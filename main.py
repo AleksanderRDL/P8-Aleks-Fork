@@ -1,13 +1,20 @@
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
 import time
 import os
 import removeDuplications
 import removeShiptypes
 import trimStationary
 
-input_file = "AISDATA/aisdk-2026-02-05.csv"
-output_path = "AISDATA/aisdk-2026-02-05.cleaned.csv"
+# Path to local Java folder
+current_dir = os.path.dirname(os.path.abspath(__file__))
+java_home = os.path.join(current_dir, "local_java")
+
+os.environ["JAVA_HOME"] = java_home
+
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+input_file = "data/raw/aisdk-2026-02-05.csv"
+output_path = "data/processed/aisdk-2026-02-05.cleaned.csv"
 
 os.environ['HADOOP_HOME'] = r'C:\hadoop'
 os.environ['PATH'] = r'C:\hadoop\bin;' + os.environ.get('PATH', '')

@@ -2,6 +2,9 @@ AISDATA/
 *.cleaned.csv/
 *.csv
 
+# Portable java
+local_java/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
