@@ -10,7 +10,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./schema.sql:/docker-entrypoint-initdb.d/10_schema.sql:ro
     restart: unless-stopped
 
 volumes:
