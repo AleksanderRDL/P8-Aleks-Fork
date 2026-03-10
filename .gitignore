@@ -1,7 +1,6 @@
 AISDATA/
 *.cleaned.csv/
 *.csv
-
 .DS_Store
 
 
