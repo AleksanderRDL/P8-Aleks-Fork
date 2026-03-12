@@ -7,6 +7,10 @@ AISDATA/
 # Portable java
 local_java/
 
+# Spark stuff
+spark_temp/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

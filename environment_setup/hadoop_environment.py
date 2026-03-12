@@ -11,7 +11,7 @@ def _prepend_path(path: Path) -> None:
         os.environ["PATH"] = path_str + (os.pathsep + current_path if current_path else "")
 
 
-def configure_hadoop_environment(project_dir: Path) -> None:
+def configure_hadoop_environment(project_dir: Path, verbose: bool = True) -> None:
     if platform.system() != "Windows":
         return
 
@@ -27,10 +27,12 @@ def configure_hadoop_environment(project_dir: Path) -> None:
         if candidate.is_dir():
             os.environ["HADOOP_HOME"] = str(candidate)
             _prepend_path(candidate / "bin")
-            print(f"Using Hadoop home: {candidate}")
+            if verbose:
+                print(f"Using Hadoop home: {candidate}")
             return
 
-    print(
-        "Warning: Hadoop environment was not found. Set HADOOP_HOME, install Hadoop at "
-        r"'C:\hadoop', or provide a project-local 'hadoop' directory."
-    )
+    if verbose:
+        print(
+            "Warning: Hadoop environment was not found. Set HADOOP_HOME, install Hadoop at "
+            r"'C:\hadoop', or provide a project-local 'hadoop' directory."
+        )

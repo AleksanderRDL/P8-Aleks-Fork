@@ -1,7 +1,5 @@
 import os
-import sys
 import time
-import platform
 from pathlib import Path
 
 import removeOutliers
@@ -11,8 +9,12 @@ import ship_type
 import trim_moving
 import trimStationary
 
-from hadoop_environment import configure_hadoop_environment
-from java_environment import configure_java_environment
+from environment_setup.hadoop_environment import configure_hadoop_environment
+from environment_setup.java_environment import configure_java_environment
+from environment_setup.spark_environment import (
+    configure_pyspark_python,
+    configure_spark_environment,
+)
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
@@ -21,30 +23,17 @@ AISDATA_DIR = PROJECT_DIR / "AISDATA"
 INPUT_FILE = AISDATA_DIR / "aisdk-2026-02-05.csv"
 OUTPUT_PATH = AISDATA_DIR / "aisdk-2026-02-05.cleaned.csv"
 
-# THIS WILL PROBABLY BE REMOVED OR MOVED INTO ITS OWN SETUP CONFIGURATION FILE
-# Ensure Spark workers use the same Python interpreter (with pandas/pyarrow)
-# On Windows, paths with spaces break PySpark worker launches, so use the
-# short (8.3) path which contains no spaces.
-if platform.system() == "Windows":
-    import ctypes
-    buf = ctypes.create_unicode_buffer(260)
-    if ctypes.windll.kernel32.GetShortPathNameW(sys.executable, buf, 260):
-        python_exec = buf.value
-
-def configure_pyspark_python() -> None:
-    os.environ["PYSPARK_PYTHON"] = sys.executable
-    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
-
-configure_java_environment(PROJECT_DIR)
-configure_hadoop_environment(PROJECT_DIR)
+configure_java_environment(PROJECT_DIR, verbose=False)
+configure_hadoop_environment(PROJECT_DIR, verbose=False)
 configure_pyspark_python()
+configure_spark_environment(PROJECT_DIR)
 
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 start_time = time.time()
 
 spark = (SparkSession.builder
-    .config("spark.local.dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "spark_temp"))
+    .master("local[*]")
     .config("spark.sql.shuffle.partitions", "4")
     .getOrCreate())
 
