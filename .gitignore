@@ -7,6 +7,9 @@ AISDATA/
 # Portable java
 local_java/
 
+# Portable hadoop
+local_hadoop/
+
 # Spark stuff
 spark_temp/
 
