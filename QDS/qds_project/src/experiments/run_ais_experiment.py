@@ -63,7 +63,6 @@ import torch
 from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from src.data.trajectory_dataset import TrajectoryDataset
 from src.queries.query_generator import (
-    generate_spatiotemporal_queries,
     generate_uniform_queries,
     generate_density_biased_queries,
     generate_mixed_queries,
