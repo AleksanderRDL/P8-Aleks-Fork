@@ -1,6 +1,8 @@
 AISDATA/
 *.cleaned.csv/
 *.csv
+.DS_Store
+
 
 # Portable java
 local_java/
