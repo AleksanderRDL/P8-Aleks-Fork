@@ -23,8 +23,8 @@ AISDATA_DIR = PROJECT_DIR / "AISDATA"
 INPUT_FILE = AISDATA_DIR / "aisdk-2026-02-05.csv"
 OUTPUT_PATH = AISDATA_DIR / "aisdk-2026-02-05.cleaned.csv"
 
-configure_java_environment(PROJECT_DIR, verbose=False)
-configure_hadoop_environment(PROJECT_DIR, verbose=False)
+configure_java_environment(PROJECT_DIR, verbose=True)
+configure_hadoop_environment(PROJECT_DIR, verbose=True)
 configure_pyspark_python()
 configure_spark_environment(PROJECT_DIR)
 
