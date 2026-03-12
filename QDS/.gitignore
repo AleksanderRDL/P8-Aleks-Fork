@@ -1,0 +1,36 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Trained model weights
+*.pt
+*.pth
+
+# Generated plots
+*.png
+*.pdf
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Pytest cache
+.pytest_cache/
+
+# Experiment output directory
+results/
