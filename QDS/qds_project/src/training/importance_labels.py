@@ -121,4 +121,4 @@ def compute_importance(
     else:
         importance = torch.zeros_like(importance)
 
-    return importance.cpu() if points.device.type != "cpu" else importance
+    return importance

@@ -8,8 +8,12 @@ AIS CSV format expected: mmsi, timestamp, lat, lon, speed, heading
 Each row represents a position report for a vessel.
 
 The loader groups rows by MMSI (vessel identifier), sorts each vessel's
-track by timestamp, and returns tensors of shape [T, 5] where the columns
-are [time, lat, lon, speed, heading].
+track by timestamp, and returns tensors of shape [T, 7] where the columns
+are [time, lat, lon, speed, heading, is_start, is_end].
+
+The ``is_start`` and ``is_end`` binary flags are set to 1.0 for the first
+and last points of each trajectory respectively, and 0.0 otherwise.  They
+allow the model to learn that trajectory endpoints may have higher importance.
 """
 
 from __future__ import annotations
@@ -21,6 +25,15 @@ from typing import List, Optional
 
 import torch
 from torch import Tensor
+
+
+def _make_endpoint_flags(t: int, start: bool) -> "numpy.ndarray":
+    """Return a [T, 1] float32 array with 1.0 at the start or end index."""
+    import numpy as np
+    flags = np.zeros((t, 1), dtype="float32")
+    if t > 0:
+        flags[0 if start else -1, 0] = 1.0
+    return flags
 
 
 def _normalize_column_name(name: str) -> str:
@@ -48,8 +61,8 @@ def load_ais_csv(filepath: str) -> List[Tensor]:
         filepath: Path to the CSV file.
 
     Returns:
-        List of tensors, one per vessel, each of shape [T, 5] with columns
-        [time, lat, lon, speed, heading].
+        List of tensors, one per vessel, each of shape [T, 7] with columns
+        [time, lat, lon, speed, heading, is_start, is_end].
     """
     import pandas as pd  # optional dependency; checked at call-time
 
@@ -130,6 +143,7 @@ def load_ais_csv(filepath: str) -> List[Tensor]:
         df[timestamp_col] = pd.Series(range(len(df)), index=df.index, dtype="float64") * 60.0
 
     trajectories: List[Tensor] = []
+    import numpy as np
     for _, group in df.groupby(mmsi_col, sort=False):
         group = group.sort_values(timestamp_col, kind="mergesort")
         # Keep only [time, lat, lon, speed, heading] — drop mmsi
@@ -137,6 +151,10 @@ def load_ais_csv(filepath: str) -> List[Tensor]:
             dtype="float32",
             copy=True,
         )
+        t = values.shape[0]
+        is_start = _make_endpoint_flags(t, start=True)
+        is_end = _make_endpoint_flags(t, start=False)
+        values = np.concatenate([values, is_start, is_end], axis=1)
         trajectories.append(torch.from_numpy(values))
 
     return trajectories
@@ -158,8 +176,8 @@ def generate_synthetic_ais_data(
         save_path:         If provided, save the data as a CSV to this path.
 
     Returns:
-        List of tensors, one per vessel, each of shape [T, 5] with columns
-        [time, lat, lon, speed, heading].
+        List of tensors, one per vessel, each of shape [T, 7] with columns
+        [time, lat, lon, speed, heading, is_start, is_end].
     """
     torch.manual_seed(42)  # reproducibility
 
@@ -216,7 +234,14 @@ def generate_synthetic_ais_data(
                     }
                 )
 
-        trajectories.append(torch.tensor(points, dtype=torch.float32))
+        tensor = torch.tensor(points, dtype=torch.float32)  # [T, 5]
+        n_pts = tensor.shape[0]
+        is_start = torch.zeros(n_pts, 1, dtype=torch.float32)
+        is_end = torch.zeros(n_pts, 1, dtype=torch.float32)
+        if n_pts > 0:
+            is_start[0, 0] = 1.0
+            is_end[-1, 0] = 1.0
+        trajectories.append(torch.cat([tensor, is_start, is_end], dim=1))  # [T, 7]
 
     # Optionally persist to CSV
     if save_path is not None:

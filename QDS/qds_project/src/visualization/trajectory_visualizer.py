@@ -46,14 +46,28 @@ def plot_trajectories(
         lons = traj[:, 2].numpy()
         color = cmap(i % 20)
         ax.plot(lons, lats, "-", color=color, linewidth=1.0, alpha=0.8, label=f"Ship {i}")
-        ax.plot(lons[0],  lats[0],  "o", color=color, markersize=5)
-        ax.plot(lons[-1], lats[-1], "x", color=color, markersize=5)
+        ax.plot(lons[0],  lats[0],  "o", color="green", markersize=6, zorder=5)
+        ax.plot(lons[-1], lats[-1], "s", color="blue",  markersize=6, zorder=5)
 
     ax.set_xlabel("Longitude (°)")
     ax.set_ylabel("Latitude (°)")
     ax.set_title(title)
     if len(trajectories) <= 10:
         ax.legend(fontsize=7, loc="best")
+
+    # Endpoint legend entries
+    start_handle = plt.Line2D(
+        [0], [0], marker="o", color="w", markerfacecolor="green", markersize=7,
+    )
+    end_handle = plt.Line2D(
+        [0], [0], marker="s", color="w", markerfacecolor="blue", markersize=7,
+    )
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles=handles + [start_handle, end_handle],
+        labels=labels + ["Start point", "End point"],
+        fontsize=7, loc="best",
+    )
     plt.tight_layout()
 
     if save_path:

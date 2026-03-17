@@ -3,8 +3,11 @@ trajectory_dataset.py
 
 PyTorch Dataset wrapper for AIS trajectory tensors.
 
-Each trajectory is a tensor of shape [T, 5] with columns:
-[time, lat, lon, speed, heading].
+Each trajectory is a tensor of shape [T, 7] with columns:
+[time, lat, lon, speed, heading, is_start, is_end].
+
+The ``is_start`` and ``is_end`` columns are binary flags (0.0 or 1.0) that
+indicate the first and last point of each trajectory respectively.
 """
 
 from __future__ import annotations
@@ -24,8 +27,8 @@ class TrajectoryDataset(Dataset):
     point cloud.
 
     Args:
-        trajectories: List of tensors, each of shape [T, 5] with columns
-                      [time, lat, lon, speed, heading].
+        trajectories: List of tensors, each of shape [T, 7] with columns
+                      [time, lat, lon, speed, heading, is_start, is_end].
     """
 
     def __init__(self, trajectories: List[Tensor]) -> None:
@@ -42,7 +45,7 @@ class TrajectoryDataset(Dataset):
             idx: Trajectory index.
 
         Returns:
-            Tensor of shape [T, 5].
+            Tensor of shape [T, 7].
         """
         return self.trajectories[idx]
 
@@ -50,7 +53,7 @@ class TrajectoryDataset(Dataset):
         """Flatten all trajectories into a single point cloud tensor.
 
         Returns:
-            Tensor of shape [N, 5] where N is the total number of points
+            Tensor of shape [N, 7] where N is the total number of points
             across all trajectories.
         """
         return torch.cat(self.trajectories, dim=0)

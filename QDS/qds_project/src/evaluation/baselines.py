@@ -30,7 +30,7 @@ def random_sampling(points: Tensor, ratio: float) -> Tensor:
     """
     n = points.shape[0]
     k = max(1, int(round(ratio * n)))
-    indices = torch.randperm(n)[:k]
+    indices = torch.randperm(n, device=points.device)[:k]
     return points[indices]
 
 
@@ -57,7 +57,7 @@ def uniform_temporal_sampling(points: Tensor, ratio: float) -> Tensor:
 
     # Pick every step-th point to get approximately k points
     step = max(1, n // k)
-    sampled_indices = torch.arange(0, n, step)[:k]
+    sampled_indices = torch.arange(0, n, step, device=points.device)[:k]
     return sorted_points[sampled_indices]
 
 
@@ -81,12 +81,48 @@ def _perpendicular_distance(point: Tensor, line_start: Tensor, line_end: Tensor)
     return float(torch.abs(cross) / torch.norm(d))
 
 
+def _max_distance_in_segment(points_2d: Tensor, start_idx: int, end_idx: int) -> tuple[int, float]:
+    """Return the interior point index with max distance to segment [start, end].
+
+    Args:
+        points_2d: Tensor of shape [N, 2] with [lat, lon].
+        start_idx: Start index of segment (inclusive).
+        end_idx:   End index of segment (inclusive).
+
+    Returns:
+        ``(split_idx, max_dist)`` where ``split_idx`` is ``-1`` when the
+        segment has no interior points.
+    """
+    if end_idx - start_idx <= 1:
+        return -1, 0.0
+
+    start_pt = points_2d[start_idx]
+    end_pt = points_2d[end_idx]
+    interior = points_2d[start_idx + 1 : end_idx]
+    if interior.numel() == 0:
+        return -1, 0.0
+
+    segment = end_pt - start_pt
+    seg_norm = torch.norm(segment)
+
+    if float(seg_norm.item()) == 0.0:
+        distances = torch.norm(interior - start_pt, dim=1)
+    else:
+        rel = interior - start_pt
+        cross = segment[0] * rel[:, 1] - rel[:, 0] * segment[1]
+        distances = torch.abs(cross) / seg_norm
+
+    max_dist, local_idx = torch.max(distances, dim=0)
+    split_idx = start_idx + 1 + int(local_idx.item())
+    return split_idx, float(max_dist.item())
+
+
 def _douglas_peucker_indices(
     points_2d: Tensor,
     indices: list[int],
     epsilon: float,
 ) -> list[int]:
-    """Recursive Douglas-Peucker algorithm returning indices to keep.
+    """Douglas-Peucker algorithm returning indices to keep.
 
     Args:
         points_2d: Tensor of shape [N, 2] with [lat, lon].
@@ -99,31 +135,47 @@ def _douglas_peucker_indices(
     if len(indices) <= 2:
         return indices
 
-    start_idx = indices[0]
-    end_idx   = indices[-1]
-    start_pt  = points_2d[start_idx]
-    end_pt    = points_2d[end_idx]
+    index_tensor = torch.as_tensor(indices, dtype=torch.long, device=points_2d.device)
+    keep = torch.zeros(index_tensor.shape[0], dtype=torch.bool, device=points_2d.device)
+    keep[0] = True
+    keep[-1] = True
 
-    # Find the point with the maximum perpendicular distance
-    max_dist  = 0.0
-    max_index = 0
-    for i in indices[1:-1]:
-        dist = _perpendicular_distance(points_2d[i], start_pt, end_pt)
-        if dist > max_dist:
-            max_dist  = dist
-            max_index = i
+    # Work with positions in `indices` to support arbitrary index subsets.
+    stack: list[tuple[int, int]] = [(0, len(indices) - 1)]
 
-    if max_dist > epsilon:
-        # Recurse on both sub-segments
-        left_idx  = indices[: indices.index(max_index) + 1]
-        right_idx = indices[indices.index(max_index):]
-        left_result  = _douglas_peucker_indices(points_2d, left_idx,  epsilon)
-        right_result = _douglas_peucker_indices(points_2d, right_idx, epsilon)
-        # Merge (avoid duplicating the split point)
-        return left_result[:-1] + right_result
-    else:
-        # All interior points are within epsilon — keep only endpoints
-        return [start_idx, end_idx]
+    while stack:
+        left_pos, right_pos = stack.pop()
+        if right_pos - left_pos <= 1:
+            continue
+
+        start_idx = int(index_tensor[left_pos].item())
+        end_idx = int(index_tensor[right_pos].item())
+
+        interior_idx = index_tensor[left_pos + 1 : right_pos]
+        if interior_idx.numel() == 0:
+            continue
+
+        start_pt = points_2d[start_idx]
+        end_pt = points_2d[end_idx]
+        interior = points_2d[interior_idx]
+
+        segment = end_pt - start_pt
+        seg_norm = torch.norm(segment)
+        if float(seg_norm.item()) == 0.0:
+            distances = torch.norm(interior - start_pt, dim=1)
+        else:
+            rel = interior - start_pt
+            cross = segment[0] * rel[:, 1] - rel[:, 0] * segment[1]
+            distances = torch.abs(cross) / seg_norm
+
+        max_dist, local_idx = torch.max(distances, dim=0)
+        if float(max_dist.item()) > epsilon:
+            split_pos = left_pos + 1 + int(local_idx.item())
+            keep[split_pos] = True
+            stack.append((left_pos, split_pos))
+            stack.append((split_pos, right_pos))
+
+    return index_tensor[keep].tolist()
 
 
 def douglas_peucker(points: Tensor, epsilon: float = 0.01) -> Tensor:
@@ -149,6 +201,20 @@ def douglas_peucker(points: Tensor, epsilon: float = 0.01) -> Tensor:
     # Work on the lat/lon columns only (indices 1 and 2)
     points_2d = points[:, 1:3]  # [N, 2]
 
-    kept_indices = _douglas_peucker_indices(points_2d, list(range(n)), epsilon)
-    kept_indices = sorted(set(kept_indices))
-    return points[kept_indices]
+    keep = torch.zeros(n, dtype=torch.bool, device=points.device)
+    keep[0] = True
+    keep[-1] = True
+
+    # Iterative stack avoids Python recursion overhead on large inputs.
+    stack: list[tuple[int, int]] = [(0, n - 1)]
+    while stack:
+        start_idx, end_idx = stack.pop()
+        split_idx, max_dist = _max_distance_in_segment(points_2d, start_idx, end_idx)
+
+        if split_idx >= 0 and max_dist > epsilon:
+            keep[split_idx] = True
+            stack.append((start_idx, split_idx))
+            stack.append((split_idx, end_idx))
+
+    kept_indices = torch.nonzero(keep, as_tuple=False).flatten()
+    return points.index_select(0, kept_indices)

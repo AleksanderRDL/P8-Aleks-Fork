@@ -6,14 +6,14 @@ importance scores for AIS trajectory data given a spatiotemporal query workload.
 
 Architecture
 ------------
-1. Point Encoder   : MLP  [5 → 64 → 64]
+1. Point Encoder   : MLP  [7 → 64 → 64]
 2. Query Encoder   : MLP  [6 → 64 → 64]
 3. Cross-Attention : MultiheadAttention(embed_dim=64, num_heads=4, batch_first=True)
                      Queries attend to points so each point accumulates
                      query-driven context.
 4. Importance Predictor : MLP [64 → 32 → 1] + Sigmoid
 
-Point columns:  [time, lat, lon, speed, heading]
+Point columns:  [time, lat, lon, speed, heading, is_start, is_end]
 Query columns:  [lat_min, lat_max, lon_min, lon_max, time_start, time_end]
 """
 
@@ -31,8 +31,12 @@ def normalize_points_and_queries(points: Tensor, queries: Tensor) -> tuple[Tenso
       - latitude  ↔ query lat_min/lat_max
       - longitude ↔ query lon_min/lon_max
 
+    The ``is_start`` and ``is_end`` binary features (columns 5 and 6) are
+    already in [0, 1] and are preserved without additional scaling.
+
     Args:
-        points:  Tensor [N, 5] with columns [time, lat, lon, speed, heading].
+        points:  Tensor [N, 7] with columns [time, lat, lon, speed, heading,
+                 is_start, is_end].
         queries: Tensor [M, 6] with columns
                  [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
 
@@ -44,11 +48,17 @@ def normalize_points_and_queries(points: Tensor, queries: Tensor) -> tuple[Tenso
 
     eps = torch.tensor(1e-8, dtype=points.dtype, device=points.device)
 
-    p_min = points.min(dim=0).values
-    p_max = points.max(dim=0).values
+    # Normalise only the first 5 features (time, lat, lon, speed, heading).
+    # The is_start and is_end binary flags (columns 5 and 6) are already in
+    # [0, 1] and are passed through unchanged.
+    n_spatial_features = min(5, points.shape[1])
+    p_min = points[:, :n_spatial_features].min(dim=0).values
+    p_max = points[:, :n_spatial_features].max(dim=0).values
     p_range = torch.maximum(p_max - p_min, eps)
 
-    norm_points = (norm_points - p_min) / p_range
+    norm_points[:, :n_spatial_features] = (
+        (norm_points[:, :n_spatial_features] - p_min) / p_range
+    ).clamp(0.0, 1.0)
 
     # Query lat bounds use point lat scale
     norm_queries[:, 0] = (norm_queries[:, 0] - p_min[1]) / p_range[1]  # lat_min
@@ -62,7 +72,6 @@ def normalize_points_and_queries(points: Tensor, queries: Tensor) -> tuple[Tenso
     norm_queries[:, 4] = (norm_queries[:, 4] - p_min[0]) / p_range[0]  # time_start
     norm_queries[:, 5] = (norm_queries[:, 5] - p_min[0]) / p_range[0]  # time_end
 
-    norm_points = norm_points.clamp(0.0, 1.0)
     norm_queries = norm_queries.clamp(0.0, 1.0)
 
     return norm_points, norm_queries
@@ -84,9 +93,9 @@ class TrajectoryQDSModel(nn.Module):
     def __init__(self, embed_dim: int = 64, num_heads: int = 4) -> None:
         super().__init__()
 
-        # --- Point encoder: [time, lat, lon, speed, heading] → embed_dim ---
+        # --- Point encoder: [time, lat, lon, speed, heading, is_start, is_end] → embed_dim ---
         self.point_encoder = nn.Sequential(
-            nn.Linear(5, embed_dim),
+            nn.Linear(7, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim),
         )
@@ -117,8 +126,8 @@ class TrajectoryQDSModel(nn.Module):
         """Predict per-point importance scores.
 
         Args:
-            points:  Tensor of shape [N, 5] with columns
-                     [time, lat, lon, speed, heading].
+            points:  Tensor of shape [N, 7] with columns
+                     [time, lat, lon, speed, heading, is_start, is_end].
             queries: Tensor of shape [M, 6] with columns
                      [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
 

@@ -70,6 +70,10 @@ def train_model(
     # --- Flatten all trajectories into a single point cloud ---
     points = torch.cat(trajectories, dim=0)  # [N, 5]
 
+    # Keep preprocess tensors colocated before normalization.
+    if queries.device != points.device:
+        queries = queries.to(points.device)
+
     # --- Compute ground-truth importance labels ---
     if importance is None:
         print("Computing ground-truth importance labels …")
@@ -96,8 +100,17 @@ def train_model(
     # --- Normalise model inputs for stable training dynamics ---
     norm_points, norm_queries = normalize_points_and_queries(train_points, queries)
 
+    # --- Select compute device (GPU if available, else CPU) ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # --- Move training tensors to device once before the training loop ---
+    norm_points = norm_points.to(device)
+    norm_queries = norm_queries.to(device)
+    train_importance = train_importance.to(device)
+
     # --- Build model and optimizer ---
     model = TrajectoryQDSModel()
+    model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     high_importance_weight = 9.0
     n_train = norm_points.shape[0]

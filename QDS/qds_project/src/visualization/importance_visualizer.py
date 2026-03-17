@@ -147,6 +147,25 @@ def plot_simplification_results(
     )
     plt.colorbar(sc, ax=ax, label="Importance Score")
 
+    # 4b. Overlay retained start/end points with distinctive markers
+    if all_points.shape[1] >= 7:
+        retained_start_mask = retained_mask & (all_points[:, 5] > 0.5)
+        retained_end_mask   = retained_mask & (all_points[:, 6] > 0.5)
+        if retained_start_mask.any():
+            ax.scatter(
+                all_points[retained_start_mask, 2].numpy(),
+                all_points[retained_start_mask, 1].numpy(),
+                s=50, color="green", marker="o", zorder=7,
+                label="Trajectory start",
+            )
+        if retained_end_mask.any():
+            ax.scatter(
+                all_points[retained_end_mask, 2].numpy(),
+                all_points[retained_end_mask, 1].numpy(),
+                s=50, color="blue", marker="s", zorder=7,
+                label="Trajectory end",
+            )
+
     # 5. Draw query rectangles
     query_patch = None
     for q in queries:

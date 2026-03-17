@@ -55,6 +55,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
@@ -71,7 +72,7 @@ from src.queries.query_executor import run_queries
 from src.training.importance_labels import compute_importance
 from src.training.train_model import train_model
 from src.simplification.simplify_trajectories import simplify_trajectories
-from src.evaluation.metrics import query_error, compression_ratio, query_latency
+from src.evaluation.metrics import query_error, compression_ratio as compute_compression_ratio, query_latency
 from src.evaluation.baselines import (
     random_sampling,
     uniform_temporal_sampling,
@@ -199,13 +200,17 @@ def _save_retained_points_csv(
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     points_cpu = retained_points.detach().cpu()
+    # Only export the core 5 columns: timestamp, lat, lon, speed, heading.
+    # The is_start/is_end endpoint flags (columns 5–6) are internal model
+    # features and are not written to the output CSV.
+    points_export = points_cpu[:, :5]
     with open(output_path, "w", newline="", encoding="utf-8") as out_file:
         writer = csv.writer(out_file)
         writer.writerow(["timestamp", "lat", "lon", "speed", "heading"])
 
-        for start in range(0, points_cpu.shape[0], write_chunk_size):
-            end = min(points_cpu.shape[0], start + write_chunk_size)
-            writer.writerows(points_cpu[start:end].tolist())
+        for start in range(0, points_export.shape[0], write_chunk_size):
+            end = min(points_export.shape[0], start + write_chunk_size)
+            writer.writerows(points_export[start:end].tolist())
 
 
 def _generate_queries_for_workload(
@@ -280,6 +285,8 @@ def run_ais_experiment(
     epochs: int = 50,
     threshold: float = 0.5,
     target_ratio: float | None = None,
+    compression_ratio: float | None = 0.2,
+    min_points_per_trajectory: int = 5,
     max_train_points: int | None = None,
     model_max_points: int | None = 300_000,
     point_batch_size: int = 50_000,
@@ -309,9 +316,17 @@ def run_ais_experiment(
         n_points:   Position reports per vessel (ignored if csv_path given).
         n_queries:  Number of spatiotemporal queries.
         epochs:     Training epochs for the model.
-        threshold:  Importance score threshold for ML-based compression.
+        threshold:  Importance score threshold for global threshold mode
+                    (used only when *compression_ratio* is ``None``).
         target_ratio: Optional retained fraction in (0, 1]. If provided,
-                      threshold is selected automatically from score ranks.
+                      threshold is selected automatically from score ranks
+                      (only active when *compression_ratio* is ``None``).
+        compression_ratio: Per-trajectory compression fraction in (0, 1].
+                      When set (default 0.2), per-trajectory top-k mode is
+                      used and *threshold*/*target_ratio* are ignored.
+                      Pass ``None`` to revert to global threshold mode.
+        min_points_per_trajectory: Minimum number of points to retain per
+                      trajectory.  Defaults to 5.
         max_train_points: Optional cap on training points (random sample).
         model_max_points: Optional cap for full-set model inference.
         point_batch_size: Mini-batch size over points during training.
@@ -352,6 +367,8 @@ def run_ais_experiment(
                 epochs=epochs,
                 threshold=threshold,
                 target_ratio=target_ratio,
+                compression_ratio=compression_ratio,
+                min_points_per_trajectory=min_points_per_trajectory,
                 max_train_points=max_train_points,
                 model_max_points=model_max_points,
                 point_batch_size=point_batch_size,
@@ -383,6 +400,8 @@ def run_ais_experiment(
         epochs=epochs,
         threshold=threshold,
         target_ratio=target_ratio,
+        compression_ratio=compression_ratio,
+        min_points_per_trajectory=min_points_per_trajectory,
         max_train_points=max_train_points,
         model_max_points=model_max_points,
         point_batch_size=point_batch_size,
@@ -455,6 +474,8 @@ def _run_single_workload(
     epochs: int,
     threshold: float,
     target_ratio: float | None,
+    compression_ratio: float | None,
+    min_points_per_trajectory: int,
     max_train_points: int | None,
     model_max_points: int | None,
     point_batch_size: int,
@@ -477,6 +498,9 @@ def _run_single_workload(
         workload:       One of ``"uniform"``, ``"density"``, or ``"mixed"``.
         density_ratio:  Fraction of density-biased queries for ``"mixed"``
                         workload.
+        compression_ratio: Per-trajectory compression fraction; ``None``
+                        reverts to global threshold mode.
+        min_points_per_trajectory: Minimum retained points per trajectory.
         (remaining args mirror :func:`run_ais_experiment`.)
 
     Returns:
@@ -487,11 +511,16 @@ def _run_single_workload(
     print(f"Workload: {_workload_title(workload)}")
     print("=" * 65)
 
+    # Select compute device (GPU if available, otherwise CPU).
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"       Device: {device}")
+
     # ------------------------------------------------------------------
     # 1. Load or generate AIS data
     # ------------------------------------------------------------------
     loaded_from_csv = bool(csv_path and os.path.exists(csv_path))
 
+    _t0 = time.time()
     if loaded_from_csv:
         assert csv_path is not None
         print(f"\n[1/8] Loading AIS data from {csv_path} …")
@@ -503,12 +532,15 @@ def _run_single_workload(
         )
 
     dataset = TrajectoryDataset(trajectories)
-    points  = dataset.get_all_points()  # [N, 5]
+    points  = dataset.get_all_points().to(device)  # [N, 7]
+    traj_boundaries = dataset.get_trajectory_boundaries()
     print(f"       Total ships: {len(trajectories)}, Total points: {points.shape[0]}")
+    print(f"       Data loading time: {time.time() - _t0:.2f}s")
 
     # ------------------------------------------------------------------
     # 2. Generate query workload
     # ------------------------------------------------------------------
+    _t0 = time.time()
     print(f"\n[2/8] Generating {n_queries} queries ({_workload_title(workload)}) …")
     queries = _generate_queries_for_workload(
         trajectories,
@@ -519,7 +551,7 @@ def _run_single_workload(
         temporal_fraction=query_temporal_fraction,
         spatial_bound_lower_quantile=query_spatial_lower_quantile,
         spatial_bound_upper_quantile=query_spatial_upper_quantile,
-    )
+    ).to(device)
     print(f"       Query tensor shape: {queries.shape}")
     lat_span = (queries[:, 1] - queries[:, 0]).mean().item()
     lon_span = (queries[:, 3] - queries[:, 2]).mean().item()
@@ -528,13 +560,16 @@ def _run_single_workload(
         "       Avg query spans "
         f"lat={lat_span:.4f}, lon={lon_span:.4f}, time={time_span:.2f}"
     )
+    print(f"       Query generation time: {time.time() - _t0:.2f}s")
 
     # ------------------------------------------------------------------
     # 3. Compute importance labels
     # ------------------------------------------------------------------
+    _t0 = time.time()
     print("\n[3/8] Computing ground-truth importance labels …")
     importance = compute_importance(points, queries, chunk_size=importance_chunk_size)
     print(f"       Importance range: [{importance.min():.4f}, {importance.max():.4f}]")
+    print(f"       Importance computation time: {time.time() - _t0:.2f}s")
 
     effective_max_train_points = max_train_points
     if (
@@ -551,6 +586,7 @@ def _run_single_workload(
     # ------------------------------------------------------------------
     # 4. Train model
     # ------------------------------------------------------------------
+    _t0 = time.time()
     print(f"\n[4/8] Training TrajectoryQDSModel ({epochs} epochs) …")
     model = train_model(
         trajectories,
@@ -561,56 +597,96 @@ def _run_single_workload(
         importance_chunk_size=importance_chunk_size,
         point_batch_size=point_batch_size,
     )
+    print(f"       Model training time: {time.time() - _t0:.2f}s")
 
     # ------------------------------------------------------------------
     # 5. Simplify with model
     # ------------------------------------------------------------------
+    _t0 = time.time()
     print("\n[5/8] Simplifying trajectories with trained model …")
 
-    effective_threshold = threshold
-
-    if target_ratio is not None:
-        if not (0.0 < target_ratio <= 1.0):
-            raise ValueError("target_ratio must be in (0, 1].")
-
-        # Get model/query-driven scores once (threshold=0 keeps all points).
-        _, _, ml_scores = simplify_trajectories(
-            points,
-            model,
-            queries,
-            threshold=0.0,
-            query_scores=importance,
-            model_max_points=model_max_points,
-            importance_chunk_size=importance_chunk_size,
-        )
-
-        n_points_total = points.shape[0]
-        target_count = max(1, min(n_points_total, int(round(target_ratio * n_points_total))))
-        topk_vals, topk_idx = torch.topk(ml_scores, k=target_count)
-        effective_threshold = float(topk_vals.min().item())
-
-        retained_mask = torch.zeros(n_points_total, dtype=torch.bool, device=points.device)
-        retained_mask[topk_idx] = True
-        ml_simplified = points[retained_mask]
-
+    if compression_ratio is not None:
+        # Per-trajectory compression mode: threshold and target_ratio are ignored.
         print(
-            f"       target_ratio={target_ratio:.4f} "
-            f"-> auto-threshold={effective_threshold:.4f}"
+            f"       Mode: per-trajectory compression "
+            f"(ratio={compression_ratio}, min_pts={min_points_per_trajectory})"
         )
-    else:
         ml_simplified, retained_mask, ml_scores = simplify_trajectories(
             points,
             model,
             queries,
-            threshold=threshold,
             query_scores=importance,
             model_max_points=model_max_points,
             importance_chunk_size=importance_chunk_size,
+            trajectory_boundaries=traj_boundaries,
+            compression_ratio=compression_ratio,
+            min_points_per_trajectory=min_points_per_trajectory,
         )
+        effective_threshold = None
+    else:
+        # Legacy global threshold mode.
+        effective_threshold = threshold
 
-    ml_ratio = compression_ratio(points, ml_simplified)
+        if target_ratio is not None:
+            if not (0.0 < target_ratio <= 1.0):
+                raise ValueError("target_ratio must be in (0, 1].")
+
+            # Get model/query-driven scores once (threshold=0 keeps all points).
+            _, _, ml_scores = simplify_trajectories(
+                points,
+                model,
+                queries,
+                threshold=0.0,
+                query_scores=importance,
+                model_max_points=model_max_points,
+                importance_chunk_size=importance_chunk_size,
+                trajectory_boundaries=traj_boundaries,
+                compression_ratio=None,
+            )
+
+            n_points_total = points.shape[0]
+            target_count = max(1, min(n_points_total, int(round(target_ratio * n_points_total))))
+            topk_vals, topk_idx = torch.topk(ml_scores, k=target_count)
+            effective_threshold = float(topk_vals.min().item())
+
+            retained_mask = torch.zeros(n_points_total, dtype=torch.bool, device=points.device)
+            retained_mask[topk_idx] = True
+            ml_simplified = points[retained_mask]
+
+            print(
+                f"       target_ratio={target_ratio:.4f} "
+                f"-> auto-threshold={effective_threshold:.4f}"
+            )
+        else:
+            ml_simplified, retained_mask, ml_scores = simplify_trajectories(
+                points,
+                model,
+                queries,
+                threshold=threshold,
+                query_scores=importance,
+                model_max_points=model_max_points,
+                importance_chunk_size=importance_chunk_size,
+                trajectory_boundaries=traj_boundaries,
+                compression_ratio=None,
+                min_points_per_trajectory=min_points_per_trajectory,
+            )
+
+    ml_ratio = compute_compression_ratio(points, ml_simplified)
     print(f"       ML QDS retained {ml_simplified.shape[0]}/{points.shape[0]} points "
           f"(ratio={ml_ratio:.3f})")
+    print(f"       Simplification time: {time.time() - _t0:.2f}s")
+
+    # Trajectory retention statistics (Feature 6)
+    n_trajectories = len(trajectories)
+    n_traj_retained = sum(
+        1 for start, end in traj_boundaries
+        if retained_mask[start:end].any().item()
+    )
+    avg_pts_before = points.shape[0] / max(1, n_trajectories)
+    avg_pts_after  = ml_simplified.shape[0] / max(1, n_trajectories)
+    print(f"       Trajectories retained: {n_traj_retained}/{n_trajectories}")
+    print(f"       Avg points per trajectory before: {avg_pts_before:.1f}")
+    print(f"       Avg points per trajectory after:  {avg_pts_after:.1f}")
 
     if loaded_from_csv and csv_path is not None:
         if _get_yes_no_input("\n       Save cleaned file to CSV?"):
@@ -700,13 +776,15 @@ def _run_single_workload(
     # ------------------------------------------------------------------
     # 7. Evaluate all methods
     # ------------------------------------------------------------------
+    _t0 = time.time()
     print("\n[7/8] Evaluating all methods …")
     results: dict[str, tuple[float, float, float]] = {}
     for name, simplified in methods.items():
         err     = query_error(points, simplified, queries)
-        ratio   = compression_ratio(points, simplified)
+        ratio   = compute_compression_ratio(points, simplified)
         latency = query_latency(simplified, queries) * 1000  # ms
         results[name] = (err, ratio, latency)
+    print(f"       Evaluation time: {time.time() - _t0:.2f}s")
 
     # ------------------------------------------------------------------
     # 8. Print comparison table
@@ -759,40 +837,48 @@ def _run_single_workload(
             f"ships {len(viz_trajectories)}/{len(trajectories)}."
         )
 
+    # Matplotlib plotting functions expect CPU-backed tensors.
+    viz_trajectories_cpu = [traj.detach().cpu() for traj in viz_trajectories]
+    viz_points_cpu = viz_points.detach().cpu()
+    viz_importance_cpu = viz_importance.detach().cpu()
+    viz_retained_mask_cpu = viz_retained_mask.detach().cpu()
+    viz_scores_cpu = viz_scores.detach().cpu()
+    queries_cpu = queries.detach().cpu()
+
     plot_trajectories(
-        viz_trajectories,
+        viz_trajectories_cpu,
         title="AIS Trajectories",
         save_path=trajectories_path,
     )
     plot_queries_on_trajectories(
-        viz_trajectories, queries,
+        viz_trajectories_cpu, queries_cpu,
         title=f"AIS Trajectories with {_workload_title(workload)}",
         save_path=queries_path,
     )
     plot_importance(
-        viz_points, viz_importance,
+        viz_points_cpu, viz_importance_cpu,
         title="Ground-Truth Point Importance",
         save_path=importance_path,
     )
     plot_trajectories_with_importance_and_queries(
-        viz_trajectories, viz_points, viz_importance, queries,
+        viz_trajectories_cpu, viz_points_cpu, viz_importance_cpu, queries_cpu,
         title=f"AIS QDS: Importance + Queries ({_workload_title(workload)})",
         save_path=combined_path,
     )
     plot_simplification_results(
-        viz_trajectories,
-        viz_points,
-        viz_retained_mask,
-        viz_scores,
-        queries,
+        viz_trajectories_cpu,
+        viz_points_cpu,
+        viz_retained_mask_cpu,
+        viz_scores_cpu,
+        queries_cpu,
         title="AIS Trajectory Simplification Results",
         save_path="results/simplification_visualization.png",
     )
     plot_simplification_time_slices(
-        viz_points,
-        viz_retained_mask,
-        viz_scores,
-        queries,
+        viz_points_cpu,
+        viz_retained_mask_cpu,
+        viz_scores_cpu,
+        queries_cpu,
         title="AIS Simplification (Time-Sliced Query Context)",
         n_slices=4,
         save_path=time_slices_path,
@@ -818,12 +904,29 @@ def main() -> None:
     parser.add_argument("--n_points",  type=int,   default=100,  help="Points per ship")
     parser.add_argument("--n_queries", type=int,   default=100,  help="Number of queries")
     parser.add_argument("--epochs",    type=int,   default=50,   help="Training epochs")
-    parser.add_argument("--threshold", type=float, default=0.5,  help="Compression threshold")
+    parser.add_argument("--threshold", type=float, default=0.5,  help="Compression threshold (global mode only)")
     parser.add_argument(
         "--target_ratio",
         type=float,
         default=None,
-        help="Target retained ratio in (0, 1]; overrides --threshold",
+        help="Target retained ratio in (0, 1]; overrides --threshold (global mode only)",
+    )
+    parser.add_argument(
+        "--compression_ratio",
+        type=float,
+        default=0.2,
+        help=(
+            "Per-trajectory compression fraction in (0, 1] (default: 0.2). "
+            "Each trajectory keeps max(min_points_per_trajectory, "
+            "int(compression_ratio * traj_len)) points. "
+            "Pass 0 to disable per-trajectory mode and use global --threshold instead."
+        ),
+    )
+    parser.add_argument(
+        "--min_points_per_trajectory",
+        type=int,
+        default=5,
+        help="Minimum number of points to retain per trajectory (default: 5).",
     )
     parser.add_argument(
         "--max_train_points",
@@ -943,6 +1046,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # --compression_ratio 0 disables per-trajectory mode.
+    parsed_compression_ratio: float | None = (
+        args.compression_ratio if args.compression_ratio > 0.0 else None
+    )
+
     run_ais_experiment(
         n_ships=args.n_ships,
         n_points=args.n_points,
@@ -950,6 +1058,8 @@ def main() -> None:
         epochs=args.epochs,
         threshold=args.threshold,
         target_ratio=args.target_ratio,
+        compression_ratio=parsed_compression_ratio,
+        min_points_per_trajectory=args.min_points_per_trajectory,
         max_train_points=args.max_train_points,
         model_max_points=args.model_max_points,
         point_batch_size=args.point_batch_size,
