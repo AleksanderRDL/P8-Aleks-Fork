@@ -40,11 +40,13 @@ Options
     --workload     Query workload type: uniform|density|mixed|all (default: density)
     --density_ratio Fraction of density-biased queries in mixed workload (default: 0.7)
     --csv_path     Optional path to real AIS CSV file
+    --save_csv     Save cleaned CSV when loading from --csv_path
 
 Notes
 -----
-When `--csv_path` is used, retained ML datapoints are exported to a CSV file
-next to the source file as `MLClean-<original_filename>.csv`.
+When both `--csv_path` and `--save_csv` are used, retained ML datapoints
+are exported to a CSV file next to the source file as
+`MLClean-<original_filename>.csv`.
 """
 
 from __future__ import annotations
@@ -180,17 +182,6 @@ def _clean_csv_output_path(source_csv_path: str) -> str:
     return os.path.join(source_dir, f"MLClean-{source_name}")
 
 
-def _get_yes_no_input(prompt: str) -> bool:
-    """Prompt user for y/n input and return True for yes, False for no."""
-    while True:
-        response = input(f"{prompt} (y/n): ").strip().lower()
-        if response in ("y", "yes"):
-            return True
-        if response in ("n", "no"):
-            return False
-        print("Please enter 'y' or 'n'.")
-
-
 def _save_retained_points_csv(
     retained_points: torch.Tensor,
     output_path: str,
@@ -298,6 +289,7 @@ def run_ais_experiment(
     max_visualization_ships: int = 200,
     max_points_per_ship_plot: int = 2_000,
     csv_path: str | None = None,
+    save_csv: bool = False,
     workload: str = "density",
     density_ratio: float = 0.7,
     query_spatial_fraction: float = 0.03,
@@ -338,6 +330,8 @@ def run_ais_experiment(
         max_visualization_ships: Max trajectories plotted in trajectory views.
         max_points_per_ship_plot: Max points per trajectory line in plots.
         csv_path:   Optional path to a real AIS CSV file.
+        save_csv:   Save cleaned retained points CSV when loading from
+                *csv_path*.
         workload:   Query workload type: ``"uniform"``, ``"density"``,
                     ``"mixed"``, or ``"all"`` (default: ``"density"``).
         density_ratio: Fraction of density-biased queries in a ``"mixed"``
@@ -380,6 +374,7 @@ def run_ais_experiment(
                 max_visualization_ships=max_visualization_ships,
                 max_points_per_ship_plot=max_points_per_ship_plot,
                 csv_path=csv_path,
+                save_csv=save_csv,
                 query_spatial_fraction=query_spatial_fraction,
                 query_temporal_fraction=query_temporal_fraction,
                 query_spatial_lower_quantile=query_spatial_lower_quantile,
@@ -413,6 +408,7 @@ def run_ais_experiment(
         max_visualization_ships=max_visualization_ships,
         max_points_per_ship_plot=max_points_per_ship_plot,
         csv_path=csv_path,
+        save_csv=save_csv,
         query_spatial_fraction=query_spatial_fraction,
         query_temporal_fraction=query_temporal_fraction,
         query_spatial_lower_quantile=query_spatial_lower_quantile,
@@ -487,6 +483,7 @@ def _run_single_workload(
     max_visualization_ships: int,
     max_points_per_ship_plot: int,
     csv_path: str | None,
+    save_csv: bool,
     query_spatial_fraction: float,
     query_temporal_fraction: float,
     query_spatial_lower_quantile: float,
@@ -689,12 +686,12 @@ def _run_single_workload(
     print(f"       Avg points per trajectory after:  {avg_pts_after:.1f}")
 
     if loaded_from_csv and csv_path is not None:
-        if _get_yes_no_input("\n       Save cleaned file to CSV?"):
+        if save_csv:
             clean_csv_path = _clean_csv_output_path(csv_path)
             _save_retained_points_csv(ml_simplified, clean_csv_path)
             print(f"       Saved retained points CSV: {clean_csv_path}")
         else:
-            print("       Skipped saving cleaned file.")
+            print("       Skipped saving cleaned file (set --save_csv to enable).")
 
     removed_mask = ~retained_mask
     removed_in_spatial, removed_in_spatiotemporal = _count_removed_overlap_stats(
@@ -988,6 +985,11 @@ def main() -> None:
     )
     parser.add_argument("--csv_path",  type=str,   default=None, help="Path to AIS CSV file")
     parser.add_argument(
+        "--save_csv",
+        action="store_true",
+        help="Save cleaned retained points CSV when loading data from --csv_path",
+    )
+    parser.add_argument(
         "--workload",
         type=str,
         default="density",
@@ -1071,6 +1073,7 @@ def main() -> None:
         max_visualization_ships=args.max_visualization_ships,
         max_points_per_ship_plot=args.max_points_per_ship_plot,
         csv_path=args.csv_path,
+        save_csv=args.save_csv,
         workload=args.workload,
         density_ratio=args.density_ratio,
         query_spatial_fraction=args.query_spatial_fraction,
