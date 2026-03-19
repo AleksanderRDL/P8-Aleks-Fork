@@ -36,6 +36,7 @@ from torch import Tensor
 
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.trajectory_qds_model import normalize_points_and_queries
+from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.training.importance_labels import compute_importance
 
 
@@ -170,7 +171,7 @@ def _simplify_per_trajectory(
 
 def simplify_trajectories(
     points: Tensor,
-    model: TrajectoryQDSModel,
+    model: TrajectoryQDSModel | TurnAwareQDSModel,
     queries: Tensor,
     threshold: float = 0.5,
     query_scores: Tensor | None = None,
@@ -179,6 +180,7 @@ def simplify_trajectories(
     trajectory_boundaries: Optional[List[Tuple[int, int]]] = None,
     min_points_per_trajectory: int = 3,
     compression_ratio: float | None = 0.2,
+    turn_bias_weight: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Simplify AIS trajectory data using predicted per-point importance.
 
@@ -204,10 +206,20 @@ def simplify_trajectories(
     In both modes, if model scores appear degenerate the function falls
     back to query-driven importance scores.
 
+    When *turn_bias_weight* is positive and *points* contains a
+    ``turn_score`` column (column 7), a small additive bias is applied::
+
+        final_importance = predicted_importance
+                         + turn_bias_weight * turn_score
+
+    This nudges the ranker toward retaining points at trajectory bends
+    while keeping endpoints and query-relevant points dominant.
+
     Args:
-        points:    Tensor of shape [N, 7] with columns
-                   [time, lat, lon, speed, heading, is_start, is_end].
-        model:     Trained TrajectoryQDSModel instance.
+        points:    Tensor of shape [N, 7] or [N, 8] with columns
+                   [time, lat, lon, speed, heading, is_start, is_end]
+                   and optionally [turn_score].
+        model:     Trained TrajectoryQDSModel or TurnAwareQDSModel instance.
         queries:   Tensor of shape [M, 6] — the query workload.
         threshold: Score threshold used in global threshold mode.
         query_scores: Optional precomputed query-driven importance scores.
@@ -221,10 +233,16 @@ def simplify_trajectories(
         compression_ratio: Per-trajectory compression parameter in (0, 1].
                    When set, enables per-trajectory top-k mode and
                    *threshold* is ignored.  Defaults to 0.2.
+        turn_bias_weight: Additive weight for turn-score bias.  When > 0
+                   and points has 8+ columns, ``turn_score`` (column 7) is
+                   added to the importance scores with this weight.
+                   Recommended default is 0.1 for the turn-aware model.
+                   Defaults to 0.0 (no bias).
 
     Returns:
         A tuple of:
-        - simplified_points: Tensor of shape [K, 7] where K ≤ N.
+        - simplified_points: Tensor of shape [K, F] where K ≤ N and F is
+          the number of feature columns in *points*.
         - retained_mask: Boolean tensor of shape [N].
         - importance_scores: Tensor of shape [N] (model or fallback scores).
     """
@@ -232,7 +250,14 @@ def simplify_trajectories(
 
     model_scores: Tensor | None = None
     if run_model:
-        norm_points, norm_queries = normalize_points_and_queries(points, queries)
+        # TurnAwareQDSModel expects 8-feature points; baseline model expects 7.
+        if isinstance(model, TurnAwareQDSModel):
+            model_points = points if points.shape[1] >= 8 else torch.cat(
+                [points, torch.zeros(points.shape[0], 1, device=points.device)], dim=1
+            )
+        else:
+            model_points = points[:, :7]
+        norm_points, norm_queries = normalize_points_and_queries(model_points, queries)
         # Move tensors to the model's device once before inference.
         _first_param = next(model.parameters(), None)
         model_device = _first_param.device if _first_param is not None else torch.device("cpu")
@@ -262,6 +287,14 @@ def simplify_trajectories(
         weak_query_alignment = top_query_mean <= (global_query_mean + 1e-4)
 
         scores = query_scores if (degenerate_scores or weak_query_alignment) else model_scores
+
+    # Apply optional turn-score bias when turn_bias_weight > 0 and turn_score
+    # column is available (column 7 in an 8-feature point tensor).
+    if turn_bias_weight > 0.0 and points.shape[1] >= 8:
+        turn_scores = points[:, 7]
+        if turn_scores.device != scores.device:
+            turn_scores = turn_scores.to(scores.device)
+        scores = scores + turn_bias_weight * turn_scores
 
     # Resolve trajectory boundaries (used by both modes).
     boundaries = (

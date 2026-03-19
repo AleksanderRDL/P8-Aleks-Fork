@@ -11,10 +11,11 @@ from src.simplification.simplify_trajectories import (
     _simplify_per_trajectory,
 )
 from src.models.trajectory_qds_model import TrajectoryQDSModel
+from src.models.turn_aware_qds_model import TurnAwareQDSModel
 
 def _make_points_and_queries(n=50):
     torch.manual_seed(0)
-    pts = torch.zeros(n, 7)
+    pts = torch.zeros(n, 8)
     pts[:, 0] = torch.arange(n).float()
     pts[:, 1] = 50.0 + torch.rand(n)
     pts[:, 2] = 0.0 + torch.rand(n)
@@ -23,6 +24,8 @@ def _make_points_and_queries(n=50):
     # is_start / is_end endpoint flags
     pts[0, 5] = 1.0
     pts[-1, 6] = 1.0
+    # turn_score column (already in [0, 1]; endpoints = 0)
+    pts[1:-1, 7] = torch.rand(n - 2)
     queries = torch.tensor([
         [50.0, 51.0, 0.0, 1.0, 0.0, 25.0],
         [50.2, 50.8, 0.2, 0.8, 10.0, 40.0],
@@ -40,7 +43,7 @@ class TestSimplifyTrajectories:
         pts, queries = _make_points_and_queries()
         model = TrajectoryQDSModel()
         simplified, mask, scores = simplify_trajectories(pts, model, queries, threshold=0.5)
-        assert simplified.shape[1] == 7
+        assert simplified.shape[1] == 8
 
     def test_threshold_zero_keeps_all_global_mode(self):
         """In global threshold mode, threshold=0 retains all points."""
@@ -103,7 +106,7 @@ class TestSimplifyTrajectories:
         """Endpoints of every trajectory in a multi-trajectory batch must be kept."""
         torch.manual_seed(1)
         # Two trajectories: points 0–9, points 10–19
-        pts = torch.zeros(20, 7)
+        pts = torch.zeros(20, 8)
         pts[:, 0] = torch.arange(20).float()
         pts[:, 1] = 50.0 + torch.rand(20)
         pts[:, 2] = torch.rand(20)
@@ -132,7 +135,7 @@ class TestSimplifyTrajectories:
         """Per-trajectory mode must keep at least one point from every trajectory."""
         torch.manual_seed(2)
         # 3 separate trajectories of 20 points each
-        pts = torch.zeros(60, 7)
+        pts = torch.zeros(60, 8)
         pts[:, 0] = torch.arange(60).float()
         pts[:, 1] = 50.0 + torch.rand(60)
         pts[:, 2] = torch.rand(60)
@@ -157,7 +160,7 @@ class TestSimplifyTrajectories:
         """Per-trajectory mode should keep ~compression_ratio * traj_len points."""
         torch.manual_seed(3)
         n = 50
-        pts = torch.zeros(n, 7)
+        pts = torch.zeros(n, 8)
         pts[:, 0] = torch.arange(n).float()
         pts[:, 1] = 50.0 + torch.rand(n)
         pts[:, 2] = torch.rand(n)
@@ -206,13 +209,13 @@ class TestSimplifyTrajectories:
 
 class TestInferTrajectoryBoundaries:
     def test_single_trajectory(self):
-        pts = torch.zeros(10, 7)
+        pts = torch.zeros(10, 8)
         pts[0, 5] = 1.0
         boundaries = _infer_trajectory_boundaries(pts)
         assert boundaries == [(0, 10)]
 
     def test_two_trajectories(self):
-        pts = torch.zeros(20, 7)
+        pts = torch.zeros(20, 8)
         pts[0, 5] = 1.0
         pts[10, 5] = 1.0
         boundaries = _infer_trajectory_boundaries(pts)
@@ -220,7 +223,7 @@ class TestInferTrajectoryBoundaries:
 
     def test_no_flags_fallback(self):
         """No is_start flags → treat entire tensor as one trajectory."""
-        pts = torch.zeros(15, 7)
+        pts = torch.zeros(15, 8)
         boundaries = _infer_trajectory_boundaries(pts)
         assert boundaries == [(0, 15)]
 
@@ -304,3 +307,71 @@ class TestSimplifyPerTrajectory:
         mask = torch.zeros(5, dtype=torch.bool)
         _simplify_per_trajectory(mask, scores, [(0, 5)], compression_ratio=0.4, min_points_per_trajectory=2)
         assert torch.allclose(scores, original), "scores must not be mutated"
+
+
+class TestTurnAwareSimplification:
+    """Tests for simplify_trajectories with TurnAwareQDSModel and turn_bias_weight."""
+
+    def test_basic_output_shape(self):
+        pts, queries = _make_points_and_queries()
+        model = TurnAwareQDSModel()
+        simplified, mask, scores = simplify_trajectories(
+            pts, model, queries, threshold=0.5,
+        )
+        assert simplified.shape[1] == 8
+        assert mask.shape == (pts.shape[0],)
+        assert scores.shape == (pts.shape[0],)
+
+    def test_endpoints_retained(self):
+        pts, queries = _make_points_and_queries()
+        model = TurnAwareQDSModel()
+        _, mask, _ = simplify_trajectories(
+            pts, model, queries, threshold=0.99,
+        )
+        assert mask[0].item(),  "First point must be retained"
+        assert mask[-1].item(), "Last point must be retained"
+
+    def test_turn_bias_weight_is_additive(self):
+        """turn_bias_weight > 0 should not reduce the number of retained points below no-bias."""
+        pts, queries = _make_points_and_queries(n=30)
+        model = TrajectoryQDSModel()
+        # Use a moderate threshold so some points are removed.
+        _, mask_no_bias, scores_no_bias = simplify_trajectories(
+            pts, model, queries, threshold=0.0,
+            compression_ratio=None,
+            turn_bias_weight=0.0,
+        )
+        _, mask_biased, scores_biased = simplify_trajectories(
+            pts, model, queries, threshold=0.0,
+            compression_ratio=None,
+            turn_bias_weight=0.2,
+        )
+        # With threshold=0 and no bias both should retain all points, but the
+        # scores array should differ when bias is applied.
+        assert not torch.allclose(scores_no_bias, scores_biased), \
+            "Scores must differ when turn_bias_weight > 0 and turn_score column present"
+
+    def test_turn_bias_weight_no_column(self):
+        """turn_bias_weight with 7-feature points (no turn_score col) must not crash."""
+        pts_7, queries = _make_points_and_queries()
+        pts_7 = pts_7[:, :7]  # drop turn_score column
+        model = TrajectoryQDSModel()
+        simplified, mask, scores = simplify_trajectories(
+            pts_7, model, queries, threshold=0.5,
+            turn_bias_weight=0.2,
+        )
+        assert simplified.shape[1] == 7
+
+    def test_per_traj_turn_aware(self):
+        """TurnAwareQDSModel works in per-trajectory compression mode."""
+        pts, queries = _make_points_and_queries(n=40)
+        model = TurnAwareQDSModel()
+        _, mask, _ = simplify_trajectories(
+            pts, model, queries,
+            trajectory_boundaries=[(0, 40)],
+            compression_ratio=0.25,
+            min_points_per_trajectory=3,
+            turn_bias_weight=0.1,
+        )
+        expected = max(3, int(0.25 * 40))
+        assert mask.sum().item() == expected

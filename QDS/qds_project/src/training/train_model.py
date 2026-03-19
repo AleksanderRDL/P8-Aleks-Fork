@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.trajectory_qds_model import normalize_points_and_queries
+from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.training.importance_labels import compute_importance
 
 
@@ -47,14 +48,15 @@ def train_model(
     max_points: Optional[int] = None,
     importance_chunk_size: int = 200_000,
     point_batch_size: Optional[int] = 50_000,
-) -> TrajectoryQDSModel:
-    """Train a TrajectoryQDSModel on AIS trajectory data.
+    model_type: str = "baseline",
+) -> TrajectoryQDSModel | TurnAwareQDSModel:
+    """Train a TrajectoryQDSModel or TurnAwareQDSModel on AIS trajectory data.
 
     The model is trained to predict ground-truth importance scores
     computed via leave-one-out query error analysis.
 
     Args:
-        trajectories: List of trajectory tensors, each [T, 5].
+        trajectories: List of trajectory tensors, each [T, 7] or [T, 8].
         queries:      Tensor of shape [M, 6] — the query workload.
         epochs:       Number of training epochs.
         lr:           Adam learning rate.
@@ -63,12 +65,16 @@ def train_model(
         max_points:   Optional upper bound on training points (random sample).
         importance_chunk_size: Chunk size used when computing importance labels.
         point_batch_size: Optional mini-batch size over points for training.
+        model_type:   Which model variant to train.  ``"baseline"`` trains the
+                      original :class:`TrajectoryQDSModel` (7-feature input);
+                      ``"turn_aware"`` trains the
+                      :class:`TurnAwareQDSModel` (8-feature input).
 
     Returns:
-        Trained TrajectoryQDSModel.
+        Trained model instance (TrajectoryQDSModel or TurnAwareQDSModel).
     """
     # --- Flatten all trajectories into a single point cloud ---
-    points = torch.cat(trajectories, dim=0)  # [N, 5]
+    points = torch.cat(trajectories, dim=0)  # [N, 7] or [N, 8]
 
     # Keep preprocess tensors colocated before normalization.
     if queries.device != points.device:
@@ -84,13 +90,25 @@ def train_model(
     if importance.device != points.device:
         importance = importance.to(points.device)
 
-    train_points = points
+    # Select feature slice for the chosen model type.
+    # Baseline model uses 7 features; turn-aware model uses 8.
+    # If points have fewer features than required, zero-pad to 8 for turn_aware.
+    if model_type == "turn_aware":
+        if points.shape[1] >= 8:
+            train_input = points
+        else:
+            pad = torch.zeros(points.shape[0], 8 - points.shape[1], device=points.device)
+            train_input = torch.cat([points, pad], dim=1)
+    else:
+        train_input = points[:, :7]
+
+    train_points = train_input
     train_importance = importance
 
-    if max_points is not None and points.shape[0] > max_points:
+    if max_points is not None and train_points.shape[0] > max_points:
         sample_count = int(max_points)
-        sample_idx = torch.randperm(points.shape[0], device=points.device)[:sample_count]
-        train_points = points[sample_idx]
+        sample_idx = torch.randperm(train_points.shape[0], device=train_points.device)[:sample_count]
+        train_points = train_points[sample_idx]
         train_importance = importance[sample_idx]
         print(
             f"Training on sampled subset: {sample_count}/{points.shape[0]} points "
@@ -109,7 +127,12 @@ def train_model(
     train_importance = train_importance.to(device)
 
     # --- Build model and optimizer ---
-    model = TrajectoryQDSModel()
+    if model_type == "turn_aware":
+        model = TurnAwareQDSModel()
+        print("Training TurnAwareQDSModel for", epochs, "epochs …")
+    else:
+        model = TrajectoryQDSModel()
+        print(f"Training TrajectoryQDSModel for {epochs} epochs …")
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     high_importance_weight = 9.0
@@ -117,7 +140,6 @@ def train_model(
     effective_batch = None if point_batch_size is None else max(1, int(point_batch_size))
 
     # --- Training loop ---
-    print(f"Training TrajectoryQDSModel for {epochs} epochs …")
     model.train()
     for epoch in range(1, epochs + 1):
         if effective_batch is None or n_train <= effective_batch:

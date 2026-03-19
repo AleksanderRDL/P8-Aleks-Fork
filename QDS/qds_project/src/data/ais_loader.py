@@ -8,12 +8,20 @@ AIS CSV format expected: mmsi, timestamp, lat, lon, speed, heading
 Each row represents a position report for a vessel.
 
 The loader groups rows by MMSI (vessel identifier), sorts each vessel's
-track by timestamp, and returns tensors of shape [T, 7] where the columns
-are [time, lat, lon, speed, heading, is_start, is_end].
+track by timestamp, and returns tensors of shape [T, 8] where the columns
+are [time, lat, lon, speed, heading, is_start, is_end, turn_score].
 
 The ``is_start`` and ``is_end`` binary flags are set to 1.0 for the first
 and last points of each trajectory respectively, and 0.0 otherwise.  They
 allow the model to learn that trajectory endpoints may have higher importance.
+
+The ``turn_score`` column stores a normalised direction-change intensity in
+[0, 1] for each interior point.  Endpoints are assigned 0.0.
+
+Turn-score computation supports two vectorized methods:
+
+* ``heading``  (default): uses wrapped heading/COG deltas.
+* ``geometry``: uses angles between consecutive lat/lon displacement vectors.
 """
 
 from __future__ import annotations
@@ -36,6 +44,86 @@ def _make_endpoint_flags(t: int, start: bool) -> "numpy.ndarray":
     return flags
 
 
+def _normalize_turn_score_method(method: str) -> str:
+    """Normalize and validate turn-score method names."""
+    norm = method.strip().lower()
+    if norm not in {"heading", "geometry"}:
+        raise ValueError(
+            "Unknown turn_score_method "
+            f"'{method}'. Choose from: heading, geometry."
+        )
+    return norm
+
+
+def _compute_turn_scores_geometry(lat_lon: "numpy.ndarray") -> "numpy.ndarray":
+    """Vectorized geometry-based turn score from [lat, lon] points."""
+    import numpy as np
+
+    t = lat_lon.shape[0]
+    scores = np.zeros((t, 1), dtype="float32")
+    if t < 3:
+        return scores
+
+    # Interior points use the angle between incoming and outgoing displacement vectors.
+    v1 = lat_lon[1:-1] - lat_lon[:-2]
+    v2 = lat_lon[2:] - lat_lon[1:-1]
+
+    n1 = np.linalg.norm(v1, axis=1)
+    n2 = np.linalg.norm(v2, axis=1)
+    den = n1 * n2
+    valid = den > 1e-12
+
+    cos_angle = np.zeros_like(den, dtype="float64")
+    dot = np.einsum("ij,ij->i", v1, v2)
+    cos_angle[valid] = dot[valid] / den[valid]
+    cos_angle = np.clip(cos_angle, -1.0, 1.0)
+
+    angles = np.arccos(cos_angle) / math.pi
+    angles[~valid] = 0.0
+    scores[1:-1, 0] = angles.astype("float32")
+    return scores
+
+
+def _compute_turn_scores_heading(heading: "numpy.ndarray") -> "numpy.ndarray":
+    """Vectorized heading/COG-based turn score using wrapped angular deltas."""
+    import numpy as np
+
+    heading_vec = np.asarray(heading, dtype="float64").reshape(-1)
+    t = heading_vec.shape[0]
+    scores = np.zeros((t, 1), dtype="float32")
+    if t < 3:
+        return scores
+
+    # Compare heading before/after each interior point using shortest angular distance.
+    delta = np.abs(((heading_vec[2:] - heading_vec[:-2] + 180.0) % 360.0) - 180.0)
+    delta = np.nan_to_num(delta, nan=0.0, posinf=180.0, neginf=180.0)
+    scores[1:-1, 0] = (delta / 180.0).astype("float32")
+    return scores
+
+
+def _compute_turn_scores(
+    lat_lon: "numpy.ndarray",
+    heading: Optional["numpy.ndarray"] = None,
+    method: str = "heading",
+) -> "numpy.ndarray":
+    """Compute per-point turn scores using vectorized geometry or heading deltas.
+
+    Args:
+        lat_lon: Float array of shape [T, 2] with columns [lat, lon].
+        heading: Optional float array of shape [T] or [T, 1] with heading/COG in degrees.
+        method:  One of ``"heading"`` (default) or ``"geometry"``.
+
+    Returns:
+        Float32 array of shape [T, 1] with turn scores in [0, 1].
+    """
+    method_norm = _normalize_turn_score_method(method)
+    if method_norm == "geometry":
+        return _compute_turn_scores_geometry(lat_lon)
+    if heading is None:
+        raise ValueError("heading-based turn scores require a heading/COG array.")
+    return _compute_turn_scores_heading(heading)
+
+
 def _normalize_column_name(name: str) -> str:
     """Normalise CSV column names for schema matching."""
     return name.strip().lower().lstrip("#").strip()
@@ -49,7 +137,10 @@ def _pick_column(columns: list[str], candidates: list[str]) -> Optional[str]:
     return None
 
 
-def load_ais_csv(filepath: str) -> List[Tensor]:
+def load_ais_csv(
+    filepath: str,
+    turn_score_method: str = "heading",
+) -> List[Tensor]:
     """Load AIS trajectories from a CSV file.
 
     Supports common schema variants, including AISDK-style fields like
@@ -59,12 +150,16 @@ def load_ais_csv(filepath: str) -> List[Tensor]:
 
     Args:
         filepath: Path to the CSV file.
+        turn_score_method: Method used to compute turn scores.
+            One of ``"heading"`` (default) or ``"geometry"``.
 
     Returns:
-        List of tensors, one per vessel, each of shape [T, 7] with columns
-        [time, lat, lon, speed, heading, is_start, is_end].
+        List of tensors, one per vessel, each of shape [T, 8] with columns
+        [time, lat, lon, speed, heading, is_start, is_end, turn_score].
     """
     import pandas as pd  # optional dependency; checked at call-time
+
+    method = _normalize_turn_score_method(turn_score_method)
 
     header = pd.read_csv(filepath, nrows=0)
     raw_columns = list(header.columns)
@@ -154,7 +249,12 @@ def load_ais_csv(filepath: str) -> List[Tensor]:
         t = values.shape[0]
         is_start = _make_endpoint_flags(t, start=True)
         is_end = _make_endpoint_flags(t, start=False)
-        values = np.concatenate([values, is_start, is_end], axis=1)
+        turn_scores = _compute_turn_scores(
+            values[:, 1:3],
+            heading=values[:, 4],
+            method=method,
+        )
+        values = np.concatenate([values, is_start, is_end, turn_scores], axis=1)
         trajectories.append(torch.from_numpy(values))
 
     return trajectories
@@ -164,6 +264,7 @@ def generate_synthetic_ais_data(
     n_ships: int = 10,
     n_points_per_ship: int = 100,
     save_path: Optional[str] = None,
+    turn_score_method: str = "heading",
 ) -> List[Tensor]:
     """Generate synthetic AIS trajectory data for testing.
 
@@ -174,12 +275,15 @@ def generate_synthetic_ais_data(
         n_ships:           Number of vessels to simulate.
         n_points_per_ship: Number of position reports per vessel.
         save_path:         If provided, save the data as a CSV to this path.
+        turn_score_method: Method used to compute turn scores.
+              One of ``"heading"`` (default) or ``"geometry"``.
 
     Returns:
-        List of tensors, one per vessel, each of shape [T, 7] with columns
-        [time, lat, lon, speed, heading, is_start, is_end].
+        List of tensors, one per vessel, each of shape [T, 8] with columns
+        [time, lat, lon, speed, heading, is_start, is_end, turn_score].
     """
     torch.manual_seed(42)  # reproducibility
+    method = _normalize_turn_score_method(turn_score_method)
 
     # Geographic bounds (North Sea-like region)
     LAT_MIN, LAT_MAX = 50.0, 60.0
@@ -241,7 +345,14 @@ def generate_synthetic_ais_data(
         if n_pts > 0:
             is_start[0, 0] = 1.0
             is_end[-1, 0] = 1.0
-        trajectories.append(torch.cat([tensor, is_start, is_end], dim=1))  # [T, 7]
+        # Compute turn scores from either heading deltas or trajectory geometry.
+        import numpy as np
+        lat_lon_np = tensor[:, 1:3].numpy()
+        heading_np = tensor[:, 4].numpy()
+        turn_scores = torch.from_numpy(
+            _compute_turn_scores(lat_lon_np, heading=heading_np, method=method)
+        )  # [T, 1]
+        trajectories.append(torch.cat([tensor, is_start, is_end, turn_scores], dim=1))  # [T, 8]
 
     # Optionally persist to CSV
     if save_path is not None:

@@ -425,3 +425,80 @@ def plot_simplification_time_slices(
     if save_path:
         fig.savefig(save_path, dpi=150)
     plt.close(fig)
+
+
+def plot_turn_scores(
+    points: Tensor,
+    retained_mask: Tensor,
+    title: str = "AIS Turn-Score Visualization",
+    save_path: Optional[str] = None,
+) -> None:
+    """Scatter plot highlighting trajectory points by turn intensity.
+
+    Points with high ``turn_score`` (sharp direction changes) are rendered
+    with a stronger colour.  Retained points are overlaid with a star marker
+    so that preserved turn points are clearly visible.
+
+    This function requires a ``turn_score`` column (column 7) in *points*.
+    If the column is absent (e.g., for 7-feature legacy tensors) the plot
+    is skipped and a warning is printed.
+
+    Args:
+        points:        Tensor of shape [N, F] with F >= 8.  Column 7 must be
+                       ``turn_score`` in [0, 1].
+        retained_mask: Boolean tensor of shape [N].  True = retained point.
+        title:         Figure title.
+        save_path:     If provided, save the figure to this file path.
+    """
+    if points.shape[1] < 8:
+        print(
+            "plot_turn_scores: turn_score column (col 7) not present "
+            f"(points has {points.shape[1]} features). Skipping."
+        )
+        return
+
+    lons = points[:, 2].numpy()
+    lats = points[:, 1].numpy()
+    turn = points[:, 7].numpy()
+
+    fig, ax = plt.subplots(figsize=(11, 7))
+
+    # All points, coloured by turn score using a hot colormap.
+    sc = ax.scatter(
+        lons, lats,
+        c=turn,
+        cmap="hot_r",
+        s=8,
+        alpha=0.6,
+        vmin=0.0,
+        vmax=1.0,
+        zorder=3,
+        label="All points (turn intensity)",
+    )
+    plt.colorbar(sc, ax=ax, label="Turn Score (angle / π)")
+
+    # Highlight retained points at high-turn locations.
+    high_turn_threshold = 0.2
+    high_turn_retained = retained_mask & (points[:, 7] > high_turn_threshold)
+    if high_turn_retained.any():
+        ax.scatter(
+            points[high_turn_retained, 2].numpy(),
+            points[high_turn_retained, 1].numpy(),
+            s=60,
+            marker="*",
+            color="deepskyblue",
+            edgecolors="black",
+            linewidths=0.5,
+            zorder=6,
+            label=f"Retained high-turn (score > {high_turn_threshold:.1f})",
+        )
+
+    ax.set_xlabel("Longitude (°)")
+    ax.set_ylabel("Latitude (°)")
+    ax.set_title(title)
+    ax.legend(fontsize=8, loc="best")
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    plt.close(fig)

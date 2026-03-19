@@ -1,20 +1,27 @@
 """
-trajectory_qds_model.py
+turn_aware_qds_model.py
 
-Defines the TrajectoryQDSModel — a neural network that predicts per-point
-importance scores for AIS trajectory data given a spatiotemporal query workload.
+Defines the TurnAwareQDSModel — a neural network variant that predicts
+per-point importance scores for AIS trajectory data while taking turn
+intensity into account.
 
 Architecture
 ------------
-1. Point Encoder   : MLP  [7 → 64 → 64]
+Identical to TrajectoryQDSModel but accepts an 8-feature point vector:
+
+1. Point Encoder   : MLP  [8 → 64 → 64]
 2. Query Encoder   : MLP  [6 → 64 → 64]
 3. Cross-Attention : MultiheadAttention(embed_dim=64, num_heads=4, batch_first=True)
                      Queries attend to points so each point accumulates
                      query-driven context.
 4. Importance Predictor : MLP [64 → 32 → 1] + Sigmoid
 
-Point columns:  [time, lat, lon, speed, heading, is_start, is_end]
+Point columns:  [time, lat, lon, speed, heading, is_start, is_end, turn_score]
 Query columns:  [lat_min, lat_max, lon_min, lon_max, time_start, time_end]
+
+The extra ``turn_score`` feature allows the model to learn that points at
+trajectory bends may carry additional structural importance independent of
+the spatiotemporal query workload.
 """
 
 import torch
@@ -22,84 +29,29 @@ import torch.nn as nn
 from torch import Tensor
 
 
-def normalize_points_and_queries(points: Tensor, queries: Tensor) -> tuple[Tensor, Tensor]:
-    """Min-max normalise points and queries using point-cloud feature ranges.
+class TurnAwareQDSModel(nn.Module):
+    """Turn-aware Query-Driven Simplification model for AIS trajectory data.
 
-    The same scaling is applied to matching semantic fields so train-time and
-    inference-time model inputs are on consistent scales:
-      - time      ↔ query time_start/time_end
-      - latitude  ↔ query lat_min/lat_max
-      - longitude ↔ query lon_min/lon_max
-
-    The ``is_start`` and ``is_end`` binary features (columns 5 and 6) are
-    already in [0, 1] and are preserved without additional scaling.
-
-    If a ``turn_score`` feature is present (column 7), it is already in [0, 1]
-    and is also preserved without additional scaling.
-
-    Args:
-        points:  Tensor [N, F] with F ≥ 5 and columns
-                 [time, lat, lon, speed, heading, (is_start, is_end,
-                 turn_score)].
-        queries: Tensor [M, 6] with columns
-                 [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-
-    Returns:
-        Tuple (norm_points, norm_queries).
-    """
-    norm_points = points.clone()
-    norm_queries = queries.clone()
-
-    eps = torch.tensor(1e-8, dtype=points.dtype, device=points.device)
-
-    # Normalise only the first 5 features (time, lat, lon, speed, heading).
-    # The is_start and is_end binary flags (columns 5 and 6) are already in
-    # [0, 1] and are passed through unchanged.
-    n_spatial_features = min(5, points.shape[1])
-    p_min = points[:, :n_spatial_features].min(dim=0).values
-    p_max = points[:, :n_spatial_features].max(dim=0).values
-    p_range = torch.maximum(p_max - p_min, eps)
-
-    norm_points[:, :n_spatial_features] = (
-        (norm_points[:, :n_spatial_features] - p_min) / p_range
-    ).clamp(0.0, 1.0)
-
-    # Query lat bounds use point lat scale
-    norm_queries[:, 0] = (norm_queries[:, 0] - p_min[1]) / p_range[1]  # lat_min
-    norm_queries[:, 1] = (norm_queries[:, 1] - p_min[1]) / p_range[1]  # lat_max
-
-    # Query lon bounds use point lon scale
-    norm_queries[:, 2] = (norm_queries[:, 2] - p_min[2]) / p_range[2]  # lon_min
-    norm_queries[:, 3] = (norm_queries[:, 3] - p_min[2]) / p_range[2]  # lon_max
-
-    # Query time bounds use point time scale
-    norm_queries[:, 4] = (norm_queries[:, 4] - p_min[0]) / p_range[0]  # time_start
-    norm_queries[:, 5] = (norm_queries[:, 5] - p_min[0]) / p_range[0]  # time_end
-
-    norm_queries = norm_queries.clamp(0.0, 1.0)
-
-    return norm_points, norm_queries
-
-
-class TrajectoryQDSModel(nn.Module):
-    """Query-Driven Simplification model for AIS trajectory data.
-
-    Given a set of trajectory points and a spatiotemporal query workload,
-    predicts an importance score in [0, 1] for every point.  High-scoring
-    points are more influential for answering the queries and should be
-    retained during compression.
+    Identical architecture to :class:`TrajectoryQDSModel` but accepts an
+    extended 8-feature point vector that includes a ``turn_score`` column.
+    This allows the model to learn relationships between direction changes
+    and query-relevant importance, resulting in simplified trajectories that
+    better preserve trajectory shapes (bends and turns).
 
     Args:
         embed_dim: Embedding dimensionality used throughout the model.
         num_heads: Number of attention heads in the cross-attention layer.
     """
 
+    #: Number of point features expected by this model.
+    POINT_FEATURES: int = 8
+
     def __init__(self, embed_dim: int = 64, num_heads: int = 4) -> None:
         super().__init__()
 
-        # --- Point encoder: [time, lat, lon, speed, heading, is_start, is_end] → embed_dim ---
+        # --- Point encoder: [time, lat, lon, speed, heading, is_start, is_end, turn_score] → embed_dim ---
         self.point_encoder = nn.Sequential(
-            nn.Linear(7, embed_dim),
+            nn.Linear(self.POINT_FEATURES, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim),
         )
@@ -130,8 +82,9 @@ class TrajectoryQDSModel(nn.Module):
         """Predict per-point importance scores.
 
         Args:
-            points:  Tensor of shape [N, 7] with columns
-                     [time, lat, lon, speed, heading, is_start, is_end].
+            points:  Tensor of shape [N, 8] with columns
+                     [time, lat, lon, speed, heading, is_start, is_end,
+                     turn_score].
             queries: Tensor of shape [M, 6] with columns
                      [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
 

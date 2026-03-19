@@ -39,6 +39,7 @@ Options
                    auto-selects threshold from scores
     --workload     Query workload type: uniform|density|mixed|all (default: density)
     --density_ratio Fraction of density-biased queries in mixed workload (default: 0.7)
+    --turn_score_method Method for turn_score: heading|geometry (default: heading)
     --csv_path     Optional path to real AIS CSV file
     --save_csv     Save cleaned CSV when loading from --csv_path
 
@@ -74,6 +75,7 @@ from src.queries.query_executor import run_queries
 from src.training.importance_labels import compute_importance
 from src.training.train_model import train_model
 from src.simplification.simplify_trajectories import simplify_trajectories
+from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.evaluation.metrics import query_error, compression_ratio as compute_compression_ratio, query_latency
 from src.evaluation.baselines import (
     random_sampling,
@@ -296,6 +298,9 @@ def run_ais_experiment(
     query_temporal_fraction: float = 0.10,
     query_spatial_lower_quantile: float = 0.01,
     query_spatial_upper_quantile: float = 0.99,
+    model_type: str = "baseline",
+    turn_bias_weight: float = 0.1,
+    turn_score_method: str = "heading",
 ) -> None:
     """Run the full AIS QDS experiment and print a results table.
 
@@ -344,6 +349,16 @@ def run_ais_experiment(
                 lat/lon bounds for uniform query placement.
         query_spatial_upper_quantile: Upper quantile used to derive robust
                 lat/lon bounds for uniform query placement.
+        model_type: Which model variant to use.  ``"baseline"`` uses the
+                    original :class:`TrajectoryQDSModel`;
+                    ``"turn_aware"`` uses the :class:`TurnAwareQDSModel`.
+                    Pass ``"all"`` to compare both models sequentially.
+                    Defaults to ``"baseline"``.
+        turn_bias_weight: Additive weight applied to ``turn_score`` during
+                    simplification when *model_type* is ``"turn_aware"``.
+                    Defaults to 0.1.
+        turn_score_method: Method used to compute turn scores when loading
+                data.  One of ``"heading"`` (default) or ``"geometry"``.
     """
     if workload == "all":
         # Run each workload independently and collect results for a combined table
@@ -379,6 +394,9 @@ def run_ais_experiment(
                 query_temporal_fraction=query_temporal_fraction,
                 query_spatial_lower_quantile=query_spatial_lower_quantile,
                 query_spatial_upper_quantile=query_spatial_upper_quantile,
+                model_type=model_type,
+                turn_bias_weight=turn_bias_weight,
+                turn_score_method=turn_score_method,
             )
             all_results[wl] = wl_results
 
@@ -413,6 +431,9 @@ def run_ais_experiment(
         query_temporal_fraction=query_temporal_fraction,
         query_spatial_lower_quantile=query_spatial_lower_quantile,
         query_spatial_upper_quantile=query_spatial_upper_quantile,
+        model_type=model_type,
+        turn_bias_weight=turn_bias_weight,
+        turn_score_method=turn_score_method,
     )
 
 
@@ -488,16 +509,27 @@ def _run_single_workload(
     query_temporal_fraction: float,
     query_spatial_lower_quantile: float,
     query_spatial_upper_quantile: float,
+    model_type: str = "baseline",
+    turn_bias_weight: float = 0.1,
+    turn_score_method: str = "heading",
 ) -> dict[str, tuple[float, float, float]]:
     """Run the full AIS QDS pipeline for a single query workload.
 
     Args:
-        workload:       One of ``"uniform"``, ``"density"``, or ``"mixed"``.
-        density_ratio:  Fraction of density-biased queries for ``"mixed"``
-                        workload.
-        compression_ratio: Per-trajectory compression fraction; ``None``
-                        reverts to global threshold mode.
+        workload:           One of ``"uniform"``, ``"density"``, or ``"mixed"``.
+        density_ratio:      Fraction of density-biased queries for ``"mixed"``
+                            workload.
+        compression_ratio:  Per-trajectory compression fraction; ``None``
+                            reverts to global threshold mode.
         min_points_per_trajectory: Minimum retained points per trajectory.
+        model_type:         ``"baseline"`` or ``"turn_aware"`` selects which
+                            model is trained and used for simplification.
+                            When ``"all"``, both models are trained and
+                            compared.
+        turn_bias_weight:   Additive weight for turn-score bias in the
+                            turn-aware model simplification step.
+        turn_score_method:  Method used to compute turn_score at load time.
+                    One of ``"heading"`` or ``"geometry"``.
         (remaining args mirror :func:`run_ais_experiment`.)
 
     Returns:
@@ -506,6 +538,7 @@ def _run_single_workload(
     print("=" * 65)
     print(f"AIS Query-Driven Simplification (QDS) Experiment")
     print(f"Workload: {_workload_title(workload)}")
+    print(f"Turn score method: {turn_score_method}")
     print("=" * 65)
 
     # Select compute device (GPU if available, otherwise CPU).
@@ -521,11 +554,13 @@ def _run_single_workload(
     if loaded_from_csv:
         assert csv_path is not None
         print(f"\n[1/8] Loading AIS data from {csv_path} …")
-        trajectories = load_ais_csv(csv_path)
+        trajectories = load_ais_csv(csv_path, turn_score_method=turn_score_method)
     else:
         print(f"\n[1/8] Generating synthetic AIS data ({n_ships} ships × {n_points} pts) …")
         trajectories = generate_synthetic_ais_data(
-            n_ships=n_ships, n_points_per_ship=n_points
+            n_ships=n_ships,
+            n_points_per_ship=n_points,
+            turn_score_method=turn_score_method,
         )
 
     dataset = TrajectoryDataset(trajectories)
@@ -581,96 +616,122 @@ def _run_single_workload(
         )
 
     # ------------------------------------------------------------------
-    # 4. Train model
+    # 4. Train model(s)
     # ------------------------------------------------------------------
     _t0 = time.time()
-    print(f"\n[4/8] Training TrajectoryQDSModel ({epochs} epochs) …")
-    model = train_model(
-        trajectories,
-        queries,
-        epochs=epochs,
-        importance=importance,
-        max_points=effective_max_train_points,
-        importance_chunk_size=importance_chunk_size,
-        point_batch_size=point_batch_size,
-    )
+
+    # Support model_type="all" to train and compare both models.
+    _model_types_to_run = ["baseline", "turn_aware"] if model_type == "all" else [model_type]
+
+    models: dict[str, object] = {}
+    for mt in _model_types_to_run:
+        label = "TrajectoryQDSModel" if mt == "baseline" else "TurnAwareQDSModel"
+        print(f"\n[4/8] Training {label} ({epochs} epochs, model_type={mt}) …")
+        models[mt] = train_model(
+            trajectories,
+            queries,
+            epochs=epochs,
+            importance=importance,
+            max_points=effective_max_train_points,
+            importance_chunk_size=importance_chunk_size,
+            point_batch_size=point_batch_size,
+            model_type=mt,
+        )
     print(f"       Model training time: {time.time() - _t0:.2f}s")
 
     # ------------------------------------------------------------------
-    # 5. Simplify with model
+    # 5. Simplify with model(s)
     # ------------------------------------------------------------------
     _t0 = time.time()
-    print("\n[5/8] Simplifying trajectories with trained model …")
+    print("\n[5/8] Simplifying trajectories with trained model(s) …")
 
-    if compression_ratio is not None:
-        # Per-trajectory compression mode: threshold and target_ratio are ignored.
-        print(
-            f"       Mode: per-trajectory compression "
-            f"(ratio={compression_ratio}, min_pts={min_points_per_trajectory})"
-        )
-        ml_simplified, retained_mask, ml_scores = simplify_trajectories(
-            points,
-            model,
-            queries,
-            query_scores=importance,
-            model_max_points=model_max_points,
-            importance_chunk_size=importance_chunk_size,
-            trajectory_boundaries=traj_boundaries,
-            compression_ratio=compression_ratio,
-            min_points_per_trajectory=min_points_per_trajectory,
-        )
-        effective_threshold = None
-    else:
-        # Legacy global threshold mode.
-        effective_threshold = threshold
+    # We may run simplification for one or both model types.
+    # Results are stored per-model-type so the comparison table can show them.
+    ml_results_by_type: dict[str, tuple] = {}
 
-        if target_ratio is not None:
-            if not (0.0 < target_ratio <= 1.0):
-                raise ValueError("target_ratio must be in (0, 1].")
+    for mt, trained_model in models.items():
+        eff_turn_bias = turn_bias_weight if mt == "turn_aware" else 0.0
+        label = "ML QDS" if mt == "baseline" else "ML QDS (turn-aware)"
 
-            # Get model/query-driven scores once (threshold=0 keeps all points).
-            _, _, ml_scores = simplify_trajectories(
-                points,
-                model,
-                queries,
-                threshold=0.0,
-                query_scores=importance,
-                model_max_points=model_max_points,
-                importance_chunk_size=importance_chunk_size,
-                trajectory_boundaries=traj_boundaries,
-                compression_ratio=None,
-            )
-
-            n_points_total = points.shape[0]
-            target_count = max(1, min(n_points_total, int(round(target_ratio * n_points_total))))
-            topk_vals, topk_idx = torch.topk(ml_scores, k=target_count)
-            effective_threshold = float(topk_vals.min().item())
-
-            retained_mask = torch.zeros(n_points_total, dtype=torch.bool, device=points.device)
-            retained_mask[topk_idx] = True
-            ml_simplified = points[retained_mask]
-
+        if compression_ratio is not None:
             print(
-                f"       target_ratio={target_ratio:.4f} "
-                f"-> auto-threshold={effective_threshold:.4f}"
+                f"       Mode: per-trajectory compression "
+                f"(ratio={compression_ratio}, min_pts={min_points_per_trajectory}, "
+                f"model={mt})"
             )
-        else:
-            ml_simplified, retained_mask, ml_scores = simplify_trajectories(
+            ml_simp, ret_mask, ml_sc = simplify_trajectories(
                 points,
-                model,
+                trained_model,
                 queries,
-                threshold=threshold,
                 query_scores=importance,
                 model_max_points=model_max_points,
                 importance_chunk_size=importance_chunk_size,
                 trajectory_boundaries=traj_boundaries,
-                compression_ratio=None,
+                compression_ratio=compression_ratio,
                 min_points_per_trajectory=min_points_per_trajectory,
+                turn_bias_weight=eff_turn_bias,
             )
+            effective_threshold = None
+        else:
+            effective_threshold = threshold
 
+            if target_ratio is not None:
+                if not (0.0 < target_ratio <= 1.0):
+                    raise ValueError("target_ratio must be in (0, 1].")
+
+                _, _, ml_sc = simplify_trajectories(
+                    points,
+                    trained_model,
+                    queries,
+                    threshold=0.0,
+                    query_scores=importance,
+                    model_max_points=model_max_points,
+                    importance_chunk_size=importance_chunk_size,
+                    trajectory_boundaries=traj_boundaries,
+                    compression_ratio=None,
+                    turn_bias_weight=eff_turn_bias,
+                )
+
+                n_points_total = points.shape[0]
+                target_count = max(1, min(n_points_total, int(round(target_ratio * n_points_total))))
+                topk_vals, topk_idx = torch.topk(ml_sc, k=target_count)
+                effective_threshold = float(topk_vals.min().item())
+
+                ret_mask = torch.zeros(n_points_total, dtype=torch.bool, device=points.device)
+                ret_mask[topk_idx] = True
+                ml_simp = points[ret_mask]
+
+                print(
+                    f"       target_ratio={target_ratio:.4f} "
+                    f"-> auto-threshold={effective_threshold:.4f}"
+                )
+            else:
+                ml_simp, ret_mask, ml_sc = simplify_trajectories(
+                    points,
+                    trained_model,
+                    queries,
+                    threshold=threshold,
+                    query_scores=importance,
+                    model_max_points=model_max_points,
+                    importance_chunk_size=importance_chunk_size,
+                    trajectory_boundaries=traj_boundaries,
+                    compression_ratio=None,
+                    min_points_per_trajectory=min_points_per_trajectory,
+                    turn_bias_weight=eff_turn_bias,
+                )
+
+        ml_ratio_mt = compute_compression_ratio(points, ml_simp)
+        print(
+            f"       {label} retained {ml_simp.shape[0]}/{points.shape[0]} points "
+            f"(ratio={ml_ratio_mt:.3f})"
+        )
+        ml_results_by_type[mt] = (ml_simp, ret_mask, ml_sc, label)
+
+    # Use the first (or only) model result for single-model statistics/visualisation.
+    primary_mt = _model_types_to_run[0]
+    ml_simplified, retained_mask, ml_scores, primary_label = ml_results_by_type[primary_mt]
     ml_ratio = compute_compression_ratio(points, ml_simplified)
-    print(f"       ML QDS retained {ml_simplified.shape[0]}/{points.shape[0]} points "
-          f"(ratio={ml_ratio:.3f})")
+
     print(f"       Simplification time: {time.time() - _t0:.2f}s")
 
     # Trajectory retention statistics (Feature 6)
@@ -752,7 +813,11 @@ def _run_single_workload(
     # 6. Baselines at the same compression ratio
     # ------------------------------------------------------------------
     print(f"\n[6/8] Running baselines at ratio ≈ {ml_ratio:.3f} …")
-    methods: dict[str, torch.Tensor] = {"ML QDS": ml_simplified}
+
+    # Start with all trained-model results
+    methods: dict[str, torch.Tensor] = {
+        label: ml_simp for _, (ml_simp, _, _, label) in ml_results_by_type.items()
+    }
 
     if skip_baselines:
         print("       Skipping baselines (--skip_baselines enabled).")
@@ -862,13 +927,17 @@ def _run_single_workload(
         title=f"AIS QDS: Importance + Queries ({_workload_title(workload)})",
         save_path=combined_path,
     )
+
+    simplif_title = (
+        f"AIS Trajectory Simplification Results ({primary_label})"
+    )
     plot_simplification_results(
         viz_trajectories_cpu,
         viz_points_cpu,
         viz_retained_mask_cpu,
         viz_scores_cpu,
         queries_cpu,
-        title="AIS Trajectory Simplification Results",
+        title=simplif_title,
         save_path="results/simplification_visualization.png",
     )
     plot_simplification_time_slices(
@@ -880,6 +949,18 @@ def _run_single_workload(
         n_slices=4,
         save_path=time_slices_path,
     )
+
+    # If turn-aware model was run, generate an additional turn-score visualization.
+    if "turn_aware" in ml_results_by_type and not skip_visualizations:
+        from src.visualization.importance_visualizer import plot_turn_scores
+        turn_path = os.path.join(temp_dir, "ais_turn_scores.png")
+        plot_turn_scores(
+            viz_points_cpu,
+            viz_retained_mask_cpu,
+            title="AIS Turn-Score Visualization (Turn-Aware Model)",
+            save_path=turn_path,
+        )
+        print(f"       Saved: {turn_path}")
 
     print(f"       Saved: {trajectories_path}")
     print(f"       Saved: {queries_path}")
@@ -1046,6 +1127,36 @@ def main() -> None:
             "placement (and uniform part of mixed workload)."
         ),
     )
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default="baseline",
+        choices=["baseline", "turn_aware", "all"],
+        help=(
+            "Model variant to use: 'baseline' (TrajectoryQDSModel, 7 features), "
+            "'turn_aware' (TurnAwareQDSModel, 8 features with turn bias), "
+            "or 'all' (train and compare both models). Default: 'baseline'."
+        ),
+    )
+    parser.add_argument(
+        "--turn_bias_weight",
+        type=float,
+        default=0.1,
+        help=(
+            "Additive weight for turn-score bias applied during simplification "
+            "when model_type is 'turn_aware'. Default: 0.1."
+        ),
+    )
+    parser.add_argument(
+        "--turn_score_method",
+        type=str,
+        default="heading",
+        choices=["heading", "geometry"],
+        help=(
+            "Method used to compute turn_score: 'heading' (default, wrapped "
+            "COG/heading deltas) or 'geometry' (turn angle from lat/lon vectors)."
+        ),
+    )
     args = parser.parse_args()
 
     # --compression_ratio 0 disables per-trajectory mode.
@@ -1080,6 +1191,9 @@ def main() -> None:
         query_temporal_fraction=args.query_temporal_fraction,
         query_spatial_lower_quantile=args.query_spatial_lower_quantile,
         query_spatial_upper_quantile=args.query_spatial_upper_quantile,
+        model_type=args.model_type,
+        turn_bias_weight=args.turn_bias_weight,
+        turn_score_method=args.turn_score_method,
     )
 
 
