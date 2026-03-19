@@ -40,73 +40,141 @@ def trim_moving(
     )
 
     # join back & compute a per-row distance threshold (NM)
+    base_columns = non_stationary.columns
     enriched = non_stationary.join(
         F.broadcast(avg_sog_by_ship_type), on="Ship type", how="left"
     ).withColumn(
         "_dist_threshold",
         F.coalesce(F.col("avg_SOG") * F.lit(distance_factor), F.lit(1.0)),
+    ).select(
+        *base_columns, "_dist_threshold"
     )
 
-    output_schema = enriched.schema          # applyInPandas needs the schema
+    output_schema = enriched.schema
 
-    # --- greedy selection executed once per MMSI via Pandas UDF ------------
-    def _greedy_trim(pdf):
-        import numpy as np
+    # Streaming greedy selection: keeps O(1) state per MMSI instead of
+    # materializing each full MMSI group as a Pandas frame.
+    def _greedy_trim_iter(pdf_iter):
+        import pandas as pd
 
-        pdf = pdf.sort_values("# Timestamp").reset_index(drop=True)
-        n = len(pdf)
-        if n <= 2:
-            return pdf
-
-        keep = [False] * n
-        keep[0] = True           # always keep first point
-        keep[n - 1] = True       # always keep last  point
-        last = 0                 # index of last kept point
-
-        for i in range(1, n):
-            # ---- time delta --------------------------------------------------
-            dt = (pdf.at[i, "# Timestamp"] - pdf.at[last, "# Timestamp"]).total_seconds()
-
-            # ---- haversine distance (NM) -------------------------------------
+        def _to_float(value, default=0.0):
             try:
-                lat1 = math.radians(float(pdf.at[last, "Latitude"]))
-                lon1 = math.radians(float(pdf.at[last, "Longitude"]))
-                lat2 = math.radians(float(pdf.at[i, "Latitude"]))
-                lon2 = math.radians(float(pdf.at[i, "Longitude"]))
-                dlat, dlon = lat2 - lat1, lon2 - lon1
-                a = (math.sin(dlat / 2) ** 2
-                     + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2)
-                dist_nm = 2 * math.asin(math.sqrt(min(a, 1.0))) * 3440.065
+                number = float(value)
+                if math.isnan(number):
+                    return default
+                return number
             except (TypeError, ValueError):
-                dist_nm = 0.0
+                return default
 
-            # ---- course (COG) drift ------------------------------------------
-            try:
-                drift = abs(float(pdf.at[i, "COG"]) - float(pdf.at[last, "COG"])) % 360
-                if drift > 180:
-                    drift = 360 - drift
-            except (TypeError, ValueError):
-                drift = 0.0
+        columns = None
+        out_rows = []
+        flush_size = 50000
 
-            # ---- distance threshold for this row -----------------------------
-            dist_thr = pdf.at[i, "_dist_threshold"]
-            if dist_thr is None or (isinstance(dist_thr, float) and np.isnan(dist_thr)):
-                dist_thr = 1.0
+        # Per-MMSI streaming state.
+        current_mmsi = None
+        last_kept_ts = None
+        last_kept_lat = None
+        last_kept_lon = None
+        last_kept_cog = None
+        last_seen_row = None
+        last_seen_emitted = False
 
-            # ---- keep if ANY criterion fires ---------------------------------
-            if dt >= time_threshold_seconds or dist_nm >= dist_thr or drift >= degree_threshold:
-                keep[i] = True
-                last = i
+        def finalize_current_mmsi():
+            nonlocal last_seen_emitted
+            if last_seen_row is not None and not last_seen_emitted:
+                out_rows.append(last_seen_row)
+                last_seen_emitted = True
 
-        return pdf.loc[keep].reset_index(drop=True)
+        for pdf in pdf_iter:
+            if pdf.empty:
+                continue
+
+            if columns is None:
+                columns = list(pdf.columns)
+                mmsi_idx = columns.index("MMSI")
+                ts_idx = columns.index("# Timestamp")
+                lat_idx = columns.index("Latitude")
+                lon_idx = columns.index("Longitude")
+                cog_idx = columns.index("COG")
+                thr_idx = columns.index("_dist_threshold")
+
+            for row in pdf.itertuples(index=False, name=None):
+                mmsi = row[mmsi_idx]
+                ts = row[ts_idx]
+                lat = _to_float(row[lat_idx], default=0.0)
+                lon = _to_float(row[lon_idx], default=0.0)
+                cog = _to_float(row[cog_idx], default=0.0)
+                dist_thr = _to_float(row[thr_idx], default=1.0)
+
+                # New MMSI starts: finalize previous and seed state with first point.
+                if current_mmsi is None or mmsi != current_mmsi:
+                    finalize_current_mmsi()
+                    current_mmsi = mmsi
+                    last_kept_ts = ts
+                    last_kept_lat = lat
+                    last_kept_lon = lon
+                    last_kept_cog = cog
+                    last_seen_row = row
+                    out_rows.append(row)  # always keep first point
+                    last_seen_emitted = True
+                else:
+                    last_seen_row = row
+                    last_seen_emitted = False
+
+                    # ---- time delta -------------------------------------------
+                    try:
+                        dt = (ts - last_kept_ts).total_seconds()
+                    except Exception:
+                        dt = 0.0
+                    if dt < 0:
+                        dt = 0.0
+
+                    # ---- haversine distance (NM) ------------------------------
+                    lat1 = math.radians(last_kept_lat)
+                    lon1 = math.radians(last_kept_lon)
+                    lat2 = math.radians(lat)
+                    lon2 = math.radians(lon)
+                    dlat, dlon = lat2 - lat1, lon2 - lon1
+                    a = (
+                        math.sin(dlat / 2) ** 2
+                        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+                    )
+                    dist_nm = 2 * math.asin(math.sqrt(min(a, 1.0))) * 3440.065
+
+                    # ---- course (COG) drift -----------------------------------
+                    drift = abs(cog - last_kept_cog) % 360
+                    if drift > 180:
+                        drift = 360 - drift
+
+                    # ---- keep if ANY criterion fires --------------------------
+                    if (
+                        dt >= time_threshold_seconds
+                        or dist_nm >= dist_thr
+                        or drift >= degree_threshold
+                    ):
+                        out_rows.append(row)
+                        last_seen_emitted = True
+                        last_kept_ts = ts
+                        last_kept_lat = lat
+                        last_kept_lon = lon
+                        last_kept_cog = cog
+
+                if len(out_rows) >= flush_size:
+                    yield pd.DataFrame(out_rows, columns=columns)
+                    out_rows = []
+
+        finalize_current_mmsi()
+        if out_rows:
+            yield pd.DataFrame(out_rows, columns=columns)
 
     trimmed = (
         enriched
-        .groupby("MMSI")
-        .applyInPandas(_greedy_trim, output_schema)
+        .repartition("MMSI")
+        .sortWithinPartitions("MMSI", "# Timestamp")
+        .mapInPandas(_greedy_trim_iter, output_schema)
     )
 
     # drop helper columns before returning
-    trimmed = trimmed.drop("avg_SOG", "_dist_threshold")
+    trimmed = trimmed.drop("_dist_threshold")
 
     return trimmed.unionByName(stationary)
