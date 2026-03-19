@@ -4,12 +4,31 @@ End-to-end AIS Query-Driven Simplification experiment pipeline.
 
 ---
 
-## Component
+## Components
 
 ### `run_ais_experiment.py`
 
-Runs the complete QDS pipeline from data generation to evaluation and
-visualisation.
+Main orchestration script for the end-to-end QDS pipeline. Coordinates data
+generation/loading, query generation, model training, simplification, baseline
+evaluation, and visualisation.
+
+### `experiment_cli.py`
+
+CLI argument parsing and validation. Handles all command-line argument
+definitions, type conversions, and range/constraint validation.
+
+### `experiment_config.py`
+
+Shared configuration and result dataclasses (e.g., `DataConfig`, `QueryConfig`,
+`ModelConfig`, `MethodMetrics`). Centralizes configuration structures used
+throughout the pipeline.
+
+### `experiment_pipeline_helpers.py`
+
+Helper functions for core pipeline operations: query generation (uniform,
+density-biased, mixed), trajectory simplification, baseline computation
+(random sampling, uniform temporal sampling, Douglas-Peucker), evaluation
+metrics (query error, compression ratio, query latency), and visualisation.
 
 ---
 
