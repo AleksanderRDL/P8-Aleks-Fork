@@ -90,24 +90,27 @@ def _linux_portable_java_home(project_dir: Path) -> Optional[Path]:
     return None
 
 
-def configure_java_environment(project_dir: Path) -> None:
+def configure_java_environment(project_dir: Path, verbose: bool = True) -> None:
     system_java_home = _system_java_home()
     if system_java_home:
         os.environ["JAVA_HOME"] = str(system_java_home)
         _prepend_path(system_java_home / "bin")
-        print(f"Using system Java: {system_java_home}")
+        if verbose:
+            print(f"Using system Java: {system_java_home}")
         return
 
     java_cmd = shutil.which("java")
     if java_cmd and _java_command_is_usable(java_cmd):
-        print(f"Using system Java from PATH: {java_cmd}")
+        if verbose:
+            print(f"Using system Java from PATH: {java_cmd}")
         return
 
     portable_java_home = _linux_portable_java_home(project_dir)
     if portable_java_home:
         os.environ["JAVA_HOME"] = str(portable_java_home)
         _prepend_path(portable_java_home / "bin")
-        print(f"Using portable Linux Java: {portable_java_home}")
+        if verbose:
+            print(f"Using portable Linux Java: {portable_java_home}")
         return
 
     raise RuntimeError(
