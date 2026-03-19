@@ -1,14 +1,4 @@
-"""
-query_executor.py
-
-Execute spatiotemporal range queries against a point cloud of AIS data.
-
-A query selects all points whose (lat, lon, time) fall inside the query
-rectangle and returns the SUM of the speed column for those points.
-
-Points tensor columns: [time=0, lat=1, lon=2, speed=3, heading=4]
-Query tensor columns:  [lat_min=0, lat_max=1, lon_min=2, lon_max=3, time_start=4, time_end=5]
-"""
+"""Spatiotemporal range query execution against AIS point clouds. See src/queries/README.md."""
 
 from __future__ import annotations
 
@@ -17,20 +7,7 @@ from torch import Tensor
 
 
 def run_query(points: Tensor, query: Tensor) -> Tensor:
-    """Run a single spatiotemporal range query against a point cloud.
-
-    Selects all points whose lat, lon, and time fall within the query
-    bounds and returns the SUM of the speed values for those points.
-
-    Args:
-        points: Tensor of shape [N, 5] with columns
-                [time, lat, lon, speed, heading].
-        query:  Tensor of shape [6] with columns
-                [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-
-    Returns:
-        Scalar tensor containing the sum of speed values for matching points.
-    """
+    """Run a single spatiotemporal range query; returns sum of speed for matching points."""
     lat_min, lat_max, lon_min, lon_max, time_start, time_end = (
         query[0], query[1], query[2], query[3], query[4], query[5],
     )
@@ -45,17 +22,7 @@ def run_query(points: Tensor, query: Tensor) -> Tensor:
 
 
 def run_queries(points: Tensor, queries: Tensor) -> Tensor:
-    """Run multiple spatiotemporal range queries against a point cloud.
-
-    Args:
-        points:  Tensor of shape [N, 5] with columns
-                 [time, lat, lon, speed, heading].
-        queries: Tensor of shape [M, 6] with columns
-                 [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-
-    Returns:
-        Tensor of shape [M] with the sum-of-speed result for each query.
-    """
+    """Run all M queries in a vectorised, chunked manner against the point cloud."""
     n_points = points.shape[0]
     n_queries = queries.shape[0]
 

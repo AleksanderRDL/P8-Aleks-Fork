@@ -1,54 +1,4 @@
-"""
-run_ais_experiment.py
-
-End-to-end AIS Query-Driven Simplification (QDS) experiment.
-
-Pipeline
---------
-1. Generate synthetic AIS data (or load from CSV if provided).
-2. Generate a spatiotemporal query workload.
-3. Compute ground-truth importance labels (leave-one-out).
-4. Train the TrajectoryQDSModel.
-5. Simplify trajectories with the trained model.
-6. Run baselines: random sampling, uniform temporal sampling, Douglas-Peucker.
-7. Evaluate all methods and print a comparison table.
-8. Save visualisations to the system temporary directory and results/.
-
-The experiment can be run under three query workloads:
-
-* ``uniform``  — query centres drawn uniformly from the bounding box.
-* ``density``  — query centres anchored to real AIS data points (simulates
-                 realistic maritime workloads focused on high-traffic areas).
-* ``mixed``    — a blend of uniform and density-biased queries controlled
-                 by ``--density_ratio``.
-* ``all``      — run all three workloads sequentially and print a combined
-                 comparison table.
-
-Usage
------
-    python -m src.experiments.run_ais_experiment [options]
-
-Options
--------
-    --n_ships      Number of ships to simulate            (default: 10)
-    --n_points     Points per ship                        (default: 100)
-    --n_queries    Number of spatiotemporal queries       (default: 100)
-    --epochs       Training epochs                        (default: 50)
-    --threshold    Importance score compression threshold (default: 0.5)
-    --target_ratio Optional target retained ratio in (0, 1];
-                   auto-selects threshold from scores
-    --workload     Query workload type: uniform|density|mixed|all (default: density)
-    --density_ratio Fraction of density-biased queries in mixed workload (default: 0.7)
-    --turn_score_method Method for turn_score: heading|geometry (default: heading)
-    --csv_path     Optional path to real AIS CSV file
-    --save_csv     Save cleaned CSV when loading from --csv_path
-
-Notes
------
-When both `--csv_path` and `--save_csv` are used, retained ML datapoints
-are exported to a CSV file next to the source file as
-`MLClean-<original_filename>.csv`.
-"""
+"""End-to-end AIS QDS experiment pipeline. See src/experiments/README.md for full details."""
 
 from __future__ import annotations
 
@@ -216,21 +166,7 @@ def _generate_queries_for_workload(
     spatial_bound_lower_quantile: float = 0.01,
     spatial_bound_upper_quantile: float = 0.99,
 ) -> torch.Tensor:
-    """Return a query tensor for the requested *workload* type.
-
-    Args:
-        trajectories:  List of AIS trajectory tensors, each [T, 5].
-        n_queries:     Number of queries to generate.
-        workload:      One of ``"uniform"``, ``"density"``, or ``"mixed"``.
-        density_ratio: Fraction of density-biased queries used when
-                       *workload* is ``"mixed"`` (ignored otherwise).
-
-    Returns:
-        Tensor of shape [n_queries, 6].
-
-    Raises:
-        ValueError: If *workload* is not one of the recognised values.
-    """
+    """Return a query tensor for the requested *workload* type."""
     if workload == "uniform":
         return generate_uniform_queries(
             trajectories,
@@ -302,64 +238,7 @@ def run_ais_experiment(
     turn_bias_weight: float = 0.1,
     turn_score_method: str = "heading",
 ) -> None:
-    """Run the full AIS QDS experiment and print a results table.
-
-    When *workload* is ``"all"`` the experiment is executed for each of the
-    three workload types (``"uniform"``, ``"density"``, ``"mixed"``) in turn
-    and a combined comparison table is printed at the end.
-
-    Args:
-        n_ships:    Number of vessels to simulate (ignored if csv_path given).
-        n_points:   Position reports per vessel (ignored if csv_path given).
-        n_queries:  Number of spatiotemporal queries.
-        epochs:     Training epochs for the model.
-        threshold:  Importance score threshold for global threshold mode
-                    (used only when *compression_ratio* is ``None``).
-        target_ratio: Optional retained fraction in (0, 1]. If provided,
-                      threshold is selected automatically from score ranks
-                      (only active when *compression_ratio* is ``None``).
-        compression_ratio: Per-trajectory compression fraction in (0, 1].
-                      When set (default 0.2), per-trajectory top-k mode is
-                      used and *threshold*/*target_ratio* are ignored.
-                      Pass ``None`` to revert to global threshold mode.
-        min_points_per_trajectory: Minimum number of points to retain per
-                      trajectory.  Defaults to 5.
-        max_train_points: Optional cap on training points (random sample).
-        model_max_points: Optional cap for full-set model inference.
-        point_batch_size: Mini-batch size over points during training.
-        importance_chunk_size: Chunk size used for importance computation.
-        dp_max_points: Maximum points for running Douglas-Peucker baseline.
-        skip_baselines: Skip baseline generation/evaluation when True.
-        skip_visualizations: Skip plot generation when True.
-        max_visualization_points: Max points plotted in scatter visualizations.
-        max_visualization_ships: Max trajectories plotted in trajectory views.
-        max_points_per_ship_plot: Max points per trajectory line in plots.
-        csv_path:   Optional path to a real AIS CSV file.
-        save_csv:   Save cleaned retained points CSV when loading from
-                *csv_path*.
-        workload:   Query workload type: ``"uniform"``, ``"density"``,
-                    ``"mixed"``, or ``"all"`` (default: ``"density"``).
-        density_ratio: Fraction of density-biased queries in a ``"mixed"``
-                    workload (ignored for other types).  Must be in [0, 1].
-        query_spatial_fraction: Maximum spatial query width as a fraction of
-                the effective lat/lon range.
-        query_temporal_fraction: Maximum temporal query width as a fraction of
-                the time range.
-        query_spatial_lower_quantile: Lower quantile used to derive robust
-                lat/lon bounds for uniform query placement.
-        query_spatial_upper_quantile: Upper quantile used to derive robust
-                lat/lon bounds for uniform query placement.
-        model_type: Which model variant to use.  ``"baseline"`` uses the
-                    original :class:`TrajectoryQDSModel`;
-                    ``"turn_aware"`` uses the :class:`TurnAwareQDSModel`.
-                    Pass ``"all"`` to compare both models sequentially.
-                    Defaults to ``"baseline"``.
-        turn_bias_weight: Additive weight applied to ``turn_score`` during
-                    simplification when *model_type* is ``"turn_aware"``.
-                    Defaults to 0.1.
-        turn_score_method: Method used to compute turn scores when loading
-                data.  One of ``"heading"`` (default) or ``"geometry"``.
-    """
+    """Run the full AIS QDS experiment and print a results table."""
     if workload == "all":
         # Run each workload independently and collect results for a combined table
         all_results: dict[str, dict[str, tuple[float, float, float]]] = {}
@@ -440,11 +319,7 @@ def run_ais_experiment(
 def _print_workload_comparison_table(
     all_results: dict[str, dict[str, tuple[float, float, float]]],
 ) -> None:
-    """Print a combined comparison table across multiple workloads.
-
-    Args:
-        all_results: Mapping of workload name → (method → (error, ratio, latency)).
-    """
+    """Print a combined comparison table across multiple workloads."""
     col_w = 20
     col_n = 12
     col_e = 14
@@ -513,28 +388,7 @@ def _run_single_workload(
     turn_bias_weight: float = 0.1,
     turn_score_method: str = "heading",
 ) -> dict[str, tuple[float, float, float]]:
-    """Run the full AIS QDS pipeline for a single query workload.
-
-    Args:
-        workload:           One of ``"uniform"``, ``"density"``, or ``"mixed"``.
-        density_ratio:      Fraction of density-biased queries for ``"mixed"``
-                            workload.
-        compression_ratio:  Per-trajectory compression fraction; ``None``
-                            reverts to global threshold mode.
-        min_points_per_trajectory: Minimum retained points per trajectory.
-        model_type:         ``"baseline"`` or ``"turn_aware"`` selects which
-                            model is trained and used for simplification.
-                            When ``"all"``, both models are trained and
-                            compared.
-        turn_bias_weight:   Additive weight for turn-score bias in the
-                            turn-aware model simplification step.
-        turn_score_method:  Method used to compute turn_score at load time.
-                    One of ``"heading"`` or ``"geometry"``.
-        (remaining args mirror :func:`run_ais_experiment`.)
-
-    Returns:
-        Dictionary mapping method name → (query_error, compression_ratio, latency_ms).
-    """
+    """Run the full AIS QDS pipeline for a single query workload."""
     print("=" * 65)
     print(f"AIS Query-Driven Simplification (QDS) Experiment")
     print(f"Workload: {_workload_title(workload)}")

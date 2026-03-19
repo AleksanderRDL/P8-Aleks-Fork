@@ -1,28 +1,4 @@
-"""
-ais_loader.py
-
-Load AIS (Automatic Identification System) trajectory data from CSV files
-and provide a synthetic data generator for testing.
-
-AIS CSV format expected: mmsi, timestamp, lat, lon, speed, heading
-Each row represents a position report for a vessel.
-
-The loader groups rows by MMSI (vessel identifier), sorts each vessel's
-track by timestamp, and returns tensors of shape [T, 8] where the columns
-are [time, lat, lon, speed, heading, is_start, is_end, turn_score].
-
-The ``is_start`` and ``is_end`` binary flags are set to 1.0 for the first
-and last points of each trajectory respectively, and 0.0 otherwise.  They
-allow the model to learn that trajectory endpoints may have higher importance.
-
-The ``turn_score`` column stores a normalised direction-change intensity in
-[0, 1] for each interior point.  Endpoints are assigned 0.0.
-
-Turn-score computation supports two vectorized methods:
-
-* ``heading``  (default): uses wrapped heading/COG deltas.
-* ``geometry``: uses angles between consecutive lat/lon displacement vectors.
-"""
+"""AIS data loading utilities. See src/data/README.md for full documentation."""
 
 from __future__ import annotations
 
@@ -36,7 +12,7 @@ from torch import Tensor
 
 
 def _make_endpoint_flags(t: int, start: bool) -> "numpy.ndarray":
-    """Return a [T, 1] float32 array with 1.0 at the start or end index."""
+    """Return a [T, 1] float32 array with 1.0 at the start or end."""
     import numpy as np
     flags = np.zeros((t, 1), dtype="float32")
     if t > 0:
@@ -106,16 +82,7 @@ def _compute_turn_scores(
     heading: Optional["numpy.ndarray"] = None,
     method: str = "heading",
 ) -> "numpy.ndarray":
-    """Compute per-point turn scores using vectorized geometry or heading deltas.
-
-    Args:
-        lat_lon: Float array of shape [T, 2] with columns [lat, lon].
-        heading: Optional float array of shape [T] or [T, 1] with heading/COG in degrees.
-        method:  One of ``"heading"`` (default) or ``"geometry"``.
-
-    Returns:
-        Float32 array of shape [T, 1] with turn scores in [0, 1].
-    """
+    """Compute per-point turn scores in [0, 1] using geometry or heading deltas."""
     method_norm = _normalize_turn_score_method(method)
     if method_norm == "geometry":
         return _compute_turn_scores_geometry(lat_lon)
@@ -141,22 +108,7 @@ def load_ais_csv(
     filepath: str,
     turn_score_method: str = "heading",
 ) -> List[Tensor]:
-    """Load AIS trajectories from a CSV file.
-
-    Supports common schema variants, including AISDK-style fields like
-    ``Latitude``, ``Longitude``, and ``SOG``. If timestamp values are missing,
-    synthetic per-vessel timestamps are generated from row order so the
-    spatiotemporal pipeline can still run.
-
-    Args:
-        filepath: Path to the CSV file.
-        turn_score_method: Method used to compute turn scores.
-            One of ``"heading"`` (default) or ``"geometry"``.
-
-    Returns:
-        List of tensors, one per vessel, each of shape [T, 8] with columns
-        [time, lat, lon, speed, heading, is_start, is_end, turn_score].
-    """
+    """Load AIS trajectories from a CSV file."""
     import pandas as pd  # optional dependency; checked at call-time
 
     method = _normalize_turn_score_method(turn_score_method)
@@ -266,22 +218,7 @@ def generate_synthetic_ais_data(
     save_path: Optional[str] = None,
     turn_score_method: str = "heading",
 ) -> List[Tensor]:
-    """Generate synthetic AIS trajectory data for testing.
-
-    Ships move on straight-ish paths with small random perturbations,
-    placed in a North Sea–like region (lat 50–60, lon 0–20).
-
-    Args:
-        n_ships:           Number of vessels to simulate.
-        n_points_per_ship: Number of position reports per vessel.
-        save_path:         If provided, save the data as a CSV to this path.
-        turn_score_method: Method used to compute turn scores.
-              One of ``"heading"`` (default) or ``"geometry"``.
-
-    Returns:
-        List of tensors, one per vessel, each of shape [T, 8] with columns
-        [time, lat, lon, speed, heading, is_start, is_end, turn_score].
-    """
+    """Generate synthetic AIS trajectory data for testing."""
     torch.manual_seed(42)  # reproducibility
     method = _normalize_turn_score_method(turn_score_method)
 

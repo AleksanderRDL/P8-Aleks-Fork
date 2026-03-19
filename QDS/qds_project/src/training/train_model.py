@@ -1,22 +1,4 @@
-"""
-train_model.py
-
-Training pipeline for the TrajectoryQDSModel.
-
-Usage (CLI)
------------
-    python -m src.training.train_model [options]
-
-Options
--------
-    --n_ships       Number of synthetic ships  (default: 10)
-    --n_points      Points per ship            (default: 100)
-    --n_queries     Number of queries          (default: 100)
-    --epochs        Training epochs            (default: 50)
-    --lr            Learning rate              (default: 1e-3)
-    --threshold     Compression threshold      (default: 0.5)
-    --save_path     Where to save the model    (default: auto)
-"""
+"""QDS model training pipeline. See src/training/README.md for details and CLI usage."""
 
 from __future__ import annotations
 
@@ -50,29 +32,7 @@ def train_model(
     point_batch_size: Optional[int] = 50_000,
     model_type: str = "baseline",
 ) -> TrajectoryQDSModel | TurnAwareQDSModel:
-    """Train a TrajectoryQDSModel or TurnAwareQDSModel on AIS trajectory data.
-
-    The model is trained to predict ground-truth importance scores
-    computed via leave-one-out query error analysis.
-
-    Args:
-        trajectories: List of trajectory tensors, each [T, 7] or [T, 8].
-        queries:      Tensor of shape [M, 6] — the query workload.
-        epochs:       Number of training epochs.
-        lr:           Adam learning rate.
-        save_path:    If provided, save the trained model weights here.
-        importance:   Optional precomputed importance labels for all points.
-        max_points:   Optional upper bound on training points (random sample).
-        importance_chunk_size: Chunk size used when computing importance labels.
-        point_batch_size: Optional mini-batch size over points for training.
-        model_type:   Which model variant to train.  ``"baseline"`` trains the
-                      original :class:`TrajectoryQDSModel` (7-feature input);
-                      ``"turn_aware"`` trains the
-                      :class:`TurnAwareQDSModel` (8-feature input).
-
-    Returns:
-        Trained model instance (TrajectoryQDSModel or TurnAwareQDSModel).
-    """
+    """Train a TrajectoryQDSModel or TurnAwareQDSModel on AIS trajectory data."""
     # --- Flatten all trajectories into a single point cloud ---
     points = torch.cat(trajectories, dim=0)  # [N, 7] or [N, 8]
 

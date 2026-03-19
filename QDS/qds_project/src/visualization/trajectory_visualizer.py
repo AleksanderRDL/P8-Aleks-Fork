@@ -1,11 +1,4 @@
-"""
-trajectory_visualizer.py
-
-Visualization utilities for AIS trajectory data.
-
-Uses matplotlib with the Agg backend so plots can be generated in
-headless environments (no display required).
-"""
+"""Trajectory visualization utilities for AIS data. See src/visualization/README.md."""
 
 from __future__ import annotations
 
@@ -25,19 +18,7 @@ def plot_trajectories(
     title: str = "AIS Trajectories",
     save_path: Optional[str] = None,
 ) -> None:
-    """Plot ship trajectories as lines in lat/lon space.
-
-    Each trajectory is drawn as a separate coloured line.  The first
-    point of each trajectory is marked with a circle and the last point
-    with an 'x'.
-
-    Args:
-        trajectories: List of trajectory tensors, each [T, 5] with columns
-                      [time, lat, lon, speed, heading].
-        title:        Figure title.
-        save_path:    If provided, save the figure to this file path.
-                      Otherwise, the figure is created but not displayed.
-    """
+    """Plot vessel trajectories as coloured lines in lat/lon space."""
     fig, ax = plt.subplots(figsize=(10, 7))
     cmap = plt.get_cmap("tab20")
 
@@ -81,15 +62,7 @@ def plot_queries_on_trajectories(
     title: str = "Trajectories with Queries",
     save_path: Optional[str] = None,
 ) -> None:
-    """Plot trajectories overlaid with semi-transparent query rectangles.
-
-    Args:
-        trajectories: List of trajectory tensors, each [T, 5].
-        queries:      Tensor of shape [M, 6] with columns
-                      [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-        title:        Figure title.
-        save_path:    If provided, save the figure to this file path.
-    """
+    """Overlay semi-transparent query rectangles on trajectory paths."""
     fig, ax = plt.subplots(figsize=(10, 7))
     cmap = plt.get_cmap("tab20")
 

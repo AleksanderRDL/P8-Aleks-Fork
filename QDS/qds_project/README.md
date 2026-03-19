@@ -2,7 +2,7 @@
 
 A machine learning research project that learns to compress AIS (Automatic
 Identification System) vessel trajectory datasets while preserving the accuracy
-of a spatiotemporal query workload.  The model identifies which trajectory
+of a spatiotemporal query workload. The model identifies which trajectory
 points are important based on how much they influence query results, and
 discards the rest.
 
@@ -11,7 +11,7 @@ discards the rest.
 ## Research Problem
 
 AIS data streams report vessel positions (lat, lon, speed, heading) every few
-minutes, producing large trajectory datasets.  Many downstream analytics tasks
+minutes, producing large trajectory datasets. Many downstream analytics tasks
 can be answered from much smaller subsets of the data.
 
 **Query-Driven Simplification** answers:
@@ -32,24 +32,40 @@ expensive leave-one-out computation.
 
 ---
 
+## Model Variants
+
+### Baseline — `TrajectoryQDSModel`
+
+- **Input**: 7-feature point vector — `[time, lat, lon, speed, heading, is_start, is_end]`
+- Standard cross-attention architecture
+
+### Turn-Aware — `TurnAwareQDSModel`
+
+- **Input**: 8-feature point vector — `[time, lat, lon, speed, heading, is_start, is_end, turn_score]`
+- Same architecture but the extra `turn_score` feature lets the model learn
+  that trajectory bends carry structural importance independent of the query
+  workload.
+
+See [`src/models/README.md`](src/models/README.md) for the full architecture diagram.
+
+---
+
 ## Model Architecture
 
 ```
-Points [N, 5] ──► Point Encoder (5→64→64) ─────────────────────────────────► (+) ──► Importance Predictor (64→32→1→σ) ──► scores [N]
+Points [N, F] ──► Point Encoder (F→64→64) ─────────────────────────────────► (+) ──► Importance Predictor (64→32→1→σ) ──► scores [N]
                                                                                ▲
 Queries [M, 6] ─► Query Encoder (6→64→64) ──► Cross-Attention (Q attends K,V) ┘
-                                              (mean over M queries)
+                                              (weighted mean over M queries)
 ```
 
 | Component            | Architecture                               |
 |----------------------|--------------------------------------------|
-| Point Encoder        | Linear(5→64) → ReLU → Linear(64→64)        |
+| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)        |
 | Query Encoder        | Linear(6→64) → ReLU → Linear(64→64)        |
 | Cross-Attention      | MultiheadAttention(embed=64, heads=4)      |
 | Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ   |
 
-Point columns: `[time, lat, lon, speed, heading]`  
-Query columns: `[lat_min, lat_max, lon_min, lon_max, time_start, time_end]`  
 Query result: SUM of speed for all points inside the query rectangle.
 
 ---
@@ -60,27 +76,36 @@ Query result: SUM of speed for all points inside the query rectangle.
 qds_project/
 ├── requirements.txt
 ├── src/
-│   ├── data/
-│   │   ├── ais_loader.py          # load_ais_csv / generate_synthetic_ais_data
-│   │   └── trajectory_dataset.py  # TrajectoryDataset (PyTorch Dataset)
-│   ├── queries/
-│   │   ├── query_generator.py     # uniform / density-biased / mixed workloads
-│   │   └── query_executor.py      # run_query / run_queries
-│   ├── models/
-│   │   └── trajectory_qds_model.py  # TrajectoryQDSModel (nn.Module)
-│   ├── training/
-│   │   ├── importance_labels.py   # compute_importance (leave-one-out)
-│   │   └── train_model.py         # training loop + CLI
-│   ├── simplification/
-│   │   └── simplify_trajectories.py  # simplify_trajectories(...)
-│   ├── evaluation/
-│   │   ├── metrics.py             # query_error / compression_ratio / query_latency
-│   │   └── baselines.py           # random / temporal / Douglas-Peucker baselines
-│   ├── visualization/
-│   │   ├── trajectory_visualizer.py   # plot_trajectories / plot_queries_on_trajectories
-│   │   └── importance_visualizer.py   # plot_importance / plot_simplification_results
-│   └── experiments/
-│       └── run_ais_experiment.py  # end-to-end experiment pipeline
+│   ├── data/               # AIS data loading and synthetic generation
+│   │   ├── README.md
+│   │   ├── ais_loader.py
+│   │   └── trajectory_dataset.py
+│   ├── queries/            # Spatiotemporal query generation and execution
+│   │   ├── README.md
+│   │   ├── query_generator.py
+│   │   └── query_executor.py
+│   ├── models/             # Neural network model definitions
+│   │   ├── README.md
+│   │   ├── trajectory_qds_model.py
+│   │   └── turn_aware_qds_model.py
+│   ├── training/           # Importance labels and training loop
+│   │   ├── README.md
+│   │   ├── importance_labels.py
+│   │   └── train_model.py
+│   ├── simplification/     # Trajectory simplification logic
+│   │   ├── README.md
+│   │   └── simplify_trajectories.py
+│   ├── evaluation/         # Metrics and baseline methods
+│   │   ├── README.md
+│   │   ├── metrics.py
+│   │   └── baselines.py
+│   ├── visualization/      # Plotting utilities
+│   │   ├── README.md
+│   │   ├── trajectory_visualizer.py
+│   │   └── importance_visualizer.py
+│   └── experiments/        # End-to-end experiment pipeline
+│       ├── README.md
+│       └── run_ais_experiment.py
 └── tests/
     ├── test_data.py
     ├── test_query_executor.py
@@ -135,13 +160,8 @@ python -m src.experiments.run_ais_experiment --workload density --n_queries 100
 
 ### Use real AIS data (CSV)
 
-Supported column aliases:
-- `mmsi`
-- `lat` or `latitude`
-- `lon` or `longitude`
-- `speed` or `sog`
-- `heading` or `cog` (optional)
-- `timestamp` / `time` / `datetime` (optional)
+Supported column aliases: `mmsi`, `lat`/`latitude`, `lon`/`longitude`,
+`speed`/`sog`, `heading`/`cog`, `timestamp`/`time`/`datetime`.
 
 ```bash
 cd qds_project
@@ -151,8 +171,8 @@ python -m src.experiments.run_ais_experiment \
     --epochs 50
 ```
 
-Retained points are exported to `MLClean-<original_filename>.csv` next to the
-input file.
+When `--save_csv` is also set, retained points are exported to
+`MLClean-<original_filename>.csv` next to the input file.
 
 ### Train only
 
@@ -179,21 +199,22 @@ python -m pytest tests/ -v
 
 ## Configuration
 
-All scripts accept command-line arguments.  Key parameters:
+All scripts accept command-line arguments. Key parameters:
 
-| Parameter           | Default | Description                                      |
-|---------------------|---------|--------------------------------------------------|
-| `--n_ships`         | 10      | Number of synthetic vessels                      |
-| `--n_points`        | 100     | Points per vessel trajectory                     |
-| `--n_queries`       | 100     | Number of spatiotemporal queries                 |
-| `--epochs`          | 50      | Training epochs                                  |
-| `--lr`              | 1e-3    | Learning rate                                    |
-| `--threshold`       | 0.5     | Importance threshold for simplification          |
-| `--target_ratio`    | None    | Auto-select threshold to retain this fraction    |
-| `--workload`        | density | Query workload: `uniform`, `density`, `mixed`, `all` |
-| `--density_ratio`   | 0.7     | Fraction of density-biased queries (mixed mode)  |
-| `--csv_path`        | None    | Path to real AIS CSV file                        |
-| `--max_train_points`| None    | Cap training points (for large datasets)         |
+| Parameter            | Default  | Description                                        |
+|----------------------|----------|----------------------------------------------------|
+| `--n_ships`          | 10       | Number of synthetic vessels                        |
+| `--n_points`         | 100      | Points per vessel trajectory                       |
+| `--n_queries`        | 100      | Number of spatiotemporal queries                   |
+| `--epochs`           | 50       | Training epochs                                    |
+| `--lr`               | 1e-3     | Learning rate                                      |
+| `--threshold`        | 0.5      | Importance threshold for simplification            |
+| `--target_ratio`     | None     | Auto-select threshold to retain this fraction      |
+| `--workload`         | density  | `uniform`, `density`, `mixed`, or `all`            |
+| `--density_ratio`    | 0.7      | Fraction of density-biased queries (mixed mode)    |
+| `--turn_score_method`| heading  | Turn score method: `heading` or `geometry`         |
+| `--csv_path`         | None     | Path to real AIS CSV file                          |
+| `--max_train_points` | None     | Cap training points (for large datasets)           |
 
 ---
 
@@ -214,7 +235,23 @@ All scripts accept command-line arguments.  Key parameters:
 | Random Sampling        | Uniformly random subset                                    |
 | Uniform Temporal       | Every k-th point sorted by time                            |
 | Douglas-Peucker        | Recursive line simplification on lat/lon coordinates       |
-| ML QDS                 | Learned importance scores (this project)                   |
+| ML QDS (baseline)      | Learned importance scores — `TrajectoryQDSModel`           |
+| ML QDS (turn-aware)    | Learned importance scores — `TurnAwareQDSModel`            |
+
+---
+
+## Simplification Modes
+
+**Per-trajectory compression** (default, `compression_ratio=0.2`): each
+trajectory is independently compressed to retain
+`max(min_points, int(compression_ratio * len))` points, with endpoints
+guaranteed.
+
+**Global threshold mode** (`compression_ratio=None`): points below `threshold`
+are discarded; endpoint and minimum-point-floor constraints are applied per
+trajectory.
+
+See [`src/simplification/README.md`](src/simplification/README.md) for details.
 
 ---
 
@@ -230,6 +267,8 @@ directory and `results/`:
 - `results/simplification_visualization.png` — simplification and query overlay
 - `results/simplification_time_slices.png` — 4 time-window panels
 
+See [`src/visualization/README.md`](src/visualization/README.md) for details.
+
 ---
 
 ## Python API
@@ -240,7 +279,7 @@ sys.path.insert(0, 'qds_project')
 
 from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from src.data.trajectory_dataset import TrajectoryDataset
-from src.queries.query_generator import generate_spatiotemporal_queries
+from src.queries.query_generator import generate_density_biased_queries
 from src.queries.query_executor import run_queries
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.training.importance_labels import compute_importance
@@ -253,18 +292,21 @@ trajectories = generate_synthetic_ais_data(n_ships=10, n_points_per_ship=100)
 
 # 2. Get flat point cloud
 ds = TrajectoryDataset(trajectories)
-points = ds.get_all_points()          # [N, 5]
+points = ds.get_all_points()          # [N, 8]
 
 # 3. Generate spatiotemporal query workload
-queries = generate_spatiotemporal_queries(trajectories, n_queries=100)  # [M, 6]
+queries = generate_density_biased_queries(trajectories, n_queries=100)  # [M, 6]
 
 # 4. Train QDS model
 model = train_model(trajectories, queries, epochs=50)
 
-# 5. Simplify trajectories
-simplified, mask, scores = simplify_trajectories(points, model, queries, threshold=0.5)
+# 5. Simplify trajectories (per-trajectory compression, 20% retained)
+simplified, mask, scores = simplify_trajectories(
+    points, model, queries, compression_ratio=0.2
+)
 
 # 6. Evaluate
-print(f"Query error:       {query_error(points, simplified, queries):.4f}")
+print(f"Query error:       {query_error(points[:, :5], simplified[:, :5], queries):.4f}")
 print(f"Compression ratio: {compression_ratio(points, simplified):.4f}")
 ```
+

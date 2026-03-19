@@ -1,24 +1,4 @@
-"""
-query_generator.py
-
-Generates random spatiotemporal range queries derived from actual trajectory
-data bounds.
-
-Each query is a 6-tuple:
-    [lat_min, lat_max, lon_min, lon_max, time_start, time_end]
-
-Query extents are sampled as fractions of the total data range so that
-queries cover a realistic portion of the dataset.
-
-Three query generation strategies are provided:
-
-* ``generate_uniform_queries`` — centres sampled uniformly from the
-  bounding box, simulating random ad-hoc queries.
-* ``generate_density_biased_queries`` — centres anchored to real AIS
-  data points, concentrating queries where vessel traffic is dense and
-  simulating realistic maritime workloads (ports, straits, shipping lanes).
-* ``generate_mixed_queries`` — a weighted blend of the two strategies.
-"""
+"""Spatiotemporal query generation. See src/queries/README.md for strategies."""
 
 from __future__ import annotations
 
@@ -31,8 +11,7 @@ from torch import Tensor
 def _compute_bounds(
     all_points: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Return (time_min, time_max, lat_min, lat_max, lon_min, lon_max) from a
-    flat point cloud tensor of shape [N, 5]."""
+    """Return (time_min, time_max, lat_min, lat_max, lon_min, lon_max) from a flat point cloud tensor."""
     time_min = all_points[:, 0].min()
     time_max = all_points[:, 0].max()
     lat_min  = all_points[:, 1].min()
@@ -52,12 +31,7 @@ def _effective_spatial_ranges(
     lat_range: Tensor,
     lon_range: Tensor,
 ) -> tuple[Tensor, Tensor]:
-    """Return robust spatial ranges for query width sampling.
-
-    Uses a clipped spread estimate based on the 5th-95th percentiles to
-    prevent extremely wide queries when the global bounding box is dominated
-    by outliers or sparse extremes.
-    """
+    """Return robust spatial ranges for query width sampling using 5th–95th percentiles."""
     q = torch.tensor([0.05, 0.95], dtype=all_points.dtype, device=all_points.device)
     lat_q = torch.quantile(all_points[:, 1], q)
     lon_q = torch.quantile(all_points[:, 2], q)
@@ -77,11 +51,7 @@ def _effective_spatial_bounds(
     lower_q: float = 0.01,
     upper_q: float = 0.99,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Return robust spatial bounds for center sampling/clamping.
-
-    Bounds are based on quantiles to reduce the influence of a small number
-    of extreme outliers in lat/lon coordinates.
-    """
+    """Return robust spatial bounds for center sampling using quantile clipping."""
     if not (0.0 <= lower_q < upper_q <= 1.0):
         raise ValueError(
             f"Invalid quantile bounds: lower_q={lower_q}, upper_q={upper_q}."
@@ -155,24 +125,7 @@ def _build_queries(
     spatial_fraction: float,
     temporal_fraction: float,
 ) -> Tensor:
-    """Sample half-widths, clamp to data bounds, and assemble query tensor.
-
-    Args:
-        centers_lat / centers_lon / centers_time: Query centre coordinates,
-            each of shape [M].
-        lat_width_range / lon_width_range / time_range: Extents used to scale
-            half-widths.
-        lat_min / lat_max / lon_min / lon_max / time_min / time_max: Data
-            bounds used for clamping.
-        spatial_fraction:  Maximum query width as a fraction of the spatial
-            range.
-        temporal_fraction: Maximum query width as a fraction of the time
-            range.
-
-    Returns:
-        Tensor of shape [M, 6] with columns
-        [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-    """
+    """Sample query half-widths, clamp to data bounds, and assemble [M, 6] query tensor."""
     n_queries = centers_lat.shape[0]
 
     if spatial_fraction <= 0.0:
@@ -241,38 +194,7 @@ def generate_uniform_queries(
     spatial_bound_lower_quantile: float = 0.01,
     spatial_bound_upper_quantile: float = 0.99,
 ) -> Tensor:
-    """Generate spatiotemporal queries with centres sampled **uniformly** from
-    the dataset bounding box.
-
-    Query centres are drawn independently and uniformly from the full
-    lat/lon/time extent of the dataset.  This models an unbiased, ad-hoc
-    query workload where any location is equally likely to be queried.
-
-    Algorithm:
-        center_lat  ~ Uniform(lat_min,  lat_max)
-        center_lon  ~ Uniform(lon_min,  lon_max)
-        time_start  ~ Uniform(time_min, time_max)
-        width_lat   ~ Uniform(w_min,    w_max) * lat_range
-        width_lon   ~ Uniform(w_min,    w_max) * lon_range
-        time_length ~ Uniform(t_min,    t_max) * time_range
-
-    Args:
-        trajectories:      List of trajectory tensors, each [T, 5] with
-                           columns [time, lat, lon, speed, heading].
-        n_queries:         Number of queries to generate.
-        spatial_fraction:  Maximum query width as a fraction of the lat/lon
-                           range.
-        temporal_fraction: Maximum query width as a fraction of the time
-                           range.
-        spatial_bound_lower_quantile: Lower quantile used to define robust
-                   spatial bounds for center placement and clamping.
-        spatial_bound_upper_quantile: Upper quantile used to define robust
-                   spatial bounds for center placement and clamping.
-
-    Returns:
-        Tensor of shape [n_queries, 6] with columns
-        [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-    """
+    """Generate spatiotemporal queries with centres sampled uniformly from the bounding box."""
     all_points = torch.cat(trajectories, dim=0)  # [N, 5]
     time_min, time_max, _, _, _, _ = _compute_bounds(all_points)
 
@@ -310,37 +232,7 @@ def generate_density_biased_queries(
     spatial_fraction: float = 0.03,
     temporal_fraction: float = 0.10,
 ) -> Tensor:
-    """Generate spatiotemporal queries **centred on real AIS data points**.
-
-    Query centres are drawn by sampling uniformly from the actual AIS point
-    cloud rather than from the bounding box.  Because the point cloud is
-    denser in high-traffic areas (ports, straits, shipping lanes), this
-    naturally concentrates queries where vessel activity is greatest —
-    closely approximating a traffic-density sampling distribution and
-    simulating realistic maritime workloads.
-
-    Algorithm:
-        point       = random AIS data point
-        center_lat  = point.lat
-        center_lon  = point.lon
-        time_start  ~ Uniform(time_min, time_max)
-        width_lat   ~ Uniform(w_min,    w_max) * lat_range
-        width_lon   ~ Uniform(w_min,    w_max) * lon_range
-        time_length ~ Uniform(t_min,    t_max) * time_range
-
-    Args:
-        trajectories:      List of trajectory tensors, each [T, 5] with
-                           columns [time, lat, lon, speed, heading].
-        n_queries:         Number of queries to generate.
-        spatial_fraction:  Maximum query width as a fraction of the lat/lon
-                           range.
-        temporal_fraction: Maximum query width as a fraction of the time
-                           range.
-
-    Returns:
-        Tensor of shape [n_queries, 6] with columns
-        [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-    """
+    """Generate spatiotemporal queries centred on real AIS data points."""
     all_points = torch.cat(trajectories, dim=0)  # [N, 5]
     time_min, time_max, lat_min, lat_max, lon_min, lon_max = _compute_bounds(all_points)
 
@@ -379,32 +271,7 @@ def generate_mixed_queries(
     spatial_bound_lower_quantile: float = 0.01,
     spatial_bound_upper_quantile: float = 0.99,
 ) -> Tensor:
-    """Generate a **mixed workload** combining uniform and density-biased queries.
-
-    The resulting tensor is a shuffled blend of uniform queries (representing
-    general exploratory traffic) and density-biased queries (representing
-    focused queries on busy maritime areas).
-
-    Args:
-        trajectories:      List of trajectory tensors, each [T, 5] with
-                           columns [time, lat, lon, speed, heading].
-        total_queries:     Total number of queries to generate.
-        density_ratio:     Fraction in [0, 1] of queries that are
-                           density-biased.  The remainder are uniform.
-                           E.g. 0.7 → 70 % density-biased, 30 % uniform.
-        spatial_fraction:  Maximum query width as a fraction of the lat/lon
-                           range.
-        temporal_fraction: Maximum query width as a fraction of the time
-                           range.
-        spatial_bound_lower_quantile: Lower quantile used to define robust
-                   spatial bounds for uniform component.
-        spatial_bound_upper_quantile: Upper quantile used to define robust
-                   spatial bounds for uniform component.
-
-    Returns:
-        Tensor of shape [total_queries, 6] with columns
-        [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-    """
+    """Generate a mixed workload of uniform and density-biased queries."""
     if not (0.0 <= density_ratio <= 1.0):
         raise ValueError(f"density_ratio must be in [0, 1], got {density_ratio}.")
 
@@ -448,29 +315,7 @@ def generate_spatiotemporal_queries(
     temporal_fraction: float = 0.10,
     anchor_to_data: bool = True,
 ) -> Tensor:
-    """Generate random spatiotemporal range queries from trajectory bounds.
-
-    .. deprecated::
-        Prefer ``generate_uniform_queries`` or
-        ``generate_density_biased_queries`` for new code.  This function is
-        kept for backward compatibility and delegates to one of those two
-        generators based on the ``anchor_to_data`` flag.
-
-    Args:
-        trajectories:      List of trajectory tensors, each [T, 5] with
-                           columns [time, lat, lon, speed, heading].
-        n_queries:         Number of queries to generate.
-        spatial_fraction:  Typical query width as a fraction of the lat/lon range.
-        temporal_fraction: Typical query width as a fraction of the time range.
-        anchor_to_data:    If True, delegates to ``generate_density_biased_queries``
-                           (centres on real AIS points).  If False, delegates to
-                           ``generate_uniform_queries`` (centres drawn from bounding
-                           box).
-
-    Returns:
-        Tensor of shape [M, 6] with columns
-        [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-    """
+    """Generate random spatiotemporal range queries from trajectory bounds."""
     if anchor_to_data:
         return generate_density_biased_queries(
             trajectories,

@@ -1,15 +1,4 @@
-"""
-baselines.py
-
-Baseline trajectory simplification strategies for comparison with
-the TrajectoryQDSModel.
-
-Baselines
----------
-1. random_sampling           — retain a uniformly random subset of points.
-2. uniform_temporal_sampling — retain every k-th point sorted by time.
-3. douglas_peucker           — recursive 2D line simplification on lat/lon.
-"""
+"""Baseline simplification methods for comparison. See src/evaluation/README.md."""
 
 from __future__ import annotations
 
@@ -18,16 +7,7 @@ from torch import Tensor
 
 
 def random_sampling(points: Tensor, ratio: float) -> Tensor:
-    """Retain a uniformly random subset of the trajectory point cloud.
-
-    Args:
-        points: Tensor of shape [N, 5] with columns
-                [time, lat, lon, speed, heading].
-        ratio:  Fraction of points to retain, in (0, 1].
-
-    Returns:
-        Tensor of shape [K, 5] where K = max(1, round(ratio * N)).
-    """
+    """Retain a uniformly random subset of the trajectory point cloud."""
     n = points.shape[0]
     k = max(1, int(round(ratio * n)))
     indices = torch.randperm(n, device=points.device)[:k]
@@ -35,19 +15,7 @@ def random_sampling(points: Tensor, ratio: float) -> Tensor:
 
 
 def uniform_temporal_sampling(points: Tensor, ratio: float) -> Tensor:
-    """Sample uniformly in time by retaining every k-th point.
-
-    Points are first sorted by the time column, then every k-th point is
-    kept so that the retained set is spread evenly across the time axis.
-
-    Args:
-        points: Tensor of shape [N, 5] with columns
-                [time, lat, lon, speed, heading].
-        ratio:  Fraction of points to retain, in (0, 1].
-
-    Returns:
-        Tensor of shape [K, 5].
-    """
+    """Sample uniformly in time by retaining every k-th point."""
     n = points.shape[0]
     k = max(1, int(round(ratio * n)))
 
@@ -62,16 +30,7 @@ def uniform_temporal_sampling(points: Tensor, ratio: float) -> Tensor:
 
 
 def _perpendicular_distance(point: Tensor, line_start: Tensor, line_end: Tensor) -> float:
-    """Compute the perpendicular distance from a 2D point to a line segment.
-
-    Args:
-        point:      2D tensor [lat, lon].
-        line_start: 2D tensor [lat, lon] — start of the segment.
-        line_end:   2D tensor [lat, lon] — end of the segment.
-
-    Returns:
-        Perpendicular distance as a float.
-    """
+    """Perpendicular distance from a 2D point to a line segment."""
     if torch.allclose(line_start, line_end):
         return float(torch.norm(point - line_start))
 
@@ -82,17 +41,7 @@ def _perpendicular_distance(point: Tensor, line_start: Tensor, line_end: Tensor)
 
 
 def _max_distance_in_segment(points_2d: Tensor, start_idx: int, end_idx: int) -> tuple[int, float]:
-    """Return the interior point index with max distance to segment [start, end].
-
-    Args:
-        points_2d: Tensor of shape [N, 2] with [lat, lon].
-        start_idx: Start index of segment (inclusive).
-        end_idx:   End index of segment (inclusive).
-
-    Returns:
-        ``(split_idx, max_dist)`` where ``split_idx`` is ``-1`` when the
-        segment has no interior points.
-    """
+    """Return the interior point index with max perpendicular distance to the segment."""
     if end_idx - start_idx <= 1:
         return -1, 0.0
 
@@ -122,16 +71,7 @@ def _douglas_peucker_indices(
     indices: list[int],
     epsilon: float,
 ) -> list[int]:
-    """Douglas-Peucker algorithm returning indices to keep.
-
-    Args:
-        points_2d: Tensor of shape [N, 2] with [lat, lon].
-        indices:   List of point indices in the current segment.
-        epsilon:   Maximum allowable perpendicular distance.
-
-    Returns:
-        Sorted list of indices to retain.
-    """
+    """Douglas-Peucker algorithm; returns sorted list of indices to keep."""
     if len(indices) <= 2:
         return indices
 
@@ -179,21 +119,7 @@ def _douglas_peucker_indices(
 
 
 def douglas_peucker(points: Tensor, epsilon: float = 0.01) -> Tensor:
-    """Simplify a trajectory using the Douglas-Peucker algorithm on lat/lon.
-
-    Recursively removes points that deviate less than ``epsilon`` degrees
-    from the straight-line path in 2D lat/lon space.
-
-    Args:
-        points:  Tensor of shape [N, 5] with columns
-                 [time, lat, lon, speed, heading].
-        epsilon: Maximum allowable perpendicular distance in degrees.
-                 Smaller values preserve more detail.
-
-    Returns:
-        Tensor of shape [K, 5] — the subset of input points that were
-        retained by the algorithm.
-    """
+    """Simplify a trajectory using Douglas-Peucker on lat/lon coordinates."""
     n = points.shape[0]
     if n <= 2:
         return points

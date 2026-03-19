@@ -1,16 +1,4 @@
-"""
-importance_labels.py
-
-Computes ground-truth per-point importance scores for AIS trajectory data
-given a spatiotemporal query workload.
-
-Importance of point p_i is defined as the mean absolute relative query
-error when that point is removed from the dataset:
-
-    importance_i = mean_q | result(D, q) - result(D \\ {p_i}, q) |
-
-Scores are then normalised to [0, 1].
-"""
+"""Ground-truth importance label computation. See src/training/README.md for algorithm details."""
 
 from __future__ import annotations
 
@@ -26,30 +14,7 @@ def compute_importance(
     sample_points: Optional[int] = None,
     chunk_size: int = 200_000,
 ) -> Tensor:
-    """Compute normalised importance scores for every trajectory point.
-
-    For each point the function measures how much removing that point
-    changes the query results on average.  The raw scores are normalised
-    to [0, 1] so they can be used directly as regression targets.
-
-    When a query returns 0 for both the full and reduced dataset, no
-    error is recorded.  When only the reduced dataset returns 0 (the
-    point was the sole contributor), the full result magnitude is used
-    as the error to avoid division-by-zero.
-
-    Args:
-        points:        Tensor of shape [N, 5] with columns
-                       [time, lat, lon, speed, heading].
-        queries:       Tensor of shape [M, 6] with columns
-                       [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-        sample_points: If provided, compute labels for only this many randomly
-                       sampled points (rest receive score 0).
-        chunk_size:    Number of points processed per chunk when computing
-                   query membership and label scores.
-
-    Returns:
-        Tensor of shape [N] with importance scores in [0, 1].
-    """
+    """Compute normalised leave-one-out importance scores for trajectory points."""
     n_points = points.shape[0]
     n_queries = queries.shape[0]
     importance = torch.zeros(n_points, dtype=torch.float32, device=points.device)

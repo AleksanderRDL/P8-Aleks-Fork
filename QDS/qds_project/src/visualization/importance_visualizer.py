@@ -1,11 +1,4 @@
-"""
-importance_visualizer.py
-
-Visualization utilities for point-level importance scores.
-
-Uses matplotlib with the Agg backend so plots can be generated in
-headless environments (no display required).
-"""
+"""Importance score visualization utilities. See src/visualization/README.md."""
 
 from __future__ import annotations
 
@@ -27,15 +20,7 @@ def plot_importance(
     title: str = "Point Importance",
     save_path: Optional[str] = None,
 ) -> None:
-    """Scatter plot of trajectory points coloured by importance score.
-
-    Args:
-        points:            Tensor of shape [N, 5] with columns
-                           [time, lat, lon, speed, heading].
-        importance_scores: Tensor of shape [N] with scores in [0, 1].
-        title:             Figure title.
-        save_path:         If provided, save the figure to this file path.
-    """
+    """Scatter plot of trajectory points coloured by importance score."""
     lons   = points[:, 2].numpy()
     lats   = points[:, 1].numpy()
     scores = importance_scores.numpy()
@@ -62,24 +47,7 @@ def plot_simplification_results(
     title: str = "AIS Trajectory Simplification Results",
     save_path: Optional[str] = None,
 ) -> None:
-    """Visualization showing retained/removed points alongside query regions.
-
-    Draws trajectory lines as thin gray context lines, plots removed points
-    in red and retained points coloured by importance score, then overlays
-    semi-transparent query rectangles.
-
-    Args:
-        trajectories:      List of trajectory tensors, each [T, 5] with columns
-                           [time, lat, lon, speed, heading].
-        all_points:        Tensor of shape [N, 5] — all trajectory points.
-        retained_mask:     Boolean tensor of shape [N].  True = retained,
-                           False = removed by simplification.
-        importance_scores: Tensor of shape [N] with scores in [0, 1].
-        queries:           Tensor of shape [M, 6] with columns
-                           [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-        title:             Figure title.
-        save_path:         If provided, save the figure to this file path.
-    """
+    """Visualise retained/removed points alongside query regions."""
     fig, ax = plt.subplots(figsize=(12, 8))
 
     # 1. Draw trajectory lines as thin gray context lines
@@ -212,17 +180,7 @@ def plot_trajectories_with_importance_and_queries(
     title: str = "Trajectories: Importance + Queries",
     save_path: Optional[str] = None,
 ) -> None:
-    """Combined visualization: trajectory lines, importance-colored points, and query rectangles.
-
-    Args:
-        trajectories:      List of trajectory tensors, each [T, 5].
-        points:            Tensor of shape [N, 5] — all points flattened.
-        importance_scores: Tensor of shape [N] with scores in [0, 1].
-        queries:           Tensor of shape [M, 6] with columns
-                           [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-        title:             Figure title.
-        save_path:         If provided, save the figure to this file path.
-    """
+    """Combined plot: trajectory lines coloured by importance with query overlays."""
     fig, ax = plt.subplots(figsize=(12, 8))
     cmap_traj = plt.get_cmap("tab20")
 
@@ -272,24 +230,7 @@ def plot_simplification_time_slices(
     n_slices: int = 4,
     save_path: Optional[str] = None,
 ) -> None:
-    """Time-aware simplification visualization across temporal slices.
-
-    Each subplot shows one time window with:
-    - removed points outside query-time (red),
-    - removed points that are query-relevant in full spatiotemporal terms (orange),
-    - retained points coloured by importance (viridis),
-    - only query rectangles active during that time window (blue).
-
-    Args:
-        all_points:        Tensor [N, 5] with columns [time, lat, lon, speed, heading].
-        retained_mask:     Boolean tensor [N].
-        importance_scores: Tensor [N] in [0, 1].
-        queries:           Tensor [M, 6] with columns
-                           [lat_min, lat_max, lon_min, lon_max, time_start, time_end].
-        title:             Figure title.
-        n_slices:          Number of temporal panels.
-        save_path:         If provided, save figure to this file path.
-    """
+    """Visualise simplification results across n_slices temporal windows."""
     n_slices = max(1, int(n_slices))
 
     times = all_points[:, 0]
@@ -433,23 +374,7 @@ def plot_turn_scores(
     title: str = "AIS Turn-Score Visualization",
     save_path: Optional[str] = None,
 ) -> None:
-    """Scatter plot highlighting trajectory points by turn intensity.
-
-    Points with high ``turn_score`` (sharp direction changes) are rendered
-    with a stronger colour.  Retained points are overlaid with a star marker
-    so that preserved turn points are clearly visible.
-
-    This function requires a ``turn_score`` column (column 7) in *points*.
-    If the column is absent (e.g., for 7-feature legacy tensors) the plot
-    is skipped and a warning is printed.
-
-    Args:
-        points:        Tensor of shape [N, F] with F >= 8.  Column 7 must be
-                       ``turn_score`` in [0, 1].
-        retained_mask: Boolean tensor of shape [N].  True = retained point.
-        title:         Figure title.
-        save_path:     If provided, save the figure to this file path.
-    """
+    """Scatter plot highlighting trajectory points by turn intensity (column 7)."""
     if points.shape[1] < 8:
         print(
             "plot_turn_scores: turn_score column (col 7) not present "

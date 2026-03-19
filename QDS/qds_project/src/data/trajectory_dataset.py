@@ -1,17 +1,4 @@
-"""
-trajectory_dataset.py
-
-PyTorch Dataset wrapper for AIS trajectory tensors.
-
-Each trajectory is a tensor of shape [T, 8] with columns:
-[time, lat, lon, speed, heading, is_start, is_end, turn_score].
-
-The ``is_start`` and ``is_end`` columns are binary flags (0.0 or 1.0) that
-indicate the first and last point of each trajectory respectively.
-
-The ``turn_score`` column stores normalised direction-change intensity in
-[0, 1] for each interior point (endpoints are 0.0).
-"""
+"""PyTorch Dataset wrapper for AIS trajectory tensors. See src/data/README.md."""
 
 from __future__ import annotations
 
@@ -23,51 +10,24 @@ from torch.utils.data import Dataset
 
 
 class TrajectoryDataset(Dataset):
-    """PyTorch Dataset for AIS vessel trajectories.
-
-    Wraps a list of variable-length trajectory tensors and provides
-    utilities for accessing individual trajectories or the full flattened
-    point cloud.
-
-    Args:
-        trajectories: List of tensors, each of shape [T, 8] with columns
-                      [time, lat, lon, speed, heading, is_start, is_end,
-                      turn_score].
-    """
+    """PyTorch Dataset for AIS vessel trajectories."""
 
     def __init__(self, trajectories: List[Tensor]) -> None:
         self.trajectories = trajectories
 
     def __len__(self) -> int:
-        """Return the number of trajectories in the dataset."""
         return len(self.trajectories)
 
     def __getitem__(self, idx: int) -> Tensor:
-        """Return the trajectory tensor at index ``idx``.
-
-        Args:
-            idx: Trajectory index.
-
-        Returns:
-            Tensor of shape [T, 8].
-        """
+        """Return the trajectory tensor at index ``idx``."""
         return self.trajectories[idx]
 
     def get_all_points(self) -> Tensor:
-        """Flatten all trajectories into a single point cloud tensor.
-
-        Returns:
-            Tensor of shape [N, 8] where N is the total number of points
-            across all trajectories.
-        """
+        """Flatten all trajectories into a single [N, 8] point cloud tensor."""
         return torch.cat(self.trajectories, dim=0)
 
     def get_trajectory_boundaries(self) -> List[Tuple[int, int]]:
-        """Return the start and end indices of each trajectory in the flattened point cloud.
-
-        Returns:
-            List of (start, end) index pairs (exclusive end) — one per trajectory.
-        """
+        """Return (start, end) index pairs for each trajectory in the flattened cloud."""
         boundaries: List[Tuple[int, int]] = []
         offset = 0
         for traj in self.trajectories:
