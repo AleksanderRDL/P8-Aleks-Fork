@@ -36,6 +36,33 @@ docker compose -f db/compose.yaml up -d
 python scripts/smoke_test_db.py
 ```
 
+## AIS Cleaning Pipeline
+
+Run the raw CSV -> cleaned CSV pipeline:
+
+```bash
+python main.py
+```
+
+Run with conservative local-memory settings:
+
+```bash
+SPARK_LOCAL_CORES=2 \
+SPARK_SHUFFLE_PARTITIONS=96 \
+SPARK_INPUT_PARTITION_MB=32 \
+SPARK_OUTPUT_PARTITIONS=4 \
+python main.py
+```
+
+Useful environment variables:
+
+- `AIS_INPUT_FILE`: Input CSV path (default `AISDATA/aisdk-2026-02-05.csv`)
+- `AIS_OUTPUT_PATH`: Output directory path (default `AISDATA/aisdk-2026-02-05.cleaned.csv`)
+- `SPARK_LOCAL_CORES`: Local Spark cores (default `4`)
+- `SPARK_SHUFFLE_PARTITIONS`: Shuffle partitions (default `64`)
+- `SPARK_INPUT_PARTITION_MB`: Input split size in MB (default `64`)
+- `SPARK_OUTPUT_PARTITIONS`: Number of output CSV part files (default `1`)
+
 ## CSV Import (Fast + Resumable)
 
 Basic import:

@@ -104,7 +104,8 @@ def remove_gps_outliers(df, base_margin=1.2, time_scale=0.3, max_passes=3):
     prev_count = -1
     for i in range(max_passes):
         df = forward_pass(df, base_margin, time_scale)
-        df = df.localCheckpoint(eager=True)
+        # Use disk-backed checkpoints to avoid retaining large in-memory checkpoints.
+        df = df.checkpoint(eager=True)
         curr_count = df.count()
         print(f"  Forward pass {i+1}: {curr_count} rows remaining")
         if curr_count == prev_count:
