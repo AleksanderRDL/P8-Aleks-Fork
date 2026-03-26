@@ -68,7 +68,14 @@ def _load_workload_data(config: ExperimentConfig, device: torch.device) -> Workl
     """Load AIS trajectories from CSV or generate synthetic trajectories."""
     data_cfg = config.data
     model_cfg = config.model
-    loaded_from_csv = bool(data_cfg.csv_path and os.path.exists(data_cfg.csv_path))
+    if data_cfg.csv_path is not None:
+        if not os.path.exists(data_cfg.csv_path):
+            raise FileNotFoundError(
+                f"--csv_path was provided but file does not exist: {data_cfg.csv_path}"
+            )
+        loaded_from_csv = True
+    else:
+        loaded_from_csv = False
 
     start = time.time()
     if loaded_from_csv:
@@ -84,6 +91,13 @@ def _load_workload_data(config: ExperimentConfig, device: torch.device) -> Workl
             n_ships=data_cfg.n_ships,
             n_points_per_ship=data_cfg.n_points_per_ship,
             turn_score_method=model_cfg.turn_score_method,
+        )
+
+    if len(trajectories) == 0:
+        source_label = data_cfg.csv_path if loaded_from_csv else "synthetic generation"
+        raise ValueError(
+            "No trajectories available after data loading "
+            f"(source: {source_label})."
         )
 
     dataset = TrajectoryDataset(trajectories)

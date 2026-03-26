@@ -154,7 +154,8 @@ python -m src.experiments.run_ais_experiment \
     --n_ships 50 \
     --n_points 150 \
     --n_queries 150 \
-    --target_ratio 0.10
+    --target_ratio 0.10 \
+    --compression_ratio 0
 ```
 
 Choose query workload type (`uniform`, `density`, `mixed`, or `all`):

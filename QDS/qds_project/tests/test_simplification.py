@@ -331,24 +331,27 @@ class TestTurnAwareSimplification:
         assert mask[-1].item(), "Last point must be retained"
 
     def test_turn_bias_weight_is_additive(self):
-        """turn_bias_weight > 0 should not reduce the number of retained points below no-bias."""
+        """Positive turn bias must not reduce retention in global-threshold mode."""
         pts, queries = _make_points_and_queries(n=30)
-        model = TrajectoryQDSModel()
-        # Use a moderate threshold so some points are removed.
+        model = TrajectoryQDSModel()  # model is bypassed by model_max_points=0 below
+        query_scores = torch.linspace(0.0, 1.0, pts.shape[0])
+
         _, mask_no_bias, scores_no_bias = simplify_trajectories(
-            pts, model, queries, threshold=0.0,
+            pts, model, queries, threshold=0.55,
             compression_ratio=None,
+            query_scores=query_scores,
+            model_max_points=0,
             turn_bias_weight=0.0,
         )
         _, mask_biased, scores_biased = simplify_trajectories(
-            pts, model, queries, threshold=0.0,
+            pts, model, queries, threshold=0.55,
             compression_ratio=None,
+            query_scores=query_scores,
+            model_max_points=0,
             turn_bias_weight=0.2,
         )
-        # With threshold=0 and no bias both should retain all points, but the
-        # scores array should differ when bias is applied.
-        assert not torch.allclose(scores_no_bias, scores_biased), \
-            "Scores must differ when turn_bias_weight > 0 and turn_score column present"
+        assert mask_biased.sum().item() >= mask_no_bias.sum().item()
+        assert (scores_biased >= scores_no_bias).all().item()
 
     def test_turn_bias_weight_no_column(self):
         """turn_bias_weight with 7-feature points (no turn_score col) must not crash."""

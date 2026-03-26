@@ -15,6 +15,9 @@ def query_error(
     queries: Tensor,
 ) -> float:
     """Compute the mean relative query error between original and simplified data."""
+    if queries.shape[0] == 0:
+        return 0.0
+
     original_results   = run_queries(original_points,   queries)  # [M]
     simplified_results = run_queries(simplified_points, queries)  # [M]
 

@@ -73,7 +73,7 @@ python -m src.experiments.run_ais_experiment \
 
 # Auto-select threshold by target retention ratio
 python -m src.experiments.run_ais_experiment \
-    --n_ships 50 --n_points 150 --n_queries 150 --target_ratio 0.10
+    --n_ships 50 --n_points 150 --n_queries 150 --target_ratio 0.10 --compression_ratio 0
 
 # Specific workload type
 python -m src.experiments.run_ais_experiment --workload density --n_queries 100

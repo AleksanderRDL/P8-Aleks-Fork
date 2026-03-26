@@ -348,16 +348,28 @@ def _simplify_with_model(
             1,
             min(n_points_total, int(round(model_cfg.target_ratio * n_points_total))),
         )
-        topk_vals, topk_idx = torch.topk(ml_scores, k=target_count)
+        topk_vals, _ = torch.topk(ml_scores, k=target_count)
         effective_threshold = float(topk_vals.min().item())
 
-        retained_mask = torch.zeros(n_points_total, dtype=torch.bool, device=points.device)
-        retained_mask[topk_idx] = True
-        ml_simplified = points[retained_mask]
+        # Re-run in global-threshold mode so endpoint/min-point trajectory
+        # constraints are applied consistently.
+        ml_simplified, retained_mask, _ = _run_simplify_trajectories(
+            points,
+            queries,
+            importance,
+            trained_model,
+            model_cfg,
+            trajectory_boundaries,
+            threshold=effective_threshold,
+            compression_ratio=None,
+            turn_bias_weight=eff_turn_bias,
+        )
+        retained_count = int(retained_mask.sum().item())
 
         print(
             f"       target_ratio={model_cfg.target_ratio:.4f} "
-            f"-> auto-threshold={effective_threshold:.4f}"
+            f"-> auto-threshold={effective_threshold:.4f} "
+            f"(retained={retained_count}/{n_points_total})"
         )
         return _build_model_simplification_result(
             ml_simplified,
