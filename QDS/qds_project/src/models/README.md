@@ -33,6 +33,18 @@ original point embeddings before predicting importance scores.
 
 ## Components
 
+### `attention_qds_model_base.py`
+
+**`AttentionQDSModelBase`** — shared architecture backbone used by both model
+variants.
+
+- Defines the point encoder, query encoder, cross-attention block, and
+  importance predictor once.
+- Provides the common forward pass that computes per-point query-conditioned
+  context vectors and outputs `[N]` importance scores.
+
+---
+
 ### `trajectory_qds_model.py`
 
 **`TrajectoryQDSModel`** — Baseline QDS model.

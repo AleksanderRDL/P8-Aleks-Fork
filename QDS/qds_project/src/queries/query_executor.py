@@ -5,19 +5,17 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from src.queries.query_masks import (
+    spatiotemporal_inclusion_mask,
+    sum_speed_by_query,
+)
+
 
 def run_query(points: Tensor, query: Tensor) -> Tensor:
     """Run a single spatiotemporal range query; returns sum of speed for matching points."""
-    lat_min, lat_max, lon_min, lon_max, time_start, time_end = (
-        query[0], query[1], query[2], query[3], query[4], query[5],
-    )
-
-    mask = (
-        (points[:, 1] >= lat_min)  & (points[:, 1] <= lat_max) &
-        (points[:, 2] >= lon_min)  & (points[:, 2] <= lon_max) &
-        (points[:, 0] >= time_start) & (points[:, 0] <= time_end)
-    )
-
+    if query.dim() == 1:
+        query = query.unsqueeze(0)
+    mask = spatiotemporal_inclusion_mask(points, query).squeeze(1)
     return points[mask, 3].sum()
 
 
@@ -38,15 +36,7 @@ def run_queries(points: Tensor, queries: Tensor) -> Tensor:
         end = min(n_points, start + chunk_size)
         chunk = points[start:end]
 
-        mask = (
-            (chunk[:, None, 1] >= queries[None, :, 0]) &
-            (chunk[:, None, 1] <= queries[None, :, 1]) &
-            (chunk[:, None, 2] >= queries[None, :, 2]) &
-            (chunk[:, None, 2] <= queries[None, :, 3]) &
-            (chunk[:, None, 0] >= queries[None, :, 4]) &
-            (chunk[:, None, 0] <= queries[None, :, 5])
-        )
-
-        results += (mask.float() * chunk[:, 3].unsqueeze(1)).sum(dim=0)
+        mask = spatiotemporal_inclusion_mask(chunk, queries)
+        results += sum_speed_by_query(chunk, mask)
 
     return results

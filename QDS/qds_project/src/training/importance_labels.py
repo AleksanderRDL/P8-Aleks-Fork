@@ -7,6 +7,8 @@ from typing import Optional
 import torch
 from torch import Tensor
 
+from src.queries.query_masks import spatiotemporal_inclusion_mask, sum_speed_by_query
+
 
 def compute_importance(
     points: Tensor,
@@ -30,17 +32,8 @@ def compute_importance(
         end = min(n_points, start + chunk_size)
         chunk = points[start:end]
 
-        inclusion = (
-            (chunk[:, None, 1] >= queries[None, :, 0]) &
-            (chunk[:, None, 1] <= queries[None, :, 1]) &
-            (chunk[:, None, 2] >= queries[None, :, 2]) &
-            (chunk[:, None, 2] <= queries[None, :, 3]) &
-            (chunk[:, None, 0] >= queries[None, :, 4]) &
-            (chunk[:, None, 0] <= queries[None, :, 5])
-        )
-
-        speed_chunk = chunk[:, 3].abs().unsqueeze(1)  # [C, 1]
-        query_results += (inclusion.float() * speed_chunk).sum(dim=0)
+        inclusion = spatiotemporal_inclusion_mask(chunk, queries)
+        query_results += sum_speed_by_query(chunk, inclusion, absolute=True)
 
     denom = query_results.abs()
     safe_denom = torch.where(denom > 1e-8, denom, torch.ones_like(denom))
@@ -50,15 +43,7 @@ def compute_importance(
         end = min(n_points, start + chunk_size)
         chunk = points[start:end]
 
-        inclusion = (
-            (chunk[:, None, 1] >= queries[None, :, 0]) &
-            (chunk[:, None, 1] <= queries[None, :, 1]) &
-            (chunk[:, None, 2] >= queries[None, :, 2]) &
-            (chunk[:, None, 2] <= queries[None, :, 3]) &
-            (chunk[:, None, 0] >= queries[None, :, 4]) &
-            (chunk[:, None, 0] <= queries[None, :, 5])
-        )
-
+        inclusion = spatiotemporal_inclusion_mask(chunk, queries)
         speed_chunk = chunk[:, 3].abs().unsqueeze(1)  # [C, 1]
 
         # For positive-speed workloads this equals leave-one-out relative error:

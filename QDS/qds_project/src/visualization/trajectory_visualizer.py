@@ -9,7 +9,6 @@ matplotlib.use("Agg")  # headless rendering — must come before pyplot import
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import torch
 from torch import Tensor
 
 

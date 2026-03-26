@@ -83,9 +83,11 @@ qds_project/
 │   ├── queries/            # Spatiotemporal query generation and execution
 │   │   ├── README.md
 │   │   ├── query_generator.py
-│   │   └── query_executor.py
+│   │   ├── query_executor.py
+│   │   └── query_masks.py
 │   ├── models/             # Neural network model definitions
 │   │   ├── README.md
+│   │   ├── attention_qds_model_base.py
 │   │   ├── trajectory_qds_model.py
 │   │   └── turn_aware_qds_model.py
 │   ├── training/           # Importance labels and training loop
@@ -105,6 +107,10 @@ qds_project/
 │   │   └── importance_visualizer.py
 │   └── experiments/        # End-to-end experiment pipeline
 │       ├── README.md
+│       ├── experiment_cli.py
+│       ├── experiment_config.py
+│       ├── experiment_pipeline_helpers.py
+│       ├── workload_runner.py
 │       └── run_ais_experiment.py
 └── tests/
     ├── test_data.py
@@ -309,4 +315,3 @@ simplified, mask, scores = simplify_trajectories(
 print(f"Query error:       {query_error(points[:, :5], simplified[:, :5], queries):.4f}")
 print(f"Compression ratio: {compression_ratio(points, simplified):.4f}")
 ```
-

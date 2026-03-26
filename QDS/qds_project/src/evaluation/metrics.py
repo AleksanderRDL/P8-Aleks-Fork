@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-import torch
 from torch import Tensor
 
 from src.queries.query_executor import run_queries

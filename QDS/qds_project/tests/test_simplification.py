@@ -1,5 +1,4 @@
 """Tests for AIS trajectory simplification."""
-import pytest
 import torch
 import sys
 import os

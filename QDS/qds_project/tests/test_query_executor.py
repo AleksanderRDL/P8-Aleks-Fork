@@ -1,5 +1,4 @@
 """Tests for AIS spatiotemporal query execution."""
-import pytest
 import torch
 import sys
 import os

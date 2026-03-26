@@ -8,9 +8,14 @@ End-to-end AIS Query-Driven Simplification experiment pipeline.
 
 ### `run_ais_experiment.py`
 
-Main orchestration script for the end-to-end QDS pipeline. Coordinates data
-generation/loading, query generation, model training, simplification, baseline
-evaluation, and visualisation.
+CLI-facing entry point for the end-to-end QDS pipeline. Builds config from
+arguments and dispatches workload execution.
+
+### `workload_runner.py`
+
+Single-workload pipeline runner and step helpers. Contains the staged
+data/query/training/simplification/evaluation flow used by
+`run_ais_experiment.py`.
 
 ### `experiment_cli.py`
 

@@ -78,3 +78,17 @@ to avoid large `[N, M]` memory allocations. Returns a `[M]` result tensor.
 
 Point tensor columns: `[time, lat, lon, speed, heading]`  
 Query tensor columns: `[lat_min, lat_max, lon_min, lon_max, time_start, time_end]`
+
+---
+
+### `query_masks.py`
+
+Shared masking utilities used across query execution, label generation,
+visualisation, and experiment diagnostics.
+
+- **`spatial_inclusion_mask(points, queries)`** → `[N, M]` boolean mask
+- **`spatiotemporal_inclusion_mask(points, queries, spatial_mask=None)`** → `[N, M]`
+- **`sum_speed_by_query(points, inclusion_mask, absolute=False)`** → `[M]`
+
+This centralises point/query column semantics and keeps masking logic
+consistent across modules.

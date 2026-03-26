@@ -1,5 +1,4 @@
 """Tests for AIS baseline simplification methods."""
-import pytest
 import torch
 import sys
 import os

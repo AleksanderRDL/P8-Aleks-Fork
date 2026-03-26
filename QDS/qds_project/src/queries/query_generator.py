@@ -2,28 +2,44 @@
 
 from __future__ import annotations
 
-from typing import List
+from dataclasses import dataclass
 
 import torch
 from torch import Tensor
 
+from src.queries.query_masks import LAT_COL, LON_COL, TIME_COL
 
-def _compute_bounds(
-    all_points: Tensor,
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Return (time_min, time_max, lat_min, lat_max, lon_min, lon_max) from a flat point cloud tensor."""
-    time_min = all_points[:, 0].min()
-    time_max = all_points[:, 0].max()
-    lat_min  = all_points[:, 1].min()
-    lat_max  = all_points[:, 1].max()
-    lon_min  = all_points[:, 2].min()
-    lon_max  = all_points[:, 2].max()
-    return time_min, time_max, lat_min, lat_max, lon_min, lon_max
+
+@dataclass(frozen=True)
+class _QueryBounds:
+    """Sampling and clamping bounds used to build query tensors."""
+
+    time_min: Tensor
+    time_max: Tensor
+    lat_min: Tensor
+    lat_max: Tensor
+    lon_min: Tensor
+    lon_max: Tensor
+    time_range: Tensor
+    lat_width_range: Tensor
+    lon_width_range: Tensor
+
+
+def _concat_trajectories(trajectories: list[Tensor]) -> Tensor:
+    """Flatten trajectory list into one point cloud tensor."""
+    if len(trajectories) == 0:
+        raise ValueError("trajectories must contain at least one tensor.")
+    return torch.cat(trajectories, dim=0)
 
 
 def _guard_range(r: Tensor) -> Tensor:
-    """Return *r* unchanged if it is meaningfully positive, else 1.0."""
-    return r if r > 1e-6 else torch.tensor(1.0)
+    """Return *r* if positive, else a safe fallback span of 1.0."""
+    return torch.where(r > 1e-6, r, torch.ones_like(r))
+
+
+def _rand_like_scalar(size: int, ref: Tensor) -> Tensor:
+    """Sample random tensor on the same dtype/device as a scalar reference."""
+    return torch.rand(size, dtype=ref.dtype, device=ref.device)
 
 
 def _effective_spatial_ranges(
@@ -31,50 +47,90 @@ def _effective_spatial_ranges(
     lat_range: Tensor,
     lon_range: Tensor,
 ) -> tuple[Tensor, Tensor]:
-    """Return robust spatial ranges for query width sampling using 5th–95th percentiles."""
+    """Return robust spatial ranges for width sampling using 5th–95th percentiles."""
     q = torch.tensor([0.05, 0.95], dtype=all_points.dtype, device=all_points.device)
-    lat_q = torch.quantile(all_points[:, 1], q)
-    lon_q = torch.quantile(all_points[:, 2], q)
+    lat_q = torch.quantile(all_points[:, LAT_COL], q)
+    lon_q = torch.quantile(all_points[:, LON_COL], q)
 
     robust_lat_range = _guard_range(lat_q[1] - lat_q[0])
     robust_lon_range = _guard_range(lon_q[1] - lon_q[0])
 
-    scale = torch.tensor(1.5, dtype=all_points.dtype, device=all_points.device)
-    eff_lat_range = _guard_range(torch.minimum(lat_range, robust_lat_range * scale))
-    eff_lon_range = _guard_range(torch.minimum(lon_range, robust_lon_range * scale))
-
+    eff_lat_range = _guard_range(torch.minimum(lat_range, robust_lat_range * 1.5))
+    eff_lon_range = _guard_range(torch.minimum(lon_range, robust_lon_range * 1.5))
     return eff_lat_range, eff_lon_range
 
 
 def _effective_spatial_bounds(
     all_points: Tensor,
+    *,
     lower_q: float = 0.01,
     upper_q: float = 0.99,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Return robust spatial bounds for center sampling using quantile clipping."""
+    """Return robust spatial center bounds via quantile clipping."""
     if not (0.0 <= lower_q < upper_q <= 1.0):
         raise ValueError(
             f"Invalid quantile bounds: lower_q={lower_q}, upper_q={upper_q}."
         )
 
     q = torch.tensor([lower_q, upper_q], dtype=all_points.dtype, device=all_points.device)
-    lat_q = torch.quantile(all_points[:, 1], q)
-    lon_q = torch.quantile(all_points[:, 2], q)
+    lat_q = torch.quantile(all_points[:, LAT_COL], q)
+    lon_q = torch.quantile(all_points[:, LON_COL], q)
 
-    lat_lo = lat_q[0]
-    lat_hi = lat_q[1]
-    lon_lo = lon_q[0]
-    lon_hi = lon_q[1]
+    lat_lo, lat_hi = lat_q[0], lat_q[1]
+    lon_lo, lon_hi = lon_q[0], lon_q[1]
 
-    # Fallback to strict min/max if quantile span is degenerate.
     if bool(lat_hi - lat_lo <= 1e-6):
-        lat_lo = all_points[:, 1].min()
-        lat_hi = all_points[:, 1].max()
+        lat_lo = all_points[:, LAT_COL].min()
+        lat_hi = all_points[:, LAT_COL].max()
     if bool(lon_hi - lon_lo <= 1e-6):
-        lon_lo = all_points[:, 2].min()
-        lon_hi = all_points[:, 2].max()
+        lon_lo = all_points[:, LON_COL].min()
+        lon_hi = all_points[:, LON_COL].max()
 
     return lat_lo, lat_hi, lon_lo, lon_hi
+
+
+def _prepare_query_bounds(
+    all_points: Tensor,
+    *,
+    use_robust_spatial_bounds: bool,
+    spatial_bound_lower_quantile: float = 0.01,
+    spatial_bound_upper_quantile: float = 0.99,
+) -> _QueryBounds:
+    """Build query bounds/context from the point cloud."""
+    time_min = all_points[:, TIME_COL].min()
+    time_max = all_points[:, TIME_COL].max()
+
+    if use_robust_spatial_bounds:
+        lat_min, lat_max, lon_min, lon_max = _effective_spatial_bounds(
+            all_points,
+            lower_q=spatial_bound_lower_quantile,
+            upper_q=spatial_bound_upper_quantile,
+        )
+    else:
+        lat_min = all_points[:, LAT_COL].min()
+        lat_max = all_points[:, LAT_COL].max()
+        lon_min = all_points[:, LON_COL].min()
+        lon_max = all_points[:, LON_COL].max()
+
+    lat_range = _guard_range(lat_max - lat_min)
+    lon_range = _guard_range(lon_max - lon_min)
+    time_range = _guard_range(time_max - time_min)
+    lat_width_range, lon_width_range = _effective_spatial_ranges(
+        all_points,
+        lat_range,
+        lon_range,
+    )
+    return _QueryBounds(
+        time_min=time_min,
+        time_max=time_max,
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
+        time_range=time_range,
+        lat_width_range=lat_width_range,
+        lon_width_range=lon_width_range,
+    )
 
 
 def _ensure_strict_order_within_bounds(
@@ -85,10 +141,9 @@ def _ensure_strict_order_within_bounds(
     eps: float = 1e-4,
 ) -> tuple[Tensor, Tensor]:
     """Ensure q_min < q_max while keeping both values inside bounds."""
-    eps_t = torch.tensor(eps, dtype=q_min.dtype, device=q_min.device)
+    eps_t = torch.as_tensor(eps, dtype=q_min.dtype, device=q_min.device)
     span = bound_max - bound_min
 
-    # If the global span is tiny, best effort is to stay inside bounds.
     if bool(span <= eps_t):
         return bound_min.expand_as(q_min), bound_max.expand_as(q_max)
 
@@ -105,27 +160,23 @@ def _ensure_strict_order_within_bounds(
 
     q_min = torch.clamp(q_min, min=bound_min, max=bound_max)
     q_max = torch.clamp(q_max, min=bound_min, max=bound_max)
-
     return q_min, q_max
+
+
+def _sample_center_uniform(min_value: Tensor, max_value: Tensor, n_queries: int) -> Tensor:
+    """Sample uniformly in [min_value, max_value] with matching dtype/device."""
+    return min_value + _rand_like_scalar(n_queries, min_value) * _guard_range(max_value - min_value)
 
 
 def _build_queries(
     centers_lat: Tensor,
     centers_lon: Tensor,
     centers_time: Tensor,
-    lat_width_range: Tensor,
-    lon_width_range: Tensor,
-    time_range: Tensor,
-    lat_min: Tensor,
-    lat_max: Tensor,
-    lon_min: Tensor,
-    lon_max: Tensor,
-    time_min: Tensor,
-    time_max: Tensor,
+    bounds: _QueryBounds,
     spatial_fraction: float,
     temporal_fraction: float,
 ) -> Tensor:
-    """Sample query half-widths, clamp to data bounds, and assemble [M, 6] query tensor."""
+    """Sample query widths, clamp to bounds, and assemble [M, 6] query tensor."""
     n_queries = centers_lat.shape[0]
 
     if spatial_fraction <= 0.0:
@@ -133,137 +184,123 @@ def _build_queries(
     if temporal_fraction <= 0.0:
         raise ValueError(f"temporal_fraction must be > 0, got {temporal_fraction}.")
 
-    # Keep a small lower bound so boxes do not collapse to near-zero size.
     min_spatial_fraction = min(0.0025, spatial_fraction)
     min_temporal_fraction = min(0.01, temporal_fraction)
 
     spatial_f = (
-        torch.rand(n_queries) * (spatial_fraction - min_spatial_fraction)
+        _rand_like_scalar(n_queries, centers_lat)
+        * (spatial_fraction - min_spatial_fraction)
         + min_spatial_fraction
     )
     temporal_f = (
-        torch.rand(n_queries) * (temporal_fraction - min_temporal_fraction)
+        _rand_like_scalar(n_queries, centers_time)
+        * (temporal_fraction - min_temporal_fraction)
         + min_temporal_fraction
     )
 
-    # Sample half-widths (always positive, proportional to effective ranges)
-    hw_lat = spatial_f * lat_width_range / 2.0
-    hw_lon = spatial_f * lon_width_range / 2.0
-    hw_time = temporal_f * time_range / 2.0
+    hw_lat = spatial_f * bounds.lat_width_range / 2.0
+    hw_lon = spatial_f * bounds.lon_width_range / 2.0
+    hw_time = temporal_f * bounds.time_range / 2.0
 
-    # Build bounds and clamp to data range
-    q_lat_min  = torch.clamp(centers_lat  - hw_lat,  min=lat_min,  max=lat_max)
-    q_lat_max  = torch.clamp(centers_lat  + hw_lat,  min=lat_min,  max=lat_max)
-    q_lon_min  = torch.clamp(centers_lon  - hw_lon,  min=lon_min,  max=lon_max)
-    q_lon_max  = torch.clamp(centers_lon  + hw_lon,  min=lon_min,  max=lon_max)
-    q_time_min = torch.clamp(centers_time - hw_time, min=time_min, max=time_max)
-    q_time_max = torch.clamp(centers_time + hw_time, min=time_min, max=time_max)
+    q_lat_min = torch.clamp(centers_lat - hw_lat, min=bounds.lat_min, max=bounds.lat_max)
+    q_lat_max = torch.clamp(centers_lat + hw_lat, min=bounds.lat_min, max=bounds.lat_max)
+    q_lon_min = torch.clamp(centers_lon - hw_lon, min=bounds.lon_min, max=bounds.lon_max)
+    q_lon_max = torch.clamp(centers_lon + hw_lon, min=bounds.lon_min, max=bounds.lon_max)
+    q_time_min = torch.clamp(centers_time - hw_time, min=bounds.time_min, max=bounds.time_max)
+    q_time_max = torch.clamp(centers_time + hw_time, min=bounds.time_min, max=bounds.time_max)
 
-    # Ensure min < max (may become equal after clamping at boundary), while
-    # staying strictly inside dataset bounds.
     q_lat_min, q_lat_max = _ensure_strict_order_within_bounds(
         q_lat_min,
         q_lat_max,
-        lat_min,
-        lat_max,
+        bounds.lat_min,
+        bounds.lat_max,
     )
     q_lon_min, q_lon_max = _ensure_strict_order_within_bounds(
         q_lon_min,
         q_lon_max,
-        lon_min,
-        lon_max,
+        bounds.lon_min,
+        bounds.lon_max,
     )
     q_time_min, q_time_max = _ensure_strict_order_within_bounds(
         q_time_min,
         q_time_max,
-        time_min,
-        time_max,
+        bounds.time_min,
+        bounds.time_max,
     )
 
     return torch.stack(
         [q_lat_min, q_lat_max, q_lon_min, q_lon_max, q_time_min, q_time_max],
         dim=1,
-    )  # [M, 6]
+    )
 
 
 def generate_uniform_queries(
-    trajectories: List[Tensor],
+    trajectories: list[Tensor],
     n_queries: int = 100,
     spatial_fraction: float = 0.03,
     temporal_fraction: float = 0.10,
     spatial_bound_lower_quantile: float = 0.01,
     spatial_bound_upper_quantile: float = 0.99,
 ) -> Tensor:
-    """Generate spatiotemporal queries with centres sampled uniformly from the bounding box."""
-    all_points = torch.cat(trajectories, dim=0)  # [N, 5]
-    time_min, time_max, _, _, _, _ = _compute_bounds(all_points)
-
-    lat_min, lat_max, lon_min, lon_max = _effective_spatial_bounds(
+    """Generate queries with centers sampled uniformly from robust spatial bounds."""
+    all_points = _concat_trajectories(trajectories)
+    bounds = _prepare_query_bounds(
         all_points,
-        lower_q=spatial_bound_lower_quantile,
-        upper_q=spatial_bound_upper_quantile,
+        use_robust_spatial_bounds=True,
+        spatial_bound_lower_quantile=spatial_bound_lower_quantile,
+        spatial_bound_upper_quantile=spatial_bound_upper_quantile,
     )
 
-    lat_range = _guard_range(lat_max - lat_min)
-    lon_range = _guard_range(lon_max - lon_min)
-    time_range = _guard_range(time_max - time_min)
-    lat_width_range, lon_width_range = _effective_spatial_ranges(
-        all_points,
-        lat_range,
-        lon_range,
-    )
-
-    # Uniform centre sampling from the bounding box
-    centers_lat  = lat_min  + torch.rand(n_queries) * lat_range
-    centers_lon  = lon_min  + torch.rand(n_queries) * lon_range
-    centers_time = time_min + torch.rand(n_queries) * time_range
+    centers_lat = _sample_center_uniform(bounds.lat_min, bounds.lat_max, n_queries)
+    centers_lon = _sample_center_uniform(bounds.lon_min, bounds.lon_max, n_queries)
+    centers_time = _sample_center_uniform(bounds.time_min, bounds.time_max, n_queries)
 
     return _build_queries(
-        centers_lat, centers_lon, centers_time,
-        lat_width_range, lon_width_range, time_range,
-        lat_min, lat_max, lon_min, lon_max, time_min, time_max,
-        spatial_fraction, temporal_fraction,
+        centers_lat,
+        centers_lon,
+        centers_time,
+        bounds,
+        spatial_fraction,
+        temporal_fraction,
     )
 
 
 def generate_density_biased_queries(
-    trajectories: List[Tensor],
+    trajectories: list[Tensor],
     n_queries: int = 100,
     spatial_fraction: float = 0.03,
     temporal_fraction: float = 0.10,
 ) -> Tensor:
-    """Generate spatiotemporal queries centred on real AIS data points."""
-    all_points = torch.cat(trajectories, dim=0)  # [N, 5]
-    time_min, time_max, lat_min, lat_max, lon_min, lon_max = _compute_bounds(all_points)
-
-    lat_range = _guard_range(lat_max - lat_min)
-    lon_range = _guard_range(lon_max - lon_min)
-    time_range = _guard_range(time_max - time_min)
-    lat_width_range, lon_width_range = _effective_spatial_ranges(
+    """Generate queries with spatial centers anchored to real AIS points."""
+    all_points = _concat_trajectories(trajectories)
+    bounds = _prepare_query_bounds(
         all_points,
-        lat_range,
-        lon_range,
+        use_robust_spatial_bounds=False,
     )
 
-    # Density-biased centre sampling: anchor to real AIS data points so that
-    # queries are concentrated in high-traffic regions.
-    anchor_idx   = torch.randint(0, all_points.shape[0], (n_queries,))
-    anchors      = all_points[anchor_idx]  # [M, 5]
-    centers_lat  = anchors[:, 1]
-    centers_lon  = anchors[:, 2]
-    # Time window centre is still drawn uniformly to allow temporal variety.
-    centers_time = time_min + torch.rand(n_queries) * time_range
+    anchor_idx = torch.randint(
+        0,
+        all_points.shape[0],
+        (n_queries,),
+        device=all_points.device,
+    )
+    anchors = all_points[anchor_idx]
+    centers_lat = anchors[:, LAT_COL]
+    centers_lon = anchors[:, LON_COL]
+    centers_time = _sample_center_uniform(bounds.time_min, bounds.time_max, n_queries)
 
     return _build_queries(
-        centers_lat, centers_lon, centers_time,
-        lat_width_range, lon_width_range, time_range,
-        lat_min, lat_max, lon_min, lon_max, time_min, time_max,
-        spatial_fraction, temporal_fraction,
+        centers_lat,
+        centers_lon,
+        centers_time,
+        bounds,
+        spatial_fraction,
+        temporal_fraction,
     )
 
 
 def generate_mixed_queries(
-    trajectories: List[Tensor],
+    trajectories: list[Tensor],
     total_queries: int = 100,
     density_ratio: float = 0.5,
     spatial_fraction: float = 0.03,
@@ -271,13 +308,12 @@ def generate_mixed_queries(
     spatial_bound_lower_quantile: float = 0.01,
     spatial_bound_upper_quantile: float = 0.99,
 ) -> Tensor:
-    """Generate a mixed workload of uniform and density-biased queries."""
+    """Generate a shuffled blend of uniform and density-biased queries."""
     if not (0.0 <= density_ratio <= 1.0):
         raise ValueError(f"density_ratio must be in [0, 1], got {density_ratio}.")
 
     n_density = int(total_queries * density_ratio)
     n_uniform = total_queries - n_density
-
     parts: list[Tensor] = []
 
     if n_density > 0:
@@ -301,21 +337,22 @@ def generate_mixed_queries(
             )
         )
 
-    combined = torch.cat(parts, dim=0)  # [total_queries, 6]
+    if not parts:
+        all_points = _concat_trajectories(trajectories)
+        return torch.empty((0, 6), dtype=all_points.dtype, device=all_points.device)
 
-    # Shuffle so density-biased and uniform queries are interleaved
-    perm = torch.randperm(combined.shape[0])
-    return combined[perm]
+    combined = torch.cat(parts, dim=0)
+    return combined[torch.randperm(combined.shape[0], device=combined.device)]
 
 
 def generate_spatiotemporal_queries(
-    trajectories: List[Tensor],
+    trajectories: list[Tensor],
     n_queries: int = 100,
     spatial_fraction: float = 0.03,
     temporal_fraction: float = 0.10,
     anchor_to_data: bool = True,
 ) -> Tensor:
-    """Generate random spatiotemporal range queries from trajectory bounds."""
+    """Backward-compatible wrapper for density-biased or uniform workloads."""
     if anchor_to_data:
         return generate_density_biased_queries(
             trajectories,

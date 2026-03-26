@@ -32,6 +32,7 @@ from src.queries.query_generator import (
     generate_mixed_queries,
     generate_uniform_queries,
 )
+from src.queries.query_masks import spatial_inclusion_mask, spatiotemporal_inclusion_mask
 from src.simplification.simplify_trajectories import simplify_trajectories
 
 
@@ -58,17 +59,12 @@ def _count_removed_overlap_stats(
         if not removed_chunk.any():
             continue
 
-        spatial_matches = (
-            (chunk[:, None, 1] >= queries[None, :, 0])
-            & (chunk[:, None, 1] <= queries[None, :, 1])
-            & (chunk[:, None, 2] >= queries[None, :, 2])
-            & (chunk[:, None, 2] <= queries[None, :, 3])
-        )
+        spatial_matches = spatial_inclusion_mask(chunk, queries)
         spatial_any = spatial_matches.any(dim=1)
-        spatiotemporal_any = (
-            spatial_matches
-            & (chunk[:, None, 0] >= queries[None, :, 4])
-            & (chunk[:, None, 0] <= queries[None, :, 5])
+        spatiotemporal_any = spatiotemporal_inclusion_mask(
+            chunk,
+            queries,
+            spatial_mask=spatial_matches,
         ).any(dim=1)
 
         removed_in_spatial += int((removed_chunk & spatial_any).sum().item())
@@ -251,6 +247,49 @@ def _resolve_model_variants(model_type: str) -> list[str]:
     return ["baseline", "turn_aware"] if model_type == "all" else [model_type]
 
 
+def _build_model_simplification_result(
+    simplified_points: torch.Tensor,
+    retained_mask: torch.Tensor,
+    scores: torch.Tensor,
+    label: str,
+) -> ModelSimplificationResult:
+    """Create a strongly-typed simplification result object."""
+    return ModelSimplificationResult(
+        simplified_points=simplified_points,
+        retained_mask=retained_mask,
+        scores=scores,
+        label=label,
+    )
+
+
+def _run_simplify_trajectories(
+    points: torch.Tensor,
+    queries: torch.Tensor,
+    importance: torch.Tensor,
+    trained_model: object,
+    model_cfg: ModelConfig,
+    trajectory_boundaries: list[tuple[int, int]],
+    *,
+    threshold: float,
+    compression_ratio: float | None,
+    turn_bias_weight: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Execute simplify_trajectories with shared experiment defaults."""
+    return simplify_trajectories(
+        points,
+        trained_model,
+        queries,
+        threshold=threshold,
+        query_scores=importance,
+        model_max_points=model_cfg.model_max_points,
+        importance_chunk_size=model_cfg.importance_chunk_size,
+        trajectory_boundaries=trajectory_boundaries,
+        compression_ratio=compression_ratio,
+        min_points_per_trajectory=model_cfg.min_points_per_trajectory,
+        turn_bias_weight=turn_bias_weight,
+    )
+
+
 def _simplify_with_model(
     points: torch.Tensor,
     queries: torch.Tensor,
@@ -270,38 +309,36 @@ def _simplify_with_model(
             f"(ratio={model_cfg.compression_ratio}, "
             f"min_pts={model_cfg.min_points_per_trajectory}, model={model_variant})"
         )
-        ml_simplified, retained_mask, ml_scores = simplify_trajectories(
+        ml_simplified, retained_mask, ml_scores = _run_simplify_trajectories(
             points,
-            trained_model,
             queries,
-            query_scores=importance,
-            model_max_points=model_cfg.model_max_points,
-            importance_chunk_size=model_cfg.importance_chunk_size,
-            trajectory_boundaries=trajectory_boundaries,
+            importance,
+            trained_model,
+            model_cfg,
+            trajectory_boundaries,
+            threshold=model_cfg.threshold,
             compression_ratio=model_cfg.compression_ratio,
-            min_points_per_trajectory=model_cfg.min_points_per_trajectory,
             turn_bias_weight=eff_turn_bias,
         )
-        return ModelSimplificationResult(
-            simplified_points=ml_simplified,
-            retained_mask=retained_mask,
-            scores=ml_scores,
-            label=label,
+        return _build_model_simplification_result(
+            ml_simplified,
+            retained_mask,
+            ml_scores,
+            label,
         )
 
     if model_cfg.target_ratio is not None:
         if not (0.0 < model_cfg.target_ratio <= 1.0):
             raise ValueError("target_ratio must be in (0, 1].")
 
-        _, _, ml_scores = simplify_trajectories(
+        _, _, ml_scores = _run_simplify_trajectories(
             points,
-            trained_model,
             queries,
+            importance,
+            trained_model,
+            model_cfg,
+            trajectory_boundaries,
             threshold=0.0,
-            query_scores=importance,
-            model_max_points=model_cfg.model_max_points,
-            importance_chunk_size=model_cfg.importance_chunk_size,
-            trajectory_boundaries=trajectory_boundaries,
             compression_ratio=None,
             turn_bias_weight=eff_turn_bias,
         )
@@ -322,31 +359,29 @@ def _simplify_with_model(
             f"       target_ratio={model_cfg.target_ratio:.4f} "
             f"-> auto-threshold={effective_threshold:.4f}"
         )
-        return ModelSimplificationResult(
-            simplified_points=ml_simplified,
-            retained_mask=retained_mask,
-            scores=ml_scores,
-            label=label,
+        return _build_model_simplification_result(
+            ml_simplified,
+            retained_mask,
+            ml_scores,
+            label,
         )
 
-    ml_simplified, retained_mask, ml_scores = simplify_trajectories(
+    ml_simplified, retained_mask, ml_scores = _run_simplify_trajectories(
         points,
-        trained_model,
         queries,
+        importance,
+        trained_model,
+        model_cfg,
+        trajectory_boundaries,
         threshold=model_cfg.threshold,
-        query_scores=importance,
-        model_max_points=model_cfg.model_max_points,
-        importance_chunk_size=model_cfg.importance_chunk_size,
-        trajectory_boundaries=trajectory_boundaries,
         compression_ratio=None,
-        min_points_per_trajectory=model_cfg.min_points_per_trajectory,
         turn_bias_weight=eff_turn_bias,
     )
-    return ModelSimplificationResult(
-        simplified_points=ml_simplified,
-        retained_mask=retained_mask,
-        scores=ml_scores,
-        label=label,
+    return _build_model_simplification_result(
+        ml_simplified,
+        retained_mask,
+        ml_scores,
+        label,
     )
 
 
