@@ -58,3 +58,29 @@ class TestRunQueries:
         ])
         results = run_queries(pts, queries)
         assert (results >= 0).all()
+
+    def test_matches_run_query_per_query(self):
+        pts = _make_points()
+        queries = torch.tensor([
+            [49.0, 55.0, -1.0, 5.0, -1.0, 5.0],
+            [50.5, 51.5, 0.5, 1.5, 0.5, 1.5],
+            [60.0, 65.0, 10.0, 20.0, 10.0, 20.0],
+        ])
+        batched = run_queries(pts, queries)
+        per_query = torch.stack([run_query(pts, q) for q in queries], dim=0)
+        assert torch.allclose(batched, per_query)
+
+    def test_empty_points_returns_zeros(self):
+        pts = torch.zeros((0, 5), dtype=torch.float32)
+        queries = torch.tensor([
+            [49.0, 55.0, -1.0, 5.0, -1.0, 5.0],
+            [60.0, 65.0, 10.0, 20.0, 10.0, 20.0],
+        ])
+        results = run_queries(pts, queries)
+        assert torch.equal(results, torch.zeros(2, dtype=pts.dtype))
+
+    def test_empty_queries_returns_empty_tensor(self):
+        pts = _make_points()
+        queries = torch.zeros((0, 6), dtype=torch.float32)
+        results = run_queries(pts, queries)
+        assert results.shape == (0,)

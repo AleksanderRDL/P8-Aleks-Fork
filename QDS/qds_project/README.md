@@ -202,6 +202,34 @@ cd qds_project
 python -m pytest tests/ -v
 ```
 
+Test categories are organized with pytest markers:
+
+- `unit`: fast isolated tests (default for uncategorized tests)
+- `integration`: cross-module control-flow/orchestration tests
+- `slow`: higher-cost tests (for example training paths)
+
+Default run order is enforced as:
+
+1. `unit`
+2. `integration`
+3. `slow`
+
+Common commands:
+
+```bash
+# Fast local feedback (recommended on older hardware)
+python -m pytest tests/ -m "not slow" -q
+
+# Unit-only tests
+python -m pytest tests/ -m unit -q
+
+# Integration tests
+python -m pytest tests/ -m integration -q
+
+# Full suite
+python -m pytest tests/ -q
+```
+
 ---
 
 ## Configuration
