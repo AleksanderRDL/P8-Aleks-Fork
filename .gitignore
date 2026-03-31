@@ -3,91 +3,89 @@
 # ---------------------------------
 AISDATA/*
 !AISDATA/README.md
-*.cleaned.csv/
-*.csv
 
-local_java/
 local_hadoop/
+local_java/
 spark_temp/
 
 # ---------------------------------
 # Python: bytecode and extensions
 # ---------------------------------
-__pycache__/
-*.py[codz]
 *$py.class
+*.py[codz]
 *.so
+__pycache__/
 
 # ---------------------------------
 # Python: virtual environments
 # ---------------------------------
 .envrc
 .venv
-env/
-venv/
 ENV/
+env/
 env.bak/
+venv/
 venv.bak/
 
 # ---------------------------------
 # Python: packaging / build outputs
 # ---------------------------------
+*.egg
+*.egg-info/
+.eggs/
+.installed.cfg
 .Python
+MANIFEST
 build/
 develop-eggs/
 dist/
 downloads/
 eggs/
-.eggs/
 lib/
 lib64/
 parts/
 sdist/
+share/python-wheels/
 var/
 wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
 # ---------------------------------
 # Tests and coverage
 # ---------------------------------
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
 *.cover
 *.py.cover
+.cache
+.coverage
+.coverage.*
 .hypothesis/
+.nox/
 .pytest_cache/
+.tox/
+coverage.xml
 cover/
+htmlcov/
+nosetests.xml
 
 # ---------------------------------
 # Notebooks and generated docs
 # ---------------------------------
-.ipynb_checkpoints
 /site
+.ipynb_checkpoints
 
 # ---------------------------------
 # Static analysis / lint tooling
 # ---------------------------------
-.mypy_cache/
 .dmypy.json
-dmypy.json
+.mypy_cache/
 .pyre/
 .pytype/
-cython_debug/
 .ruff_cache/
+cython_debug/
+dmypy.json
 
 # ---------------------------------
 # Editor / local credentials / OS
 # ---------------------------------
-.vscode/settings.json
-.pypirc
 .DS_Store
+.pypirc
+.vscode/settings.json
