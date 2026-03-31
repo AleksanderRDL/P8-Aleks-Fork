@@ -1,27 +1,37 @@
+# ---------------------------------
+# Project data and local runtimes
+# ---------------------------------
 AISDATA/*
 !AISDATA/README.md
 *.cleaned.csv/
 *.csv
-.DS_Store
 
-# Portable java
 local_java/
-
-# Portable hadoop
 local_hadoop/
-
-# Spark stuff
 spark_temp/
 
-# Byte-compiled / optimized / DLL files
+# ---------------------------------
+# Python: bytecode and extensions
+# ---------------------------------
 __pycache__/
 *.py[codz]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
+# ---------------------------------
+# Python: virtual environments
+# ---------------------------------
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ---------------------------------
+# Python: packaging / build outputs
+# ---------------------------------
 .Python
 build/
 develop-eggs/
@@ -41,7 +51,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Unit test / coverage reports
+# ---------------------------------
+# Tests and coverage
+# ---------------------------------
 htmlcov/
 .tox/
 .nox/
@@ -56,40 +68,26 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Jupyter Notebook
+# ---------------------------------
+# Notebooks and generated docs
+# ---------------------------------
 .ipynb_checkpoints
-
-# Environments
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# mkdocs documentation
 /site
 
-# mypy
+# ---------------------------------
+# Static analysis / lint tooling
+# ---------------------------------
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Pyre type checker
 .pyre/
-
-# pytype static type analyzer
 .pytype/
-
-# Cython debug symbols
 cython_debug/
-
-# Visual Studio Code
-.vscode/settings.json
-
-# Ruff stuff:
 .ruff_cache/
 
-# PyPI configuration file
+# ---------------------------------
+# Editor / local credentials / OS
+# ---------------------------------
+.vscode/settings.json
 .pypirc
+.DS_Store
