@@ -64,7 +64,7 @@ Queries [M, 6] ─► Query Encoder (6→64→64) ──► Cross-Attention (Q a
 | Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)        |
 | Query Encoder        | Linear(6→64) → ReLU → Linear(64→64)        |
 | Cross-Attention      | MultiheadAttention(embed=64, heads=4)      |
-| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ   |
+| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ    |
 
 Query result: SUM of speed for all points inside the query rectangle.
 
@@ -76,6 +76,7 @@ Query result: SUM of speed for all points inside the query rectangle.
 qds_project/
 ├── requirements.txt
 ├── src/
+│   ├── README.md           # Source package index
 │   ├── data/               # AIS data loading and synthetic generation
 │   │   ├── README.md
 │   │   ├── ais_loader.py
@@ -113,6 +114,7 @@ qds_project/
 │       ├── workload_runner.py
 │       └── run_ais_experiment.py
 └── tests/
+    ├── README.md           # Test categories and run modes
     ├── test_data.py
     ├── test_query_executor.py
     ├── test_query_generator.py
@@ -257,8 +259,8 @@ All scripts accept command-line arguments. Key parameters:
 
 | Metric            | Formula                                                |
 |-------------------|--------------------------------------------------------|
-| Query Error       | mean_q \|orig(q) - simp(q)\| / (\|orig(q)\| + 1e-8)  |
-| Compression Ratio | \|simplified\| / \|original\|                         |
+| Query Error       | mean_q \|orig(q) - simp(q)\| / (\|orig(q)\| + 1e-8)    |
+| Compression Ratio | \|simplified\| / \|original\|                          |
 | Query Latency     | Average wall-clock time per query (seconds)            |
 
 ---
