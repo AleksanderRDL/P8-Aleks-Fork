@@ -5,6 +5,9 @@ This folder contains the local PostGIS service definition and initialization SQL
 - `compose.yaml`: PostGIS container definition.
 - `init.sql`: PostGIS extensions.
 - `schema.sql`: AIS tables and indexes.
+- `smoke_test_db.py`: DB connectivity/PostGIS sanity check.
+- `import_ais_csv.py`: cleaned AIS CSV import utility.
+- `run_range_query.py`: range query validation utility.
 
 ## Database Lifecycle
 
@@ -68,4 +71,5 @@ SELECT * FROM ais_import_progress;
 
 ## Related Tools
 
-- [`../scripts/README.md`](../scripts/README.md) for import and query scripts.
+- [`../ais_pipeline/README.md`](../ais_pipeline/README.md) for root pipeline documentation.
+- [`../ais_pipeline/tools/README.md`](../ais_pipeline/tools/README.md) for optional utility scripts.

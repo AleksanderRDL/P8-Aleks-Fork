@@ -1,7 +1,7 @@
-# Environment Setup (`environment_setup/`)
+# Environment Setup (`ais_pipeline/environment/`)
 
 Helpers for configuring Java, Hadoop, and Spark/PySpark runtime variables before
-running the root AIS cleaning pipeline.
+running the root AIS cleaning pipeline (`main.py` -> `ais_pipeline/pipeline.py`).
 
 ## Files
 
@@ -12,7 +12,7 @@ running the root AIS cleaning pipeline.
 
 ## How It Is Used
 
-`main.py` calls these setup functions before starting Spark:
+`ais_pipeline/pipeline.py` (invoked by `main.py`) calls these setup functions before starting Spark:
 
 - `configure_java_environment(project_dir, verbose=True)`
 - `configure_hadoop_environment(project_dir, verbose=True)`
@@ -21,7 +21,7 @@ running the root AIS cleaning pipeline.
 
 ## Pipeline Runtime Environment Variables
 
-Used by `main.py`:
+Used by the AIS cleaning pipeline:
 
 - `AIS_INPUT_FILE` (default `AISDATA/aisdk-2026-02-05.csv`)
 - `AIS_OUTPUT_PATH` (default `AISDATA/aisdk-2026-02-05.cleaned.csv`)

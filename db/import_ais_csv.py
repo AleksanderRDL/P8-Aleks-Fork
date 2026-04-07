@@ -5,6 +5,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 import psycopg
@@ -272,8 +273,8 @@ def fetch_progress(cur, source_path: str):
 
 
 def main():
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    default_aisdata_dir = os.path.join(project_root, "AISDATA")
+    project_root = Path(__file__).resolve().parents[1]
+    default_aisdata_dir = str(project_root / "AISDATA")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("csv_path", help="CSV file path or filename inside AISDATA/")

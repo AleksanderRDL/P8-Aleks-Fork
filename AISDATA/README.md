@@ -10,11 +10,11 @@ Dataset folder for raw and cleaned AIS CSV files used by the root pipeline.
 ## Notes
 
 - This folder can contain very large files.
-- Root pipeline (`main.py`) reads and writes here by default unless overridden with:
+- Root pipeline (`main.py`, backed by `ais_pipeline/pipeline.py`) reads and writes here by default unless overridden with:
   - `AIS_INPUT_FILE`
   - `AIS_OUTPUT_PATH`
 
 ## Related Docs
 
 - [`../README.md`](../README.md) for root pipeline quick start.
-- [`../scripts/README.md`](../scripts/README.md) for CSV import/query scripts.
+- [`../db/README.md`](../db/README.md) for CSV import/query and database scripts.

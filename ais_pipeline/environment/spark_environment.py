@@ -27,7 +27,7 @@ def configure_pyspark_python() -> None:
 def configure_spark_environment(project_dir: Path) -> None:
     spark_temp_dir = project_dir / "spark_temp"
     spark_temp_dir.mkdir(parents=True, exist_ok=True)
-    spark_conf_dir = project_dir / "environment_setup" / "spark_conf"
+    spark_conf_dir = project_dir / "ais_pipeline" / "environment" / "spark_conf"
 
     # Allow user-defined values to win, but avoid common local startup warnings.
     os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")

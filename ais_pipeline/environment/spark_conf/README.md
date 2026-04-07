@@ -1,4 +1,4 @@
-# Spark Config (`environment_setup/spark_conf/`)
+# Spark Config (`ais_pipeline/environment/spark_conf/`)
 
 Local Spark configuration files consumed by `SPARK_CONF_DIR` when running the
 root pipeline.
