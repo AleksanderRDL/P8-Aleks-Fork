@@ -15,7 +15,6 @@ from .steps import remove_duplicates
 from .steps import remove_outliers
 from .steps import remove_shiptypes
 from .steps import ship_type
-from .steps import trim_moving
 from .steps import trim_stationary
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -98,7 +97,6 @@ def run() -> None:
     df = ship_type.remove_undefined_ship_type(df)
     df = remove_shiptypes.remove_shiptypes(df)
     df = remove_outliers.remove_gps_outliers(df)
-    df = trim_moving.trim_moving(df)
     df = df.select(*remove_duplicates.OUTPUT_COLUMNS)
 
     (
