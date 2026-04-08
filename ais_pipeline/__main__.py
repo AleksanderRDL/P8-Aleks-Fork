@@ -1,4 +1,4 @@
-from ais_pipeline.pipeline import run
+from .pipeline import run
 
 
 if __name__ == "__main__":
