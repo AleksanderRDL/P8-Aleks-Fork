@@ -5,7 +5,8 @@ Utility and exploratory scripts related to AIS processing workflows.
 ## Files
 
 - `filter_csv.py`: simple MMSI-based CSV filter helper.
-- `dask_test.py`: lightweight Dask experiment script.
+- `validate_cleaning.py`: validates rows removed by the outlier step and reports per-MMSI impact.
+- `check_gaps.py`: inspects largest consecutive trajectory gaps in cleaned output and flags suspicious ones.
 
 ## Notes
 
