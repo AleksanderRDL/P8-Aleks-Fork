@@ -23,12 +23,12 @@ of a spatiotemporal query.
 **`plot_typed_queries_on_trajectories(trajectories, typed_queries, title, save_path)`**  
 Renders queries with type-specific visual styles:
 
-| Query type   | Visual encoding                                                                |
-|--------------|--------------------------------------------------------------------------------|
-| `range`      | Solid red semi-transparent rectangle                                           |
-| `intersection` | Dashed blue semi-transparent rectangle                                       |
-| `aggregation`| Dotted green semi-transparent rectangle                                        |
-| `nearest`/kNN| Orange marker at query location; **circle** for *k=1*, **star** for *k>1*; size scales with √k; *k>1* queries are annotated with their *k* value |
+| Query type     | Visual encoding                                                                                                                                  |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `range`        | Solid red semi-transparent rectangle                                                                                                             |
+| `intersection` | Dashed blue semi-transparent rectangle                                                                                                           |
+| `aggregation`  | Dotted green semi-transparent rectangle                                                                                                          |
+| `nearest`/kNN  | Orange marker at query location; **circle** for *k=1*, **star** for *k>1*; size scales with √k; *k>1* queries are annotated with their *k* value |
 
 The legend groups mixed workloads by type and shows per-type query counts.
 For kNN queries, distinct *k* values are noted in the legend label.

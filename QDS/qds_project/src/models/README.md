@@ -18,12 +18,12 @@ Query Types [M] ─► Type Embedding (→16) ┘
 
 | Component            | Architecture                                            |
 |----------------------|---------------------------------------------------------|
-| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)                    |
+| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)                     |
 | Point Self-Attention | MultiheadAttention(embed=64, heads=4) + LayerNorm       |
 | Query Type Embedding | Embedding(4, 16)                                        |
-| Query Encoder        | Linear(6+16→64) → ReLU → Linear(64→64)                 |
+| Query Encoder        | Linear(6+16→64) → ReLU → Linear(64→64)                  |
 | Cross-Attention      | MultiheadAttention(embed=64, heads=4) + LayerNorm       |
-| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ                |
+| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ                 |
 
 **Point self-attention**: before interacting with queries, each point attends to
 its trajectory neighbours (key and value are both the point sequence) so that
@@ -49,13 +49,13 @@ connection and LayerNorm follow the cross-attention block.
 `trajectory_qds_model.py` exports integer constants that map to the query type
 strings used in `query_types.py`:
 
-| Constant                    | Value | Query type    |
-|-----------------------------|-------|---------------|
+| Constant                     | Value | Query type      |
+|------------------------------|-------|-----------------|
 | `QUERY_TYPE_ID_RANGE`        | 0     | `"range"`       |
 | `QUERY_TYPE_ID_INTERSECTION` | 1     | `"intersection"`|
 | `QUERY_TYPE_ID_AGGREGATION`  | 2     | `"aggregation"` |
 | `QUERY_TYPE_ID_NEAREST`      | 3     | `"nearest"`     |
-| `NUM_QUERY_TYPES`            | 4     | —              |
+| `NUM_QUERY_TYPES`            | 4     | —               |
 
 ---
 

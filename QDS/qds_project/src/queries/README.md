@@ -124,11 +124,11 @@ typed query dicts and returns a list of scalar results.
 
 **Query types**
 
-| Type           | Result              | Parameters                                            |
-|----------------|---------------------|-------------------------------------------------------|
-| `range`        | Sum of speed        | lat/lon/time box                                      |
-| `intersection` | Count of ships      | lat/lon/time box (+ optional `trajectories`)          |
-| `aggregation`  | Count of points     | lat/lon/time box                                      |
+| Type           | Result              | Parameters                                                             |
+|----------------|---------------------|------------------------------------------------------------------------|
+| `range`        | Sum of speed        | lat/lon/time box                                                       |
+| `intersection` | Count of ships      | lat/lon/time box (+ optional `trajectories`)                           |
+| `aggregation`  | Count of points     | lat/lon/time box                                                       |
 | `nearest`      | Mean k-NN distance  | `query_lat`, `query_lon`, `query_time`, `time_window`, `k` (default 1) |
 
 **`execute_query(query, points, trajectories=None)`**  
