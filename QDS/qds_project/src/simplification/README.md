@@ -14,9 +14,7 @@ Simplifies the full point cloud using model-predicted importance scores.
 Returns a tuple of `(simplified_points, retained_mask, importance_scores)`.
 
 When the model cannot score the full point cloud at once, points are processed
-in chunks using the same normalization statistics as the full pass. For
-boundary-aware runs, `boundary_proximity` is appended before scoring so the
-feature is only computed for the sampled points.
+in chunks using the same normalization statistics as the full pass.
 
 ---
 
@@ -56,10 +54,8 @@ detect degenerate model outputs:
 
 - If the model score span is `< 1e-6` (all scores nearly identical), the
   query-driven scores are used as fallback.
-- For baseline/turn-aware models: if the top-1% of model-scored points do not
+- If the top-1% of model-scored points do not
   have above-average query importance, query-driven scores are used.
-- For boundary-aware models: when model inference runs successfully, model
-  scores are used directly (no weak-alignment/degeneracy fallback).
 - Otherwise, model scores are used.
 
 If `model_max_points` is exceeded, chunked scoring is used instead of full-batch
@@ -94,8 +90,8 @@ new trajectory.
 
 | Parameter                  | Default | Description                                                                    |
 |----------------------------|---------|--------------------------------------------------------------------------------|
-| `points`                   | —       | `[N, 7]`, `[N, 8]`, or `[N, 9]` point cloud tensor                             |
-| `model`                    | —       | Trained `TrajectoryQDSModel`, `TurnAwareQDSModel`, or `BoundaryAwareTurnModel` |
+| `points`                   | —       | `[N, 7]` or `[N, 8]` point cloud tensor                                         |
+| `model`                    | —       | Trained `TrajectoryQDSModel` or `TurnAwareQDSModel`                             |
 | `queries`                  | —       | `[M, 6]` query workload tensor                                                 |
 | `threshold`                | 0.5     | Score threshold for global threshold mode                                      |
 | `compression_ratio`        | 0.2     | Per-trajectory fraction to retain; `None` → threshold                          |

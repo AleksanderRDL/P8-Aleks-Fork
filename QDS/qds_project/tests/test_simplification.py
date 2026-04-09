@@ -12,7 +12,6 @@ from src.simplification.simplify_trajectories import (
 )
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
-from src.models.boundary_aware_turn_model import BoundaryAwareTurnModel
 
 
 class _FixedBaselineModel(TrajectoryQDSModel):
@@ -20,26 +19,6 @@ class _FixedBaselineModel(TrajectoryQDSModel):
 
     def __init__(self, fixed_scores: torch.Tensor):
         super().__init__()
-        self._fixed_scores = fixed_scores
-
-    def forward(self, points, queries):
-        n = points.shape[0]
-        fs = self._fixed_scores
-        if fs.numel() == 1:
-            return fs.to(points.device).expand(n)
-        if fs.shape[0] == n:
-            return fs.to(points.device)
-        if fs.shape[0] > n:
-            return fs[:n].to(points.device)
-        repeats = (n + fs.shape[0] - 1) // fs.shape[0]
-        return fs.repeat(repeats)[:n].to(points.device)
-
-
-class _FixedBoundaryModel(BoundaryAwareTurnModel):
-    """Deterministic boundary-aware model used for fallback behavior tests."""
-
-    def __init__(self, fixed_scores: torch.Tensor):
-        super().__init__(sigma=0.05)
         self._fixed_scores = fixed_scores
 
     def forward(self, points, queries):
@@ -419,59 +398,19 @@ class TestTurnAwareSimplification:
 
 
 class TestFallbackBehavior:
-    def test_boundary_aware_bypasses_fallback_checks(self):
-        """Boundary-aware should use model scores even when fallback checks would trip."""
-        n = 100
-        pts, queries = _make_points_and_queries(n=n)
-
-        # Mean is 0.50; point 0 has low query importance.
-        query_scores = torch.full((n,), 0.5)
-        query_scores[0] = 0.10
-
-        # Degenerate model scores would normally trigger fallback for baseline.
-        model_scores = torch.full((n,), 0.2)
-
-        boundary_model = _FixedBoundaryModel(model_scores)
-        baseline_model = _FixedBaselineModel(model_scores)
-
-        _, _, boundary_scores = simplify_trajectories(
-            pts,
-            boundary_model,
-            queries,
-            query_scores=query_scores,
-            compression_ratio=None,
-            threshold=0.5,
-        )
-
-        _, _, baseline_scores = simplify_trajectories(
-            pts,
-            baseline_model,
-            queries,
-            query_scores=query_scores,
-            compression_ratio=None,
-            threshold=0.5,
-        )
-
-        assert torch.allclose(
-            boundary_scores, model_scores, atol=1e-6
-        ), "Boundary-aware should use model scores without fallback"
-        assert torch.allclose(
-            baseline_scores, query_scores, atol=1e-6
-        ), "Baseline should still fallback to query scores"
-
-    def test_boundary_aware_uses_model_scores_above_model_max_points(self):
-        """Boundary-aware should not collapse to query scores on large point sets."""
+    def test_baseline_falls_back_on_degenerate_scores(self):
+        """Degenerate model scores should fallback to query-driven scores."""
         n = 120
         pts, queries = _make_points_and_queries(n=n)
 
         query_scores = torch.linspace(0.0, 1.0, n)
         model_scores = torch.full((n,), 0.33)
 
-        boundary_model = _FixedBoundaryModel(model_scores)
+        baseline_model = _FixedBaselineModel(model_scores)
 
         _, _, scores = simplify_trajectories(
             pts,
-            boundary_model,
+            baseline_model,
             queries,
             query_scores=query_scores,
             compression_ratio=None,
@@ -480,5 +419,5 @@ class TestFallbackBehavior:
         )
 
         assert torch.allclose(
-            scores, model_scores, atol=1e-6
-        ), "Boundary-aware should use chunked model scores when points exceed model_max_points"
+            scores, query_scores, atol=1e-6
+        ), "Degenerate model scores should fallback to query scores"

@@ -193,7 +193,6 @@ def _build_run_kwargs(
         "model_type": args.model_type,
         "turn_bias_weight": args.turn_bias_weight,
         "turn_score_method": args.turn_score_method,
-        "sigma": args.sigma,
         "max_query_error": args.max_query_error,
         "max_search_iterations": args.max_search_iterations,
         "error_tolerance": args.error_tolerance,
@@ -338,12 +337,11 @@ def _add_model_arguments(parser) -> None:
         "--model_type",
         type=str,
         default="baseline",
-        choices=["baseline", "turn_aware", "boundary_aware", "all"],
+        choices=["baseline", "turn_aware", "all"],
         help=(
             "Model variant to use: 'baseline' (TrajectoryQDSModel, 7 features), "
             "'turn_aware' (TurnAwareQDSModel, 8 features with turn bias), "
-            "'boundary_aware' (BoundaryAwareTurnModel, 9 features with boundary proximity), "
-            "or 'all' (train and compare all three models). Default: 'baseline'."
+            "or 'all' (train and compare both models). Default: 'baseline'."
         ),
     )
     parser.add_argument(
@@ -363,15 +361,6 @@ def _add_model_arguments(parser) -> None:
         help=(
             "Method used to compute turn_score: 'heading' (default, wrapped "
             "COG/heading deltas) or 'geometry' (turn angle from lat/lon vectors)."
-        ),
-    )
-    parser.add_argument(
-        "--sigma",
-        type=float,
-        default=1.0,
-        help=(
-            "Boundary-proximity decay bandwidth for BoundaryAwareTurnModel. "
-            "Smaller values concentrate importance closer to query edges. Default: 1.0."
         ),
     )
     parser.add_argument(

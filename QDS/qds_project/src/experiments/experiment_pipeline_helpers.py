@@ -304,14 +304,13 @@ def _resolve_effective_max_train_points(
 def _resolve_model_variants(model_type: str) -> list[str]:
     """Return the model variants to execute based on CLI/model config."""
     if model_type == "all":
-        return ["baseline", "turn_aware", "boundary_aware"]
+        return ["baseline", "turn_aware"]
     return [model_type]
 
 
 _MODEL_LABELS: dict[str, str] = {
     "baseline": "ML QDS",
     "turn_aware": "ML QDS (turn-aware)",
-    "boundary_aware": "ML QDS (boundary-aware)",
 }
 
 

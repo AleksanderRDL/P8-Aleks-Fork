@@ -76,7 +76,7 @@ strings used in `query_types.py`:
 Min-max normalises points and queries using point-cloud feature ranges so that
 training and inference inputs are on consistent scales. The same scaling is
 applied to semantically matching fields (time, lat, lon). Features at columns
-5 and beyond (is_start, is_end, turn_score, boundary_proximity, …) are already
+5 and beyond (is_start, is_end, turn_score, …) are already
 in `[0, 1]` and are preserved unchanged. The `query_type_ids` parameter is
 accepted for API symmetry but is not used numerically.
 
@@ -97,52 +97,3 @@ includes `turn_score` as the final column.
 The `turn_score` feature allows the model to learn that points at trajectory
 bends may carry structural importance independent of the query workload,
 producing simplified trajectories that better preserve trajectory shapes.
-
----
-
-### `boundary_aware_turn_model.py`
-
-**`BoundaryAwareTurnModel`** — Boundary-aware turn model variant.
-
-Extends `TurnAwareQDSModel` by appending a `boundary_proximity` feature
-(column 8) to the 8-feature turn-aware point vector.  A point near a query
-boundary edge is more likely to affect the query result when removed, so this
-feature provides an inductive bias toward retaining such points.
-
-- Point encoder input: **9 features** —
-  `[time, lat, lon, speed, heading, is_start, is_end, turn_score, boundary_proximity]`
-- Query encoder input: **6 features** (same as baseline)
-- Output: `[N]` importance scores in `[0, 1]`
-
-The `boundary_proximity` feature is computed by `compute_boundary_proximity` in
-point/query chunks so large workloads do not materialize a full `[N, M]`
-distance tensor. `extract_boundary_features` is a thin wrapper that reshapes the
-result for concatenation with point features.
-
-During `forward`, the model expects the 9-feature point tensor, runs the shared
-point/query attention stack, and then adds the learned score with the explicit
-`boundary_proximity` and `turn_score` biases before clamping the result to
-`[0, 1]`.
-
-**`compute_boundary_proximity(points, queries, sigma)`**
-For each point computes the distance to the nearest boundary edge of each
-rectangular query and converts it to an exponential proximity score:
-
-```
-boundary_distance = min(|lat - lat_min|, |lat - lat_max|, |lon - lon_min|, |lon - lon_max|)
-boundary_proximity = exp(-boundary_distance / sigma)
-```
-
-Returns the maximum proximity across all queries so that points near *any*
-query boundary receive a high score.  `sigma` controls the decay bandwidth.
-
-**`extract_boundary_features(points, queries, sigma)`**
-Thin wrapper that returns the feature as an `[N, 1]` tensor for concatenation.
-
-**Hyperparameters:**
-
-| Parameter | Default | Description                                          |
-|-----------|---------|------------------------------------------------------|
-| `sigma`   | 1.0     | Boundary-proximity decay bandwidth                   |
-| `alpha`   | 0.1     | Additive weight for the boundary-proximity bias      |
-| `beta`    | 0.1     | Additive weight for the turn-score bias              |

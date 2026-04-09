@@ -63,7 +63,6 @@ class ModelConfig:
     model_type: str = "baseline"
     turn_bias_weight: float = 0.1
     turn_score_method: str = "heading"
-    sigma: float = 1.0
     max_query_error: float | None = None
     max_search_iterations: int = 20
     error_tolerance: float = 1e-3
@@ -147,7 +146,6 @@ def build_experiment_config(
     model_type: str,
     turn_bias_weight: float,
     turn_score_method: str,
-    sigma: float = 1.0,
     max_query_error: float | None = None,
     max_search_iterations: int = 20,
     error_tolerance: float = 1e-3,
@@ -182,7 +180,6 @@ def build_experiment_config(
             model_type=model_type,
             turn_bias_weight=turn_bias_weight,
             turn_score_method=turn_score_method,
-            sigma=sigma,
             max_query_error=max_query_error,
             max_search_iterations=max_search_iterations,
             error_tolerance=error_tolerance,

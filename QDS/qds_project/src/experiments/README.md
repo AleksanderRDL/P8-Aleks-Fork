@@ -12,8 +12,8 @@ Main orchestration script for the end-to-end QDS pipeline. Coordinates data
 generation/loading, query generation, model training, simplification, baseline
 evaluation, and visualisation.
 
-The pipeline supports `baseline`, `turn_aware`, and `boundary_aware` model
-variants, and workload modes for `uniform`, `density`, `mixed`,
+The pipeline supports `baseline` and `turn_aware` model variants, and
+workload modes for `uniform`, `density`, `mixed`,
 `intersection`, `aggregation`, `nearest`, `multi`, and `all`.
 
 ### `experiment_cli.py`
@@ -41,8 +41,7 @@ metrics (query error, compression ratio, query latency), and visualisation.
 1. **Data**: Generate synthetic AIS data (or load from CSV if `--csv_path` is provided).
 2. **Queries**: Generate a spatiotemporal query workload.
 3. **Labels**: Compute ground-truth importance labels (leave-one-out).
-4. **Training**: Train the `TrajectoryQDSModel`, `TurnAwareQDSModel`, or
-    `BoundaryAwareTurnModel`.
+4. **Training**: Train the `TrajectoryQDSModel` or `TurnAwareQDSModel`.
 5. **Simplification**: Simplify trajectories with the trained model.
 6. **Baselines**: Apply random sampling, uniform temporal sampling, and
    Douglas-Peucker at the same compression ratio.
@@ -120,7 +119,7 @@ to `MLClean-<original_filename>.csv` next to the input file.
 | `--query_temporal_fraction`     | 0.10       | Maximum temporal query width as a fraction of the time range                                                           |
 | `--query_spatial_lower_quantile`| 0.01       | Lower quantile for robust spatial bounds (uniform query placement)                                                     |
 | `--query_spatial_upper_quantile`| 0.99       | Upper quantile for robust spatial bounds (uniform query placement)                                                     |
-| `--model_type`                  | baseline   | `baseline` (TrajectoryQDSModel), `turn_aware` (TurnAwareQDSModel), `boundary_aware` (BoundaryAwareTurnModel), or `all` |
+| `--model_type`                  | baseline   | `baseline` (TrajectoryQDSModel), `turn_aware` (TurnAwareQDSModel), or `all` |
 | `--turn_bias_weight`            | 0.1        | Additive weight for turn-score bias during simplification (turn-aware model)                                           |
 | `--turn_score_method`           | heading    | Turn score method: `heading` (COG deltas) or `geometry` (lat/lon vectors)                                              |
 | `--csv_path`                    | None       | Path to real AIS CSV file                                                                                              |

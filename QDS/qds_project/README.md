@@ -53,14 +53,6 @@ expensive leave-one-out computation.
   that trajectory bends carry structural importance independent of the query
   workload.
 
-### Boundary-Aware Turn — `BoundaryAwareTurnModel`
-
-- **Input**: 9-feature point vector — `[time, lat, lon, speed, heading, is_start, is_end, turn_score, boundary_proximity]`
-- Combines turn-score awareness with an explicit `boundary_proximity` feature that
-  assigns higher importance to points lying near query boundary edges.
-- `boundary_proximity = exp(-boundary_distance / sigma)` where
-  `boundary_distance` is the distance to the nearest edge of any query rectangle.
-
 See [`src/models/README.md`](src/models/README.md) for the full architecture diagram and helper function documentation.
 
 ---
@@ -106,7 +98,7 @@ qds_project/
 │   │   ├── README.md
 │   │   ├── trajectory_qds_model.py
 │   │   ├── turn_aware_qds_model.py
-│   │   └── boundary_aware_turn_model.py
+│   │   └── __init__.py
 │   ├── training/           # Importance labels and training loop
 │   │   ├── README.md
 │   │   ├── importance_labels.py
@@ -241,9 +233,8 @@ All scripts accept command-line arguments. Key parameters:
 | `--target_ratio`     | None     | Auto-select threshold to retain this fraction                                              |
 | `--workload`         | density  | `uniform`, `density`, `mixed`, `intersection`, `aggregation`, `nearest`, `multi`, or `all` |
 | `--density_ratio`    | 0.7      | Fraction of density-biased queries (mixed mode)                                            |
-| `--model_type`       | baseline | `baseline`, `turn_aware`, `boundary_aware`, or `all`                                       |
+| `--model_type`       | baseline | `baseline`, `turn_aware`, or `all`                                                          |
 | `--turn_score_method`| heading  | Turn score method: `heading` or `geometry`                                                 |
-| `--sigma`            | 1.0      | Boundary-proximity decay bandwidth (boundary_aware)                                        |
 | `--csv_path`         | None     | Path to real AIS CSV file                                                                  |
 | `--max_train_points` | None     | Cap training points (for large datasets)                                                   |
 
@@ -268,7 +259,6 @@ All scripts accept command-line arguments. Key parameters:
 | Douglas-Peucker        | Recursive line simplification on lat/lon coordinates       |
 | ML QDS (baseline)      | Learned importance scores — `TrajectoryQDSModel`           |
 | ML QDS (turn-aware)    | Learned importance scores — `TurnAwareQDSModel`            |
-| ML QDS (boundary-aware)| Learned importance scores — `BoundaryAwareTurnModel`       |
 
 ---
 

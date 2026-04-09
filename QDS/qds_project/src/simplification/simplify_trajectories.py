@@ -10,10 +10,6 @@ from torch import Tensor
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.trajectory_qds_model import normalize_points_and_queries
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
-from src.models.boundary_aware_turn_model import (
-    BoundaryAwareTurnModel,
-    compute_boundary_proximity,
-)
 from src.training.importance_labels import compute_importance
 
 
@@ -123,24 +119,9 @@ def apply_threshold_simplification(
 
 def _build_model_points_chunk(
     points_chunk: Tensor,
-    queries: Tensor,
-    model: TrajectoryQDSModel | TurnAwareQDSModel | BoundaryAwareTurnModel,
+    model: TrajectoryQDSModel | TurnAwareQDSModel,
 ) -> Tensor:
-    """Build a model-specific feature chunk with optional boundary proximity."""
-    if isinstance(model, BoundaryAwareTurnModel):
-        if points_chunk.shape[1] < 8:
-            pad = torch.zeros(
-                points_chunk.shape[0],
-                8 - points_chunk.shape[1],
-                device=points_chunk.device,
-                dtype=points_chunk.dtype,
-            )
-            base_points = torch.cat([points_chunk, pad], dim=1)
-        else:
-            base_points = points_chunk[:, :8]
-
-        bp = compute_boundary_proximity(base_points, queries, sigma=model.sigma).unsqueeze(-1)
-        return torch.cat([base_points, bp], dim=1)
+    """Build a model-specific feature chunk."""
 
     if isinstance(model, TurnAwareQDSModel):
         if points_chunk.shape[1] >= 8:
@@ -193,7 +174,7 @@ def _normalize_queries_with_point_stats(
 
 def _compute_model_scores_chunked(
     points: Tensor,
-    model: TrajectoryQDSModel | TurnAwareQDSModel | BoundaryAwareTurnModel,
+    model: TrajectoryQDSModel | TurnAwareQDSModel,
     queries: Tensor,
     chunk_size: int,
 ) -> Tensor:
@@ -215,7 +196,7 @@ def _compute_model_scores_chunked(
         for start in range(0, points.shape[0], chunk_size):
             end = min(points.shape[0], start + chunk_size)
             points_chunk = points[start:end]
-            model_points_chunk = _build_model_points_chunk(points_chunk, queries, model)
+            model_points_chunk = _build_model_points_chunk(points_chunk, model)
             norm_chunk = _normalize_model_chunk(model_points_chunk, p_min, p_range)
             pred = model(norm_chunk.to(model_device), norm_queries_device)
             scores[start:end] = pred.to(points.device)
@@ -225,7 +206,7 @@ def _compute_model_scores_chunked(
 
 def simplify_trajectories(
     points: Tensor,
-    model: TrajectoryQDSModel | TurnAwareQDSModel | BoundaryAwareTurnModel,
+    model: TrajectoryQDSModel | TurnAwareQDSModel,
     queries: Tensor,
     threshold: float = 0.5,
     query_scores: Tensor | None = None,
@@ -241,19 +222,7 @@ def simplify_trajectories(
 
     model_scores: Tensor | None = None
     if run_full_model:
-        if isinstance(model, BoundaryAwareTurnModel):
-            # Ensure at least 8 features (turn_score at col 7)
-            if points.shape[1] < 8:
-                pad = torch.zeros(points.shape[0], 8 - points.shape[1], device=points.device)
-                base_points = torch.cat([points, pad], dim=1)
-            else:
-                base_points = points[:, :8]
-            # Append boundary_proximity as column 8
-            bp = compute_boundary_proximity(
-                base_points, queries, sigma=model.sigma
-            ).unsqueeze(-1)
-            model_points = torch.cat([base_points, bp], dim=1)  # [N, 9]
-        elif isinstance(model, TurnAwareQDSModel):
+        if isinstance(model, TurnAwareQDSModel):
             model_points = points if points.shape[1] >= 8 else torch.cat(
                 [points, torch.zeros(points.shape[0], 1, device=points.device)], dim=1
             )
@@ -281,25 +250,20 @@ def simplify_trajectories(
     if model_scores is None:
         scores = query_scores
     else:
-        if isinstance(model, BoundaryAwareTurnModel):
-            # For boundary-aware runs, trust model-produced rankings whenever
-            # model inference is available.
-            scores = model_scores
-        else:
-            if query_scores.device != model_scores.device:
-                query_scores = query_scores.to(model_scores.device)
+        if query_scores.device != model_scores.device:
+            query_scores = query_scores.to(model_scores.device)
 
-            top_k = max(1, int(points.shape[0] * 0.01))
-            top_idx = torch.topk(model_scores, k=top_k).indices
+        top_k = max(1, int(points.shape[0] * 0.01))
+        top_idx = torch.topk(model_scores, k=top_k).indices
 
-            score_span = (model_scores.max() - model_scores.min()).item()
-            top_query_mean = query_scores[top_idx].mean().item()
-            global_query_mean = query_scores.mean().item()
+        score_span = (model_scores.max() - model_scores.min()).item()
+        top_query_mean = query_scores[top_idx].mean().item()
+        global_query_mean = query_scores.mean().item()
 
-            degenerate_scores = score_span < 1e-6
-            weak_query_alignment = top_query_mean <= (global_query_mean + 1e-4)
+        degenerate_scores = score_span < 1e-6
+        weak_query_alignment = top_query_mean <= (global_query_mean + 1e-4)
 
-            scores = query_scores if (degenerate_scores or weak_query_alignment) else model_scores
+        scores = query_scores if (degenerate_scores or weak_query_alignment) else model_scores
 
     # Apply optional turn-score bias (column 7, if present).
     if turn_bias_weight > 0.0 and points.shape[1] >= 8:
