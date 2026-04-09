@@ -34,7 +34,6 @@ significantly changing the answers to a set of spatiotemporal range queries.
 |-----------------------|----------------|-----------------------------------------------------------|
 | Baseline              | 7              | `TrajectoryQDSModel` — standard QDS model                 |
 | Turn-aware            | 8              | `TurnAwareQDSModel` — adds `turn_score` feature           |
-| Boundary-aware turn   | 9              | `BoundaryAwareTurnModel` — adds `boundary_proximity` too  |
 
 ---
 

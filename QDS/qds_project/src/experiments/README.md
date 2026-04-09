@@ -119,7 +119,7 @@ to `MLClean-<original_filename>.csv` next to the input file.
 | `--query_temporal_fraction`     | 0.10       | Maximum temporal query width as a fraction of the time range                                                           |
 | `--query_spatial_lower_quantile`| 0.01       | Lower quantile for robust spatial bounds (uniform query placement)                                                     |
 | `--query_spatial_upper_quantile`| 0.99       | Upper quantile for robust spatial bounds (uniform query placement)                                                     |
-| `--model_type`                  | baseline   | `baseline` (TrajectoryQDSModel), `turn_aware` (TurnAwareQDSModel), or `all` |
+| `--model_type`                  | baseline   | `baseline` (TrajectoryQDSModel), `turn_aware` (TurnAwareQDSModel), or `all`                                            |
 | `--turn_bias_weight`            | 0.1        | Additive weight for turn-score bias during simplification (turn-aware model)                                           |
 | `--turn_score_method`           | heading    | Turn score method: `heading` (COG deltas) or `geometry` (lat/lon vectors)                                              |
 | `--csv_path`                    | None       | Path to real AIS CSV file                                                                                              |

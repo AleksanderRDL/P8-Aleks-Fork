@@ -68,12 +68,12 @@ Query Types [M] ─► Type Embedding (→16) ┘
 
 | Component            | Architecture                                            |
 |----------------------|---------------------------------------------------------|
-| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)                    |
+| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)                     |
 | Point Self-Attention | MultiheadAttention(embed=64, heads=4) + LayerNorm       |
 | Query Type Embedding | Embedding(4, 16)                                        |
-| Query Encoder        | Linear(6+16→64) → ReLU → Linear(64→64)                 |
+| Query Encoder        | Linear(6+16→64) → ReLU → Linear(64→64)                  |
 | Cross-Attention      | MultiheadAttention(embed=64, heads=4) + LayerNorm       |
-| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ                |
+| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ                 |
 
 Query result: SUM of speed for all points inside the query rectangle.
 
@@ -233,7 +233,7 @@ All scripts accept command-line arguments. Key parameters:
 | `--target_ratio`     | None     | Auto-select threshold to retain this fraction                                              |
 | `--workload`         | density  | `uniform`, `density`, `mixed`, `intersection`, `aggregation`, `nearest`, `multi`, or `all` |
 | `--density_ratio`    | 0.7      | Fraction of density-biased queries (mixed mode)                                            |
-| `--model_type`       | baseline | `baseline`, `turn_aware`, or `all`                                                          |
+| `--model_type`       | baseline | `baseline`, `turn_aware`, or `all`                                                         |
 | `--turn_score_method`| heading  | Turn score method: `heading` or `geometry`                                                 |
 | `--csv_path`         | None     | Path to real AIS CSV file                                                                  |
 | `--max_train_points` | None     | Cap training points (for large datasets)                                                   |
