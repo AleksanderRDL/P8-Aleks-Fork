@@ -43,8 +43,9 @@ are set to 0. This reduces cost for very large datasets.
 ### `train_model.py`
 
 **`train_model(trajectories, queries, epochs, lr, save_path, importance, max_points, point_batch_size, model_type)`**  
-Trains a `TrajectoryQDSModel` (baseline, 7-feature input) or
-`TurnAwareQDSModel` (turn-aware, 8-feature input) to predict the
+Trains a `TrajectoryQDSModel` (baseline, 7-feature input),
+`TurnAwareQDSModel` (turn-aware, 8-feature input), or
+`BoundaryAwareTurnModel` (boundary-aware, 9-feature input) to predict the
 ground-truth importance scores computed by `compute_importance`.
 
 #### Training Details
@@ -59,7 +60,11 @@ ground-truth importance scores computed by `compute_importance`.
 - **Mini-batching**: When `point_batch_size` is set, the point cloud is split
   into mini-batches; the full query set is used in every batch.
 - **Subsampling**: `max_points` caps the number of training points via random
-  sampling. The full dataset is still used for evaluation and simplification.
+  sampling before model-specific feature construction. The full dataset is
+  still used for evaluation and simplification.
+
+For boundary-aware training, `sigma` controls the boundary-proximity decay
+bandwidth used when appending the extra feature column.
 
 #### CLI Usage
 
@@ -80,5 +85,5 @@ python -m src.training.train_model \
 | `--epochs`        | 50      | Training epochs                          |
 | `--lr`            | 1e-3    | Adam learning rate                       |
 | `--max_points`    | None    | Cap training points (random sample)      |
-| `--point_batch_size` | 50000 | Mini-batch size over points            |
+| `--point_batch_size` | 50000 | Mini-batch size over points             |
 | `--save_path`     | auto    | Path to save model weights               |

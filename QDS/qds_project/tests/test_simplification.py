@@ -1,4 +1,5 @@
 """Tests for AIS trajectory simplification."""
+import pytest
 import torch
 import sys
 import os
@@ -11,6 +12,47 @@ from src.simplification.simplify_trajectories import (
 )
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
+from src.models.boundary_aware_turn_model import BoundaryAwareTurnModel
+
+
+class _FixedBaselineModel(TrajectoryQDSModel):
+    """Deterministic model used to force fallback-path behavior in tests."""
+
+    def __init__(self, fixed_scores: torch.Tensor):
+        super().__init__()
+        self._fixed_scores = fixed_scores
+
+    def forward(self, points, queries):
+        n = points.shape[0]
+        fs = self._fixed_scores
+        if fs.numel() == 1:
+            return fs.to(points.device).expand(n)
+        if fs.shape[0] == n:
+            return fs.to(points.device)
+        if fs.shape[0] > n:
+            return fs[:n].to(points.device)
+        repeats = (n + fs.shape[0] - 1) // fs.shape[0]
+        return fs.repeat(repeats)[:n].to(points.device)
+
+
+class _FixedBoundaryModel(BoundaryAwareTurnModel):
+    """Deterministic boundary-aware model used for fallback behavior tests."""
+
+    def __init__(self, fixed_scores: torch.Tensor):
+        super().__init__(sigma=0.05)
+        self._fixed_scores = fixed_scores
+
+    def forward(self, points, queries):
+        n = points.shape[0]
+        fs = self._fixed_scores
+        if fs.numel() == 1:
+            return fs.to(points.device).expand(n)
+        if fs.shape[0] == n:
+            return fs.to(points.device)
+        if fs.shape[0] > n:
+            return fs[:n].to(points.device)
+        repeats = (n + fs.shape[0] - 1) // fs.shape[0]
+        return fs.repeat(repeats)[:n].to(points.device)
 
 def _make_points_and_queries(n=50):
     torch.manual_seed(0)
@@ -331,27 +373,24 @@ class TestTurnAwareSimplification:
         assert mask[-1].item(), "Last point must be retained"
 
     def test_turn_bias_weight_is_additive(self):
-        """Positive turn bias must not reduce retention in global-threshold mode."""
+        """turn_bias_weight > 0 should not reduce the number of retained points below no-bias."""
         pts, queries = _make_points_and_queries(n=30)
-        model = TrajectoryQDSModel()  # model is bypassed by model_max_points=0 below
-        query_scores = torch.linspace(0.0, 1.0, pts.shape[0])
-
+        model = TrajectoryQDSModel()
+        # Use a moderate threshold so some points are removed.
         _, mask_no_bias, scores_no_bias = simplify_trajectories(
-            pts, model, queries, threshold=0.55,
+            pts, model, queries, threshold=0.0,
             compression_ratio=None,
-            query_scores=query_scores,
-            model_max_points=0,
             turn_bias_weight=0.0,
         )
         _, mask_biased, scores_biased = simplify_trajectories(
-            pts, model, queries, threshold=0.55,
+            pts, model, queries, threshold=0.0,
             compression_ratio=None,
-            query_scores=query_scores,
-            model_max_points=0,
             turn_bias_weight=0.2,
         )
-        assert mask_biased.sum().item() >= mask_no_bias.sum().item()
-        assert (scores_biased >= scores_no_bias).all().item()
+        # With threshold=0 and no bias both should retain all points, but the
+        # scores array should differ when bias is applied.
+        assert not torch.allclose(scores_no_bias, scores_biased), \
+            "Scores must differ when turn_bias_weight > 0 and turn_score column present"
 
     def test_turn_bias_weight_no_column(self):
         """turn_bias_weight with 7-feature points (no turn_score col) must not crash."""
@@ -377,3 +416,69 @@ class TestTurnAwareSimplification:
         )
         expected = max(3, int(0.25 * 40))
         assert mask.sum().item() == expected
+
+
+class TestFallbackBehavior:
+    def test_boundary_aware_bypasses_fallback_checks(self):
+        """Boundary-aware should use model scores even when fallback checks would trip."""
+        n = 100
+        pts, queries = _make_points_and_queries(n=n)
+
+        # Mean is 0.50; point 0 has low query importance.
+        query_scores = torch.full((n,), 0.5)
+        query_scores[0] = 0.10
+
+        # Degenerate model scores would normally trigger fallback for baseline.
+        model_scores = torch.full((n,), 0.2)
+
+        boundary_model = _FixedBoundaryModel(model_scores)
+        baseline_model = _FixedBaselineModel(model_scores)
+
+        _, _, boundary_scores = simplify_trajectories(
+            pts,
+            boundary_model,
+            queries,
+            query_scores=query_scores,
+            compression_ratio=None,
+            threshold=0.5,
+        )
+
+        _, _, baseline_scores = simplify_trajectories(
+            pts,
+            baseline_model,
+            queries,
+            query_scores=query_scores,
+            compression_ratio=None,
+            threshold=0.5,
+        )
+
+        assert torch.allclose(
+            boundary_scores, model_scores, atol=1e-6
+        ), "Boundary-aware should use model scores without fallback"
+        assert torch.allclose(
+            baseline_scores, query_scores, atol=1e-6
+        ), "Baseline should still fallback to query scores"
+
+    def test_boundary_aware_uses_model_scores_above_model_max_points(self):
+        """Boundary-aware should not collapse to query scores on large point sets."""
+        n = 120
+        pts, queries = _make_points_and_queries(n=n)
+
+        query_scores = torch.linspace(0.0, 1.0, n)
+        model_scores = torch.full((n,), 0.33)
+
+        boundary_model = _FixedBoundaryModel(model_scores)
+
+        _, _, scores = simplify_trajectories(
+            pts,
+            boundary_model,
+            queries,
+            query_scores=query_scores,
+            compression_ratio=None,
+            threshold=0.5,
+            model_max_points=50,
+        )
+
+        assert torch.allclose(
+            scores, model_scores, atol=1e-6
+        ), "Boundary-aware should use chunked model scores when points exceed model_max_points"

@@ -30,10 +30,11 @@ significantly changing the answers to a set of spatiotemporal range queries.
 
 ## Available Model Variants
 
-| Variant               | Input Features | Description                                      |
-|-----------------------|----------------|--------------------------------------------------|
-| Baseline              | 7              | `TrajectoryQDSModel` — standard QDS model        |
-| Turn-aware            | 8              | `TurnAwareQDSModel` — adds `turn_score` feature  |
+| Variant               | Input Features | Description                                               |
+|-----------------------|----------------|-----------------------------------------------------------|
+| Baseline              | 7              | `TrajectoryQDSModel` — standard QDS model                 |
+| Turn-aware            | 8              | `TurnAwareQDSModel` — adds `turn_score` feature           |
+| Boundary-aware turn   | 9              | `BoundaryAwareTurnModel` — adds `boundary_proximity` too  |
 
 ---
 
@@ -58,6 +59,9 @@ QDS/
     ├── src/
     │   ├── data/               ← AIS loading; README.md
     │   ├── queries/            ← query generation/execution; README.md
+    │   │   ├── query_generator.py   ← range + typed query generators
+    │   │   ├── query_executor.py    ← vectorised range query execution
+    │   │   └── query_types.py       ← typed query dispatcher & executors
     │   ├── models/             ← model architectures; README.md
     │   ├── training/           ← importance labels, training loop; README.md
     │   ├── simplification/     ← simplification logic; README.md

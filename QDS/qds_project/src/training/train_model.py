@@ -8,6 +8,7 @@ import sys
 from typing import List, Optional
 
 import torch
+import torch.nn as nn
 from torch import Tensor
 
 # Allow execution both as a module and directly
@@ -16,6 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.trajectory_qds_model import normalize_points_and_queries
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
+from src.models.boundary_aware_turn_model import (
+    BoundaryAwareTurnModel,
+    compute_boundary_proximity,
+)
 from src.training.importance_labels import compute_importance
 
 
@@ -30,8 +35,9 @@ def train_model(
     importance_chunk_size: int = 200_000,
     point_batch_size: Optional[int] = 50_000,
     model_type: str = "baseline",
-) -> TrajectoryQDSModel | TurnAwareQDSModel:
-    """Train a TrajectoryQDSModel or TurnAwareQDSModel on AIS trajectory data."""
+    sigma: float = 1.0,
+) -> TrajectoryQDSModel | TurnAwareQDSModel | BoundaryAwareTurnModel:
+    """Train a TrajectoryQDSModel, TurnAwareQDSModel, or BoundaryAwareTurnModel on AIS trajectory data."""
     # --- Flatten all trajectories into a single point cloud ---
     points = torch.cat(trajectories, dim=0)  # [N, 7] or [N, 8]
 
@@ -49,30 +55,49 @@ def train_model(
     if importance.device != points.device:
         importance = importance.to(points.device)
 
-    # Select feature slice for the chosen model type.
-    # Baseline model uses 7 features; turn-aware model uses 8.
-    # If points have fewer features than required, zero-pad to 8 for turn_aware.
-    if model_type == "turn_aware":
-        if points.shape[1] >= 8:
-            train_input = points
-        else:
-            pad = torch.zeros(points.shape[0], 8 - points.shape[1], device=points.device)
-            train_input = torch.cat([points, pad], dim=1)
-    else:
-        train_input = points[:, :7]
-
-    train_points = train_input
+    # Sample before expensive feature construction so boundary-aware runs avoid
+    # computing boundary proximity for points that are not used for training.
+    sampled_points = points
     train_importance = importance
-
-    if max_points is not None and train_points.shape[0] > max_points:
+    if max_points is not None and sampled_points.shape[0] > max_points:
         sample_count = int(max_points)
-        sample_idx = torch.randperm(train_points.shape[0], device=train_points.device)[:sample_count]
-        train_points = train_points[sample_idx]
-        train_importance = importance[sample_idx]
+        sample_idx = torch.randperm(sampled_points.shape[0], device=sampled_points.device)[:sample_count]
+        sampled_points = sampled_points[sample_idx]
+        train_importance = train_importance[sample_idx]
         print(
             f"Training on sampled subset: {sample_count}/{points.shape[0]} points "
             "(full dataset still used for evaluation/simplification)."
         )
+
+    # Select feature slice for the chosen model type.
+    # Baseline model uses 7 features; turn-aware uses 8; boundary-aware uses 9.
+    # If points have fewer features than required, zero-pad as needed.
+    if model_type == "boundary_aware":
+        # Ensure we have at least 8 features (turn_score at col 7)
+        if sampled_points.shape[1] < 8:
+            pad = torch.zeros(
+                sampled_points.shape[0],
+                8 - sampled_points.shape[1],
+                device=sampled_points.device,
+            )
+            base_points = torch.cat([sampled_points, pad], dim=1)
+        else:
+            base_points = sampled_points[:, :8]
+        # Compute and append boundary_proximity as the 9th feature.
+        bp = compute_boundary_proximity(base_points, queries, sigma=sigma).unsqueeze(-1)
+        train_points = torch.cat([base_points, bp], dim=1)  # [N, 9]
+    elif model_type == "turn_aware":
+        if sampled_points.shape[1] >= 8:
+            train_points = sampled_points
+        else:
+            pad = torch.zeros(
+                sampled_points.shape[0],
+                8 - sampled_points.shape[1],
+                device=sampled_points.device,
+            )
+            train_points = torch.cat([sampled_points, pad], dim=1)
+    else:
+        train_points = sampled_points[:, :7]
 
     # --- Normalise model inputs for stable training dynamics ---
     norm_points, norm_queries = normalize_points_and_queries(train_points, queries)
@@ -86,7 +111,10 @@ def train_model(
     train_importance = train_importance.to(device)
 
     # --- Build model and optimizer ---
-    if model_type == "turn_aware":
+    if model_type == "boundary_aware":
+        model = BoundaryAwareTurnModel(sigma=sigma)
+        print(f"Training BoundaryAwareTurnModel for {epochs} epochs …")
+    elif model_type == "turn_aware":
         model = TurnAwareQDSModel()
         print("Training TurnAwareQDSModel for", epochs, "epochs …")
     else:
