@@ -42,6 +42,11 @@ per-point query-conditioned context vector `[N, D]`. This is added to the
 original point embeddings before predicting importance scores.  A residual
 connection and LayerNorm follow the cross-attention block.
 
+Implementation note: the model computes this aggregation in bounded query
+chunks, and the baseline point self-attention block does not request attention
+weights because they are not used. Both changes preserve the same outputs while
+avoiding large transient attention allocations on large workloads.
+
 ---
 
 ## Query-Type Integer Constants

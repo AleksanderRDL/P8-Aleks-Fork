@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from src.models.attention_utils import chunked_cross_attention_context
+
 # ---------------------------------------------------------------------------
 # Query-type integer identifiers — keep in sync with query_types.py
 # ---------------------------------------------------------------------------
@@ -141,6 +143,7 @@ class TrajectoryQDSModel(nn.Module):
             dropout=dropout,
         )
         self.cross_norm = nn.LayerNorm(embed_dim)
+        self.query_chunk_size = 128
 
         # --- Importance predictor ---
         self.importance_predictor = nn.Sequential(
@@ -171,7 +174,12 @@ class TrajectoryQDSModel(nn.Module):
         point_emb = self.point_encoder(points).unsqueeze(0)          # [1, N, D]
 
         # Self-attention: each point gathers context from its trajectory neighbours
-        sa_out, _ = self.point_self_attn(point_emb, point_emb, point_emb)
+        sa_out, _ = self.point_self_attn(
+            point_emb,
+            point_emb,
+            point_emb,
+            need_weights=False,
+        )
         point_emb = self.point_norm(point_emb + sa_out)              # residual + norm
 
         # --- Encode queries (with type embedding) ---
@@ -179,18 +187,14 @@ class TrajectoryQDSModel(nn.Module):
         query_in  = torch.cat([queries, type_emb], dim=-1)           # [M, 6 + type_embed_dim]
         query_emb = self.query_encoder(query_in).unsqueeze(0)        # [1, M, D]
 
-        # Queries (Q) attend to points (K, V); gives per-query context over points.
-        ca_out, attn_weights = self.cross_attention(
-            query=query_emb,
-            key=point_emb,
-            value=point_emb,
+        # Queries (Q) attend to points (K, V); accumulate contexts in chunks.
+        per_point_context = chunked_cross_attention_context(
+            self.cross_attention,
+            point_emb,
+            query_emb,
+            self.query_chunk_size,
+            self.cross_norm,
         )
-        ca_out = self.cross_norm(query_emb + ca_out)                 # residual + norm
-
-        # Build per-point context: [N, M] @ [M, D] = [N, D]
-        attn_w = attn_weights.squeeze(0).transpose(0, 1)  # [N, M]
-        attn_o = ca_out.squeeze(0)                         # [M, D]
-        per_point_context = torch.mm(attn_w, attn_o)       # [N, D]
 
         point_features = point_emb.squeeze(0) + per_point_context    # [N, D]
         scores = self.importance_predictor(point_features).squeeze(-1)

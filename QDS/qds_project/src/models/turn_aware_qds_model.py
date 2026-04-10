@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from src.models.attention_utils import chunked_cross_attention_context
+
 
 class TurnAwareQDSModel(nn.Module):
     """Turn-aware QDS model for AIS trajectory data."""
@@ -34,6 +36,7 @@ class TurnAwareQDSModel(nn.Module):
             num_heads=num_heads,
             batch_first=True,
         )
+        self.query_chunk_size = 128
 
         # --- Importance predictor ---
         self.importance_predictor = nn.Sequential(
@@ -52,17 +55,13 @@ class TurnAwareQDSModel(nn.Module):
         point_emb = self.point_encoder(points).unsqueeze(0)   # [1, N, D]
         query_emb = self.query_encoder(queries).unsqueeze(0)  # [1, M, D]
 
-        # Queries (Q) attend to points (K, V); gives per-query context over points.
-        attn_out, attn_weights = self.cross_attention(
-            query=query_emb,
-            key=point_emb,
-            value=point_emb,
+        # Queries (Q) attend to points (K, V); accumulate contexts in chunks.
+        per_point_context = chunked_cross_attention_context(
+            self.cross_attention,
+            point_emb,
+            query_emb,
+            self.query_chunk_size,
         )
-
-        # Build per-point context: [N, M] @ [M, D] = [N, D]
-        attn_w = attn_weights.squeeze(0).transpose(0, 1)  # [N, M]
-        attn_o = attn_out.squeeze(0)                       # [M, D]
-        per_point_context = torch.mm(attn_w, attn_o)       # [N, D]
 
         point_features = point_emb.squeeze(0) + per_point_context  # [N, D]
         scores = self.importance_predictor(point_features).squeeze(-1)

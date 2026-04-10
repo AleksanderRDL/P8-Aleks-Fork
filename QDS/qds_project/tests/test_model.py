@@ -54,6 +54,7 @@ class TestTrajectoryQDSModel:
 
     def test_gradients_flow(self):
         model = TrajectoryQDSModel()
+        model.query_chunk_size = 1
         points = torch.randn(10, 7)
         queries = torch.randn(5, 6)
         scores = model(points, queries)
@@ -61,6 +62,26 @@ class TestTrajectoryQDSModel:
         loss.backward()
         for param in model.parameters():
             assert param.grad is not None
+
+    def test_chunked_query_attention_matches_unchunked(self):
+        torch.manual_seed(0)
+        chunked = TrajectoryQDSModel()
+        chunked.query_chunk_size = 1
+        reference = TrajectoryQDSModel()
+        reference.load_state_dict(chunked.state_dict())
+        reference.query_chunk_size = 512
+        chunked.eval()
+        reference.eval()
+
+        points = torch.randn(12, 7)
+        queries = torch.randn(9, 6)
+        type_ids = torch.randint(0, NUM_QUERY_TYPES, (9,))
+
+        with torch.no_grad():
+            chunked_scores = chunked(points, queries, query_type_ids=type_ids)
+            reference_scores = reference(points, queries, query_type_ids=type_ids)
+
+        assert torch.allclose(chunked_scores, reference_scores, atol=1e-6, rtol=1e-5)
 
     def test_query_type_ids_explicit(self):
         """Passing explicit query_type_ids must produce the same output shape."""
@@ -220,6 +241,7 @@ class TestTurnAwareQDSModel:
 
     def test_gradients_flow(self):
         model = TurnAwareQDSModel()
+        model.query_chunk_size = 1
         points = torch.randn(10, 8)
         queries = torch.randn(5, 6)
         scores = model(points, queries)
