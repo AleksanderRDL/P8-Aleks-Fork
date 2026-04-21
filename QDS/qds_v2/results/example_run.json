@@ -1,0 +1,181 @@
+{
+  "config": {
+    "data": {
+      "n_ships": 10,
+      "n_points_per_ship": 80,
+      "csv_path": null,
+      "seed": 42,
+      "train_fraction": 0.7,
+      "val_fraction": 0.15
+    },
+    "query": {
+      "n_queries": 32,
+      "workload": "mixed",
+      "train_workload_mix": {
+        "range": 0.5,
+        "knn": 0.5
+      },
+      "eval_workload_mix": {
+        "similarity": 0.5,
+        "clustering": 0.5
+      },
+      "similarity_top_k": 5
+    },
+    "model": {
+      "embed_dim": 64,
+      "num_heads": 4,
+      "num_layers": 3,
+      "type_embed_dim": 16,
+      "query_chunk_size": 128,
+      "dropout": 0.1,
+      "window_length": 512,
+      "window_stride": 256,
+      "epochs": 2,
+      "lr": 0.002,
+      "compression_ratio": 0.2,
+      "model_type": "baseline",
+      "rank_margin": 0.05,
+      "ranking_pairs_per_type": 96,
+      "ranking_top_quantile": 0.8,
+      "l2_score_weight": 0.0001,
+      "dirichlet_alpha": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "baselines": {
+      "include_oracle": false
+    },
+    "visualization": {
+      "enabled": false
+    }
+  },
+  "train_mix": {
+    "range": 0.5,
+    "knn": 0.5
+  },
+  "eval_mix": {
+    "similarity": 0.5,
+    "clustering": 0.5
+  },
+  "matched": {
+    "MLQDS": {
+      "aggregate_error": 0.7,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.9,
+        "clustering": 0.5
+      },
+      "compression_ratio": 0.22499999403953552,
+      "latency_ms": 4.745244979858398
+    },
+    "QueryBlindML": {
+      "aggregate_error": 0.7625,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.9,
+        "clustering": 0.625
+      },
+      "compression_ratio": 0.22499999403953552,
+      "latency_ms": 3.793954849243164
+    },
+    "Random": {
+      "aggregate_error": 0.60625,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.9,
+        "clustering": 0.3125
+      },
+      "compression_ratio": 0.21250000596046448,
+      "latency_ms": 0.2429485321044922
+    },
+    "UniformTemporal": {
+      "aggregate_error": 0.60625,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.9,
+        "clustering": 0.3125
+      },
+      "compression_ratio": 0.22499999403953552,
+      "latency_ms": 0.25916099548339844
+    },
+    "DouglasPeucker": {
+      "aggregate_error": 0.85625,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.9,
+        "clustering": 0.8125
+      },
+      "compression_ratio": 0.20000000298023224,
+      "latency_ms": 0.4749298095703125
+    },
+    "Oracle": {
+      "aggregate_error": 0.0,
+      "per_type_error": {
+        "range": 0.6469965115259856,
+        "knn": 1.0,
+        "similarity": 0.0,
+        "clustering": 0.0
+      },
+      "compression_ratio": 0.21964286267757416,
+      "latency_ms": 0.7228851318359375
+    }
+  },
+  "shift": {
+    "knn=0.5,range=0.5": {
+      "knn=0.5,range=0.5": 0.4119791666666667,
+      "clustering=0.5,similarity=0.5": 0.7
+    }
+  },
+  "training_history": [
+    {
+      "epoch": 0.0,
+      "loss": 0.35269011769975933,
+      "pred_std": 0.08996524661779404,
+      "pred_p50_t0": 0.16384121775627136,
+      "pred_p90_t0": 0.2084837257862091,
+      "pred_p99_t0": 0.24638202786445618,
+      "kendall_tau_t0": 0.35,
+      "pred_p50_t1": 0.28500643372535706,
+      "pred_p90_t1": 0.36005517840385437,
+      "pred_p99_t1": 0.4154866933822632,
+      "kendall_tau_t1": 0.35,
+      "pred_p50_t2": 0.20203934609889984,
+      "pred_p90_t2": 0.2524297535419464,
+      "pred_p99_t2": 0.2976498305797577,
+      "kendall_tau_t2": 0.35,
+      "pred_p50_t3": 0.06397242844104767,
+      "pred_p90_t3": 0.11934016644954681,
+      "pred_p99_t3": 0.16659879684448242,
+      "kendall_tau_t3": 0.35
+    },
+    {
+      "epoch": 1.0,
+      "loss": 0.25284208570207867,
+      "pred_std": 0.09078492224216461,
+      "pred_p50_t0": 0.14787277579307556,
+      "pred_p90_t0": 0.19296136498451233,
+      "pred_p99_t0": 0.22602786123752594,
+      "kendall_tau_t0": 0.35,
+      "pred_p50_t1": 0.3477776050567627,
+      "pred_p90_t1": 0.39090442657470703,
+      "pred_p99_t1": 0.4199908375740051,
+      "kendall_tau_t1": 0.35,
+      "pred_p50_t2": 0.25980937480926514,
+      "pred_p90_t2": 0.2989360988140106,
+      "pred_p99_t2": 0.32573920488357544,
+      "kendall_tau_t2": 0.35,
+      "pred_p50_t3": 0.1331200897693634,
+      "pred_p90_t3": 0.1644676774740219,
+      "pred_p99_t3": 0.19023877382278442,
+      "kendall_tau_t3": 0.35
+    }
+  ]
+}

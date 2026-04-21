@@ -34,3 +34,6 @@ Thumbs.db
 
 # Experiment output directory
 results/
+!qds_v2/results/
+!qds_v2/results/*.json
+!qds_v2/results/*.txt
