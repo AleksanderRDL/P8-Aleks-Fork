@@ -76,6 +76,10 @@ class ModelConfig:
     ranking_top_quantile: float = 0.80
     l2_score_weight: float = 1e-4
     dirichlet_alpha: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])
+    early_stopping_patience: int = 0
+    train_batch_size: int = 16
+    diagnostic_every: int = 3
+    diagnostic_window_fraction: float = 0.2
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -199,6 +203,7 @@ def build_experiment_config(
     train_workload_mix: dict[str, float] | None = None,
     eval_workload_mix: dict[str, float] | None = None,
     seed: int = 42,
+    early_stopping_patience: int = 0,
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -219,6 +224,7 @@ def build_experiment_config(
             epochs=epochs,
             compression_ratio=compression_ratio,
             model_type=model_type,
+            early_stopping_patience=early_stopping_patience,
         ),
     )
 

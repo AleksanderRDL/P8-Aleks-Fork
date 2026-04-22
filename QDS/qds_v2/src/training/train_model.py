@@ -14,7 +14,7 @@ from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
-from src.training.trajectory_batching import TrajectoryBatch, build_trajectory_windows
+from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
 
 KENDALL_TIE_THRESHOLD = 0.05
 
@@ -54,6 +54,7 @@ class TrainingOutputs:
     labels: torch.Tensor
     labelled_mask: torch.Tensor
     history: list[dict[str, float]]
+    epochs_trained: int = 0
 
 
 def _sample_epoch_mix(alpha: list[float], generator: torch.Generator) -> torch.Tensor:
@@ -187,7 +188,7 @@ def train_model(
         window_length=model_config.window_length,
         stride=model_config.window_stride,
     )
-    windows = [
+    single_windows = [
         TrajectoryBatch(
             points=w.points.to(device),
             padding_mask=w.padding_mask.to(device),
@@ -196,6 +197,14 @@ def train_model(
         )
         for w in windows_cpu
     ]
+    train_batch_size = max(1, int(getattr(model_config, "train_batch_size", 1)))
+    windows = batch_windows(single_windows, train_batch_size)
+    # Diagnostic pass operates on single windows so we can cheaply subsample a
+    # fraction of them (batched diagnostics would waste the remaining lanes).
+    diag_windows = single_windows
+    diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
+    diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
+    diag_fraction = min(1.0, max(0.05, diag_fraction))
 
     g = torch.Generator().manual_seed(int(seed) + 99)
     # Separate fixed-seed generator for diagnostics so the tau subsample
@@ -205,6 +214,12 @@ def train_model(
 
     effective_epochs = max(8, int(model_config.epochs))
     run_tag = "query-blind" if query_blind else "main"
+    patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
+    best_tau = float("-inf")
+    best_loss = float("inf")
+    epochs_no_improve = 0
+    epoch_w = len(str(effective_epochs))
+    epochs_trained = 0
     for epoch in range(effective_epochs):
         epoch_t0 = time.perf_counter()
         model.train()
@@ -217,112 +232,182 @@ def train_model(
             q_input = norm_queries_dev
 
         for w in windows:
-            pred = model(
+            pred_batch = model(
                 points=w.points,
                 queries=q_input,
                 query_type_ids=type_ids_dev,
                 padding_mask=w.padding_mask,
-            )[0]
+            )
+            # pred_batch: (B, L, T).  Accumulate per-window loss terms across
+            # the batch and backprop once per batch — this is what makes the
+            # GPU actually saturated compared to the old batch=1 loop.
+            loss_terms: list[torch.Tensor] = []
+            B = pred_batch.shape[0]
+            for b in range(B):
+                idx = w.global_indices[b]
+                valid_window = idx >= 0
+                global_idx = idx[valid_window]
+                pred_valid = pred_batch[b][valid_window]
 
-            idx = w.global_indices[0]
-            valid_window = idx >= 0
-            global_idx = idx[valid_window]
-            pred_valid = pred[valid_window]
-
-            loss_terms = []
-            for t in range(NUM_QUERY_TYPES):
-                if float(epoch_mix[t].item()) <= 0.0:
-                    continue
-                t_labels = labels_dev[global_idx, t]
-                t_mask = labelled_mask_dev[global_idx, t]
-                t_pred = pred_valid[:, t]
-                rank_loss = _ranking_loss_for_type(
-                    pred=t_pred,
-                    target=t_labels,
-                    valid_mask=t_mask,
-                    pairs_per_type=model_config.ranking_pairs_per_type,
-                    top_quantile=model_config.ranking_top_quantile,
-                    margin=model_config.rank_margin,
-                    generator=g,
-                )
-                if bool(t_mask.any().item()):
-                    mse_term = F.mse_loss(t_pred[t_mask], t_labels[t_mask])
-                else:
-                    mse_term = t_pred.new_tensor(0.0)
-                # MSE term keeps scores anchored near label magnitude so the
-                # ranking loss operates on a well-scaled output range rather than
-                # drifting to arbitrary scale.  The small weight (0.05) ensures it
-                # never overrides the ranking signal; the primary objective is
-                # correct intra-trajectory ordering, not absolute score value.
-                loss_terms.append(rank_loss + 0.05 * mse_term)
+                for t in range(NUM_QUERY_TYPES):
+                    if float(epoch_mix[t].item()) <= 0.0:
+                        continue
+                    t_labels = labels_dev[global_idx, t]
+                    t_mask = labelled_mask_dev[global_idx, t]
+                    t_pred = pred_valid[:, t]
+                    rank_loss = _ranking_loss_for_type(
+                        pred=t_pred,
+                        target=t_labels,
+                        valid_mask=t_mask,
+                        pairs_per_type=model_config.ranking_pairs_per_type,
+                        top_quantile=model_config.ranking_top_quantile,
+                        margin=model_config.rank_margin,
+                        generator=g,
+                    )
+                    if bool(t_mask.any().item()):
+                        mse_term = F.mse_loss(t_pred[t_mask], t_labels[t_mask])
+                    else:
+                        mse_term = t_pred.new_tensor(0.0)
+                    # MSE term keeps scores anchored near label magnitude so the
+                    # ranking loss operates on a well-scaled output range rather than
+                    # drifting to arbitrary scale.  The small weight (0.05) ensures it
+                    # never overrides the ranking signal; the primary objective is
+                    # correct intra-trajectory ordering, not absolute score value.
+                    loss_terms.append(rank_loss + 0.05 * mse_term)
 
             if loss_terms:
-                loss = torch.stack(loss_terms).sum() + model_config.l2_score_weight * (pred_valid ** 2).mean()
+                loss = (
+                    torch.stack(loss_terms).sum() / float(B)
+                    + model_config.l2_score_weight * (pred_batch ** 2).mean()
+                )
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
                 epoch_loss = epoch_loss + loss.detach()
 
-        # Eval predictions use the same per-window loop as training so that
-        # the transformer never attends across trajectory boundaries.
-        model.eval()
-        with torch.no_grad():
-            all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
-            pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
-            for w in windows:
-                wp = model(
-                    points=w.points,
-                    queries=q_input,
-                    query_type_ids=type_ids_dev,
-                    padding_mask=w.padding_mask,
-                )[0]
-                widx = w.global_indices[0]
-                valid = widx >= 0
-                all_pred[widx[valid]] = all_pred[widx[valid]] + wp[valid]
-                pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
-            pred_count = pred_count.clamp(min=1.0)
-            full_pred = all_pred / pred_count.unsqueeze(1)
-
-        stats: dict[str, float] = {
-            "epoch": float(epoch),
-            "loss": float(epoch_loss.item() / max(1, len(windows))),
-            "pred_std": float(full_pred.std().item()),
-        }
-        for t in range(NUM_QUERY_TYPES):
-            pt = full_pred[:, t]
-            stats[f"pred_p50_t{t}"] = float(torch.quantile(pt, 0.50).item())
-            stats[f"pred_p90_t{t}"] = float(torch.quantile(pt, 0.90).item())
-            stats[f"pred_p99_t{t}"] = float(torch.quantile(pt, 0.99).item())
-            eval_mask = labelled_mask_dev[:, t]
-            if bool(eval_mask.any().item()):
-                # Reset eval_g to the same state each epoch so the diagnostic
-                # subsample is identical across epochs, giving stable tau trends.
-                eval_g.manual_seed(int(seed) + 777)
-                p_sample, y_sample = _discriminative_sample(
-                    pt[eval_mask].detach().cpu(),
-                    labels_dev[eval_mask, t].detach().cpu(),
-                    n_each=100,
-                    generator=eval_g,
-                )
-                stats[f"kendall_tau_t{t}"] = _kendall_tau(p_sample, y_sample)
+        # Diagnostic pass only on selected epochs (every `diag_every` epochs and
+        # the final epoch).  Subsample windows by `diag_fraction` to further cut
+        # cost: pred_std and tau are statistical aggregates and noise from a
+        # ~20% sample is tiny compared to the training noise we're measuring.
+        is_last_epoch = (epoch + 1) == effective_epochs
+        is_diag_epoch = ((epoch + 1) % diag_every == 0) or is_last_epoch or epoch == 0
+        if is_diag_epoch:
+            if diag_fraction < 1.0 and len(diag_windows) > 8:
+                k = max(8, int(len(diag_windows) * diag_fraction))
+                perm = torch.randperm(len(diag_windows), generator=eval_g)[:k].tolist()
+                sample_windows = [diag_windows[i] for i in perm]
             else:
-                stats[f"kendall_tau_t{t}"] = 0.0
+                sample_windows = diag_windows
 
-        if stats["pred_std"] < 1e-3:
-            stats["collapse_warning"] = 1.0
+            model.eval()
+            with torch.no_grad():
+                all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
+                pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+                for w in sample_windows:
+                    wp = model(
+                        points=w.points,
+                        queries=q_input,
+                        query_type_ids=type_ids_dev,
+                        padding_mask=w.padding_mask,
+                    )[0]
+                    widx = w.global_indices[0]
+                    valid = widx >= 0
+                    all_pred[widx[valid]] = all_pred[widx[valid]] + wp[valid]
+                    pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
+                covered_mask = pred_count > 0
+                pred_count = pred_count.clamp(min=1.0)
+                full_pred = all_pred / pred_count.unsqueeze(1)
+
+            stats: dict[str, float] = {
+                "epoch": float(epoch),
+                "loss": float(epoch_loss.item() / max(1, len(windows))),
+                "pred_std": float(full_pred[covered_mask].std().item()) if bool(covered_mask.any().item()) else 0.0,
+            }
+            for t in range(NUM_QUERY_TYPES):
+                pt = full_pred[:, t]
+                stats[f"pred_p50_t{t}"] = float(torch.quantile(pt, 0.50).item())
+                stats[f"pred_p90_t{t}"] = float(torch.quantile(pt, 0.90).item())
+                stats[f"pred_p99_t{t}"] = float(torch.quantile(pt, 0.99).item())
+                eval_mask = labelled_mask_dev[:, t] & covered_mask
+                if bool(eval_mask.any().item()):
+                    # Reset eval_g to the same state each epoch so the diagnostic
+                    # subsample is identical across epochs, giving stable tau trends.
+                    eval_g.manual_seed(int(seed) + 777)
+                    p_sample, y_sample = _discriminative_sample(
+                        pt[eval_mask].detach().cpu(),
+                        labels_dev[eval_mask, t].detach().cpu(),
+                        n_each=100,
+                        generator=eval_g,
+                    )
+                    stats[f"kendall_tau_t{t}"] = _kendall_tau(p_sample, y_sample)
+                else:
+                    stats[f"kendall_tau_t{t}"] = 0.0
+
+            if stats["pred_std"] < 1e-3:
+                stats["collapse_warning"] = 1.0
+        else:
+            # Skip diagnostics this epoch; log only loss.  Patience counters
+            # are only updated on diagnostic epochs below.
+            stats = {
+                "epoch": float(epoch),
+                "loss": float(epoch_loss.item() / max(1, len(windows))),
+            }
 
         history.append(stats)
 
-        tau_vals = [stats[f"kendall_tau_t{t}"] for t in range(NUM_QUERY_TYPES)]
-        avg_tau = sum(tau_vals) / max(1, len(tau_vals))
         epoch_dt = time.perf_counter() - epoch_t0
-        collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
-        print(
-            f"  [{run_tag}] epoch {epoch + 1}/{effective_epochs}  "
-            f"loss={stats['loss']:.4f}  avg_tau={avg_tau:+.3f}  "
-            f"pred_std={stats['pred_std']:.3f}  ({epoch_dt:.2f}s){collapse}",
-            flush=True,
-        )
+        epochs_trained = epoch + 1
+
+        if is_diag_epoch:
+            tau_vals = [stats[f"kendall_tau_t{t}"] for t in range(NUM_QUERY_TYPES)]
+            avg_tau = sum(tau_vals) / max(1, len(tau_vals))
+            collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
+            is_new_best_tau = avg_tau > best_tau + 1e-4
+            is_new_best_loss = stats["loss"] < best_loss - 1e-8
+            markers = []
+            if epoch > 0 and is_new_best_tau:
+                markers.append("*** NEW BEST TAU ***")
+            if epoch > 0 and is_new_best_loss:
+                markers.append("*** NEW BEST LOSS ***")
+            best_marker = ("  " + "  ".join(markers)) if markers else ""
+            print(
+                f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
+                f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
+                f"pred_std={stats['pred_std']:.3f}  ({epoch_dt:.2f}s){collapse}{best_marker}",
+                flush=True,
+            )
+
+            if is_new_best_loss:
+                best_loss = stats["loss"]
+
+            if patience > 0:
+                if is_new_best_tau:
+                    best_tau = avg_tau
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+                    if epochs_no_improve >= patience:
+                        print(
+                            f"  [{run_tag}] early stopping at epoch {epoch + 1:0{epoch_w}d}: "
+                            f"avg_tau did not improve over {patience} diag epochs "
+                            f"(best_tau={best_tau:+.3f}, best_loss={best_loss:.8f})",
+                            flush=True,
+                        )
+                        break
+            else:
+                if is_new_best_tau:
+                    best_tau = avg_tau
+        else:
+            # Non-diagnostic epoch: log loss only, no tau / early-stopping update.
+            is_new_best_loss = stats["loss"] < best_loss - 1e-8
+            if is_new_best_loss:
+                best_loss = stats["loss"]
+            best_marker = "  *** NEW BEST LOSS ***" if (epoch > 0 and is_new_best_loss) else ""
+            print(
+                f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
+                f"loss={stats['loss']:.8f}  (no-diag)  ({epoch_dt:.2f}s){best_marker}",
+                flush=True,
+            )
 
     model = model.to("cpu")
     return TrainingOutputs(
@@ -331,4 +416,5 @@ def train_model(
         labels=labels,
         labelled_mask=labelled_mask,
         history=history,
+        epochs_trained=epochs_trained,
     )

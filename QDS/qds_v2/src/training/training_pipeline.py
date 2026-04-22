@@ -25,6 +25,9 @@ class ModelArtifacts:
     model: TrajectoryQDSModel
     scaler: FeatureScaler
     config: ExperimentConfig
+    epochs_trained: int = 0
+    train_workload_mix: dict[str, float] | None = None
+    eval_workload_mix: dict[str, float] | None = None
 
 
 def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
@@ -38,6 +41,9 @@ def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
         "model_type": artifacts.config.model.model_type,
         "scaler": artifacts.scaler.to_dict(),
         "config": artifacts.config.to_dict(),
+        "epochs_trained": int(artifacts.epochs_trained),
+        "train_workload_mix": artifacts.train_workload_mix,
+        "eval_workload_mix": artifacts.eval_workload_mix,
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)

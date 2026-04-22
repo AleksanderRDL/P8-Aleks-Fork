@@ -21,6 +21,14 @@ class FeatureScaler:
     @classmethod
     def fit(cls, points: torch.Tensor, queries: torch.Tensor) -> "FeatureScaler":
         """Fit scaler statistics from training points and training queries. See src/training/README.md for details."""
+        if not torch.isfinite(points).all():
+            bad = (~torch.isfinite(points)).any(dim=0).nonzero(as_tuple=False).flatten().tolist()
+            raise ValueError(
+                f"Non-finite values in training points at feature columns {bad}. "
+                "Clean NaN/Inf rows in the data loader before training."
+            )
+        if not torch.isfinite(queries).all():
+            raise ValueError("Non-finite values in query features; check query generator.")
         return cls(
             point_min=points.min(dim=0).values,
             point_max=points.max(dim=0).values,

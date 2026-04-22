@@ -21,7 +21,7 @@ def main() -> None:
 
     train_arg = args.train_workload_mix or args.workload_mix_train
     eval_arg = args.eval_workload_mix or args.workload_mix_eval
-    train_mix, eval_mix = resolve_workload_mixes(train_arg, eval_arg)
+    train_mix, eval_mix = resolve_workload_mixes(train_arg, eval_arg, workload_keyword=args.workload)
 
     config = build_experiment_config(
         n_ships=args.n_ships,
@@ -35,6 +35,7 @@ def main() -> None:
         train_workload_mix=train_mix,
         eval_workload_mix=eval_mix,
         seed=args.seed,
+        early_stopping_patience=args.early_stopping_patience,
     )
 
     print(f"[config] model={args.model_type}  workload={args.workload}  epochs={args.epochs}  "
@@ -60,6 +61,9 @@ def main() -> None:
         train_mix=train_mix,
         eval_mix=eval_mix,
         results_dir=args.results_dir,
+        save_model=args.save_model,
+        save_queries_dir=args.save_queries_dir,
+        save_simplified_dir=args.save_simplified_dir,
     )
 
     print("\nMatched-workload table")

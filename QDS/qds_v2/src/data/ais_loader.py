@@ -46,6 +46,19 @@ def load_ais_csv(csv_path: str, max_points_per_ship: int | None = None) -> list[
 
     df = df[[mmsi_col, lat_col, lon_col, speed_col, heading_col, time_col]].copy()
     df["_time"] = _to_time_seconds(df[time_col])
+
+    # Coerce numeric columns so non-numeric entries become NaN, then drop
+    # invalid rows. AIS feeds frequently contain missing heading/speed and
+    # sentinel values (e.g. heading=511) that would propagate as NaN through
+    # min-max normalization and collapse training to loss=NaN from epoch 1.
+    for col in (lat_col, lon_col, speed_col, heading_col):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df.loc[(df[heading_col] < 0) | (df[heading_col] >= 360), heading_col] = float("nan")
+    df.loc[(df[speed_col] < 0) | (df[speed_col] > 102.2), speed_col] = float("nan")
+    df.loc[(df[lat_col] < -90) | (df[lat_col] > 90), lat_col] = float("nan")
+    df.loc[(df[lon_col] < -180) | (df[lon_col] > 180), lon_col] = float("nan")
+    df = df.dropna(subset=[lat_col, lon_col, speed_col, heading_col, "_time"])
+
     df = df.sort_values([mmsi_col, "_time"]).reset_index(drop=True)
 
     trajectories: list[torch.Tensor] = []

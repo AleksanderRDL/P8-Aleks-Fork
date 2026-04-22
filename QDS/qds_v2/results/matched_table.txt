@@ -1,32 +1,32 @@
 Method                    AggregateErr   Compression   Latency(ms)        Type
 ------------------------------------------------------------------------------
-MLQDS                           0.7000        0.2250          4.75         all
+MLQDS                           0.8053        0.1007      30830.69         all
   - range                       0.0000                                   range
   - knn                         0.0000                                     knn
-  - similarity                  0.9000                              similarity
-  - clustering                  0.5000                              clustering
-QueryBlindML                    0.7625        0.2250          3.79         all
+  - similarity                  0.8053                              similarity
+  - clustering                  0.0000                              clustering
+QueryBlindML                    0.7824        0.1007      30964.60         all
   - range                       0.0000                                   range
   - knn                         0.0000                                     knn
-  - similarity                  0.9000                              similarity
-  - clustering                  0.6250                              clustering
-Random                          0.6062        0.2125          0.24         all
+  - similarity                  0.7824                              similarity
+  - clustering                  0.0000                              clustering
+Random                          0.7581        0.1007         64.81         all
   - range                       0.0000                                   range
   - knn                         0.0000                                     knn
-  - similarity                  0.9000                              similarity
-  - clustering                  0.3125                              clustering
-UniformTemporal                 0.6062        0.2250          0.26         all
+  - similarity                  0.7581                              similarity
+  - clustering                  0.0000                              clustering
+UniformTemporal                 0.9390        0.1008         56.98         all
   - range                       0.0000                                   range
   - knn                         0.0000                                     knn
-  - similarity                  0.9000                              similarity
-  - clustering                  0.3125                              clustering
-DouglasPeucker                  0.8562        0.2000          0.47         all
+  - similarity                  0.9390                              similarity
+  - clustering                  0.0000                              clustering
+DouglasPeucker                  0.9259        0.1002        105.01         all
   - range                       0.0000                                   range
   - knn                         0.0000                                     knn
-  - similarity                  0.9000                              similarity
-  - clustering                  0.8125                              clustering
-Oracle                          0.0000        0.2196          0.72         all
-  - range                       0.6470                                   range
-  - knn                         1.0000                                     knn
-  - similarity                  0.0000                              similarity
+  - similarity                  0.9259                              similarity
+  - clustering                  0.0000                              clustering
+Oracle                          0.9116        0.1009        177.44         all
+  - range                       0.0000                                   range
+  - knn                         0.0000                                     knn
+  - similarity                  0.9116                              similarity
   - clustering                  0.0000                              clustering

@@ -73,3 +73,27 @@ def build_trajectory_windows(
             if w_end == n:
                 break
     return windows
+
+
+def batch_windows(windows: list[TrajectoryBatch], batch_size: int) -> list[TrajectoryBatch]:
+    """Group single-window TrajectoryBatches into mini-batches.
+
+    Each input is shape (1, L, D) / (1, L); the grouped output has shape
+    (B, L, D) / (B, L) where B = min(batch_size, remaining).  The forward pass
+    of the model already supports arbitrary batch sizes, so grouping simply
+    lets the GPU process several windows in a single call.
+    """
+    if batch_size <= 1 or not windows:
+        return windows
+    batched: list[TrajectoryBatch] = []
+    for i in range(0, len(windows), batch_size):
+        group = windows[i : i + batch_size]
+        batched.append(
+            TrajectoryBatch(
+                points=torch.cat([w.points for w in group], dim=0),
+                padding_mask=torch.cat([w.padding_mask for w in group], dim=0),
+                trajectory_ids=torch.cat([w.trajectory_ids for w in group], dim=0),
+                global_indices=torch.cat([w.global_indices for w in group], dim=0),
+            )
+        )
+    return batched

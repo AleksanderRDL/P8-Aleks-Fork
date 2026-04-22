@@ -34,9 +34,11 @@ from src.evaluation.baselines import (
 )
 from src.evaluation.evaluate_methods import evaluate_method, print_method_comparison_table, print_shift_table
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
+from src.experiments.geojson_writers import write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import parse_workload_mix
 from src.training.train_model import train_model
+from src.training.training_pipeline import ModelArtifacts, save_checkpoint
 
 
 @dataclass
@@ -84,6 +86,9 @@ def run_experiment_pipeline(
     train_mix: dict[str, float],
     eval_mix: dict[str, float],
     results_dir: str,
+    save_model: str | None = None,
+    save_queries_dir: str | None = None,
+    save_simplified_dir: str | None = None,
 ) -> ExperimentOutputs:
     """Run training, matched evaluation, and shifted evaluation tables. See src/experiments/README.md for details."""
     pipeline_t0 = time.perf_counter()
@@ -121,6 +126,10 @@ def run_experiment_pipeline(
             seed=seeds.eval_query_seed,
         )
 
+    if save_queries_dir:
+        with _phase("write-queries-geojson"):
+            write_queries_geojson(save_queries_dir, eval_workload.typed_queries)
+
     with _phase(f"train-model ({config.model.epochs} epochs)"):
         trained = train_model(
             train_trajectories=train_traj,
@@ -130,6 +139,24 @@ def run_experiment_pipeline(
             seed=seeds.torch_seed,
             query_blind=False,
         )
+
+    if save_model:
+        with _phase("save-model"):
+            artifacts = ModelArtifacts(
+                model=trained.model,
+                scaler=trained.scaler,
+                config=config,
+                epochs_trained=trained.epochs_trained,
+                train_workload_mix=train_mix,
+                eval_workload_mix=eval_mix,
+            )
+            save_checkpoint(save_model, artifacts)
+            print(
+                f"  saved checkpoint to {save_model}  "
+                f"(epochs_trained={trained.epochs_trained}, "
+                f"train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)})",
+                flush=True,
+            )
     with _phase(f"train-query-blind ({config.model.epochs} epochs)"):
         query_blind = train_model(
             train_trajectories=train_traj,
@@ -227,15 +254,56 @@ def run_experiment_pipeline(
             json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)
 
+    if save_simplified_dir:
+        with _phase("write-simplified-csv"):
+            mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix)
+            mask = mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
+            out_path = Path(save_simplified_dir) / "ML_simplified.csv"
+            write_simplified_csv(str(out_path), test_points, test_boundaries, mask)
+
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(matched_table=matched_table, shift_table=shift_table, metrics_dump=dump)
+
+
+def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:
+    """Translate a --workload keyword to a concrete mix, or return None.
+
+    - "mixed"       -> all 4 types (range-heavy: 0.4/0.2/0.2/0.2).
+    - "cheap_mixed" -> 3 cheap types only (range=0.5, knn=0.25, similarity=0.25);
+                      omits clustering (whose eval is O(n) DBSCAN per query).
+    - "range"/"knn"/"similarity"/"clustering" -> 100% that type.
+    - anything else -> None (fall back to caller default).
+    """
+    if not keyword:
+        return None
+    k = keyword.strip().lower()
+    if k == "mixed":
+        return {"range": 0.4, "knn": 0.2, "similarity": 0.2, "clustering": 0.2}
+    if k == "cheap_mixed":
+        return {"range": 0.5, "knn": 0.25, "similarity": 0.25}
+    if k in {"range", "knn", "similarity", "clustering"}:
+        return {k: 1.0}
+    return None
 
 
 def resolve_workload_mixes(
     train_workload_mix_arg: str | None,
     eval_workload_mix_arg: str | None,
+    workload_keyword: str | None = None,
 ) -> tuple[dict[str, float], dict[str, float]]:
-    """Parse and normalize train/eval workload mix strings. See src/experiments/README.md for details."""
-    train_mix = parse_workload_mix(train_workload_mix_arg, default={"range": 0.8, "knn": 0.2})
-    eval_mix = parse_workload_mix(eval_workload_mix_arg, default={"range": 0.2, "clustering": 0.8})
+    """Parse and normalize train/eval workload mix strings. See src/experiments/README.md for details.
+
+    Priority: explicit --train_workload_mix / --eval_workload_mix strings win.
+    Otherwise, if --workload is a recognised keyword, both mixes follow it.
+    Otherwise, fall back to the historical mixed-shift defaults.
+    """
+    keyword_mix = _workload_keyword_to_mix(workload_keyword)
+    if keyword_mix is not None:
+        default_train = keyword_mix
+        default_eval = keyword_mix
+    else:
+        default_train = {"range": 0.8, "knn": 0.2}
+        default_eval = {"range": 0.2, "clustering": 0.8}
+    train_mix = parse_workload_mix(train_workload_mix_arg, default=default_train)
+    eval_mix = parse_workload_mix(eval_workload_mix_arg, default=default_eval)
     return train_mix, eval_mix

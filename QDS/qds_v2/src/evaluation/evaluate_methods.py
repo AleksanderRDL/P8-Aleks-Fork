@@ -113,7 +113,8 @@ def print_shift_table(shift_grid: dict[str, dict[str, float]]) -> str:
     """Render train-mix to eval-mix aggregate error matrix table. See src/evaluation/README.md for details."""
     eval_cols = sorted({k for row in shift_grid.values() for k in row.keys()})
     col_w = 22
-    line = f"{'Train\\Eval':<{col_w}}" + "".join(f"{c:>{col_w}}" for c in eval_cols)
+    header_label = "Train\\Eval"
+    line = f"{header_label:<{col_w}}" + "".join(f"{c:>{col_w}}" for c in eval_cols)
     out = [line, "-" * len(line)]
     for train_name in sorted(shift_grid.keys()):
         row = f"{train_name:<{col_w}}"

@@ -24,4 +24,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results_dir", type=str, default="results")
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=0,
+        help="Stop training if avg Kendall tau does not improve for this many epochs. 0 disables.",
+    )
+    parser.add_argument(
+        "--save_model",
+        type=str,
+        default=None,
+        help="Path to save trained model checkpoint (.pt). Disabled if not provided.",
+    )
+    parser.add_argument(
+        "--save_queries_dir",
+        type=str,
+        default=None,
+        help="Directory to save eval-workload queries as one GeoJSON per query type.",
+    )
+    parser.add_argument(
+        "--save_simplified_dir",
+        type=str,
+        default=None,
+        help="Directory to save MLQDS simplified trajectories as GeoJSON.",
+    )
     return parser
