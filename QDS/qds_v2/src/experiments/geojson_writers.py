@@ -126,3 +126,115 @@ def write_simplified_csv(
     print(f"  wrote {rows} retained points across "
           f"{int(mask_np.reshape(-1).sum())} samples to {out}", flush=True)
 
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two lat/lon pairs."""
+    import math
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _trajectory_length_km(lat_lon: "torch.Tensor") -> float:
+    """Sum haversine distances between consecutive (lat, lon) rows."""
+    n = lat_lon.shape[0]
+    if n < 2:
+        return 0.0
+    arr = lat_lon.detach().cpu().numpy()
+    total = 0.0
+    for i in range(1, n):
+        total += _haversine_km(float(arr[i - 1, 0]), float(arr[i - 1, 1]),
+                               float(arr[i, 0]), float(arr[i, 1]))
+    return total
+
+
+def report_trajectory_length_loss(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    top_k: int = 25,
+    min_orig_km: float = 1.0,
+) -> None:
+    """Print per-trajectory length-loss summary and two top-K rankings.
+
+    For each trajectory:
+        orig_len_km   = sum of haversine distances between consecutive original points
+        simp_len_km   = same for retained points (preserves order)
+        length_loss   = 1 - simp_len_km / orig_len_km      (0 = perfect, 1 = everything collapsed)
+        points_kept   = sum(retained_mask[s:e])
+        points_removed= (e - s) - points_kept
+
+    Two ranked lists are printed:
+        1. Most-distorted  : top-K by highest length_loss (largest shape damage).
+        2. Least-distorted : top-K by lowest length_loss (shape best preserved).
+
+    Averages over all non-empty trajectories are also printed.
+    """
+    mask = retained_mask.detach().cpu().bool()
+    rows: list[tuple[int, float, float, float, int, int]] = []  # (traj_id, orig, simp, loss, kept, removed)
+    for traj_id, (s, e) in enumerate(boundaries):
+        total_pts = e - s
+        if total_pts < 2:
+            continue
+        sub = points[s:e]
+        orig = _trajectory_length_km(sub[:, 1:3])
+        sub_mask = mask[s:e]
+        kept = int(sub_mask.sum().item())
+        removed = total_pts - kept
+        if kept >= 2:
+            simp = _trajectory_length_km(sub[sub_mask][:, 1:3])
+        else:
+            simp = 0.0
+        loss = 0.0 if orig <= 1e-9 else max(0.0, 1.0 - simp / orig)
+        rows.append((traj_id, orig, simp, loss, kept, removed))
+
+    if not rows:
+        print("  [length-loss] no trajectories with >=2 points, skipping.", flush=True)
+        return
+
+    avg_orig = sum(r[1] for r in rows) / len(rows)
+    avg_simp = sum(r[2] for r in rows) / len(rows)
+    avg_loss = sum(r[3] for r in rows) / len(rows)
+    avg_removed = sum(r[5] for r in rows) / len(rows)
+    print(
+        f"  [length-loss] {len(rows)} trajectories  "
+        f"avg_orig_km={avg_orig:.2f}  avg_simp_km={avg_simp:.2f}  "
+        f"avg_length_loss={avg_loss:.3f}  avg_points_removed={avg_removed:.1f}",
+        flush=True,
+    )
+
+    # Filter out near-stationary trajectories so the top-K is meaningful.
+    ranked = [r for r in rows if r[1] >= min_orig_km]
+    dropped = len(rows) - len(ranked)
+    if dropped:
+        print(
+            f"  [length-loss] filtered out {dropped} trajectories with orig_km < {min_orig_km:.2f} "
+            f"(likely docked/stationary) from top-{top_k} ranking",
+            flush=True,
+        )
+    if not ranked:
+        return
+
+    most = sorted(ranked, key=lambda r: r[3], reverse=True)[:top_k]
+    least = sorted(ranked, key=lambda r: r[3])[:top_k]
+
+    hdr = f"  {'rank':>4}  {'traj_id':>7}  {'orig_km':>10}  {'simp_km':>10}  {'length_loss':>11}  {'kept':>6}  {'removed':>8}"
+    print(f"\n  [length-loss] Top {top_k} MOST distorted (highest length_loss):", flush=True)
+    print(hdr, flush=True)
+    for rank, r in enumerate(most, start=1):
+        print(
+            f"  {rank:>4}  {r[0]:>7d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
+            flush=True,
+        )
+
+    print(f"\n  [length-loss] Top {top_k} LEAST distorted (lowest length_loss):", flush=True)
+    print(hdr, flush=True)
+    for rank, r in enumerate(least, start=1):
+        print(
+            f"  {rank:>4}  {r[0]:>7d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
+            flush=True,
+        )
+

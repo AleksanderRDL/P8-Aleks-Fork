@@ -35,6 +35,39 @@ class MLQDSMethod:
     trained: TrainingOutputs
     workload: TypedQueryWorkload
     workload_mix: dict[str, float]
+    query_area_boost: float = 1.0
+    query_buffer_deg: float = 0.20
+
+    def _query_proximity_mask(self, points: torch.Tensor) -> torch.Tensor:
+        """True for points within `query_buffer_deg` of any query geometry.
+
+        Uses axis-aligned lat/lon boxes (with a buffer) drawn around each query.
+        For knn / similarity queries that lack an explicit bbox, a square of
+        radius `query_buffer_deg` around the anchor/centroid is used.
+        """
+        buf = float(self.query_buffer_deg)
+        if buf <= 0.0:
+            return torch.zeros((points.shape[0],), dtype=torch.bool)
+        lat = points[:, 1]
+        lon = points[:, 2]
+        mask = torch.zeros_like(lat, dtype=torch.bool)
+        for q in self.workload.typed_queries:
+            p = q["params"]
+            qtype = q["type"]
+            if qtype in ("range", "clustering"):
+                lo_lat, hi_lat = float(p["lat_min"]) - buf, float(p["lat_max"]) + buf
+                lo_lon, hi_lon = float(p["lon_min"]) - buf, float(p["lon_max"]) + buf
+            elif qtype == "knn":
+                lo_lat, hi_lat = float(p["lat"]) - buf, float(p["lat"]) + buf
+                lo_lon, hi_lon = float(p["lon"]) - buf, float(p["lon"]) + buf
+            elif qtype == "similarity":
+                r = float(p.get("radius", 0.05)) + buf
+                lo_lat, hi_lat = float(p["lat_query_centroid"]) - r, float(p["lat_query_centroid"]) + r
+                lo_lon, hi_lon = float(p["lon_query_centroid"]) - r, float(p["lon_query_centroid"]) + r
+            else:
+                continue
+            mask |= (lat >= lo_lat) & (lat <= hi_lat) & (lon >= lo_lon) & (lon <= hi_lon)
+        return mask
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores. See src/evaluation/README.md for details."""
@@ -55,6 +88,12 @@ class MLQDSMethod:
         else:
             mix = mix / mix.sum()
         score = (pred * mix.unsqueeze(0)).sum(dim=1)
+
+        if self.query_area_boost != 1.0 and self.query_buffer_deg > 0.0:
+            near_mask = self._query_proximity_mask(points)
+            if bool(near_mask.any().item()):
+                score = score.clone()
+                score[near_mask] = score[near_mask] * float(self.query_area_boost)
         return simplify_with_scores(score, boundaries, compression_ratio)
 
 

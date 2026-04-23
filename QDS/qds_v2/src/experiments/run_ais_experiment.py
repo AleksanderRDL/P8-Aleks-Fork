@@ -36,6 +36,8 @@ def main() -> None:
         eval_workload_mix=eval_mix,
         seed=args.seed,
         early_stopping_patience=args.early_stopping_patience,
+        query_area_boost=args.query_area_boost,
+        query_buffer_deg=args.query_buffer_deg,
     )
 
     print(f"[config] model={args.model_type}  workload={args.workload}  epochs={args.epochs}  "

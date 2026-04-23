@@ -80,6 +80,13 @@ class ModelConfig:
     train_batch_size: int = 16
     diagnostic_every: int = 3
     diagnostic_window_fraction: float = 0.2
+    # Query-area boost: at simplification time, points within
+    # `query_buffer_deg` degrees of any query geometry get their score
+    # multiplied by `query_area_boost`.  Use 1.0 to disable.  Typical values:
+    #   query_buffer_deg  = 0.2  (~20 km at Denmark latitude)
+    #   query_area_boost  = 4.0  (inside-buffer points strongly preferred)
+    query_area_boost: float = 1.0
+    query_buffer_deg: float = 0.20
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -204,6 +211,8 @@ def build_experiment_config(
     eval_workload_mix: dict[str, float] | None = None,
     seed: int = 42,
     early_stopping_patience: int = 0,
+    query_area_boost: float = 1.0,
+    query_buffer_deg: float = 0.20,
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -225,6 +234,8 @@ def build_experiment_config(
             compression_ratio=compression_ratio,
             model_type=model_type,
             early_stopping_patience=early_stopping_patience,
+            query_area_boost=query_area_boost,
+            query_buffer_deg=query_buffer_deg,
         ),
     )
 

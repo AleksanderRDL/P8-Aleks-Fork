@@ -1,32 +1,32 @@
 Method                    AggregateErr   Compression   Latency(ms)        Type
 ------------------------------------------------------------------------------
-MLQDS                           0.8053        0.1007      30830.69         all
-  - range                       0.0000                                   range
-  - knn                         0.0000                                     knn
-  - similarity                  0.8053                              similarity
+MLQDS                           0.9260        0.1006      34297.68         all
+  - range                       0.8767                                   range
+  - knn                         1.0000                                     knn
+  - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-QueryBlindML                    0.7824        0.1007      30964.60         all
-  - range                       0.0000                                   range
-  - knn                         0.0000                                     knn
-  - similarity                  0.7824                              similarity
+QueryBlindML                    0.9276        0.1007      31224.17         all
+  - range                       0.8793                                   range
+  - knn                         1.0000                                     knn
+  - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-Random                          0.7581        0.1007         64.81         all
-  - range                       0.0000                                   range
-  - knn                         0.0000                                     knn
-  - similarity                  0.7581                              similarity
+Random                          0.9402        0.1007         66.19         all
+  - range                       0.9003                                   range
+  - knn                         1.0000                                     knn
+  - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-UniformTemporal                 0.9390        0.1008         56.98         all
-  - range                       0.0000                                   range
-  - knn                         0.0000                                     knn
-  - similarity                  0.9390                              similarity
+UniformTemporal                 0.9329        0.1008         66.63         all
+  - range                       0.8882                                   range
+  - knn                         1.0000                                     knn
+  - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-DouglasPeucker                  0.9259        0.1002        105.01         all
-  - range                       0.0000                                   range
-  - knn                         0.0000                                     knn
-  - similarity                  0.9259                              similarity
+DouglasPeucker                  0.9410        0.1002        115.09         all
+  - range                       0.9016                                   range
+  - knn                         1.0000                                     knn
+  - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-Oracle                          0.9116        0.1009        177.44         all
-  - range                       0.0000                                   range
-  - knn                         0.0000                                     knn
-  - similarity                  0.9116                              similarity
+Oracle                          0.9209        0.1009        280.31         all
+  - range                       0.8681                                   range
+  - knn                         1.0000                                     knn
+  - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering

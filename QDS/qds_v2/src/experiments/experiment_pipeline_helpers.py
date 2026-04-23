@@ -34,7 +34,7 @@ from src.evaluation.baselines import (
 )
 from src.evaluation.evaluate_methods import evaluate_method, print_method_comparison_table, print_shift_table
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
-from src.experiments.geojson_writers import write_queries_geojson, write_simplified_csv
+from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import parse_workload_mix
 from src.training.train_model import train_model
@@ -167,9 +167,13 @@ def run_experiment_pipeline(
             query_blind=True,
         )
 
+    boost = float(getattr(config.model, "query_area_boost", 1.0))
+    buf = float(getattr(config.model, "query_buffer_deg", 0.20))
     methods = [
-        MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix),
-        QueryBlindMLMethod(name="QueryBlindML", trained=query_blind, workload=eval_workload, workload_mix=eval_mix),
+        MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
+                    query_area_boost=boost, query_buffer_deg=buf),
+        QueryBlindMLMethod(name="QueryBlindML", trained=query_blind, workload=eval_workload, workload_mix=eval_mix,
+                           query_area_boost=boost, query_buffer_deg=buf),
         RandomMethod(seed=config.data.seed),
         UniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -206,7 +210,8 @@ def run_experiment_pipeline(
             _mix_name(train_mix): {
                 _mix_name(train_mix): float(
                     evaluate_method(
-                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix),
+                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix,
+                                           query_area_boost=boost, query_buffer_deg=buf),
                         points=test_points,
                         boundaries=test_boundaries,
                         typed_queries=train_workload.typed_queries,
@@ -216,7 +221,8 @@ def run_experiment_pipeline(
                 ),
                 _mix_name(eval_mix): float(
                     evaluate_method(
-                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix),
+                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
+                                           query_area_boost=boost, query_buffer_deg=buf),
                         points=test_points,
                         boundaries=test_boundaries,
                         typed_queries=eval_workload.typed_queries,
@@ -256,10 +262,14 @@ def run_experiment_pipeline(
 
     if save_simplified_dir:
         with _phase("write-simplified-csv"):
-            mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix)
+            mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
+                                query_area_boost=boost, query_buffer_deg=buf)
             mask = mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             out_path = Path(save_simplified_dir) / "ML_simplified.csv"
             write_simplified_csv(str(out_path), test_points, test_boundaries, mask)
+
+        with _phase("trajectory-length-loss"):
+            report_trajectory_length_loss(test_points, test_boundaries, mask, top_k=25)
 
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(matched_table=matched_table, shift_table=shift_table, metrics_dump=dump)
@@ -268,9 +278,11 @@ def run_experiment_pipeline(
 def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:
     """Translate a --workload keyword to a concrete mix, or return None.
 
-    - "mixed"       -> all 4 types (range-heavy: 0.4/0.2/0.2/0.2).
-    - "cheap_mixed" -> 3 cheap types only (range=0.5, knn=0.25, similarity=0.25);
-                      omits clustering (whose eval is O(n) DBSCAN per query).
+    - "mixed"        -> all 4 types (range-heavy: 0.4/0.2/0.2/0.2).
+    - "local_mixed"  -> local/point-based types (range=0.6, knn=0.4).
+                        These use small boxes / neighbourhood lookups, cheap to eval.
+    - "global_mixed" -> trajectory-global types (similarity=0.5, clustering=0.5).
+                        DBSCAN + DTW; expensive, needs long wall time.
     - "range"/"knn"/"similarity"/"clustering" -> 100% that type.
     - anything else -> None (fall back to caller default).
     """
@@ -279,8 +291,10 @@ def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:
     k = keyword.strip().lower()
     if k == "mixed":
         return {"range": 0.4, "knn": 0.2, "similarity": 0.2, "clustering": 0.2}
-    if k == "cheap_mixed":
-        return {"range": 0.5, "knn": 0.25, "similarity": 0.25}
+    if k == "local_mixed":
+        return {"range": 0.6, "knn": 0.4}
+    if k == "global_mixed":
+        return {"similarity": 0.5, "clustering": 0.5}
     if k in {"range", "knn", "similarity", "clustering"}:
         return {k: 1.0}
     return None
