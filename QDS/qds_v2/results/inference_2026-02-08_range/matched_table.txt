@@ -1,0 +1,22 @@
+Method                    AggregateErr   Compression   Latency(ms)        Type
+------------------------------------------------------------------------------
+MLQDS                           0.0000        0.1008     146481.06         all
+  - range                       0.0000                                   range
+  - knn                         0.0000                                     knn
+  - similarity                  0.0000                              similarity
+  - clustering                  0.0000                              clustering
+Random                          0.0000        0.1008        348.56         all
+  - range                       0.0000                                   range
+  - knn                         0.0000                                     knn
+  - similarity                  0.0000                              similarity
+  - clustering                  0.0000                              clustering
+UniformTemporal                 0.0000        0.1009        358.91         all
+  - range                       0.0000                                   range
+  - knn                         0.0000                                     knn
+  - similarity                  0.0000                              similarity
+  - clustering                  0.0000                              clustering
+DouglasPeucker                  0.0000        0.1002        709.43         all
+  - range                       0.0000                                   range
+  - knn                         0.0000                                     knn
+  - similarity                  0.0000                              similarity
+  - clustering                  0.0000                              clustering

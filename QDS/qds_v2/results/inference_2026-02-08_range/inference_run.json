@@ -1,0 +1,56 @@
+{
+  "checkpoint": "src/models/saved_models/model_2026-02-05_q25_range_766395.pt",
+  "csv_path": "../../AISDATA/preprocessed_AIS_files/preprocessed_2026-02-08.csv",
+  "n_trajectories": 1564,
+  "n_points": 4318960,
+  "eval_mix": {
+    "range": 1.0
+  },
+  "compression_ratio": 0.1,
+  "matched": {
+    "MLQDS": {
+      "aggregate_error": 0.0,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.0,
+        "clustering": 0.0
+      },
+      "compression_ratio": 0.10081756114959717,
+      "latency_ms": 146481.05597496033
+    },
+    "Random": {
+      "aggregate_error": 0.0,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.0,
+        "clustering": 0.0
+      },
+      "compression_ratio": 0.10081593692302704,
+      "latency_ms": 348.56128692626953
+    },
+    "UniformTemporal": {
+      "aggregate_error": 0.0,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.0,
+        "clustering": 0.0
+      },
+      "compression_ratio": 0.1008981317281723,
+      "latency_ms": 358.90913009643555
+    },
+    "DouglasPeucker": {
+      "aggregate_error": 0.0,
+      "per_type_error": {
+        "range": 0.0,
+        "knn": 0.0,
+        "similarity": 0.0,
+        "clustering": 0.0
+      },
+      "compression_ratio": 0.10017388314008713,
+      "latency_ms": 709.4275951385498
+    }
+  }
+}
