@@ -318,8 +318,9 @@ def generate_typed_query_workload(
             desired = weights * float(len(typed) + 1)
             type_idx = int(torch.argmax(desired - counts.float()).item())
             name = names[type_idx]
-            anchor_mask = ~covered if bool((~covered).any().item()) else None
-            query = _make_query(name, points, trajectories, b, g, anchor_mask=anchor_mask)
+            # Coverage controls the stop condition only; anchors remain uniformly sampled
+            # from all points so overlapping query hits are allowed and expected.
+            query = _make_query(name, points, trajectories, b, g, anchor_mask=None)
             typed.append(query)
             counts[type_idx] += 1
             covered |= point_coverage_mask_for_query(points, query)

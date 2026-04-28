@@ -277,7 +277,7 @@ def run_experiment_pipeline(
                         typed_queries=train_workload.typed_queries,
                         workload_mix=train_mix,
                         compression_ratio=config.model.compression_ratio,
-                    ).aggregate_error
+                    ).aggregate_f1
                 ),
                 _mix_name(eval_mix): float(
                     evaluate_method(
@@ -288,7 +288,7 @@ def run_experiment_pipeline(
                         typed_queries=eval_workload.typed_queries,
                         workload_mix=eval_mix,
                         compression_ratio=config.model.compression_ratio,
-                    ).aggregate_error
+                    ).aggregate_f1
                 ),
             }
         }
@@ -304,8 +304,8 @@ def run_experiment_pipeline(
         "eval_query_coverage": eval_workload.coverage_fraction,
         "matched": {
             name: {
-                "aggregate_error": m.aggregate_error,
-                "per_type_error": m.per_type_error,
+                "aggregate_f1": m.aggregate_f1,
+                "per_type_f1": m.per_type_f1,
                 "compression_ratio": m.compression_ratio,
                 "latency_ms": m.latency_ms,
             }

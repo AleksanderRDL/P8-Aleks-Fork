@@ -1,6 +1,6 @@
 # Experiments Module
 
-This module is the orchestration layer for the v2 rebuild. It turns flat CLI arguments into structured config objects, derives deterministic sub-seeds, generates workloads, trains MLQDS, evaluates baselines, and writes the example outputs.
+This module is the orchestration layer for the v2 rebuild. It turns flat CLI arguments into structured config objects, derives deterministic sub-seeds, generates workloads, trains MLQDS, evaluates baselines with higher-is-better F1, and writes the example outputs.
 
 ## Files
 
@@ -51,7 +51,7 @@ If `--train_csv_path` and `--eval_csv_path` are supplied together, the training 
 2. Generate independent train and eval typed query workloads from the respective trajectory sets.
 3. Train the query-aware model.
 4. Evaluate MLQDS and baseline methods on the test set.
-5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt`.
+5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt` with aggregate/per-type F1 fields.
 
 ## Workload Mixes
 

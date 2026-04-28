@@ -1,13 +1,13 @@
 # Evaluation Module
 
-This module compares query-aware ML simplification against stochastic and geometric baselines, then reports per-type and aggregate query error.
+This module compares query-aware ML simplification against stochastic and geometric baselines, then reports per-type and aggregate query F1 where higher is better.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `baselines.py` | Simplification methods: `MLQDSMethod`, `RandomMethod`, `UniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
-| `metrics.py` | Error functions and the `MethodEvaluation` container. |
+| `metrics.py` | F1 functions and the `MethodEvaluation` container. |
 | `evaluate_methods.py` | Runs a method on flattened points and boundaries, then formats the comparison tables. |
 
 ## Methods
@@ -20,12 +20,10 @@ This module compares query-aware ML simplification against stochastic and geomet
 
 ## Metrics
 
-- `range_error(full, simplified)` - normalized absolute error on the aggregate range answer.
-- `knn_error(full, simplified)` - 1 minus Jaccard overlap.
-- `similarity_error(full, simplified)` - 1 minus rank-biased overlap.
-- `clustering_error(full, simplified)` - normalized cluster-count error.
-- `MethodEvaluation` stores aggregate error, per-type error, compression ratio, and latency in milliseconds.
+- `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.
+- `clustering_f1(original_labels, simplified_labels)` - F1 over same-cluster trajectory co-membership pairs, ignoring noise label `-1`.
+- `MethodEvaluation` stores aggregate F1, per-type F1, compression ratio, and latency in milliseconds.
 
 ## Reporting
 
-`evaluate_method` evaluates one simplification method against a typed query workload. `print_method_comparison_table` renders the matched-workload summary table, and `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline.
+`evaluate_method` evaluates one simplification method against a typed query workload. `print_method_comparison_table` renders the matched-workload summary table, and `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline. Tables should be read as higher-is-better F1 scores.

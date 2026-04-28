@@ -146,6 +146,10 @@ def train_model(
     seed: int,
 ) -> TrainingOutputs:
     """Train typed-head model with trajectory-window ranking losses. See src/training/README.md for details."""
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+
     all_points = torch.cat(train_trajectories, dim=0)
     point_dim = 8 if model_config.model_type == "turn_aware" else 7
     points = all_points[:, :point_dim].float()

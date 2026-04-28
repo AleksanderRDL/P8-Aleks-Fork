@@ -6,9 +6,6 @@ from typing import Any
 
 import torch
 
-from src.queries.query_executor import (
-    execute_range_query,
-)
 from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
 
 
@@ -67,9 +64,9 @@ def compute_typed_importance_labels(
         params = q["params"]
 
         if qtype == "range":
-            base = execute_range_query(points, params)
-            denom = max(abs(base), 1e-6)
             mask = _box_mask(points, params)
+            base = float(points[mask, 3].sum().item()) if bool(mask.any().item()) else 0.0
+            denom = max(abs(base), 1e-6)
             contrib = points[:, 3] / denom
             labels[mask, t_idx] += torch.abs(contrib[mask])
             labelled_mask[mask, t_idx] = True

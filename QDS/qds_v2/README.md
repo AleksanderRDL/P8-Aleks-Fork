@@ -54,7 +54,7 @@ Use `--model_type turn_aware` to include the extra `turn_score` point feature. W
 3. `src/training/` computes typed importance labels, trains the model, and persists the scaler and checkpoint artifacts.
 4. `src/models/` contains the query-conditioned trajectory transformer and the turn-aware variant.
 5. `src/simplification/` keeps the highest-scoring points per trajectory with deterministic tie-breaking.
-6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type errors.
+6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores.
 7. `src/experiments/` wires the full pipeline together through the CLI.
 8. `src/visualization/` is currently a placeholder package for future plotting hooks.
 

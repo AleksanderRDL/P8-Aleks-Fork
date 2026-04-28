@@ -14,7 +14,7 @@ data -> queries -> training -> simplification -> evaluation -> experiments.
 | `models/` | Query-conditioned trajectory encoders and attention utilities. |
 | `training/` | Importance labels, window batching, scaler persistence, and training/checkpoint helpers. |
 | `simplification/` | Trajectory-local top-k simplification. |
-| `evaluation/` | Baselines, error metrics, and tabular reporting. |
+| `evaluation/` | Baselines, F1 metrics, and tabular reporting. |
 | `experiments/` | CLI parsing, config dataclasses, and the end-to-end pipeline. |
 | `visualization/` | Placeholder package for future plotting utilities. |
 

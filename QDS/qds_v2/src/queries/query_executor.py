@@ -7,6 +7,35 @@ import math
 import torch
 
 
+def _boundaries_from_trajectories(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
+    """Build flattened point boundaries from trajectory order."""
+    boundaries: list[tuple[int, int]] = []
+    cursor = 0
+    for traj in trajectories:
+        n = int(traj.shape[0])
+        boundaries.append((cursor, cursor + n))
+        cursor += n
+    return boundaries
+
+
+def _default_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]] | None) -> list[tuple[int, int]]:
+    """Use explicit boundaries when supplied, otherwise treat all points as one trajectory."""
+    return boundaries if boundaries is not None else [(0, int(points.shape[0]))]
+
+
+def _indices_to_trajectory_ids(indices: torch.Tensor, boundaries: list[tuple[int, int]]) -> set[int]:
+    """Map flattened point indices to stable trajectory IDs derived from boundaries."""
+    if indices.numel() == 0:
+        return set()
+    trajectory_ids: set[int] = set()
+    for traj_id, (start, end) in enumerate(boundaries):
+        if end <= start:
+            continue
+        if bool(((indices >= start) & (indices < end)).any().item()):
+            trajectory_ids.add(traj_id)
+    return trajectory_ids
+
+
 def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: float) -> torch.Tensor:
     """Compute haversine distances in km to one anchor point. See src/queries/README.md for details."""
     r = 6371.0
@@ -21,8 +50,8 @@ def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: flo
     return r * c
 
 
-def execute_range_query(points: torch.Tensor, params: dict[str, float]) -> float:
-    """Execute a range query returning speed sum. See src/queries/README.md for details."""
+def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
+    """Return the point mask inside a spatiotemporal query box."""
     mask = (
         (points[:, 1] >= params["lat_min"])
         & (points[:, 1] <= params["lat_max"])
@@ -31,13 +60,27 @@ def execute_range_query(points: torch.Tensor, params: dict[str, float]) -> float
         & (points[:, 0] >= params["t_start"])
         & (points[:, 0] <= params["t_end"])
     )
+    return mask
+
+
+def execute_range_query(
+    points: torch.Tensor,
+    params: dict[str, float],
+    boundaries: list[tuple[int, int]] | None = None,
+) -> set[int]:
+    """Execute a range query returning matching trajectory IDs. See src/queries/README.md for details."""
+    mask = _box_mask(points, params)
     if not mask.any():
-        return 0.0
-    return float(points[mask, 3].sum().item())
+        return set()
+    return _indices_to_trajectory_ids(torch.where(mask)[0], _default_boundaries(points, boundaries))
 
 
-def execute_knn_query(points: torch.Tensor, params: dict[str, float]) -> set[int]:
-    """Execute a kNN query returning point-index set. See src/queries/README.md for details."""
+def execute_knn_query(
+    points: torch.Tensor,
+    params: dict[str, float],
+    boundaries: list[tuple[int, int]] | None = None,
+) -> set[int]:
+    """Execute a kNN query returning trajectory IDs containing the nearest points."""
     k = max(1, int(params["k"]))
     t0 = float(params["t_center"] - params["t_half_window"])
     t1 = float(params["t_center"] + params["t_half_window"])
@@ -53,33 +96,7 @@ def execute_knn_query(points: torch.Tensor, params: dict[str, float]) -> set[int
 
     k_eff = min(k, dist.numel())
     chosen = torch.topk(-dist, k_eff).indices
-    return set(idx[chosen].tolist())
-
-
-def execute_knn_query_distances(points: torch.Tensor, params: dict[str, float]) -> list[float]:
-    """Execute a kNN query returning the sorted distances of the k nearest points.
-
-    Unlike :func:`execute_knn_query` (which returns positional indices and is
-    only meaningful relative to one array), this returns anchor-relative
-    distances that are directly comparable between the full dataset and a
-    simplified dataset. Used by :func:`knn_error` during evaluation.
-    """
-    k = max(1, int(params["k"]))
-    t0 = float(params["t_center"] - params["t_half_window"])
-    t1 = float(params["t_center"] + params["t_half_window"])
-    mask = (points[:, 0] >= t0) & (points[:, 0] <= t1)
-    idx = torch.where(mask)[0]
-    if idx.numel() == 0:
-        return []
-
-    cand = points[idx]
-    d_space = _haversine_km(cand[:, 1], cand[:, 2], float(params["lat"]), float(params["lon"]))
-    d_time = torch.abs(cand[:, 0] - float(params["t_center"]))
-    dist = d_space + 0.001 * d_time
-
-    k_eff = min(k, dist.numel())
-    top_vals, _ = torch.topk(-dist, k_eff)
-    return sorted((-top_vals).tolist())
+    return _indices_to_trajectory_ids(idx[chosen], _default_boundaries(points, boundaries))
 
 
 def _dtw_like_distance(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -122,10 +139,10 @@ def execute_similarity_query(
     return [idx for idx, _ in ranked[:top_k]]
 
 
-def _dbscan_cluster_count(points_xy: torch.Tensor, eps: float, min_samples: int) -> int:
-    """Compute cluster count using a simple DBSCAN implementation. See src/queries/README.md for details."""
+def _dbscan_labels(points_xy: torch.Tensor, eps: float, min_samples: int) -> list[int]:
+    """Compute simple DBSCAN labels for representative points."""
     if points_xy.shape[0] == 0:
-        return 0
+        return []
     n = points_xy.shape[0]
     visited = torch.zeros(n, dtype=torch.bool)
     labels = torch.full((n,), -1, dtype=torch.long)
@@ -156,37 +173,56 @@ def _dbscan_cluster_count(points_xy: torch.Tensor, eps: float, min_samples: int)
                 labels[j] = cluster_id
         cluster_id += 1
 
-    return int(cluster_id)
+    return [int(v) for v in labels.tolist()]
 
 
-def execute_clustering_query(points: torch.Tensor, params: dict[str, float]) -> int:
-    """Execute a clustering query returning DBSCAN cluster count. See src/queries/README.md for details."""
-    mask = (
-        (points[:, 1] >= params["lat_min"])
-        & (points[:, 1] <= params["lat_max"])
-        & (points[:, 2] >= params["lon_min"])
-        & (points[:, 2] <= params["lon_max"])
-        & (points[:, 0] >= params["t_start"])
-        & (points[:, 0] <= params["t_end"])
-    )
-    pts = points[mask][:, 1:3]
-    return _dbscan_cluster_count(pts, eps=float(params["eps"]), min_samples=int(params["min_samples"]))
+def execute_clustering_query(
+    points: torch.Tensor,
+    params: dict[str, float],
+    boundaries: list[tuple[int, int]] | None = None,
+) -> list[int]:
+    """Execute clustering over trajectory centroids and return per-trajectory labels."""
+    query_boundaries = _default_boundaries(points, boundaries)
+    labels = [-1 for _ in query_boundaries]
+    representatives: list[torch.Tensor] = []
+    represented_ids: list[int] = []
+
+    for traj_id, (start, end) in enumerate(query_boundaries):
+        if end <= start:
+            continue
+        traj_points = points[start:end]
+        mask = _box_mask(traj_points, params)
+        if not bool(mask.any().item()):
+            continue
+        representatives.append(traj_points[mask, 1:3].mean(dim=0))
+        represented_ids.append(traj_id)
+
+    if not representatives:
+        return labels
+
+    rep_xy = torch.stack(representatives)
+    rep_labels = _dbscan_labels(rep_xy, eps=float(params["eps"]), min_samples=int(params["min_samples"]))
+    for traj_id, label in zip(represented_ids, rep_labels):
+        labels[traj_id] = int(label)
+    return labels
 
 
 def execute_typed_query(
     points: torch.Tensor,
     trajectories: list[torch.Tensor],
     query: dict,
-):
+    boundaries: list[tuple[int, int]] | None = None,
+) -> set[int] | list[int]:
     """Execute one typed query and return type-specific result object. See src/queries/README.md for details."""
     qtype = query["type"]
     params = query["params"]
+    query_boundaries = boundaries if boundaries is not None else _boundaries_from_trajectories(trajectories)
     if qtype == "range":
-        return execute_range_query(points, params)
+        return execute_range_query(points, params, query_boundaries)
     if qtype == "knn":
-        return execute_knn_query_distances(points, params)
+        return execute_knn_query(points, params, query_boundaries)
     if qtype == "similarity":
         return execute_similarity_query(trajectories, params, query.get("reference", []))
     if qtype == "clustering":
-        return execute_clustering_query(points, params)
+        return execute_clustering_query(points, params, query_boundaries)
     raise ValueError(f"Unsupported query type: {qtype}")

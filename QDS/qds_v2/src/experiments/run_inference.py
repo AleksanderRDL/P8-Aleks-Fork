@@ -208,8 +208,8 @@ def main() -> None:
         "compression_ratio": compression_ratio,
         "matched": {
             name: {
-                "aggregate_error": m.aggregate_error,
-                "per_type_error": m.per_type_error,
+                "aggregate_f1": m.aggregate_f1,
+                "per_type_f1": m.per_type_f1,
                 "compression_ratio": m.compression_ratio,
                 "latency_ms": m.latency_ms,
             }
