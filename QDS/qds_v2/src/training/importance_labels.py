@@ -7,7 +7,6 @@ from typing import Any
 import torch
 
 from src.queries.query_executor import (
-    execute_knn_query,
     execute_range_query,
 )
 from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
@@ -76,11 +75,32 @@ def compute_typed_importance_labels(
             labelled_mask[mask, t_idx] = True
 
         elif qtype == "knn":
-            ids = execute_knn_query(points, params)
-            if ids:
-                idx = torch.tensor(sorted(list(ids)), dtype=torch.long)
-                labels[idx, t_idx] += 1.0 / max(1, len(ids))
-                labelled_mask[idx, t_idx] = True
+            # Dense kNN labels: every point inside the time window gets a weight
+            # decaying with distance from the anchor, and every point within the
+            # k-th nearest neighbour's distance is marked as labelled.
+            k = max(1, int(params["k"]))
+            t0 = float(params["t_center"] - params["t_half_window"])
+            t1 = float(params["t_center"] + params["t_half_window"])
+            in_window = (points[:, 0] >= t0) & (points[:, 0] <= t1)
+            cand = torch.where(in_window)[0]
+            if cand.numel() == 0:
+                continue
+            from src.queries.query_executor import _haversine_km  # local import to avoid cycle
+            d_space = _haversine_km(
+                points[cand, 1], points[cand, 2],
+                float(params["lat"]), float(params["lon"]),
+            )
+            d_time = torch.abs(points[cand, 0] - float(params["t_center"]))
+            dist = d_space + 0.001 * d_time
+            k_eff = min(k, dist.numel())
+            kth = torch.topk(-dist, k_eff).values[-1].neg()  # k-th nearest distance
+            # Soft weight: 1 / (1 + d / kth). At d=0 → 1.0, at d=kth → 0.5, far → ~0.
+            scale = float(kth.item()) + 1e-6
+            weight = 1.0 / (1.0 + dist / scale)
+            labels[cand, t_idx] += weight
+            # Label everything within 3x the k-th distance so the mask is dense.
+            within = dist <= (3.0 * scale)
+            labelled_mask[cand[within], t_idx] = True
 
         elif qtype == "similarity":
             q_mask = (

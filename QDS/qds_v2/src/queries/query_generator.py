@@ -22,15 +22,29 @@ def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
     }
 
 
-def _pick_point(points: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
+def _pick_point(
+    points: torch.Tensor,
+    generator: torch.Generator,
+    candidate_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Sample one point row from the cloud. See src/queries/README.md for details."""
-    idx = int(torch.randint(0, points.shape[0], (1,), generator=generator).item())
+    if candidate_mask is not None and bool(candidate_mask.any().item()):
+        candidates = torch.where(candidate_mask)[0]
+        cand_idx = int(torch.randint(0, candidates.shape[0], (1,), generator=generator).item())
+        idx = int(candidates[cand_idx].item())
+    else:
+        idx = int(torch.randint(0, points.shape[0], (1,), generator=generator).item())
     return points[idx]
 
 
-def _make_range_query(points: torch.Tensor, b: dict[str, float], generator: torch.Generator) -> dict[str, Any]:
+def _make_range_query(
+    points: torch.Tensor,
+    b: dict[str, float],
+    generator: torch.Generator,
+    anchor_mask: torch.Tensor | None = None,
+) -> dict[str, Any]:
     """Generate one range query. See src/queries/README.md for details."""
-    p = _pick_point(points, generator)
+    p = _pick_point(points, generator, candidate_mask=anchor_mask)
     lat_w = 0.08 * (b["lat_max"] - b["lat_min"]) * (0.5 + torch.rand(1, generator=generator).item())
     lon_w = 0.08 * (b["lon_max"] - b["lon_min"]) * (0.5 + torch.rand(1, generator=generator).item())
     t_w = 0.15 * (b["t_max"] - b["t_min"]) * (0.5 + torch.rand(1, generator=generator).item())
@@ -47,9 +61,14 @@ def _make_range_query(points: torch.Tensor, b: dict[str, float], generator: torc
     }
 
 
-def _make_knn_query(points: torch.Tensor, b: dict[str, float], generator: torch.Generator) -> dict[str, Any]:
+def _make_knn_query(
+    points: torch.Tensor,
+    b: dict[str, float],
+    generator: torch.Generator,
+    anchor_mask: torch.Tensor | None = None,
+) -> dict[str, Any]:
     """Generate one kNN query. See src/queries/README.md for details."""
-    p = _pick_point(points, generator)
+    p = _pick_point(points, generator, candidate_mask=anchor_mask)
     return {
         "type": "knn",
         "params": {
@@ -67,9 +86,10 @@ def _make_similarity_query(
     trajectories: list[torch.Tensor],
     b: dict[str, float],
     generator: torch.Generator,
+    anchor_mask: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Generate one similarity query with a reference snippet. See src/queries/README.md for details."""
-    p = _pick_point(points, generator)
+    p = _pick_point(points, generator, candidate_mask=anchor_mask)
     t_half = 0.10 * (b["t_max"] - b["t_min"])
     radius = 0.10 * max(b["lat_max"] - b["lat_min"], b["lon_max"] - b["lon_min"])
 
@@ -92,9 +112,14 @@ def _make_similarity_query(
     }
 
 
-def _make_clustering_query(points: torch.Tensor, b: dict[str, float], generator: torch.Generator) -> dict[str, Any]:
+def _make_clustering_query(
+    points: torch.Tensor,
+    b: dict[str, float],
+    generator: torch.Generator,
+    anchor_mask: torch.Tensor | None = None,
+) -> dict[str, Any]:
     """Generate one clustering query. See src/queries/README.md for details."""
-    rq = _make_range_query(points, b, generator)
+    rq = _make_range_query(points, b, generator, anchor_mask=anchor_mask)
     params = dict(rq["params"])
     params.update(
         {
@@ -105,11 +130,167 @@ def _make_clustering_query(points: torch.Tensor, b: dict[str, float], generator:
     return {"type": "clustering", "params": params}
 
 
+def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
+    """Return the point mask inside a spatiotemporal query box."""
+    return (
+        (points[:, 1] >= params["lat_min"])
+        & (points[:, 1] <= params["lat_max"])
+        & (points[:, 2] >= params["lon_min"])
+        & (points[:, 2] <= params["lon_max"])
+        & (points[:, 0] >= params["t_start"])
+        & (points[:, 0] <= params["t_end"])
+    )
+
+
+def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: float) -> torch.Tensor:
+    """Compute haversine distances in km to one anchor point."""
+    import math
+
+    r = 6371.0
+    lat1r = torch.deg2rad(lat1)
+    lon1r = torch.deg2rad(lon1)
+    lat2r = math.radians(lat2)
+    lon2r = math.radians(lon2)
+    dlat = lat1r - lat2r
+    dlon = lon1r - lon2r
+    a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat1r) * math.cos(lat2r) * torch.sin(dlon / 2.0) ** 2
+    c = 2.0 * torch.atan2(torch.sqrt(a), torch.sqrt(torch.clamp(1.0 - a, min=1e-9)))
+    return r * c
+
+
+def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -> torch.Tensor:
+    """Return the point-level dataset coverage induced by one query.
+
+    Coverage follows the same regions that produce query-specific training
+    signal: exact boxes for range/clustering, a dense neighbourhood around the
+    kNN anchor within the time window, and the spatiotemporal radius for
+    similarity queries.
+    """
+    mask = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    if points.numel() == 0:
+        return mask
+
+    qtype = str(query["type"]).lower()
+    params = query["params"]
+    if qtype in {"range", "clustering"}:
+        return _box_mask(points, params)
+
+    if qtype == "knn":
+        t0 = float(params["t_center"] - params["t_half_window"])
+        t1 = float(params["t_center"] + params["t_half_window"])
+        in_window = (points[:, 0] >= t0) & (points[:, 0] <= t1)
+        cand = torch.where(in_window)[0]
+        if cand.numel() == 0:
+            return mask
+        cand_points = points[cand]
+        d_space = _haversine_km(cand_points[:, 1], cand_points[:, 2], float(params["lat"]), float(params["lon"]))
+        d_time = torch.abs(cand_points[:, 0] - float(params["t_center"]))
+        dist = d_space + 0.001 * d_time
+        k_eff = min(max(1, int(params["k"])), dist.numel())
+        kth = torch.topk(-dist, k_eff).values[-1].neg()
+        covered = cand[dist <= (3.0 * (float(kth.item()) + 1e-6))]
+        mask[covered] = True
+        return mask
+
+    if qtype == "similarity":
+        radius = float(params["radius"])
+        return (
+            (points[:, 0] >= params["t_start"])
+            & (points[:, 0] <= params["t_end"])
+            & (
+                torch.sqrt(
+                    (points[:, 1] - params["lat_query_centroid"]) ** 2
+                    + (points[:, 2] - params["lon_query_centroid"]) ** 2
+                )
+                <= radius
+            )
+        )
+
+    raise ValueError(f"Unsupported query type for coverage: {qtype}")
+
+
+def query_coverage_mask(points: torch.Tensor, typed_queries: list[dict[str, Any]]) -> torch.Tensor:
+    """Return the union of covered points for a workload."""
+    covered = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    for query in typed_queries:
+        covered |= point_coverage_mask_for_query(points, query)
+    return covered
+
+
+def query_coverage_fraction(points: torch.Tensor, typed_queries: list[dict[str, Any]]) -> float:
+    """Return the fraction of points covered by a workload."""
+    if points.shape[0] == 0:
+        return 0.0
+    return float(query_coverage_mask(points, typed_queries).float().mean().item())
+
+
+def _normalize_target_coverage(target_coverage: float | None) -> float | None:
+    """Normalize coverage targets supplied as fractions or percentages."""
+    if target_coverage is None:
+        return None
+    target = float(target_coverage)
+    if target > 1.0:
+        if target <= 100.0:
+            target = target / 100.0
+        else:
+            raise ValueError("target_coverage must be a fraction in (0, 1] or a percent in (0, 100].")
+    if target <= 0.0 or target > 1.0:
+        raise ValueError("target_coverage must be a fraction in (0, 1] or a percent in (0, 100].")
+    return target
+
+
+def _make_query(
+    name: str,
+    points: torch.Tensor,
+    trajectories: list[torch.Tensor],
+    b: dict[str, float],
+    generator: torch.Generator,
+    anchor_mask: torch.Tensor | None = None,
+) -> dict[str, Any]:
+    """Generate one query of a named type."""
+    if name == "range":
+        return _make_range_query(points, b, generator, anchor_mask=anchor_mask)
+    if name == "knn":
+        return _make_knn_query(points, b, generator, anchor_mask=anchor_mask)
+    if name == "similarity":
+        return _make_similarity_query(points, trajectories, b, generator, anchor_mask=anchor_mask)
+    if name == "clustering":
+        return _make_clustering_query(points, b, generator, anchor_mask=anchor_mask)
+    raise ValueError(f"Unsupported query type: {name}")
+
+
+def _finalize_workload(
+    points: torch.Tensor,
+    typed: list[dict[str, Any]],
+    generator: torch.Generator,
+) -> TypedQueryWorkload:
+    """Shuffle, featurize, and attach point-coverage metadata."""
+    if typed:
+        perm = torch.randperm(len(typed), generator=generator).tolist()
+        typed = [typed[i] for i in perm]
+
+    features, type_ids = pad_query_features(typed)
+    covered = query_coverage_mask(points, typed)
+    covered_points = int(covered.sum().item())
+    total_points = int(points.shape[0])
+    coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
+    return TypedQueryWorkload(
+        query_features=features,
+        typed_queries=typed,
+        type_ids=type_ids,
+        coverage_fraction=coverage_fraction,
+        covered_points=covered_points,
+        total_points=total_points,
+    )
+
+
 def generate_typed_query_workload(
     trajectories: list[torch.Tensor],
     n_queries: int,
     workload_mix: dict[str, float],
     seed: int,
+    target_coverage: float | None = None,
+    max_queries: int | None = None,
 ) -> TypedQueryWorkload:
     """Generate a mixed typed-query workload and padded feature tensor. See src/queries/README.md for details."""
     points = torch.cat(trajectories, dim=0)
@@ -120,6 +301,31 @@ def generate_typed_query_workload(
 
     names = list(mix.keys())
     weights = torch.tensor([mix[n] for n in names], dtype=torch.float32)
+    coverage_target = _normalize_target_coverage(target_coverage)
+
+    if coverage_target is not None:
+        max_query_count = int(max_queries) if max_queries is not None else max(int(n_queries), 1000)
+        if max_query_count <= 0:
+            raise ValueError("max_queries must be positive when target_coverage is set.")
+        typed: list[dict[str, Any]] = []
+        counts = torch.zeros((len(names),), dtype=torch.long)
+        covered = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+
+        while len(typed) < max_query_count:
+            current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
+            if current_coverage >= coverage_target:
+                break
+            desired = weights * float(len(typed) + 1)
+            type_idx = int(torch.argmax(desired - counts.float()).item())
+            name = names[type_idx]
+            anchor_mask = ~covered if bool((~covered).any().item()) else None
+            query = _make_query(name, points, trajectories, b, g, anchor_mask=anchor_mask)
+            typed.append(query)
+            counts[type_idx] += 1
+            covered |= point_coverage_mask_for_query(points, query)
+
+        return _finalize_workload(points, typed, g)
+
     counts = torch.floor(weights * n_queries).to(torch.long)
     while int(counts.sum().item()) < n_queries:
         idx = int(torch.argmax(weights - counts.float() / max(1, n_queries)).item())
@@ -128,19 +334,6 @@ def generate_typed_query_workload(
     typed: list[dict[str, Any]] = []
     for name, count in zip(names, counts.tolist()):
         for _ in range(int(count)):
-            if name == "range":
-                typed.append(_make_range_query(points, b, g))
-            elif name == "knn":
-                typed.append(_make_knn_query(points, b, g))
-            elif name == "similarity":
-                typed.append(_make_similarity_query(points, trajectories, b, g))
-            elif name == "clustering":
-                typed.append(_make_clustering_query(points, b, g))
-            else:
-                raise ValueError(f"Unsupported query type: {name}")
+            typed.append(_make_query(name, points, trajectories, b, g))
 
-    perm = torch.randperm(len(typed), generator=g).tolist()
-    typed = [typed[i] for i in perm]
-
-    features, type_ids = pad_query_features(typed)
-    return TypedQueryWorkload(query_features=features, typed_queries=typed, type_ids=type_ids)
+    return _finalize_workload(points, typed, g)

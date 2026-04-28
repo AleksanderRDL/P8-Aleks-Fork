@@ -29,8 +29,17 @@ def _resolve_col(df: pd.DataFrame, aliases: list[str]) -> str:
     raise ValueError(f"Missing required column aliases: {aliases}")
 
 
-def load_ais_csv(csv_path: str, max_points_per_ship: int | None = None) -> list[torch.Tensor]:
-    """Load AIS trajectories from CSV into per-trajectory tensors. See src/data/README.md for details."""
+def load_ais_csv(
+    csv_path: str,
+    max_points_per_ship: int | None = None,
+    return_mmsis: bool = False,
+) -> list[torch.Tensor] | tuple[list[torch.Tensor], list[int]]:
+    """Load AIS trajectories from CSV into per-trajectory tensors.
+
+    If ``return_mmsis=True``, also return the original MMSI identifiers aligned
+    with the trajectory list so downstream writers can preserve vessel IDs.
+    See ``src/data/README.md`` for details.
+    """
     path = Path(csv_path)
     if not path.exists():
         raise FileNotFoundError(f"CSV path does not exist: {csv_path}")
@@ -62,7 +71,8 @@ def load_ais_csv(csv_path: str, max_points_per_ship: int | None = None) -> list[
     df = df.sort_values([mmsi_col, "_time"]).reset_index(drop=True)
 
     trajectories: list[torch.Tensor] = []
-    for _, grp in df.groupby(mmsi_col, sort=False):
+    mmsis: list[int] = []
+    for mmsi_val, grp in df.groupby(mmsi_col, sort=False):
         if len(grp) < 4:
             continue
         if max_points_per_ship is not None and len(grp) > max_points_per_ship:
@@ -88,9 +98,15 @@ def load_ais_csv(csv_path: str, max_points_per_ship: int | None = None) -> list[
 
         traj = torch.stack([t, lat, lon, speed, heading, is_start, is_end, turn_score], dim=1)
         trajectories.append(traj)
+        try:
+            mmsis.append(int(mmsi_val))
+        except (TypeError, ValueError):
+            mmsis.append(0)
 
     if not trajectories:
         raise ValueError("No valid trajectories found in CSV.")
+    if return_mmsis:
+        return trajectories, mmsis
     return trajectories
 
 

@@ -17,6 +17,8 @@ class DataConfig:
     n_ships: int = 24
     n_points_per_ship: int = 200
     csv_path: str | None = None
+    train_csv_path: str | None = None
+    eval_csv_path: str | None = None
     seed: int = 42
     train_fraction: float = 0.70
     val_fraction: float = 0.15
@@ -36,6 +38,8 @@ class QueryConfig:
     """Query generation and workload-mix configuration. See src/queries/README.md for details."""
 
     n_queries: int = 128
+    target_coverage: float | None = None
+    max_queries: int | None = None
     workload: str = "mixed"
     train_workload_mix: dict[str, float] = field(
         default_factory=lambda: {"range": 0.5, "knn": 0.5}
@@ -137,6 +141,9 @@ class TypedQueryWorkload:
     query_features: torch.Tensor
     typed_queries: list[dict[str, Any]]
     type_ids: torch.Tensor
+    coverage_fraction: float | None = None
+    covered_points: int | None = None
+    total_points: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize workload to a dictionary. See src/queries/README.md for details."""
@@ -144,6 +151,9 @@ class TypedQueryWorkload:
             "query_features": self.query_features.tolist(),
             "typed_queries": self.typed_queries,
             "type_ids": self.type_ids.tolist(),
+            "coverage_fraction": self.coverage_fraction,
+            "covered_points": self.covered_points,
+            "total_points": self.total_points,
         }
 
     @classmethod
@@ -153,6 +163,9 @@ class TypedQueryWorkload:
             query_features=torch.tensor(data["query_features"], dtype=torch.float32),
             typed_queries=list(data["typed_queries"]),
             type_ids=torch.tensor(data["type_ids"], dtype=torch.long),
+            coverage_fraction=data.get("coverage_fraction"),
+            covered_points=data.get("covered_points"),
+            total_points=data.get("total_points"),
         )
 
 
@@ -202,9 +215,14 @@ def build_experiment_config(
     n_ships: int = 24,
     n_points: int = 200,
     n_queries: int = 128,
+    query_coverage: float | None = None,
+    target_query_coverage: float | None = None,
+    max_queries: int | None = None,
     epochs: int = 6,
     compression_ratio: float = 0.2,
     csv_path: str | None = None,
+    train_csv_path: str | None = None,
+    eval_csv_path: str | None = None,
     model_type: str = "baseline",
     workload: str = "mixed",
     train_workload_mix: dict[str, float] | None = None,
@@ -221,10 +239,14 @@ def build_experiment_config(
             n_ships=n_ships,
             n_points_per_ship=n_points,
             csv_path=csv_path,
+            train_csv_path=train_csv_path,
+            eval_csv_path=eval_csv_path,
             seed=seed,
         ),
         query=QueryConfig(
             n_queries=n_queries,
+            target_coverage=target_query_coverage if target_query_coverage is not None else query_coverage,
+            max_queries=max_queries,
             workload=workload,
             train_workload_mix=train_workload_mix or {"range": 0.5, "knn": 0.5},
             eval_workload_mix=eval_workload_mix or {"similarity": 0.5, "clustering": 0.5},

@@ -144,7 +144,6 @@ def train_model(
     workload: TypedQueryWorkload,
     model_config: ModelConfig,
     seed: int,
-    query_blind: bool = False,
 ) -> TrainingOutputs:
     """Train typed-head model with trajectory-window ranking losses. See src/training/README.md for details."""
     all_points = torch.cat(train_trajectories, dim=0)
@@ -213,7 +212,7 @@ def train_model(
     history: list[dict[str, float]] = []
 
     effective_epochs = max(8, int(model_config.epochs))
-    run_tag = "query-blind" if query_blind else "main"
+    run_tag = "main"
     patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
     best_tau = float("-inf")
     best_loss = float("inf")
@@ -226,15 +225,10 @@ def train_model(
         epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g)
         epoch_loss = torch.tensor(0.0, device=device)
 
-        if query_blind:
-            q_input = torch.randn_like(norm_queries_dev)
-        else:
-            q_input = norm_queries_dev
-
         for w in windows:
             pred_batch = model(
                 points=w.points,
-                queries=q_input,
+                queries=norm_queries_dev,
                 query_type_ids=type_ids_dev,
                 padding_mask=w.padding_mask,
             )
@@ -306,7 +300,7 @@ def train_model(
                 for w in sample_windows:
                     wp = model(
                         points=w.points,
-                        queries=q_input,
+                        queries=norm_queries_dev,
                         query_type_ids=type_ids_dev,
                         padding_mask=w.padding_mask,
                     )[0]

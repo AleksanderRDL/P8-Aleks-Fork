@@ -115,7 +115,7 @@ def write_simplified_csv(
             if not sub_mask.any():
                 continue
             sub = points_np[s:e][sub_mask]
-            mmsi = trajectory_mmsis[traj_id] if trajectory_mmsis else 100000000 + traj_id
+            mmsi = trajectory_mmsis[traj_id] if trajectory_mmsis is not None and traj_id < len(trajectory_mmsis) else 100000000 + traj_id
             for row in sub:
                 # row = [time, lat, lon, speed, heading, ...]
                 f.write(

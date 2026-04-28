@@ -34,6 +34,8 @@ This module defines the typed query format used by v2, the workload generator, a
 
 `generate_typed_query_workload` builds a mixed workload from the full trajectory set, allocates query counts from the requested mix, shuffles the result deterministically, and returns the `TypedQueryWorkload` container used by experiments and training.
 
+When `target_coverage` is provided, the generator switches to dynamic mode: it creates queries one at a time, anchors new queries on currently uncovered points when possible, and stops once the union of query-covered points reaches the target or `max_queries` is hit. Coverage is measured as point-level query signal coverage: range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal radius regions.
+
 ## Execution Semantics
 
 - `execute_range_query` returns the speed sum inside the box.

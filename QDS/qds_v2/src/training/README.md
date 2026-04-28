@@ -30,7 +30,6 @@ This module builds typed importance labels, batches trajectory-local windows, fi
 
 ## Training Notes
 
-- `train_model` supports a `query_blind` ablation that feeds random query features during training.
 - Epoch-level workload weights are sampled from a lightweight Dirichlet approximation so every type continues to receive signal.
 - The current loop clamps the effective epoch count to at least 8.
 - The loop tracks loss, prediction spread, quantiles, and Kendall tau-style diagnostics in `TrainingOutputs.history`.

@@ -28,7 +28,6 @@ from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
     OracleMethod,
-    QueryBlindMLMethod,
     RandomMethod,
     UniformTemporalMethod,
 )
@@ -80,6 +79,23 @@ def _mix_name(mix: dict[str, float]) -> str:
     return ",".join(f"{k}={v:.1f}" for k, v in sorted(mix.items()))
 
 
+def _coverage_name(workload: TypedQueryWorkload) -> str:
+    """Format workload point-coverage metadata for logs."""
+    if workload.coverage_fraction is None:
+        return "unknown"
+    covered = workload.covered_points if workload.covered_points is not None else 0
+    total = workload.total_points if workload.total_points is not None else 0
+    return f"{100.0 * workload.coverage_fraction:.2f}% ({covered}/{total})"
+
+
+def _normalized_coverage_target(value: float | None) -> float | None:
+    """Normalize coverage target for pipeline warnings."""
+    if value is None:
+        return None
+    target = float(value)
+    return target / 100.0 if target > 1.0 else target
+
+
 def run_experiment_pipeline(
     config: ExperimentConfig,
     trajectories: list[torch.Tensor],
@@ -89,20 +105,53 @@ def run_experiment_pipeline(
     save_model: str | None = None,
     save_queries_dir: str | None = None,
     save_simplified_dir: str | None = None,
+    trajectory_mmsis: list[int] | None = None,
+    eval_trajectories: list[torch.Tensor] | None = None,
+    eval_trajectory_mmsis: list[int] | None = None,
 ) -> ExperimentOutputs:
     """Run training, matched evaluation, and shifted evaluation tables. See src/experiments/README.md for details."""
     pipeline_t0 = time.perf_counter()
-    print(f"[pipeline] {len(trajectories)} trajectories, train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)}", flush=True)
+    if eval_trajectories is None:
+        print(
+            f"[pipeline] {len(trajectories)} trajectories, train_mix={_mix_name(train_mix)}, "
+            f"eval_mix={_mix_name(eval_mix)}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[pipeline] train={len(trajectories)} trajectories, eval={len(eval_trajectories)} trajectories, "
+            f"train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)}",
+            flush=True,
+        )
 
     seeds = derive_seed_bundle(config.data.seed)
     with _phase("split"):
-        train_traj, _val_traj, test_traj = split_trajectories(
-            trajectories,
-            train_fraction=config.data.train_fraction,
-            val_fraction=config.data.val_fraction,
-            seed=seeds.split_seed,
-        )
-        print(f"  train={len(train_traj)}  test={len(test_traj)}", flush=True)
+        if eval_trajectories is None:
+            # Reproduce split_trajectories' permutation here so we can align the
+            # MMSI list with the test split (the helper itself doesn't carry ids).
+            n = len(trajectories)
+            g = torch.Generator().manual_seed(int(seeds.split_seed))
+            perm = torch.randperm(n, generator=g).tolist()
+            n_train = max(1, int(n * config.data.train_fraction))
+            n_val = max(1, int(n * config.data.val_fraction)) if n - n_train > 1 else 0
+            train_traj = [trajectories[i] for i in perm[:n_train]]
+            _val_traj = [trajectories[i] for i in perm[n_train : n_train + n_val]]
+            test_traj = [trajectories[i] for i in perm[n_train + n_val :]]
+            if not test_traj:
+                test_traj = _val_traj if _val_traj else train_traj
+            if trajectory_mmsis is not None and len(trajectory_mmsis) == n:
+                test_mmsis = [trajectory_mmsis[i] for i in perm[n_train + n_val :]]
+                if not test_mmsis:
+                    test_mmsis = [trajectory_mmsis[i] for i in perm[n_train : n_train + n_val]] or \
+                                 [trajectory_mmsis[i] for i in perm[:n_train]]
+            else:
+                test_mmsis = None
+            print(f"  split mode=single dataset  train={len(train_traj)}  test={len(test_traj)}", flush=True)
+        else:
+            train_traj = trajectories
+            test_traj = eval_trajectories
+            test_mmsis = eval_trajectory_mmsis
+            print(f"  split mode=separate CSVs  train={len(train_traj)}  eval={len(test_traj)}", flush=True)
 
     with _phase("build-datasets"):
         train_ds = TrajectoryDataset(train_traj)
@@ -118,13 +167,37 @@ def run_experiment_pipeline(
             n_queries=config.query.n_queries,
             workload_mix=train_mix,
             seed=seeds.train_query_seed,
+            target_coverage=config.query.target_coverage,
+            max_queries=config.query.max_queries,
         )
         eval_workload = generate_typed_query_workload(
             trajectories=test_traj,
             n_queries=config.query.n_queries,
             workload_mix=eval_mix,
             seed=seeds.eval_query_seed,
+            target_coverage=config.query.target_coverage,
+            max_queries=config.query.max_queries,
         )
+        print(
+            f"  train_workload={len(train_workload.typed_queries)} queries  "
+            f"coverage={_coverage_name(train_workload)}",
+            flush=True,
+        )
+        print(
+            f"  eval_workload={len(eval_workload.typed_queries)} queries  "
+            f"coverage={_coverage_name(eval_workload)}",
+            flush=True,
+        )
+        target = _normalized_coverage_target(config.query.target_coverage)
+        if target is not None:
+            for label, workload in (("train", train_workload), ("eval", eval_workload)):
+                coverage = float(workload.coverage_fraction or 0.0)
+                if coverage + 1e-9 < target:
+                    print(
+                        f"  WARNING: {label} workload stopped below requested coverage "
+                        f"({coverage:.2%} < {target:.2%}); raise --max_queries to continue.",
+                        flush=True,
+                    )
 
     if save_queries_dir:
         with _phase("write-queries-geojson"):
@@ -137,7 +210,6 @@ def run_experiment_pipeline(
             workload=train_workload,
             model_config=config.model,
             seed=seeds.torch_seed,
-            query_blind=False,
         )
 
     if save_model:
@@ -157,23 +229,11 @@ def run_experiment_pipeline(
                 f"train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)})",
                 flush=True,
             )
-    with _phase(f"train-query-blind ({config.model.epochs} epochs)"):
-        query_blind = train_model(
-            train_trajectories=train_traj,
-            train_boundaries=train_boundaries,
-            workload=train_workload,
-            model_config=config.model,
-            seed=seeds.torch_seed + 11,
-            query_blind=True,
-        )
-
     boost = float(getattr(config.model, "query_area_boost", 1.0))
     buf = float(getattr(config.model, "query_buffer_deg", 0.20))
     methods = [
         MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
                     query_area_boost=boost, query_buffer_deg=buf),
-        QueryBlindMLMethod(name="QueryBlindML", trained=query_blind, workload=eval_workload, workload_mix=eval_mix,
-                           query_area_boost=boost, query_buffer_deg=buf),
         RandomMethod(seed=config.data.seed),
         UniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -238,6 +298,10 @@ def run_experiment_pipeline(
         "config": config.to_dict(),
         "train_mix": train_mix,
         "eval_mix": eval_mix,
+        "train_query_count": len(train_workload.typed_queries),
+        "eval_query_count": len(eval_workload.typed_queries),
+        "train_query_coverage": train_workload.coverage_fraction,
+        "eval_query_coverage": eval_workload.coverage_fraction,
         "matched": {
             name: {
                 "aggregate_error": m.aggregate_error,
@@ -266,7 +330,8 @@ def run_experiment_pipeline(
                                 query_area_boost=boost, query_buffer_deg=buf)
             mask = mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             out_path = Path(save_simplified_dir) / "ML_simplified.csv"
-            write_simplified_csv(str(out_path), test_points, test_boundaries, mask)
+            write_simplified_csv(str(out_path), test_points, test_boundaries, mask,
+                                 trajectory_mmsis=test_mmsis)
 
         with _phase("trajectory-length-loss"):
             report_trajectory_length_loss(test_points, test_boundaries, mask, top_k=25)

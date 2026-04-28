@@ -29,6 +29,22 @@ python -m src.experiments.run_ais_experiment \
   --model_type baseline
 ```
 
+To train on one CSV and evaluate/clean a different CSV without trajectory splitting:
+
+```bash
+python -m src.experiments.run_ais_experiment \
+  --train_csv_path "C:\path\to\train.csv" \
+  --eval_csv_path "C:\path\to\eval.csv" \
+  --query_coverage 0.30 \
+  --max_queries 1000 \
+  --epochs 20 \
+  --workload mixed \
+  --compression_ratio 0.20 \
+  --model_type baseline
+```
+
+`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the simplified evaluation CSV is written automatically under `AISDATA/ML_processed_AIS_files`.
+
 Use `--model_type turn_aware` to include the extra `turn_score` point feature. Workload mixes can be overridden with `--train_workload_mix` and `--eval_workload_mix` (or the `..._mix_train` / `..._mix_eval` aliases).
 
 ## Architecture At A Glance

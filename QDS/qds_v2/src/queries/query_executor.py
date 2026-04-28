@@ -56,6 +56,32 @@ def execute_knn_query(points: torch.Tensor, params: dict[str, float]) -> set[int
     return set(idx[chosen].tolist())
 
 
+def execute_knn_query_distances(points: torch.Tensor, params: dict[str, float]) -> list[float]:
+    """Execute a kNN query returning the sorted distances of the k nearest points.
+
+    Unlike :func:`execute_knn_query` (which returns positional indices and is
+    only meaningful relative to one array), this returns anchor-relative
+    distances that are directly comparable between the full dataset and a
+    simplified dataset. Used by :func:`knn_error` during evaluation.
+    """
+    k = max(1, int(params["k"]))
+    t0 = float(params["t_center"] - params["t_half_window"])
+    t1 = float(params["t_center"] + params["t_half_window"])
+    mask = (points[:, 0] >= t0) & (points[:, 0] <= t1)
+    idx = torch.where(mask)[0]
+    if idx.numel() == 0:
+        return []
+
+    cand = points[idx]
+    d_space = _haversine_km(cand[:, 1], cand[:, 2], float(params["lat"]), float(params["lon"]))
+    d_time = torch.abs(cand[:, 0] - float(params["t_center"]))
+    dist = d_space + 0.001 * d_time
+
+    k_eff = min(k, dist.numel())
+    top_vals, _ = torch.topk(-dist, k_eff)
+    return sorted((-top_vals).tolist())
+
+
 def _dtw_like_distance(a: torch.Tensor, b: torch.Tensor) -> float:
     """Compute a lightweight DTW-like distance for short snippets. See src/queries/README.md for details."""
     if a.numel() == 0 or b.numel() == 0:
@@ -158,7 +184,7 @@ def execute_typed_query(
     if qtype == "range":
         return execute_range_query(points, params)
     if qtype == "knn":
-        return execute_knn_query(points, params)
+        return execute_knn_query_distances(points, params)
     if qtype == "similarity":
         return execute_similarity_query(trajectories, params, query.get("reference", []))
     if qtype == "clustering":

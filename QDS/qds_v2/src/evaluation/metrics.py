@@ -37,9 +37,36 @@ def range_error(full: float, simplified: float) -> float:
     return abs(simplified - full) / (abs(full) + 1e-6)
 
 
-def knn_error(full: set[int], simplified: set[int]) -> float:
-    """Compute kNN error as one minus Jaccard. See src/evaluation/README.md for details."""
-    return jaccard_distance(full, simplified)
+def knn_error(full: list[float], simplified: list[float]) -> float:
+    """Compute kNN error as relative distance excess.
+
+    Both inputs are sorted-ascending lists of anchor-to-neighbour distances
+    (length ``<= k``). Error is the average, clipped to ``[0, 1]``, of
+    ``(d_simplified - d_full) / d_full`` over matched ranks. Missing slots
+    in ``simplified`` (fewer survivors in the time window than ``k``) count
+    as error ``1.0``. Zero-distance exact hits in ``full`` contribute 0 if
+    ``simplified`` also hits zero, else 1.
+
+    Intuitively: 0.0 means the simplified dataset preserves the exact
+    neighbourhood; 1.0 means the k nearest surviving neighbours are at
+    least twice as far as in the full dataset (or missing entirely).
+    """
+    n = len(full)
+    if n == 0:
+        return 0.0
+    errors: list[float] = []
+    for i in range(n):
+        if i >= len(simplified):
+            errors.append(1.0)
+            continue
+        d_full = float(full[i])
+        d_simp = float(simplified[i])
+        if d_full <= 1e-9:
+            errors.append(0.0 if d_simp <= 1e-9 else 1.0)
+        else:
+            rel = (d_simp - d_full) / d_full
+            errors.append(max(0.0, min(1.0, rel)))
+    return sum(errors) / len(errors)
 
 
 def similarity_error(full: list[int], simplified: list[int]) -> float:

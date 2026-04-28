@@ -9,9 +9,25 @@ def build_parser() -> argparse.ArgumentParser:
     """Build experiment CLI parser. See src/experiments/README.md for details."""
     parser = argparse.ArgumentParser(description="Run AIS-QDS v2 experiment.")
     parser.add_argument("--csv_path", type=str, default=None)
+    parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
     parser.add_argument("--n_queries", type=int, default=128)
+    parser.add_argument(
+        "--query_coverage",
+        "--target_query_coverage",
+        dest="query_coverage",
+        type=float,
+        default=None,
+        help="Generate queries until this point-coverage target is reached. Accepts 0.30 or 30 for 30%%.",
+    )
+    parser.add_argument(
+        "--max_queries",
+        type=int,
+        default=None,
+        help="Safety cap for dynamic query generation when --query_coverage is set. Default: max(n_queries, 1000).",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--compression_ratio", type=float, default=0.2)
     parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
@@ -46,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--save_simplified_dir",
         type=str,
         default=None,
-        help="Directory to save MLQDS simplified trajectories as GeoJSON.",
+        help="Directory to save MLQDS simplified trajectories as CSV.",
     )
     parser.add_argument(
         "--query_area_boost",

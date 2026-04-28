@@ -1,6 +1,6 @@
 # Experiments Module
 
-This module is the orchestration layer for the v2 rebuild. It turns flat CLI arguments into structured config objects, derives deterministic sub-seeds, generates workloads, trains the MLQDS and query-blind ablations, evaluates baselines, and writes the example outputs.
+This module is the orchestration layer for the v2 rebuild. It turns flat CLI arguments into structured config objects, derives deterministic sub-seeds, generates workloads, trains MLQDS, evaluates baselines, and writes the example outputs.
 
 ## Files
 
@@ -16,9 +16,13 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 `run_ais_experiment.py` accepts:
 
 - `--csv_path`
+- `--train_csv_path` / `--train_csv`
+- `--eval_csv_path` / `--eval_csv`
 - `--n_ships`
 - `--n_points`
 - `--n_queries`
+- `--query_coverage` / `--target_query_coverage`
+- `--max_queries`
 - `--epochs`
 - `--compression_ratio`
 - `--model_type {baseline,turn_aware}`
@@ -28,12 +32,12 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--seed`
 - `--results_dir`
 
-If `--csv_path` is omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
+If `--train_csv_path` and `--eval_csv_path` are supplied together, the training CSV is used only for training and the evaluation CSV is used only for evaluation/simplified-output writing. If `--csv_path` is supplied instead, trajectories are split at trajectory level as before. If all CSV arguments are omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
 
 ## Config Objects
 
-- `DataConfig` - CSV path, synthetic data size, and train/validation split fractions.
-- `QueryConfig` - workload size, workload label, train/eval workload mixes, and `similarity_top_k`.
+- `DataConfig` - CSV paths, synthetic data size, and legacy train/validation split fractions.
+- `QueryConfig` - workload size, optional target point coverage, workload label, train/eval workload mixes, and `similarity_top_k`.
 - `ModelConfig` - embedding sizes, transformer depth, chunk size, dropout, compression ratio, and ranking-loss hyperparameters.
 - `BaselineConfig` - baseline toggles such as `include_oracle`.
 - `VisualizationConfig` - current hook for optional plotting.
@@ -43,9 +47,9 @@ If `--csv_path` is omitted, synthetic AIS data is generated with `n_ships`, `n_p
 
 ## Pipeline
 
-1. Split trajectories into train, validation, and test sets at the trajectory level.
+1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
 2. Generate independent train and eval typed query workloads from the respective trajectory sets.
-3. Train the query-aware model and the query-blind ablation.
+3. Train the query-aware model.
 4. Evaluate MLQDS and baseline methods on the test set.
 5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt`.
 
