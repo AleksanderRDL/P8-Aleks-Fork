@@ -36,6 +36,7 @@ from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorklo
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import parse_workload_mix
+from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
 
@@ -140,16 +141,19 @@ def run_experiment_pipeline(
             if not test_traj:
                 test_traj = _val_traj if _val_traj else train_traj
             if trajectory_mmsis is not None and len(trajectory_mmsis) == n:
+                train_mmsis = [trajectory_mmsis[i] for i in perm[:n_train]]
                 test_mmsis = [trajectory_mmsis[i] for i in perm[n_train + n_val :]]
                 if not test_mmsis:
                     test_mmsis = [trajectory_mmsis[i] for i in perm[n_train : n_train + n_val]] or \
                                  [trajectory_mmsis[i] for i in perm[:n_train]]
             else:
+                train_mmsis = None
                 test_mmsis = None
             print(f"  split mode=single dataset  train={len(train_traj)}  test={len(test_traj)}", flush=True)
         else:
             train_traj = trajectories
             test_traj = eval_trajectories
+            train_mmsis = trajectory_mmsis
             test_mmsis = eval_trajectory_mmsis
             print(f"  split mode=separate CSVs  train={len(train_traj)}  eval={len(test_traj)}", flush=True)
 
@@ -226,14 +230,12 @@ def run_experiment_pipeline(
             print(
                 f"  saved checkpoint to {save_model}  "
                 f"(epochs_trained={trained.epochs_trained}, "
+                f"best_epoch={trained.best_epoch}, best_loss={trained.best_loss:.8f}, "
                 f"train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)})",
                 flush=True,
             )
-    boost = float(getattr(config.model, "query_area_boost", 1.0))
-    buf = float(getattr(config.model, "query_buffer_deg", 0.20))
     methods = [
-        MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
-                    query_area_boost=boost, query_buffer_deg=buf),
+        MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix),
         RandomMethod(seed=config.data.seed),
         UniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -252,13 +254,19 @@ def run_experiment_pipeline(
                     compression_ratio=config.model.compression_ratio,
                 )
 
-        oracle = OracleMethod(labels=trained.labels, workload_mix=eval_mix)
+        eval_labels, _ = compute_typed_importance_labels(
+            points=test_points,
+            boundaries=test_boundaries,
+            typed_queries=eval_workload.typed_queries,
+            seed=seeds.eval_query_seed,
+        )
+        oracle = OracleMethod(labels=eval_labels, workload_mix=eval_mix)
         with _phase(f"  eval {oracle.name}"):
             matched[oracle.name] = evaluate_method(
                 method=oracle,
-                points=train_points,
-                boundaries=train_boundaries,
-                typed_queries=train_workload.typed_queries,
+                points=test_points,
+                boundaries=test_boundaries,
+                typed_queries=eval_workload.typed_queries,
                 workload_mix=eval_mix,
                 compression_ratio=config.model.compression_ratio,
             )
@@ -270,8 +278,7 @@ def run_experiment_pipeline(
             _mix_name(train_mix): {
                 _mix_name(train_mix): float(
                     evaluate_method(
-                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix,
-                                           query_area_boost=boost, query_buffer_deg=buf),
+                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix),
                         points=test_points,
                         boundaries=test_boundaries,
                         typed_queries=train_workload.typed_queries,
@@ -281,8 +288,7 @@ def run_experiment_pipeline(
                 ),
                 _mix_name(eval_mix): float(
                     evaluate_method(
-                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
-                                           query_area_boost=boost, query_buffer_deg=buf),
+                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix),
                         points=test_points,
                         boundaries=test_boundaries,
                         typed_queries=eval_workload.typed_queries,
@@ -313,6 +319,8 @@ def run_experiment_pipeline(
         },
         "shift": shift_pairs,
         "training_history": trained.history,
+        "best_epoch": trained.best_epoch,
+        "best_loss": trained.best_loss,
     }
 
     with _phase("write-results"):
@@ -326,15 +334,37 @@ def run_experiment_pipeline(
 
     if save_simplified_dir:
         with _phase("write-simplified-csv"):
-            mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix,
-                                query_area_boost=boost, query_buffer_deg=buf)
-            mask = mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
-            out_path = Path(save_simplified_dir) / "ML_simplified.csv"
-            write_simplified_csv(str(out_path), test_points, test_boundaries, mask,
-                                 trajectory_mmsis=test_mmsis)
+            out_dir = Path(save_simplified_dir)
+
+            train_mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix)
+            train_mask = train_mlqds.simplify(train_points, train_boundaries, config.model.compression_ratio)
+            write_simplified_csv(
+                str(out_dir / "ML_simplified_train.csv"),
+                train_points,
+                train_boundaries,
+                train_mask,
+                trajectory_mmsis=train_mmsis,
+            )
+
+            eval_mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix)
+            eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
+            write_simplified_csv(
+                str(out_dir / "ML_simplified_eval.csv"),
+                test_points,
+                test_boundaries,
+                eval_mask,
+                trajectory_mmsis=test_mmsis,
+            )
+            write_simplified_csv(
+                str(out_dir / "ML_simplified.csv"),
+                test_points,
+                test_boundaries,
+                eval_mask,
+                trajectory_mmsis=test_mmsis,
+            )
 
         with _phase("trajectory-length-loss"):
-            report_trajectory_length_loss(test_points, test_boundaries, mask, top_k=25)
+            report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25)
 
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(matched_table=matched_table, shift_table=shift_table, metrics_dump=dump)

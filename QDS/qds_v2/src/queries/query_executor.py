@@ -80,7 +80,7 @@ def execute_knn_query(
     params: dict[str, float],
     boundaries: list[tuple[int, int]] | None = None,
 ) -> set[int]:
-    """Execute a kNN query returning trajectory IDs containing the nearest points."""
+    """Execute a kNN query returning the nearest distinct trajectory IDs."""
     k = max(1, int(params["k"]))
     t0 = float(params["t_center"] - params["t_half_window"])
     t1 = float(params["t_center"] + params["t_half_window"])
@@ -94,9 +94,19 @@ def execute_knn_query(
     d_time = torch.abs(cand[:, 0] - float(params["t_center"]))
     dist = d_space + 0.001 * d_time
 
-    k_eff = min(k, dist.numel())
-    chosen = torch.topk(-dist, k_eff).indices
-    return _indices_to_trajectory_ids(idx[chosen], _default_boundaries(points, boundaries))
+    query_boundaries = _default_boundaries(points, boundaries)
+    ends = torch.tensor([end for _, end in query_boundaries], dtype=torch.long, device=idx.device)
+    traj_ids = torch.bucketize(idx, ends, right=True)
+    min_dist = torch.full((len(query_boundaries),), float("inf"), dtype=dist.dtype, device=dist.device)
+    min_dist.scatter_reduce_(0, traj_ids, dist, reduce="amin", include_self=True)
+    valid = torch.isfinite(min_dist)
+    if not bool(valid.any().item()):
+        return set()
+
+    valid_ids = torch.where(valid)[0]
+    k_eff = min(k, int(valid_ids.numel()))
+    chosen = torch.topk(-min_dist[valid_ids], k_eff).indices
+    return {int(trajectory_id) for trajectory_id in valid_ids[chosen].tolist()}
 
 
 def _dtw_like_distance(a: torch.Tensor, b: torch.Tensor) -> float:

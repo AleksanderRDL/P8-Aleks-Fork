@@ -5,7 +5,12 @@ from __future__ import annotations
 from src.data.trajectory_dataset import TrajectoryDataset
 from src.experiments.experiment_config import build_experiment_config
 from src.queries.query_generator import generate_typed_query_workload
-from src.training.train_model import train_model
+from src.training.train_model import _selection_score, train_model
+
+
+def test_selection_score_penalizes_collapsed_predictions() -> None:
+    """Assert model selection does not prefer collapsed output solely because tau is nonnegative."""
+    assert _selection_score(avg_tau=0.0, pred_std=0.0) < _selection_score(avg_tau=-0.05, pred_std=0.01)
 
 
 def test_training_does_not_collapse(synthetic_dataset) -> None:

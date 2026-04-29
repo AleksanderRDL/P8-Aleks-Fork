@@ -43,7 +43,9 @@ python -m src.experiments.run_ais_experiment \
   --model_type baseline
 ```
 
-`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the simplified evaluation CSV is written automatically under `AISDATA/ML_processed_AIS_files`.
+`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. With coverage mode enabled, `--max_queries` is the safety cap and `--n_queries` only matters when `--max_queries` is omitted, where the cap defaults to `max(n_queries, 1000)`. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, simplified train/eval CSVs are written automatically under `AISDATA/ML_processed_AIS_files` as `ML_simplified_train.csv` and `ML_simplified_eval.csv`; `ML_simplified.csv` is kept as the eval alias for older tooling.
+
+Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
 
 Use `--model_type turn_aware` to include the extra `turn_score` point feature. Workload mixes can be overridden with `--train_workload_mix` and `--eval_workload_mix` (or the `..._mix_train` / `..._mix_eval` aliases).
 
@@ -51,7 +53,7 @@ Use `--model_type turn_aware` to include the extra `turn_score` point feature. W
 
 1. `src/data/` loads AIS CSV files or generates deterministic synthetic trajectories.
 2. `src/queries/` builds typed query workloads and executes range, kNN, similarity, and clustering queries.
-3. `src/training/` computes typed importance labels, trains the model, and persists the scaler and checkpoint artifacts.
+3. `src/training/` computes typed F1-contribution labels, trains the model, restores the best-loss epoch, and persists the scaler and checkpoint artifacts.
 4. `src/models/` contains the query-conditioned trajectory transformer and the turn-aware variant.
 5. `src/simplification/` keeps the highest-scoring points per trajectory with deterministic tie-breaking.
 6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores.
@@ -62,7 +64,7 @@ Use `--model_type turn_aware` to include the extra `turn_score` point feature. W
 
 The experiment runner writes three files into `results/`:
 
-- `example_run.json` - config, workload mixes, per-method metrics, and training history.
+- `example_run.json` - config, workload mixes, per-method metrics, training history, and best-loss epoch metadata.
 - `matched_table.txt` - fixed-width comparison table for the evaluation workload.
 - `shift_table.txt` - shift table comparing the train workload against the eval workload.
 

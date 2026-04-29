@@ -12,7 +12,7 @@ data -> queries -> training -> simplification -> evaluation -> experiments.
 | `data/` | AIS CSV loading, synthetic data generation, and trajectory boundary helpers. |
 | `queries/` | Typed query definitions, workload generation, and query executors. |
 | `models/` | Query-conditioned trajectory encoders and attention utilities. |
-| `training/` | Importance labels, window batching, scaler persistence, and training/checkpoint helpers. |
+| `training/` | F1-contribution labels, window batching, scaler persistence, and training/checkpoint helpers. |
 | `simplification/` | Trajectory-local top-k simplification. |
 | `evaluation/` | Baselines, F1 metrics, and tabular reporting. |
 | `experiments/` | CLI parsing, config dataclasses, and the end-to-end pipeline. |

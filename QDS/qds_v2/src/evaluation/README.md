@@ -12,7 +12,7 @@ This module compares query-aware ML simplification against stochastic and geomet
 
 ## Methods
 
-- `MLQDSMethod` uses the trained model, the persisted scaler, and the eval workload to produce per-point scores.
+- `MLQDSMethod` uses the trained model, the persisted scaler, and the eval workload to produce workload-weighted per-point scores, then applies the standard per-trajectory top-k simplifier directly.
 - `RandomMethod` retains random points per trajectory.
 - `UniformTemporalMethod` keeps approximately evenly spaced points in each trajectory.
 - `DouglasPeuckerMethod` approximates geometric importance from perpendicular distance to the trajectory endpoints.

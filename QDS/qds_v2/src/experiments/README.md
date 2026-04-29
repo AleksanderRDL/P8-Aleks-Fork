@@ -48,10 +48,10 @@ If `--train_csv_path` and `--eval_csv_path` are supplied together, the training 
 ## Pipeline
 
 1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
-2. Generate independent train and eval typed query workloads from the respective trajectory sets.
-3. Train the query-aware model.
+2. Generate independent train and eval typed query workloads from the respective trajectory sets; range/kNN anchors use the 70/30 density sampler described in `src/queries`.
+3. Train the query-aware model and restore the epoch with the best training loss.
 4. Evaluate MLQDS and baseline methods on the test set.
-5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt` with aggregate/per-type F1 fields.
+5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt` with aggregate/per-type F1 fields plus `best_epoch` and `best_loss` training metadata.
 
 ## Workload Mixes
 

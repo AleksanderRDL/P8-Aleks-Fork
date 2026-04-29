@@ -9,6 +9,9 @@ import torch
 from src.experiments.experiment_config import TypedQueryWorkload
 from src.queries.query_types import normalize_workload_mix, pad_query_features
 
+DENSITY_ANCHOR_PROBABILITY = 0.70
+DENSITY_GRID_BINS = 64
+
 
 def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
     """Compute global point-cloud bounds for query generation. See src/queries/README.md for details."""
@@ -22,16 +25,66 @@ def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
     }
 
 
+def _density_anchor_weights(points: torch.Tensor, bins: int = DENSITY_GRID_BINS) -> torch.Tensor:
+    """Return per-point spatial density weights from a lat/lon grid density map."""
+    if points.shape[0] == 0:
+        return torch.empty((0,), dtype=torch.float32, device=points.device)
+
+    bin_count = max(1, int(bins))
+    lat = points[:, 1]
+    lon = points[:, 2]
+    lat_min = lat.min()
+    lon_min = lon.min()
+    lat_span = torch.clamp(lat.max() - lat_min, min=1e-6)
+    lon_span = torch.clamp(lon.max() - lon_min, min=1e-6)
+
+    lat_bins = torch.clamp(((lat - lat_min) / lat_span * (bin_count - 1)).long(), 0, bin_count - 1)
+    lon_bins = torch.clamp(((lon - lon_min) / lon_span * (bin_count - 1)).long(), 0, bin_count - 1)
+    bin_ids = lat_bins * bin_count + lon_bins
+    cell_counts = torch.bincount(bin_ids.cpu(), minlength=bin_count * bin_count).to(
+        device=points.device,
+        dtype=torch.float32,
+    )
+    weights = cell_counts[bin_ids]
+    total = weights.sum()
+    if float(total.item()) <= 0.0:
+        return torch.ones((points.shape[0],), dtype=torch.float32, device=points.device) / max(1, points.shape[0])
+    return weights / total
+
+
 def _pick_point(
     points: torch.Tensor,
     generator: torch.Generator,
     candidate_mask: torch.Tensor | None = None,
+    density_weights: torch.Tensor | None = None,
+    density_probability: float = DENSITY_ANCHOR_PROBABILITY,
 ) -> torch.Tensor:
     """Sample one point row from the cloud. See src/queries/README.md for details."""
     if candidate_mask is not None and bool(candidate_mask.any().item()):
         candidates = torch.where(candidate_mask)[0]
-        cand_idx = int(torch.randint(0, candidates.shape[0], (1,), generator=generator).item())
-        idx = int(candidates[cand_idx].item())
+    else:
+        candidates = None
+
+    use_density = (
+        density_weights is not None
+        and density_weights.numel() == points.shape[0]
+        and float(torch.rand(1, generator=generator).item()) < float(density_probability)
+    )
+    if use_density:
+        if candidates is not None:
+            candidate_weights = density_weights[candidates].float()
+            if float(candidate_weights.sum().item()) > 0.0:
+                sampled = int(torch.multinomial(candidate_weights, 1, generator=generator).item())
+                return points[int(candidates[sampled].item())]
+        else:
+            weights = density_weights.float()
+            if float(weights.sum().item()) > 0.0:
+                sampled = int(torch.multinomial(weights, 1, generator=generator).item())
+                return points[sampled]
+
+    if candidates is not None:
+        candidate_idx = int(torch.randint(0, candidates.shape[0], (1,), generator=generator).item())
+        idx = int(candidates[candidate_idx].item())
     else:
         idx = int(torch.randint(0, points.shape[0], (1,), generator=generator).item())
     return points[idx]
@@ -42,9 +95,10 @@ def _make_range_query(
     b: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
+    density_weights: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Generate one range query. See src/queries/README.md for details."""
-    p = _pick_point(points, generator, candidate_mask=anchor_mask)
+    p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     lat_w = 0.08 * (b["lat_max"] - b["lat_min"]) * (0.5 + torch.rand(1, generator=generator).item())
     lon_w = 0.08 * (b["lon_max"] - b["lon_min"]) * (0.5 + torch.rand(1, generator=generator).item())
     t_w = 0.15 * (b["t_max"] - b["t_min"]) * (0.5 + torch.rand(1, generator=generator).item())
@@ -66,9 +120,10 @@ def _make_knn_query(
     b: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
+    density_weights: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Generate one kNN query. See src/queries/README.md for details."""
-    p = _pick_point(points, generator, candidate_mask=anchor_mask)
+    p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     return {
         "type": "knn",
         "params": {
@@ -246,12 +301,13 @@ def _make_query(
     b: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
+    density_weights: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
     if name == "range":
-        return _make_range_query(points, b, generator, anchor_mask=anchor_mask)
+        return _make_range_query(points, b, generator, anchor_mask=anchor_mask, density_weights=density_weights)
     if name == "knn":
-        return _make_knn_query(points, b, generator, anchor_mask=anchor_mask)
+        return _make_knn_query(points, b, generator, anchor_mask=anchor_mask, density_weights=density_weights)
     if name == "similarity":
         return _make_similarity_query(points, trajectories, b, generator, anchor_mask=anchor_mask)
     if name == "clustering":
@@ -298,13 +354,16 @@ def generate_typed_query_workload(
 
     mix = normalize_workload_mix(workload_mix)
     g = torch.Generator().manual_seed(int(seed))
+    density_weights = _density_anchor_weights(points)
 
     names = list(mix.keys())
     weights = torch.tensor([mix[n] for n in names], dtype=torch.float32)
     coverage_target = _normalize_target_coverage(target_coverage)
 
     if coverage_target is not None:
-        max_query_count = int(max_queries) if max_queries is not None else max(int(n_queries), 1000)
+        requested_queries = max(1, int(n_queries))
+        configured_max = int(max_queries) if max_queries is not None else max(requested_queries, 1000)
+        max_query_count = max(requested_queries, configured_max)
         if max_query_count <= 0:
             raise ValueError("max_queries must be positive when target_coverage is set.")
         typed: list[dict[str, Any]] = []
@@ -313,14 +372,14 @@ def generate_typed_query_workload(
 
         while len(typed) < max_query_count:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
-            if current_coverage >= coverage_target:
+            if len(typed) >= requested_queries and current_coverage >= coverage_target:
                 break
             desired = weights * float(len(typed) + 1)
             type_idx = int(torch.argmax(desired - counts.float()).item())
             name = names[type_idx]
-            # Coverage controls the stop condition only; anchors remain uniformly sampled
-            # from all points so overlapping query hits are allowed and expected.
-            query = _make_query(name, points, trajectories, b, g, anchor_mask=None)
+            # Coverage controls the stop condition only; range/kNN anchors still use
+            # the 70/30 density sampler over all points, allowing overlapping hits.
+            query = _make_query(name, points, trajectories, b, g, anchor_mask=None, density_weights=density_weights)
             typed.append(query)
             counts[type_idx] += 1
             covered |= point_coverage_mask_for_query(points, query)
@@ -335,6 +394,6 @@ def generate_typed_query_workload(
     typed: list[dict[str, Any]] = []
     for name, count in zip(names, counts.tolist()):
         for _ in range(int(count)):
-            typed.append(_make_query(name, points, trajectories, b, g))
+            typed.append(_make_query(name, points, trajectories, b, g, density_weights=density_weights))
 
     return _finalize_workload(points, typed, g)

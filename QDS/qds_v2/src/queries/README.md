@@ -15,7 +15,7 @@ This module defines the typed query format used by v2, the workload generator, a
 | Name | ID | Input params | Return value |
 | --- | --- | --- | --- |
 | `range` | 0 | spatial-temporal box | set of matching trajectory IDs |
-| `knn` | 1 | anchor point, time window, `k` | set of trajectory IDs containing the nearest points |
+| `knn` | 1 | anchor point, time window, `k` | set of nearest distinct trajectory IDs |
 | `similarity` | 2 | centroid, time box, radius, reference snippet | ranked trajectory IDs, consumed as a set for F1 |
 | `clustering` | 3 | box, `eps`, `min_samples` | per-trajectory DBSCAN labels over trajectory centroids |
 
@@ -34,12 +34,14 @@ This module defines the typed query format used by v2, the workload generator, a
 
 `generate_typed_query_workload` builds a mixed workload from the full trajectory set, allocates query counts from the requested mix, shuffles the result deterministically, and returns the `TypedQueryWorkload` container used by experiments and training.
 
-When `target_coverage` is provided, the generator switches to dynamic mode: it creates queries one at a time and stops once the union of query-covered points reaches the target or `max_queries` is hit. Anchors are sampled uniformly from all points; the same point may be covered by multiple queries. Coverage is measured as point-level query signal coverage: range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal radius regions.
+Range and kNN anchors use a 70/30 density sampler. The generator builds a lat/lon density map for the whole dataset; 70% of range/kNN anchors are sampled with probability proportional to the density of the point's grid cell, and 30% are sampled uniformly from all points. Similarity and clustering keep the existing uniform anchor behavior.
+
+When `target_coverage` is provided, the generator switches to dynamic mode: it creates queries one at a time and stops once the union of query-covered points reaches the target or `max_queries` is hit. Range/kNN anchors still use the same 70/30 density sampler, coverage controls only the stop condition, and the same point may be covered by multiple queries. Coverage is measured as point-level query signal coverage: range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal radius regions.
 
 ## Execution Semantics
 
 - `execute_range_query` returns the set of trajectory IDs with points inside the box.
-- `execute_knn_query` returns the set of trajectory IDs containing the selected nearest points.
+- `execute_knn_query` computes the nearest point per trajectory inside the time window and returns the `k` nearest distinct trajectory IDs.
 - `execute_similarity_query` filters trajectories by centroid and radius, then ranks trajectory IDs with a lightweight DTW-like distance; evaluation drops ranking and uses set F1.
 - `execute_clustering_query` clusters per-trajectory representatives inside the box and returns labels indexed by trajectory ID.
 - `execute_typed_query` dispatches by the `type` field and returns the type-specific result object.

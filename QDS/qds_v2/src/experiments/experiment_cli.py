@@ -64,16 +64,4 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory to save MLQDS simplified trajectories as CSV.",
     )
-    parser.add_argument(
-        "--query_area_boost",
-        type=float,
-        default=1.0,
-        help="Multiply MLQDS scores of points within --query_buffer_deg of any query by this factor. 1.0 disables.",
-    )
-    parser.add_argument(
-        "--query_buffer_deg",
-        type=float,
-        default=0.20,
-        help="Buffer (in degrees lat/lon) around each query geometry used by --query_area_boost.",
-    )
     return parser

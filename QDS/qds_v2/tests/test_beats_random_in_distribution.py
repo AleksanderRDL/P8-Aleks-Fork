@@ -18,6 +18,7 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
         train_mix=mix,
         eval_mix=mix,
         results_dir=str(tmp_path),
+        save_simplified_dir=str(tmp_path / "simplified"),
     )
 
     ml = out.metrics_dump["matched"]["MLQDS"]["aggregate_f1"]
@@ -32,3 +33,6 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     # F1 is higher-is-better, so callers should rank with max(), not min().
     scores = {name: metrics["aggregate_f1"] for name, metrics in out.metrics_dump["matched"].items()}
     assert scores[max(scores, key=scores.get)] >= scores[min(scores, key=scores.get)]
+    assert (tmp_path / "simplified" / "ML_simplified_train.csv").exists()
+    assert (tmp_path / "simplified" / "ML_simplified_eval.csv").exists()
+    assert (tmp_path / "simplified" / "ML_simplified.csv").exists()

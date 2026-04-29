@@ -1,32 +1,27 @@
-Method                    AggregateErr   Compression   Latency(ms)        Type
+Method                     AggregateF1   Compression   Latency(ms)        Type
 ------------------------------------------------------------------------------
-MLQDS                           0.8815        0.1006     330504.76         all
+MLQDS                           0.9305        0.1008    2201115.93         all
   - range                       0.0000                                   range
-  - knn                         0.8815                                     knn
+  - knn                         0.9305                                     knn
   - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-QueryBlindML                    0.8852        0.1006     305661.94         all
+Random                          0.9246        0.1008       3667.31         all
   - range                       0.0000                                   range
-  - knn                         0.8852                                     knn
+  - knn                         0.9246                                     knn
   - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-Random                          0.9640        0.1007        584.38         all
+UniformTemporal                 0.3095        0.1009       2264.93         all
   - range                       0.0000                                   range
-  - knn                         0.9640                                     knn
+  - knn                         0.3095                                     knn
   - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-UniformTemporal                 0.9300        0.1008        326.94         all
+DouglasPeucker                  0.3801        0.1002        413.03         all
   - range                       0.0000                                   range
-  - knn                         0.9300                                     knn
+  - knn                         0.3801                                     knn
   - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering
-DouglasPeucker                  0.9200        0.1002        256.58         all
+Oracle                          0.5637        0.1008        270.01         all
   - range                       0.0000                                   range
-  - knn                         0.9200                                     knn
-  - similarity                  0.0000                              similarity
-  - clustering                  0.0000                              clustering
-Oracle                          0.0322        0.1009       2007.56         all
-  - range                       0.0000                                   range
-  - knn                         0.0322                                     knn
+  - knn                         0.5637                                     knn
   - similarity                  0.0000                              similarity
   - clustering                  0.0000                              clustering

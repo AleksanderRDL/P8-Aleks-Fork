@@ -11,13 +11,51 @@ import torch.nn.functional as F
 from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
-from src.queries.query_types import NUM_QUERY_TYPES
+from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
 
-KENDALL_TIE_THRESHOLD = 0.05
+KENDALL_TIE_THRESHOLD = 1e-4
 
+
+def _scaled_training_targets(labels: torch.Tensor, labelled_mask: torch.Tensor) -> torch.Tensor:
+    """Rescale sparse F1 labels per type for optimization while preserving rank order."""
+    targets = labels.clone()
+    for type_idx in range(NUM_QUERY_TYPES):
+        positive = labelled_mask[:, type_idx] & (labels[:, type_idx] > 0)
+        if not bool(positive.any().item()):
+            continue
+        scale = torch.quantile(labels[positive, type_idx].detach(), 0.95).clamp(min=1e-6)
+        targets[:, type_idx] = torch.clamp(labels[:, type_idx] / scale, 0.0, 1.0)
+    return targets
+
+
+def _balanced_mse_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    generator: torch.Generator,
+    negatives_per_positive: int = 3,
+) -> torch.Tensor:
+    """Compute MSE on all positives plus a bounded random set of zero labels."""
+    valid_idx = torch.where(valid_mask)[0]
+    if valid_idx.numel() == 0:
+        return pred.new_tensor(0.0)
+
+    valid_target = target[valid_idx]
+    positive_idx = valid_idx[valid_target > 0]
+    if positive_idx.numel() == 0:
+        return pred.new_tensor(0.0)
+
+    zero_idx = valid_idx[valid_target <= 0]
+    max_zero = int(positive_idx.numel() * max(1, negatives_per_positive))
+    if zero_idx.numel() > max_zero:
+        perm = torch.randperm(zero_idx.numel(), generator=generator)[:max_zero]
+        zero_idx = zero_idx[perm.to(zero_idx.device)]
+
+    mse_idx = torch.cat([positive_idx, zero_idx]) if zero_idx.numel() > 0 else positive_idx
+    return F.mse_loss(pred[mse_idx], target[mse_idx])
 
 
 def _discriminative_sample(
@@ -55,6 +93,8 @@ class TrainingOutputs:
     labelled_mask: torch.Tensor
     history: list[dict[str, float]]
     epochs_trained: int = 0
+    best_epoch: int = 0
+    best_loss: float = float("inf")
 
 
 def _sample_epoch_mix(alpha: list[float], generator: torch.Generator) -> torch.Tensor:
@@ -88,6 +128,11 @@ def _kendall_tau(x: torch.Tensor, y: torch.Tensor) -> float:
     return float((concordant - discordant) / denom)
 
 
+def _model_state_on_cpu(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Copy a model state dict to CPU tensors for best-epoch restoration."""
+    return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+
+
 def _ranking_loss_for_type(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -96,15 +141,18 @@ def _ranking_loss_for_type(
     top_quantile: float,
     margin: float,
     generator: torch.Generator,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, int]:
     """Compute top-boundary-focused pairwise ranking loss for one type. See src/training/README.md for details."""
     valid_idx = torch.where(valid_mask)[0]
     if valid_idx.numel() < 2:
-        return pred.new_tensor(0.0)
+        return pred.new_tensor(0.0), 0
 
     y = target[valid_idx]
     q_val = torch.quantile(y, torch.tensor(top_quantile, dtype=torch.float32, device=y.device))
     top_idx = valid_idx[y >= q_val]
+    strict_top_idx = valid_idx[y > q_val]
+    if strict_top_idx.numel() > 0 and top_idx.numel() > max(4, valid_idx.numel() // 2):
+        top_idx = strict_top_idx
     if top_idx.numel() == 0:
         top_idx = valid_idx
 
@@ -130,12 +178,18 @@ def _ranking_loss_for_type(
         b_list.append(b)
 
     if not a_list:
-        return pred.new_tensor(0.0)
+        return pred.new_tensor(0.0), 0
 
     a_idx = torch.tensor(a_list, dtype=torch.long, device=pred.device)
     b_idx = torch.tensor(b_list, dtype=torch.long, device=pred.device)
     sign = torch.sign(target[a_idx] - target[b_idx])
-    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin)
+    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), len(a_list)
+
+
+def _selection_score(avg_tau: float, pred_std: float) -> float:
+    """Score checkpoint quality while strongly penalizing collapsed predictions."""
+    collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
+    return float(avg_tau - collapse_penalty)
 
 
 def train_model(
@@ -160,6 +214,10 @@ def train_model(
         typed_queries=workload.typed_queries,
         seed=seed,
     )
+    training_targets = _scaled_training_targets(labels, labelled_mask)
+    active_type_ids = [t for t in range(NUM_QUERY_TYPES) if bool(labelled_mask[:, t].any().item())]
+    if not active_type_ids:
+        active_type_ids = list(range(NUM_QUERY_TYPES))
 
     scaler = FeatureScaler.fit(points, workload.query_features)
     norm_points, norm_queries = scaler.transform(points, workload.query_features)
@@ -181,7 +239,7 @@ def train_model(
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
-    labels_dev = labels.to(device)
+    training_targets_dev = training_targets.to(device)
     labelled_mask_dev = labelled_mask.to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
@@ -218,8 +276,10 @@ def train_model(
     effective_epochs = max(8, int(model_config.epochs))
     run_tag = "main"
     patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
-    best_tau = float("-inf")
+    best_selection = float("-inf")
     best_loss = float("inf")
+    best_epoch = 0
+    best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
     epoch_w = len(str(effective_epochs))
     epochs_trained = 0
@@ -228,6 +288,9 @@ def train_model(
         model.train()
         epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g)
         epoch_loss = torch.tensor(0.0, device=device)
+        positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
+        skipped_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
+        ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
         for w in windows:
             pred_batch = model(
@@ -250,10 +313,14 @@ def train_model(
                 for t in range(NUM_QUERY_TYPES):
                     if float(epoch_mix[t].item()) <= 0.0:
                         continue
-                    t_labels = labels_dev[global_idx, t]
+                    t_labels = training_targets_dev[global_idx, t]
                     t_mask = labelled_mask_dev[global_idx, t]
+                    if not bool((t_mask & (t_labels > 0)).any().item()):
+                        skipped_zero_windows[t] += 1
+                        continue
                     t_pred = pred_valid[:, t]
-                    rank_loss = _ranking_loss_for_type(
+                    positive_windows[t] += 1
+                    rank_loss, pair_count = _ranking_loss_for_type(
                         pred=t_pred,
                         target=t_labels,
                         valid_mask=t_mask,
@@ -262,10 +329,8 @@ def train_model(
                         margin=model_config.rank_margin,
                         generator=g,
                     )
-                    if bool(t_mask.any().item()):
-                        mse_term = F.mse_loss(t_pred[t_mask], t_labels[t_mask])
-                    else:
-                        mse_term = t_pred.new_tensor(0.0)
+                    ranking_pair_counts[t] += int(pair_count)
+                    mse_term = _balanced_mse_loss(t_pred, t_labels, t_mask, generator=g)
                     # MSE term keeps scores anchored near label magnitude so the
                     # ranking loss operates on a well-scaled output range rather than
                     # drifting to arbitrary scale.  The small weight (0.05) ensures it
@@ -319,13 +384,29 @@ def train_model(
             stats: dict[str, float] = {
                 "epoch": float(epoch),
                 "loss": float(epoch_loss.item() / max(1, len(windows))),
-                "pred_std": float(full_pred[covered_mask].std().item()) if bool(covered_mask.any().item()) else 0.0,
+                "pred_std": (
+                    float(full_pred[covered_mask][:, active_type_ids].std().item())
+                    if bool(covered_mask.any().item())
+                    else 0.0
+                ),
             }
+            for type_idx in range(NUM_QUERY_TYPES):
+                stats[f"positive_windows_t{type_idx}"] = float(positive_windows[type_idx].item())
+                stats[f"skipped_zero_windows_t{type_idx}"] = float(skipped_zero_windows[type_idx].item())
+                stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
             for t in range(NUM_QUERY_TYPES):
                 pt = full_pred[:, t]
                 stats[f"pred_p50_t{t}"] = float(torch.quantile(pt, 0.50).item())
                 stats[f"pred_p90_t{t}"] = float(torch.quantile(pt, 0.90).item())
                 stats[f"pred_p99_t{t}"] = float(torch.quantile(pt, 0.99).item())
+                labelled_type = labelled_mask_dev[:, t]
+                positive_type = labelled_type & (training_targets_dev[:, t] > 0)
+                labelled_count = max(1, int(labelled_type.sum().item()))
+                stats[f"positive_fraction_t{t}"] = float(positive_type.sum().item() / labelled_count)
+                if bool(positive_type.any().item()):
+                    stats[f"label_p95_t{t}"] = float(torch.quantile(training_targets_dev[positive_type, t], 0.95).item())
+                else:
+                    stats[f"label_p95_t{t}"] = 0.0
                 eval_mask = labelled_mask_dev[:, t] & covered_mask
                 if bool(eval_mask.any().item()):
                     # Reset eval_g to the same state each epoch so the diagnostic
@@ -333,7 +414,7 @@ def train_model(
                     eval_g.manual_seed(int(seed) + 777)
                     p_sample, y_sample = _discriminative_sample(
                         pt[eval_mask].detach().cpu(),
-                        labels_dev[eval_mask, t].detach().cpu(),
+                        training_targets_dev[eval_mask, t].detach().cpu(),
                         n_each=100,
                         generator=eval_g,
                     )
@@ -350,6 +431,10 @@ def train_model(
                 "epoch": float(epoch),
                 "loss": float(epoch_loss.item() / max(1, len(windows))),
             }
+            for type_idx in range(NUM_QUERY_TYPES):
+                stats[f"positive_windows_t{type_idx}"] = float(positive_windows[type_idx].item())
+                stats[f"skipped_zero_windows_t{type_idx}"] = float(skipped_zero_windows[type_idx].item())
+                stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
 
         history.append(stats)
 
@@ -357,57 +442,72 @@ def train_model(
         epochs_trained = epoch + 1
 
         if is_diag_epoch:
-            tau_vals = [stats[f"kendall_tau_t{t}"] for t in range(NUM_QUERY_TYPES)]
+            tau_vals = [stats[f"kendall_tau_t{t}"] for t in active_type_ids]
             avg_tau = sum(tau_vals) / max(1, len(tau_vals))
             collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
-            is_new_best_tau = avg_tau > best_tau + 1e-4
-            is_new_best_loss = stats["loss"] < best_loss - 1e-8
+            selection = _selection_score(avg_tau, stats["pred_std"])
+            stats["selection_score"] = selection
+            is_new_best_model = selection > best_selection + 1e-4 or (
+                abs(selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
+            )
             markers = []
-            if epoch > 0 and is_new_best_tau:
-                markers.append("*** NEW BEST TAU ***")
-            if epoch > 0 and is_new_best_loss:
-                markers.append("*** NEW BEST LOSS ***")
+            if epoch > 0 and is_new_best_model:
+                markers.append("*** NEW BEST MODEL ***")
             best_marker = ("  " + "  ".join(markers)) if markers else ""
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
                 f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
-                f"pred_std={stats['pred_std']:.3f}  ({epoch_dt:.2f}s){collapse}{best_marker}",
+                f"pred_std={stats['pred_std']:.6g}  select={selection:+.3f}  "
+                f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
             )
+            diag_parts = []
+            for type_idx in active_type_ids:
+                type_name = ID_TO_QUERY_NAME.get(type_idx, f"t{type_idx}")
+                diag_parts.append(
+                    f"{type_name}:pos={stats[f'positive_fraction_t{type_idx}']:.4f},"
+                    f"p95={stats[f'label_p95_t{type_idx}']:.3f},"
+                    f"pairs={int(stats[f'ranking_pairs_t{type_idx}'])},"
+                    f"skip={int(stats[f'skipped_zero_windows_t{type_idx}'])}"
+                )
+            if diag_parts:
+                print(f"    [{run_tag}] label_diag  " + "  ".join(diag_parts), flush=True)
 
-            if is_new_best_loss:
+            if is_new_best_model:
+                best_selection = selection
                 best_loss = stats["loss"]
+                best_epoch = epoch + 1
+                best_state_dict = _model_state_on_cpu(model)
 
             if patience > 0:
-                if is_new_best_tau:
-                    best_tau = avg_tau
+                if is_new_best_model:
                     epochs_no_improve = 0
                 else:
                     epochs_no_improve += 1
                     if epochs_no_improve >= patience:
                         print(
                             f"  [{run_tag}] early stopping at epoch {epoch + 1:0{epoch_w}d}: "
-                            f"avg_tau did not improve over {patience} diag epochs "
-                            f"(best_tau={best_tau:+.3f}, best_loss={best_loss:.8f})",
+                            f"selection score did not improve over {patience} diag epochs "
+                            f"(best_selection={best_selection:+.3f}, best_loss={best_loss:.8f})",
                             flush=True,
                         )
                         break
-            else:
-                if is_new_best_tau:
-                    best_tau = avg_tau
         else:
             # Non-diagnostic epoch: log loss only, no tau / early-stopping update.
-            is_new_best_loss = stats["loss"] < best_loss - 1e-8
-            if is_new_best_loss:
-                best_loss = stats["loss"]
-            best_marker = "  *** NEW BEST LOSS ***" if (epoch > 0 and is_new_best_loss) else ""
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
-                f"loss={stats['loss']:.8f}  (no-diag)  ({epoch_dt:.2f}s){best_marker}",
+                f"loss={stats['loss']:.8f}  (no-diag)  ({epoch_dt:.2f}s)",
                 flush=True,
             )
 
     model = model.to("cpu")
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+        print(
+            f"  [{run_tag}] restored best diagnostic epoch {best_epoch}/{epochs_trained} "
+            f"(selection={best_selection:+.3f}, loss={best_loss:.8f})",
+            flush=True,
+        )
     return TrainingOutputs(
         model=model,
         scaler=scaler,
@@ -415,4 +515,6 @@ def train_model(
         labelled_mask=labelled_mask,
         history=history,
         epochs_trained=epochs_trained,
+        best_epoch=best_epoch,
+        best_loss=best_loss,
     )

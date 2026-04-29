@@ -24,7 +24,7 @@ def _project_root() -> Path:
 
 
 def _default_simplified_dir(args) -> str:
-    """Build a default run directory in AISDATA/ML_processed_AIS_files for eval CSV output."""
+    """Build a default run directory in AISDATA/ML_processed_AIS_files for simplified CSV output."""
     eval_stem = Path(args.eval_csv_path).stem if args.eval_csv_path else "eval"
     cov = args.query_coverage
     cov_tag = f"cov{float(cov):g}" if cov is not None else f"q{int(args.n_queries)}"
@@ -60,8 +60,6 @@ def main() -> None:
         eval_workload_mix=eval_mix,
         seed=args.seed,
         early_stopping_patience=args.early_stopping_patience,
-        query_area_boost=args.query_area_boost,
-        query_buffer_deg=args.query_buffer_deg,
     )
 
     coverage_msg = (
@@ -105,7 +103,7 @@ def main() -> None:
     save_simplified_dir = args.save_simplified_dir
     if args.eval_csv_path and save_simplified_dir is None:
         save_simplified_dir = _default_simplified_dir(args)
-        print(f"[config] auto-saving simplified eval CSV under {save_simplified_dir}", flush=True)
+        print(f"[config] auto-saving simplified train/eval CSVs under {save_simplified_dir}", flush=True)
 
     out = run_experiment_pipeline(
         config=config,
