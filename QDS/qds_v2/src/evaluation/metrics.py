@@ -70,3 +70,4 @@ class MethodEvaluation:
     per_type_f1: dict[str, float]
     compression_ratio: float
     latency_ms: float
+    retained_mask: torch.Tensor | None = None

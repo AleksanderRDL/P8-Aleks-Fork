@@ -9,8 +9,8 @@ from src.queries.query_types import QUERY_TYPE_ID_CLUSTERING, QUERY_TYPE_ID_KNN,
 from src.training.importance_labels import compute_typed_importance_labels
 
 
-def test_range_labels_match_singleton_f1_contribution() -> None:
-    """Assert range labels equal the F1 gain of recovering one matching trajectory."""
+def test_range_labels_match_singleton_point_f1_contribution() -> None:
+    """Assert range labels equal the F1 gain of recovering one matching point."""
     points = torch.tensor(
         [
             [0.0, 0.0, 0.0, 3.0],
@@ -45,8 +45,8 @@ def test_range_labels_match_singleton_f1_contribution() -> None:
     assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
 
 
-def test_range_labels_distribute_one_hit_gain_over_interchangeable_points() -> None:
-    """Assert duplicate in-box points from one trajectory share one trajectory-hit gain."""
+def test_range_labels_reward_each_in_box_point() -> None:
+    """Assert duplicate in-box points are scored as individual range-query hits."""
     points = torch.tensor(
         [
             [0.0, 0.0, 0.0, 1.0],
@@ -72,8 +72,9 @@ def test_range_labels_distribute_one_hit_gain_over_interchangeable_points() -> N
 
     labels, _ = compute_typed_importance_labels(points, boundaries, queries, seed=1)
 
-    assert labels[0, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.5)
-    assert labels[1, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.5)
+    expected_gain = 2.0 / 3.0
+    assert labels[0, QUERY_TYPE_ID_RANGE].item() == pytest.approx(expected_gain)
+    assert labels[1, QUERY_TYPE_ID_RANGE].item() == pytest.approx(expected_gain)
     assert labels[2, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.0)
 
 

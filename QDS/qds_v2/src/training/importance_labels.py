@@ -162,13 +162,10 @@ def compute_typed_importance_labels(
         query_counts[t_idx] += 1.0
 
         if qtype == "range":
-            original_ids = set(execute_typed_query(points, trajectories, q, boundaries))
-            gain = _set_query_singleton_gain(original_ids)
-            if gain > 0.0:
-                box_support = _box_mask(points, params)
-                for trajectory_id in original_ids:
-                    support = box_support & (point_trajectory_ids == int(trajectory_id))
-                    _add_distributed_hit_label(labels, support, t_idx, gain)
+            box_support = _box_mask(points, params)
+            hit_count = int(box_support.sum().item())
+            if hit_count > 0:
+                labels[box_support, t_idx] += float(2.0 / (hit_count + 1.0))
 
         elif qtype == "knn":
             original_ids = set(execute_typed_query(points, trajectories, q, boundaries))

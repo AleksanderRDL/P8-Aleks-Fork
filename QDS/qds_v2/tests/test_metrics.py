@@ -125,3 +125,25 @@ def test_method_comparison_table_labels_f1() -> None:
 
     assert "AggregateF1" in table
     assert "AggregateErr" not in table
+
+
+def test_method_comparison_table_shows_close_f1_values() -> None:
+    table = print_method_comparison_table(
+        {
+            "MLQDS": MethodEvaluation(
+                aggregate_f1=0.1823688112,
+                per_type_f1={"range": 0.1823688112},
+                compression_ratio=0.1008,
+                latency_ms=0.0,
+            ),
+            "Random": MethodEvaluation(
+                aggregate_f1=0.1824232682,
+                per_type_f1={"range": 0.1824232682},
+                compression_ratio=0.1008,
+                latency_ms=0.0,
+            ),
+        }
+    )
+
+    assert "0.182369" in table
+    assert "0.182423" in table

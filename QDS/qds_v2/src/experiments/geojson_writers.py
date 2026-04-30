@@ -157,6 +157,7 @@ def report_trajectory_length_loss(
     retained_mask: torch.Tensor,
     top_k: int = 25,
     min_orig_km: float = 1.0,
+    trajectory_mmsis: list[int] | None = None,
 ) -> None:
     """Print per-trajectory length-loss summary and two top-K rankings.
 
@@ -174,7 +175,7 @@ def report_trajectory_length_loss(
     Averages over all non-empty trajectories are also printed.
     """
     mask = retained_mask.detach().cpu().bool()
-    rows: list[tuple[int, float, float, float, int, int]] = []  # (traj_id, orig, simp, loss, kept, removed)
+    rows: list[tuple[int, float, float, float, int, int]] = []  # (display_id, orig, simp, loss, kept, removed)
     for traj_id, (s, e) in enumerate(boundaries):
         total_pts = e - s
         if total_pts < 2:
@@ -189,7 +190,8 @@ def report_trajectory_length_loss(
         else:
             simp = 0.0
         loss = 0.0 if orig <= 1e-9 else max(0.0, 1.0 - simp / orig)
-        rows.append((traj_id, orig, simp, loss, kept, removed))
+        display_id = trajectory_mmsis[traj_id] if trajectory_mmsis is not None and traj_id < len(trajectory_mmsis) else traj_id
+        rows.append((int(display_id), orig, simp, loss, kept, removed))
 
     if not rows:
         print("  [length-loss] no trajectories with >=2 points, skipping.", flush=True)
@@ -221,12 +223,13 @@ def report_trajectory_length_loss(
     most = sorted(ranked, key=lambda r: r[3], reverse=True)[:top_k]
     least = sorted(ranked, key=lambda r: r[3])[:top_k]
 
-    hdr = f"  {'rank':>4}  {'traj_id':>7}  {'orig_km':>10}  {'simp_km':>10}  {'length_loss':>11}  {'kept':>6}  {'removed':>8}"
+    id_label = "mmsi" if trajectory_mmsis is not None else "traj_id"
+    hdr = f"  {'rank':>4}  {id_label:>10}  {'orig_km':>10}  {'simp_km':>10}  {'length_loss':>11}  {'kept':>6}  {'removed':>8}"
     print(f"\n  [length-loss] Top {top_k} MOST distorted (highest length_loss):", flush=True)
     print(hdr, flush=True)
     for rank, r in enumerate(most, start=1):
         print(
-            f"  {rank:>4}  {r[0]:>7d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
+            f"  {rank:>4}  {r[0]:>10d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
             flush=True,
         )
 
@@ -234,7 +237,7 @@ def report_trajectory_length_loss(
     print(hdr, flush=True)
     for rank, r in enumerate(least, start=1):
         print(
-            f"  {rank:>4}  {r[0]:>7d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
+            f"  {rank:>4}  {r[0]:>10d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
             flush=True,
         )
 

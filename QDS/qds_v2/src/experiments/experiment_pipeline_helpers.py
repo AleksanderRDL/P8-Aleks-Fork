@@ -364,7 +364,7 @@ def run_experiment_pipeline(
             )
 
         with _phase("trajectory-length-loss"):
-            report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25)
+            report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)
 
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(matched_table=matched_table, shift_table=shift_table, metrics_dump=dump)

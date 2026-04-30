@@ -20,6 +20,29 @@ def _split_by_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]
     return [points[s:e] for s, e in boundaries]
 
 
+def _range_box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
+    """Return point-level hits inside a range query box."""
+    return (
+        (points[:, 1] >= params["lat_min"])
+        & (points[:, 1] <= params["lat_max"])
+        & (points[:, 2] >= params["lon_min"])
+        & (points[:, 2] <= params["lon_max"])
+        & (points[:, 0] >= params["t_start"])
+        & (points[:, 0] <= params["t_end"])
+    )
+
+
+def _range_point_f1(points: torch.Tensor, simplified: torch.Tensor, params: dict[str, float]) -> float:
+    """Compute range F1 over point hits instead of trajectory-presence hits."""
+    full_hits = int(_range_box_mask(points, params).sum().item())
+    simplified_hits = int(_range_box_mask(simplified, params).sum().item())
+    if full_hits == 0 and simplified_hits == 0:
+        return 1.0
+    if full_hits == 0 or simplified_hits == 0:
+        return 0.0
+    return float((2.0 * simplified_hits) / (full_hits + simplified_hits))
+
+
 def evaluate_method(
     method: Method,
     points: torch.Tensor,
@@ -27,6 +50,7 @@ def evaluate_method(
     typed_queries: list[dict],
     workload_mix: dict[str, float],
     compression_ratio: float,
+    return_mask: bool = False,
 ) -> MethodEvaluation:
     """Evaluate one simplification method on typed queries at matched ratio. See src/evaluation/README.md for details."""
     t0 = time.time()
@@ -46,9 +70,13 @@ def evaluate_method(
     scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
     for q in typed_queries:
         qtype = q["type"]
+        if qtype == "range":
+            scores[qtype].append(_range_point_f1(points, simplified, q["params"]))
+            continue
+
         full_res = execute_typed_query(points, full_traj, q, boundaries)
         simp_res = execute_typed_query(simplified, simp_traj, q, simp_boundaries)
-        if qtype in {"range", "knn", "similarity"}:
+        if qtype in {"knn", "similarity"}:
             scores[qtype].append(f1_score(set(full_res), set(simp_res)))
         elif qtype == "clustering":
             scores[qtype].append(clustering_f1(full_res, simp_res))
@@ -67,6 +95,7 @@ def evaluate_method(
         per_type_f1=per_type,
         compression_ratio=comp,
         latency_ms=latency_ms,
+        retained_mask=retained_mask if return_mask else None,
     )
 
 
@@ -87,7 +116,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
     for name, metrics in results.items():
         lines.append(
             f"{name:<{col1}}"
-            f"{metrics.aggregate_f1:>{col2}.4f}"
+            f"{metrics.aggregate_f1:>{col2}.6f}"
             f"{metrics.compression_ratio:>{col3}.4f}"
             f"{metrics.latency_ms:>{col4}.2f}"
             f"{'all':>{col5}}"
@@ -95,7 +124,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
         for t_name in ("range", "knn", "similarity", "clustering"):
             lines.append(
                 f"{'  - ' + t_name:<{col1}}"
-                f"{metrics.per_type_f1.get(t_name, 0.0):>{col2}.4f}"
+                f"{metrics.per_type_f1.get(t_name, 0.0):>{col2}.6f}"
                 f"{'':>{col3}}"
                 f"{'':>{col4}}"
                 f"{t_name:>{col5}}"

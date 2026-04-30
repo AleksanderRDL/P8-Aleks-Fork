@@ -38,7 +38,7 @@ from src.evaluation.baselines import (
     UniformTemporalMethod,
 )
 from src.evaluation.evaluate_methods import evaluate_method, print_method_comparison_table
-from src.experiments.geojson_writers import write_queries_geojson, write_simplified_csv
+from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.train_model import TrainingOutputs
@@ -50,6 +50,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint", required=True, help="Path to saved .pt checkpoint.")
     p.add_argument("--csv_path", required=True, help="Preprocessed AIS CSV to evaluate on.")
     p.add_argument("--n_queries", type=int, default=100, help="Queries to generate for evaluation.")
+    p.add_argument(
+        "--query_coverage",
+        "--target_query_coverage",
+        dest="query_coverage",
+        type=float,
+        default=None,
+        help="Generate queries until this point-coverage target is reached. Accepts 0.30 or 30 for 30%%.",
+    )
+    p.add_argument(
+        "--max_queries",
+        type=int,
+        default=None,
+        help="Safety cap for dynamic query generation when --query_coverage is set. Default: max(n_queries, 1000).",
+    )
     p.add_argument(
         "--workload_mix",
         type=str,
@@ -132,9 +146,10 @@ def main() -> None:
 
     t0 = time.perf_counter()
     print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-    trajectories = load_ais_csv(args.csv_path)
+    trajectories, trajectory_mmsis = load_ais_csv(args.csv_path, return_mmsis=True)
     if args.max_trajectories is not None and len(trajectories) > args.max_trajectories:
         trajectories = trajectories[: args.max_trajectories]
+        trajectory_mmsis = trajectory_mmsis[: args.max_trajectories]
         print(f"[load-data] capped trajectories to {args.max_trajectories}", flush=True)
     print(f"[load-data] {len(trajectories)} trajectories in {time.perf_counter() - t0:.2f}s", flush=True)
 
@@ -149,10 +164,18 @@ def main() -> None:
         n_queries=int(args.n_queries),
         workload_mix=eval_mix,
         seed=int(args.seed),
+        target_coverage=args.query_coverage,
+        max_queries=args.max_queries,
     )
+    coverage_msg = ""
+    if workload.coverage_fraction is not None:
+        coverage_msg = (
+            f"  coverage={100.0 * workload.coverage_fraction:.2f}% "
+            f"({workload.covered_points}/{workload.total_points})"
+        )
     print(
         f"[workload] generated {len(workload.typed_queries)} queries in "
-        f"{time.perf_counter() - t0:.2f}s",
+        f"{time.perf_counter() - t0:.2f}s{coverage_msg}",
         flush=True,
     )
 
@@ -188,8 +211,13 @@ def main() -> None:
             typed_queries=workload.typed_queries,
             workload_mix=eval_mix,
             compression_ratio=compression_ratio,
+            return_mask=method.name == "MLQDS",
         )
         print(f"[eval] {method.name} done in {time.perf_counter() - t0:.2f}s", flush=True)
+
+    mlqds_mask = results["MLQDS"].retained_mask
+    if mlqds_mask is None:
+        raise RuntimeError("MLQDS retained mask was not captured during inference evaluation.")
 
     table = print_method_comparison_table(results)
     print("\nMatched-workload table (inference on new CSV)")
@@ -206,6 +234,9 @@ def main() -> None:
         "n_points": int(points.shape[0]),
         "eval_mix": eval_mix,
         "compression_ratio": compression_ratio,
+        "query_coverage": workload.coverage_fraction,
+        "covered_points": workload.covered_points,
+        "total_points": workload.total_points,
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,
@@ -220,11 +251,16 @@ def main() -> None:
         json.dump(dump, f, indent=2)
     print(f"[write] results -> {out_dir}", flush=True)
 
+    t0 = time.perf_counter()
+    print("[trajectory-length-loss] starting...", flush=True)
+    try:
+        report_trajectory_length_loss(points, boundaries, mlqds_mask, top_k=25, trajectory_mmsis=trajectory_mmsis)
+    finally:
+        print(f"[trajectory-length-loss] done in {time.perf_counter() - t0:.2f}s", flush=True)
+
     if args.save_simplified_dir:
-        mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=workload, workload_mix=eval_mix)
-        mask = mlqds.simplify(points, boundaries, compression_ratio)
         out_path = Path(args.save_simplified_dir) / "ML_simplified.csv"
-        write_simplified_csv(str(out_path), points, boundaries, mask)
+        write_simplified_csv(str(out_path), points, boundaries, mlqds_mask, trajectory_mmsis=trajectory_mmsis)
         print(f"[write] simplified CSV -> {out_path}", flush=True)
 
 
