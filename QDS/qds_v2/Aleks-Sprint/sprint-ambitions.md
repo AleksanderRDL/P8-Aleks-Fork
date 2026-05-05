@@ -750,3 +750,222 @@ The practical recommendation is:
 > Treat benchmarking as part of the model objective, not as an afterthought.
 
 For this sprint, a model should only be considered successful when its specialist version beats the strongest baseline on its own workload at equal compression, across repeated seeds, with geometry remaining within acceptable bounds.
+
+## Model, Training Objective, And Simplification Policy Findings
+
+After data, query generation, and benchmarking, the remaining critical layer is the model/training/simplification layer.
+
+This layer determines whether the four specialist models can actually learn behavior that beats the baselines, rather than only producing better diagnostics around the same failure modes.
+
+### Query-Conditioning Scale Risk
+
+The current model conditions point scores on the full query workload. Each trajectory window attends over the generated query feature tensor.
+
+This is workable for small prototype workloads with hundreds of queries. It is not obviously scalable to the sprint target of:
+
+- `10k-50k` range queries
+- `10k-30k` kNN queries
+- `2k-10k` similarity queries
+- `2k-10k` clustering queries
+
+The current chunked cross-attention makes large workloads more memory-safe, but the computation still grows with query count. Once the workload is larger than the query chunk size, attention is also an approximation because each chunk is softmaxed independently and then averaged.
+
+For large specialist workloads, the sprint likely needs one of these strategies:
+
+- query sampling during training
+- compact workload summary embeddings
+- query clustering or query prototypes
+- cached per-point workload labels without feeding every query through the model
+- specialist models that consume compact query-type descriptors instead of full query lists
+
+The practical point is:
+
+> Large query volume cannot simply be added by increasing `n_queries`.
+
+The model-conditioning path must be made compatible with the intended workload scale.
+
+### Simplification Policy Risk
+
+The current simplifier uses per-trajectory top-k retention. Each trajectory keeps roughly the same fraction of points, and endpoints are always preserved.
+
+This makes comparisons fair and simple, but it is not fully query-driven.
+
+For true query-driven simplification, the model may need to spend more retained-point budget on trajectories that matter for the workload and less budget on trajectories that are irrelevant.
+
+Current limitation:
+
+```text
+fixed compression ratio per trajectory
+```
+
+Desired future behavior:
+
+```text
+fixed global or workload-aware budget across the dataset
+```
+
+This matters especially for range and kNN workloads. If only a subset of vessels or regions matters to the workload, a per-trajectory budget wastes retained points on trajectories that do not help query F1.
+
+The temporal-hybrid simplifier is useful because it prevents badly broken trajectories, but the sprint should not rely entirely on a large temporal base. The learned scorer should eventually make meaningful query-driven choices beyond uniform temporal coverage.
+
+### Training Objective Risk
+
+The current training objective is still point-ranking based. It trains the model to assign higher scores to points with higher proxy labels.
+
+Final evaluation, however, depends on:
+
+1. predicted point scores
+2. top-k retained subset selection
+3. query execution on the simplified data
+4. answer-set F1 and point-support preservation
+
+The training loss does not directly optimize this final retained subset.
+
+This creates a mismatch:
+
+```text
+training learns point label ranking
+evaluation scores retained set behavior
+```
+
+For the sprint, this does not require fully differentiable query execution, but the training objective should become more budget-aware.
+
+Useful intermediate improvements:
+
+- train against points that survive top-k and improve F1
+- add listwise or top-k-aware losses
+- include hard negatives that steal budget but do not improve query F1
+- add supervision for non-redundant representatives instead of dense positive regions
+- evaluate validation checkpoints by query F1 or uniform-gap, not only proxy loss
+
+The core learning goal is not just:
+
+```text
+rank positive labels above zero labels
+```
+
+It is:
+
+```text
+choose the retained subset that preserves the query workload under budget
+```
+
+### Negative Supervision Gap
+
+The current training loop skips type-specific windows that contain no positive label for that type.
+
+This avoids all-zero collapse, but it also means the model gets weaker pressure to keep irrelevant regions low. False high scores in irrelevant regions can still steal top-k budget during simplification.
+
+The sprint should add stronger negative/background supervision:
+
+- sample negative-only windows
+- include hard negatives near query boundaries
+- include hard negatives from trajectories that are close but not returned
+- track false-positive score mass in diagnostics
+
+This is especially important for kNN and similarity, where many nearby but wrong points can look plausible.
+
+### Specialist Model Configuration
+
+The current architecture already has four output heads, one per query type. That is useful for mixed-workload experiments.
+
+However, the sprint objective is four specialized models, not one universal model.
+
+For specialist training, each model should have:
+
+- one primary workload config
+- one primary validation workload
+- one primary checkpoint-selection metric
+- one primary result card
+- optional cross-workload diagnostics
+
+The default checkpoint selection should be aligned with the sprint goal. A default of training loss is useful for debugging, but final specialist runs should prefer:
+
+- validation query F1
+- or validation uniform-gap selection
+
+The current `turn_aware` model should be treated carefully. It is not a fundamentally different architecture; it is the same query-conditioned model with an extra turn-score feature. It may be useful, but it should not distract from the core objective, labels, and simplification policy.
+
+### Environment And Reproducibility Findings
+
+The local Python environments are not currently ready for repeatable end-to-end sprint work.
+
+Observed state:
+
+- System Python has `numpy`, but does not have `torch`, `pandas`, or `pytest`.
+- The root `.venv` has `pandas` and `pytest`, but does not have `torch`.
+- `qds_v2/requirements.txt` is unpinned.
+
+This prevents local training and test execution until the environment is fixed.
+
+Needed work:
+
+- create one documented environment for `qds_v2`
+- install a compatible `torch`
+- pin dependency versions or add a reproducible environment file
+- add a simple command for running tests
+- add a simple command for running one small benchmark smoke test
+
+Without this, benchmark results will be hard to reproduce across machines or across sprint days.
+
+### Artifact And Repository Hygiene Findings
+
+The repository currently tracks many saved model checkpoints under `src/models/saved_models`.
+
+This is not ideal because checkpoints are experiment artifacts, not source code. Keeping them under `src/` makes the package heavier and makes it harder to distinguish code changes from run outputs.
+
+Recommended direction:
+
+- move saved checkpoints out of `src/`
+- store run artifacts under a dedicated artifact/results directory
+- add ignore rules for generated checkpoints
+- keep only small intentional example artifacts if needed
+- record artifact metadata in JSON rather than relying on file names
+
+This matters for the sprint because multi-seed, multi-workload benchmarks will generate many more checkpoints and result files.
+
+### Visualization And Debugging Findings
+
+The v2 visualization module is currently a placeholder. Tables and JSON are useful, but they are not enough to debug query-driven simplification behavior.
+
+The sprint should add visual debugging outputs for:
+
+- query regions
+- query answer sets
+- label heatmaps
+- retained vs removed points
+- MLQDS vs baseline retained masks
+- per-query failure examples
+- range/kNN/similarity/clustering-specific retained-point behavior
+
+The old `qds_project` contains visualization and workload-comparison ideas that can be mined, but v2 should build only the plots needed to debug the current specialist-model objective.
+
+For each specialist model, visual inspection should answer:
+
+```text
+What did the model keep that the baseline did not?
+Did those retained points actually help the target query workload?
+Did the model waste budget on redundant or irrelevant points?
+```
+
+### Model And Training Work Needed For The Sprint
+
+Priority work:
+
+1. Decide how large specialist query workloads will condition the model without feeding every query through every forward pass.
+2. Add query sampling, workload summaries, or query prototypes for scalable training.
+3. Add stronger negative and hard-negative supervision.
+4. Add top-k-aware or retained-subset-aware training diagnostics.
+5. Use validation query F1 or uniform-gap selection for final specialist runs.
+6. Investigate global or workload-aware budget allocation beyond fixed per-trajectory ratios.
+7. Keep temporal-hybrid simplification as a stabilizer, but measure pure learned contribution separately.
+8. Treat `turn_aware` as a feature variant, not a core architecture solution.
+9. Fix the Python environment and dependency reproducibility.
+10. Move generated checkpoints and large artifacts out of source-controlled model code.
+11. Add visual debugging tools for specialist workload behavior.
+
+The practical recommendation is:
+
+> Do not move directly from better query generation to bigger model training.
+
+The model-conditioning path, loss objective, simplification policy, and reproducibility setup must support the four-specialist ambition first.
