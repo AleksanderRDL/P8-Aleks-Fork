@@ -1,8 +1,43 @@
 # Sprint Ambitions: Query-Driven Simplification Models
 
-## Context
+## Executive Summary
 
-The current QDS v2 work lives in `QDS/qds_v2`. It is a Python research pipeline for machine learned query-driven simplification of AIS trajectories.
+The goal of this sprint is to move `QDS/qds_v2` from a promising prototype into a credible research pipeline for machine learned query-driven simplification of AIS trajectories.
+
+The primary ambition is to train four specialized models:
+
+1. **Range-QDS** for range query workloads.
+2. **kNN-QDS** for k-nearest-neighbor query workloads.
+3. **Similarity-QDS** for trajectory similarity workloads.
+4. **Clustering-QDS** for clustering workloads.
+
+Each specialist model should be trained, selected, and evaluated primarily on its own workload. Mixed-workload and cross-workload experiments can remain useful diagnostics, but they are not the main success criterion.
+
+The current system has a coherent end-to-end structure, but it is not yet strong enough to support the desired claims. The main gaps are:
+
+- trajectory units are too coarse because one MMSI-day is currently treated as one trajectory
+- query generation is not yet workload-specific or difficulty-controlled enough
+- label construction is still a proxy for final retained-set utility
+- the model attends over full query workloads, which may not scale to the desired query volumes
+- simplification uses fixed per-trajectory budgets, not workload-aware global budgets
+- benchmarking is single-run oriented and does not yet provide four-model, multi-seed evidence against strong baselines
+- environment, artifact, and visualization support need cleanup for reproducible sprint work
+
+The practical sprint direction is:
+
+> Build a reliable specialist-model pipeline before scaling architecture complexity.
+
+The highest leverage sequence is:
+
+1. Fix trajectory segmentation and cached preprocessing.
+2. Build validated workload generators for each query type.
+3. Improve labels and training diagnostics around retained-set utility.
+4. Add a four-specialist, multi-seed benchmark runner.
+5. Use visualization and per-query diagnostics to debug why models win or lose.
+
+## Current Pipeline
+
+The current QDS v2 work lives in `QDS/qds_v2`.
 
 The pipeline currently follows this flow:
 
@@ -20,82 +55,45 @@ The four supported query workloads are:
 - `similarity`
 - `clustering`
 
-## Current Findings
+Several important improvements are already present:
 
-The current system is structurally coherent, but the learned scorer is still the weak part.
-
-The model is not directly trained to maximize final query F1. Final query F1 is measured only after scoring, top-k simplification, query execution, and answer comparison. Instead, training first builds heuristic per-point labels derived from query behavior, then teaches the model to rank those labeled points highly.
-
-This proxy is useful, but imperfect. It can label many points in the same useful region even though only a few retained representatives are needed under the final compression budget.
-
-Recent code already addresses several earlier issues:
-
-- Oracle is now evaluated on the same eval/test workload as MLQDS and baselines.
+- Oracle is evaluated on the same eval/test workload as MLQDS and baselines.
 - Coverage-targeted query generation keeps `n_queries` as a minimum.
 - Range evaluation is point-aware.
 - kNN, similarity, and clustering evaluation include retained point-support penalties in addition to answer-set F1.
 - Training includes collapse diagnostics, pointwise BCE, gradient clipping, and optional validation F1 checkpoint selection.
 - MLQDS can use a temporal base plus learned score fill through `mlqds_temporal_fraction`.
 
-Recent results show that a temporal-hybrid MLQDS setup can slightly beat Random and new uniform temporal sampling, but pure learned scoring still struggles. The sprint should therefore focus on making the learned query-specific scorer genuinely useful, not only relying on the temporal base.
+The remaining issue is not that the pipeline is conceptually broken. The issue is that the learned scorer is not yet reliably learning the retained subset that preserves final query answers.
 
-## Primary Objective
+## Core Diagnosis
 
-The primary objective is to train four specialized machine learned query-driven simplification models:
+The model is not directly trained to maximize final query F1.
 
-1. A Range-QDS model for range query workloads.
-2. A kNN-QDS model for kNN query workloads.
-3. A Similarity-QDS model for similarity query workloads.
-4. A Clustering-QDS model for clustering query workloads.
+Final query F1 is measured only after:
 
-Each model should be trained, selected, and evaluated primarily on its own query workload.
+1. model scoring
+2. top-k simplification
+3. query execution on simplified trajectories
+4. answer comparison against original trajectories
 
-Mixed-workload or cross-workload evaluation can still be useful as diagnostics, but it is not the main success criterion for this sprint.
+Training instead builds heuristic per-point labels from query behavior and teaches the model to rank those labeled points highly.
 
-## Desired Behavior
+This proxy is useful, but imperfect. It can label many nearby points in the same useful region even though only a few representatives are needed under the final compression budget.
 
-A successful MLQDS model should learn the marginal value of retaining each point under a fixed compression budget.
+The desired learning problem is therefore not simply:
 
-In practice, this means the model should select points that preserve query answers after simplification, not merely points that look geometrically important or points that individually fall inside many query regions.
+```text
+predict high scores for positive proxy labels
+```
 
-The desired behavior is:
+It is:
 
-1. **Budget-aware selection**
+```text
+choose the retained subset that preserves the query workload under budget
+```
 
-   The model should understand that only a limited fraction of points can be retained. If many adjacent points provide the same query value, the model should avoid wasting the budget on all of them.
-
-2. **Query-answer preservation**
-
-   The simplified trajectories should answer the target query workload as similarly as possible to the original trajectories.
-
-3. **Workload-specific specialization**
-
-   Each of the four models should specialize in one query workload:
-
-   - Range-QDS should preserve range query point hits.
-   - kNN-QDS should preserve nearest representative points and returned trajectory IDs.
-   - Similarity-QDS should preserve trajectory snippets, local shape, and movement patterns needed for similarity matching.
-   - Clustering-QDS should preserve trajectory representatives and co-membership structure.
-
-4. **Non-redundant retention**
-
-   The model should avoid selecting many neighboring points with nearly identical query value. It should spread retained points across useful regions and trajectories.
-
-5. **Baseline superiority at equal compression**
-
-   Each specialized model must beat typical simplification methods at the same compression ratio:
-
-   - Random
-   - new uniform temporal sampling
-   - Douglas-Peucker
-
-6. **Per-type success**
-
-   A model should not hide weak performance behind aggregate scores. For this sprint, each specialized model should win on its own query type.
-
-7. **Geometry should remain reasonable**
-
-   Query F1 is the primary objective, but simplified trajectories should not become geometrically broken. Length loss, SED/PED distortion, temporal spacing, and trajectory shape should remain within acceptable bounds.
+Recent results suggest the temporal-hybrid MLQDS setup can slightly beat Random and new uniform temporal sampling in some runs, but pure learned scoring still struggles. The sprint should focus on making the learned query-specific scorer genuinely useful, not only relying on the temporal base.
 
 ## Success Criteria
 
@@ -108,16 +106,65 @@ The sprint should be judged by workload-specific wins:
 
 All comparisons must use the same compression ratio.
 
-Useful secondary criteria:
+The primary comparison should be against:
+
+- Random
+- new uniform temporal sampling
+- true Douglas-Peucker
+- label Oracle as a diagnostic upper reference
+
+Secondary success criteria:
 
 - The learned model should beat Random and new uniform temporal without depending entirely on a large temporal base.
-- Oracle should remain substantially above all methods, confirming that the label/evaluation setup still contains learnable signal.
-- Validation checkpoint selection should prefer models that improve final query F1, not merely training loss.
+- The label Oracle should remain substantially above all methods, confirming that the label/evaluation setup still contains learnable signal.
+- Validation checkpoint selection should prefer models that improve final query F1, not merely proxy loss.
 - Geometric distortion should be reported alongside query F1.
+- Results should be repeated across seeds, not based on a single favorable run.
 
-## Recommended Sprint Direction
+## Desired Model Behavior
 
-Prioritize proving one specialized model at a time.
+A successful MLQDS model should learn the marginal value of retaining each point under a fixed compression budget.
+
+In practice, this means the model should select points that preserve query answers after simplification, not merely points that look geometrically important or points that individually fall inside many query regions.
+
+The desired behavior is:
+
+1. **Budget-aware selection**
+
+   The model should understand that only a limited fraction of points can be retained. If many adjacent points provide the same query value, the model should avoid wasting budget on all of them.
+
+2. **Query-answer preservation**
+
+   The simplified trajectories should answer the target query workload as similarly as possible to the original trajectories.
+
+3. **Workload-specific specialization**
+
+   Each specialist model should focus on one query workload:
+
+   - Range-QDS should preserve range query point hits.
+   - kNN-QDS should preserve nearest representative points and returned trajectory IDs.
+   - Similarity-QDS should preserve snippets, local shape, and movement patterns needed for similarity matching.
+   - Clustering-QDS should preserve trajectory representatives and co-membership structure.
+
+4. **Non-redundant retention**
+
+   The model should avoid selecting many neighboring points with nearly identical query value. It should spread retained points across useful regions and trajectories.
+
+5. **Baseline superiority at equal compression**
+
+   Each specialist model should beat typical simplification methods at the same compression ratio.
+
+6. **Per-type success**
+
+   A model should not hide weak performance behind aggregate scores. For this sprint, each specialist model should win on its own query type.
+
+7. **Reasonable geometry**
+
+   Query F1 is the primary objective, but simplified trajectories should not become geometrically broken. Length loss, SED/PED distortion, temporal spacing, and trajectory shape should remain within acceptable bounds.
+
+## Sprint Strategy
+
+Prioritize proving one specialist model at a time.
 
 Suggested order:
 
@@ -130,44 +177,44 @@ Range and kNN are good first targets because their query behavior is more local 
 
 The key technical direction is to move from point-label prediction toward set-aware and budget-aware learning. The model should learn which retained subset preserves query answers, not only which individual points receive heuristic positive labels.
 
-## Data And Pretraining Layer Findings
+## Data And Preprocessing
 
 There is no separate `pretrain` module in `qds_v2`. The current data/pretraining layer is the combination of:
 
-- AIS CSV loading in `src/data/ais_loader.py`.
-- Trajectory flattening and boundary construction in `src/data/trajectory_dataset.py`.
-- Query workload generation in `src/queries/query_generator.py`.
-- Query-derived importance label construction in `src/training/importance_labels.py`.
-- Feature scaling and window batching in `src/training/scaler.py` and `src/training/trajectory_batching.py`.
+- AIS CSV loading in `src/data/ais_loader.py`
+- trajectory flattening and boundary construction in `src/data/trajectory_dataset.py`
+- query workload generation in `src/queries/query_generator.py`
+- query-derived importance label construction in `src/training/importance_labels.py`
+- feature scaling and window batching in `src/training/scaler.py` and `src/training/trajectory_batching.py`
 
 The cleaned AIS files in `AISDATA/cleaned` match the current v2 loader assumptions reasonably well. They contain columns such as `MMSI`, `# Timestamp`, `Latitude`, `Longitude`, `SOG`, and `COG`, which the loader can resolve through aliases.
 
 The upstream cleaning pipeline already performs useful work:
 
-- Keeps Class A AIS rows.
-- Removes duplicate output rows.
-- Trims repeated stationary points.
-- Fills or removes undefined ship types.
-- Removes selected ship types.
-- Removes GPS outliers.
+- keeps Class A AIS rows
+- removes duplicate output rows
+- trims repeated stationary points
+- fills or removes undefined ship types
+- removes selected ship types
+- removes GPS outliers
 
-This is a solid start, but the model-specific data layer still needs work for the sprint ambition.
+This is a solid start, but the model-specific data layer still needs work.
 
 ### Observed Data Characteristics
 
 On `AISDATA/cleaned/aisdk-2026-01-01.cleaned.csv`, the cleaned daily file contains:
 
-- `3,328,209` rows.
-- `1,533` unique MMSIs.
-- Median MMSI length of `338` points.
-- 75th percentile MMSI length of `3,156` points.
-- 99th percentile MMSI length of `14,234` points.
-- Maximum MMSI length of `27,139` points.
-- `715` MMSIs with more than `500` points.
-- `32,367` rows with missing or invalid `COG`.
-- `29,001` duplicate timestamp occurrences within MMSI.
-- Maximum within-MMSI time gap of `16.9` hours.
-- `22` MMSIs with a max time gap above `6` hours.
+- `3,328,209` rows
+- `1,533` unique MMSIs
+- median MMSI length of `338` points
+- 75th percentile MMSI length of `3,156` points
+- 99th percentile MMSI length of `14,234` points
+- maximum MMSI length of `27,139` points
+- `715` MMSIs with more than `500` points
+- `32,367` rows with missing or invalid `COG`
+- `29,001` duplicate timestamp occurrences within MMSI
+- maximum within-MMSI time gap of `16.9` hours
+- `22` MMSIs with a max time gap above `6` hours
 
 These numbers matter because the current loader treats each MMSI in the loaded file as one trajectory.
 
@@ -175,18 +222,20 @@ These numbers matter because the current loader treats each MMSI in the loaded f
 
 The current trajectory unit is effectively:
 
-> one MMSI over the loaded file equals one trajectory
+```text
+one MMSI over the loaded file equals one trajectory
+```
 
 For query-driven simplification, this is likely too coarse. A vessel can have separate trips, long inactive periods, or large temporal gaps inside one daily MMSI track.
 
-This affects the four specialized models differently:
+This affects the specialist models differently:
 
 - Range-QDS may tolerate this better because range labels are local point hits.
 - kNN-QDS can become noisy because the answer unit is the whole trajectory ID, even if only one local part of a long vessel track is relevant.
 - Similarity-QDS is especially sensitive because unrelated movement segments inside one MMSI can dilute trajectory-level similarity.
 - Clustering-QDS is also sensitive because trajectory representatives and co-membership structure depend heavily on the trajectory unit.
 
-The data layer should therefore segment trajectories by MMSI plus temporal continuity, not just MMSI.
+The data layer should segment trajectories by MMSI plus temporal continuity, not just MMSI.
 
 ### Loader And Feature Issues
 
@@ -194,11 +243,11 @@ The current loader drops rows with missing or invalid COG because COG is used as
 
 A better approach may be:
 
-- Use COG when valid.
-- Derive movement bearing from consecutive latitude/longitude positions when COG is missing.
-- Add a missing-heading flag if needed.
+- use COG when valid
+- derive movement bearing from consecutive latitude/longitude positions when COG is missing
+- add a missing-heading flag if needed
 
-The current feature set is also thin:
+The current feature set is thin:
 
 - time
 - latitude
@@ -209,7 +258,7 @@ The current feature set is also thin:
 - `is_end`
 - optional `turn_score`
 
-For the four specialized models, richer local features may help:
+For the specialist models, richer local features may help:
 
 - delta time to previous/next point
 - distance to previous/next point
@@ -224,11 +273,11 @@ For the four specialized models, richer local features may help:
 
 Range and kNN may work with simpler features. Similarity and clustering likely need stronger trajectory-shape and local-context features.
 
-### Scaling And Runtime Issues
+### Scaling And Caching
 
 The loader currently reads the full CSV with Pandas. The cleaned daily files are roughly `268-377 MB` each, with `3.3-4.7 million` rows per day.
 
-This can work for small experiments, but it is not ideal for training four specialized models across multiple days.
+This can work for small experiments, but it is not ideal for training four specialist models across multiple days.
 
 The sprint should add a cached preprocessing stage:
 
@@ -236,11 +285,7 @@ The sprint should add a cached preprocessing stage:
 cleaned CSV -> validated trajectory segments -> cached tensors/parquet/pt artifacts
 ```
 
-This would make repeated range/kNN/similarity/clustering experiments much faster and more reproducible.
-
-The existing `max_points_per_ship` option exists in the loader but is not exposed in the experiment config or CLI. Large trajectory control should be exposed as normal run configuration.
-
-Useful controls:
+Useful data controls:
 
 - `min_points_per_segment`
 - `max_points_per_segment`
@@ -248,106 +293,71 @@ Useful controls:
 - `max_segments`
 - optional per-day or per-MMSI sampling
 
-### Query And Label Preparation Issues
+The existing `max_points_per_ship` option exists in the loader but is not exposed in the experiment config or CLI. Large trajectory control should be exposed as normal run configuration.
 
-The current label construction is still proxy-based and not budget-aware.
-
-Current behavior:
-
-- Range labels reward points inside query boxes.
-- kNN labels representative in-window points from returned trajectories.
-- Similarity labels reference-nearest support points from returned trajectories.
-- Clustering labels points in trajectories that participate in non-noise co-membership structure.
-
-This is useful scaffolding, but it does not fully satisfy the sprint ambition. The desired models should learn which retained subset preserves query answers under a fixed budget.
-
-For specialized models, labels should become more query-type-specific and budget-aware:
-
-- Range-QDS should avoid labeling redundant dense in-box points as equally valuable.
-- kNN-QDS should focus on points that preserve nearest-trajectory membership.
-- Similarity-QDS should focus on shape-defining snippets and reference-nearest local structures.
-- Clustering-QDS should focus on trajectory representatives that preserve cluster co-membership.
-
-Query coverage and label generation currently scan large point tensors. With millions of points and hundreds or thousands of queries, this can become expensive. Workloads and labels should be cached per query type and per dataset split.
-
-### Environment Finding
-
-The current local Python environments are not aligned:
-
-- System Python has `numpy`, but not `torch`, `pandas`, or `pytest`.
-- The repo `.venv` has `pandas` and `pytest`, but not `torch`.
-
-This blocks local end-to-end training and test execution until the environment is fixed.
-
-### Data Layer Work Needed For The Sprint
-
-The four specialized-model ambition requires data/pretraining work, not only model changes.
+### Data Work Needed
 
 Priority work:
 
-1. Add a cached preprocessing stage from cleaned CSVs to validated trajectory segment artifacts.
+1. Add cached preprocessing from cleaned CSVs to validated trajectory segment artifacts.
 2. Segment trajectories by MMSI plus time gap or voyage continuity.
 3. Add data audit reports for row drops, invalid COG, duplicate timestamps, segment lengths, and time gaps.
 4. Expose segment and sampling controls in `DataConfig` and the CLI.
-5. Build query-type-specific workload and label configs for range, kNN, similarity, and clustering.
-6. Cache generated workloads and labels per query type.
-7. Track positive label fraction, Oracle F1, and baseline F1 for each specialized training set.
-8. Make labels more budget-aware before adding more model complexity.
-9. Add smoke tests using real cleaned CSV slices, not only synthetic trajectories.
+5. Cache generated workloads and labels per query type and dataset split.
+6. Track positive label fraction, label Oracle F1, and baseline F1 for each specialist training set.
+7. Add smoke tests using real cleaned CSV slices, not only synthetic trajectories.
 
-The practical recommendation is:
+Practical recommendation:
 
 > Fix trajectory segmentation and cached preprocessing before making major architecture changes.
 
-The specialized models will only be as good as the trajectory units, query workloads, and label targets they are trained on.
+The specialist models will only be as good as the trajectory units, query workloads, and label targets they are trained on.
 
-## Query Generator And Sampling Findings
+## Query Generation And Sampling
 
-The query generator is a critical part of the training pipeline. For the four specialized-model ambition, query quality matters as much as model quality.
+The query generator is a critical part of the training pipeline. For the four-specialist ambition, query quality matters as much as model quality.
 
 The current generator already has useful behavior:
 
-- Supports all four query types: range, kNN, similarity, and clustering.
-- Normalizes workload mixes.
-- Produces padded query feature tensors and type IDs.
-- Uses density-biased anchor sampling for range and kNN queries.
-- Keeps `n_queries` as a minimum when coverage mode is enabled.
-- Allows range query footprint control through `range_spatial_fraction` and `range_time_fraction`.
-- Allows configurable kNN `k` through `knn_k`.
-- Has tests for coverage mode, density bias, smaller range footprints, and configured kNN `k`.
+- supports all four query types
+- normalizes workload mixes
+- produces padded query feature tensors and type IDs
+- uses density-biased anchor sampling for range and kNN
+- keeps `n_queries` as a minimum when coverage mode is enabled
+- allows range query footprint control through `range_spatial_fraction` and `range_time_fraction`
+- allows configurable kNN `k` through `knn_k`
+- has tests for coverage mode, density bias, smaller range footprints, and configured kNN `k`
 
-This is enough for prototype experiments, but not enough for robust specialized MLQDS training.
+This is enough for prototype experiments, but not enough for robust specialist MLQDS training.
 
 ### Main Query Sampling Risks
 
 The current generator is too generic. It does not yet guarantee that generated queries are informative training examples.
 
-Important missing controls:
+Missing controls:
 
-- Query difficulty.
-- Answer cardinality.
-- Positive label density.
-- Per-query Oracle score.
-- Empty/easy/hard query rejection.
-- Query diversity across space, time, density, trajectory length, and vessel behavior.
+- query difficulty
+- answer cardinality
+- positive label density
+- per-query label Oracle score
+- empty/easy/hard query rejection
+- query diversity across space, time, density, trajectory length, and vessel behavior
 
 Point coverage is currently used as the main workload coverage signal. This is useful, but it is not the same as query-answer quality. A workload can cover many points while still producing weak or redundant training signal.
 
-For specialized models, coverage should include more diagnostics:
+Specialist workloads should track:
 
 - point coverage
 - trajectory coverage
 - answer set size
 - support point count
 - positive label fraction
-- number of empty queries
-- number of overly broad queries
-- number of repeated or near-duplicate queries
-- Oracle F1 under the generated workload
+- empty-query rate
+- overly broad query rate
+- repeated or near-duplicate query rate
+- label Oracle F1
 
-### Query-Type-Specific Findings
-
-#### Range Queries
+### Range Queries
 
 Range query generation is currently the strongest and most controllable part of the generator.
 
@@ -368,7 +378,7 @@ Needed improvements:
 
 Range-QDS should train on boxes that produce meaningful point-level preservation pressure, not only broad boxes that reward uniform sampling.
 
-#### kNN Queries
+### kNN Queries
 
 kNN generation currently uses density-biased anchors and configurable `k`, which is good.
 
@@ -390,7 +400,7 @@ Needed improvements:
 
 kNN-QDS should train on queries where retaining the correct local representative points actually matters.
 
-#### Similarity Queries
+### Similarity Queries
 
 Similarity generation is currently weaker.
 
@@ -421,7 +431,7 @@ Needed improvements:
 
 Similarity-QDS likely needs the most generator work before model changes will pay off.
 
-#### Clustering Queries
+### Clustering Queries
 
 Clustering generation currently reuses range boxes and adds:
 
@@ -457,8 +467,6 @@ Generated workloads should be cached per:
 - seed
 - trajectory segmentation version
 
-This matters because query generation and label construction are expensive, especially with millions of AIS points and thousands of queries.
-
 The cache should store:
 
 - typed query dictionaries
@@ -467,30 +475,10 @@ The cache should store:
 - coverage metadata
 - answer-set metadata
 - label statistics
-- Oracle score
+- label Oracle score
 - baseline scores if available
 
-This makes experiments reproducible and prevents every training run from regenerating a slightly different workload.
-
-### Query Generator Work Needed For The Sprint
-
-Priority work:
-
-1. Add query-type-specific generator configs.
-2. Add query acceptance filters for empty, trivial, and overly broad queries.
-3. Add answer-cardinality and positive-label diagnostics.
-4. Add configurable kNN time windows and `k` distributions.
-5. Add configurable similarity reference length, radius, and top-k.
-6. Improve similarity query/reference alignment.
-7. Calibrate clustering `eps` by local distance or density instead of global degree span.
-8. Cache generated workloads and label diagnostics.
-9. Build one validated workload generator per specialized model:
-   - Range-QDS workload generator
-   - kNN-QDS workload generator
-   - Similarity-QDS workload generator
-   - Clustering-QDS workload generator
-
-The practical recommendation is:
+Practical recommendation:
 
 > Do not treat query generation as a minor utility. It is part of the learning objective.
 
@@ -515,9 +503,7 @@ Validation: 1 day
 Test: 1 day
 ```
 
-This is enough to debug the four specialized training pipelines and check whether Range-QDS and kNN-QDS have learnable signal.
-
-This is not enough for strong research claims.
+This is enough to debug the four specialist training pipelines and check whether Range-QDS and kNN-QDS have learnable signal. It is not enough for strong research claims.
 
 ### Practical Sprint Target
 
@@ -533,7 +519,7 @@ Validation: Jan 08
 Test: Jan 09-Jan 10
 ```
 
-This should be enough to test whether each specialized model can beat Random, new uniform temporal sampling, and Douglas-Peucker on same-region, same-period AIS data.
+This should be enough to test whether each specialist model can beat Random, new uniform temporal sampling, and Douglas-Peucker on same-region, same-period AIS data.
 
 For this sprint, `10` cleaned days should be treated as the main target.
 
@@ -555,23 +541,23 @@ At the observed cleaned data scale, `30` days would likely mean more than `100M`
 
 ### Target Query And Segment Scale
 
-For specialized model training, the target should be framed as query-label examples per workload:
+For specialist model training, target query-label examples per workload:
 
-- Range-QDS: `10k-50k` generated range queries.
-- kNN-QDS: `10k-30k` generated kNN queries.
-- Similarity-QDS: `2k-10k` generated similarity queries.
-- Clustering-QDS: `2k-10k` generated clustering queries.
+- Range-QDS: `10k-50k` generated range queries
+- kNN-QDS: `10k-30k` generated kNN queries
+- Similarity-QDS: `2k-10k` generated similarity queries
+- Clustering-QDS: `2k-10k` generated clustering queries
 
 Similarity and clustering can use fewer queries initially because their execution and label construction are heavier.
 
 For trajectory segments:
 
-- Minimum useful scale: `10k+` usable trajectory segments.
-- Preferred robust scale: `30k-100k` usable trajectory segments.
+- minimum useful scale: `10k+` usable trajectory segments
+- preferred robust scale: `30k-100k` usable trajectory segments
 
 These should be counted after MMSI/time-gap segmentation and quality filtering.
 
-### Recommended Growth Plan
+### Growth Plan
 
 Start with the existing `10` cleaned days for the sprint.
 
@@ -581,192 +567,39 @@ Then run a learning-curve study:
 3 days -> 5 days -> 10 days -> 20 days -> 30 days
 ```
 
-For each data volume, compare each specialized model against the same baselines at the same compression ratio.
+For each data volume, compare each specialist model against the same baselines at the same compression ratio.
 
 If performance still improves meaningfully from `10` to `30` days, then data volume and preprocessing are still bottlenecks. If performance plateaus before `10` days, the bottleneck is more likely label quality, budget-aware training, model architecture, or query workload design.
 
-## Benchmarking, Experimentation, And Metrics Layer Findings
-
-The current benchmarking layer is useful for prototype experiments, but it is not yet strong enough to prove the sprint ambition.
-
-The existing layer already has important foundations:
-
-- Matched-budget evaluation at the same compression ratio.
-- Baselines for Random, new uniform temporal sampling, Douglas-Peucker-style geometry, and Oracle.
-- Aggregate and per-query-type F1 reporting.
-- Point-aware range query scoring.
-- kNN, similarity, and clustering scoring that combines answer-set F1 with retained point-support preservation.
-- Geometric distortion reporting through SED, PED, length loss, and `F1x(1-L)`.
-- Optional validation query-F1 checkpoint selection.
-- JSON and text table outputs for individual runs.
-
-This is enough to reveal whether a run is promising or failing. It is not enough to claim that MLQDS beats typical algorithms across range, kNN, similarity, and clustering workloads.
-
-### Main Benchmarking Risks
-
-The current experiment pipeline runs one model with one train workload mix and one eval workload mix. It does not yet orchestrate the required four-specialist benchmark:
-
-```text
-Range-QDS      -> evaluated primarily on range
-kNN-QDS        -> evaluated primarily on kNN
-Similarity-QDS -> evaluated primarily on similarity
-Clustering-QDS -> evaluated primarily on clustering
-```
-
-For the sprint ambition, the core benchmark should be a matrix:
-
-```text
-Train model       Eval: range   Eval: kNN   Eval: similarity   Eval: clustering
-Range-QDS
-kNN-QDS
-Similarity-QDS
-Clustering-QDS
-```
-
-The diagonal is the primary success criterion. Cross-workload scores are useful diagnostics, but they should not define success.
-
-The current shift table is not a reliable workload-shift benchmark yet. It only reports MLQDS aggregate F1, does not compare baselines, and the train-workload side evaluates train-generated queries against test points. That makes the number hard to interpret as true generalization.
-
-The shift benchmark should instead use explicit eval workloads generated from the eval/test split for each query type and should include all baselines.
-
-### Baseline Findings
-
-The baseline set is directionally correct, but it needs tightening before final claims.
-
-Random is a valid and important baseline. It keeps the same approximate compression budget as MLQDS, so it answers whether the learned scorer beats chance under equal retained-point budget.
-
-new uniform temporal sampling is currently the strongest practical baseline and should remain a primary comparison target.
-
-Douglas-Peucker is currently only a proxy. The current implementation scores points by perpendicular distance to the first-last trajectory chord, but it is not a true recursive Douglas-Peucker algorithm. For credible comparison against typical simplification algorithms, this should be replaced or supplemented with a real recursive DP baseline.
-
-Oracle should be described carefully. The current Oracle uses heuristic query-derived labels directly, so it is a label-oracle diagnostic, not a theoretical final-F1 optimum. It is useful for checking whether the generated labels contain learnable signal, but it should not be presented as the absolute best possible simplification.
-
-### Metrics Findings
-
-The F1 direction is correct: higher is better.
-
-The current point-aware range metric is an improvement over trajectory-presence scoring because it prevents a method from preserving a whole range answer by keeping only one point from a hit trajectory.
-
-The kNN, similarity, and clustering metrics also move in the right direction by multiplying answer-set agreement with retained support-point quality.
-
-However, the metrics layer still needs more diagnostics:
-
-- per-query F1 distributions, not only averages
-- answer cardinality distributions
-- empty-query and trivial-query rates
-- broad-query rates
-- per-query support point counts
-- positive label fractions
-- Oracle score per query type
-- best-baseline gap per query type
-- confidence intervals or standard deviations across seeds
-
-The current aggregate F1 can hide important failures. A model should not be considered successful if it wins aggregate F1 only because one query type is easy or overrepresented.
-
-For specialist models, each result card should report:
-
-- target workload F1
-- best baseline F1
-- gap to best baseline
-- gap to label Oracle
-- compression ratio
-- SED and PED distortion
-- average length loss
-- simplification latency
-- mean and standard deviation across seeds
-
-### Runtime And Scale Findings
-
-Current latency measures the simplification call. For MLQDS this includes model inference and simplification, but it does not represent full end-to-end benchmark time including query generation, query execution, label construction, and geometric metric computation.
-
-This is acceptable if clearly documented, but final reports should separate:
-
-- simplification latency
-- query evaluation time
-- geometric metric time
-- training time
-- workload and label generation time
-
-Some current metric implementations may become expensive at larger AIS scale:
-
-- Range point F1 builds Python sets from point rows.
-- Clustering F1 builds co-membership pair sets, which can grow quadratically with cluster size.
-- Geometric distortion scans removed points across all trajectories on CPU.
-
-These are acceptable for small experiments, but larger 10-day and 30-day benchmarks will need caching, sampling, or vectorized implementations.
-
-### Experimentation Layer Gaps
-
-The current pipeline does not yet provide:
-
-- a four-specialist benchmark runner
-- a multi-seed runner
-- benchmark aggregation across seeds
-- learning-curve experiments across data volumes
-- fixed day-based split reporting
-- cached workload reuse
-- cached per-query score outputs
-- automatic winner summaries
-- structured comparison against the best baseline
-
-Single-run tables are useful during development, but final sprint evidence should be based on repeated runs.
-
-Minimum acceptable benchmark protocol:
-
-```text
-Models: Range-QDS, kNN-QDS, Similarity-QDS, Clustering-QDS
-Baselines: Random, newUniformTemporal, true Douglas-Peucker, label Oracle
-Seeds: at least 3
-Compression: same ratio for all methods
-Splits: fixed train/validation/test days
-Metrics: per-type F1, best-baseline gap, Oracle gap, SED/PED, length loss
-```
-
-Preferred benchmark protocol:
-
-```text
-Seeds: 5
-Data volumes: 3, 5, 10, 20, 30 days
-Result reporting: mean, standard deviation, best-baseline gap, and learning curves
-```
-
-### Benchmarking Work Needed For The Sprint
-
-Priority work:
-
-1. Add a four-specialist benchmark runner.
-2. Add a true train-model by eval-workload matrix.
-3. Evaluate all baselines in every matrix cell.
-4. Replace or supplement the approximate Douglas-Peucker baseline with a true recursive implementation.
-5. Rename or document Oracle as a label Oracle.
-6. Add multi-seed aggregation with mean and standard deviation.
-7. Add result fields for best baseline, gap to best baseline, and gap to Oracle.
-8. Persist per-query scores and query diagnostics.
-9. Separate simplification latency from full benchmark/evaluation runtime.
-10. Add learning-curve benchmark support for increasing AIS day counts.
-
-The practical recommendation is:
-
-> Treat benchmarking as part of the model objective, not as an afterthought.
-
-For this sprint, a model should only be considered successful when its specialist version beats the strongest baseline on its own workload at equal compression, across repeated seeds, with geometry remaining within acceptable bounds.
-
-## Model, Training Objective, And Simplification Policy Findings
-
-After data, query generation, and benchmarking, the remaining critical layer is the model/training/simplification layer.
+## Labels, Model Training, And Simplification
 
 This layer determines whether the four specialist models can actually learn behavior that beats the baselines, rather than only producing better diagnostics around the same failure modes.
+
+### Label Construction
+
+The current label construction is still proxy-based and not budget-aware.
+
+Current behavior:
+
+- Range labels reward points inside query boxes.
+- kNN labels representative in-window points from returned trajectories.
+- Similarity labels reference-nearest support points from returned trajectories.
+- Clustering labels points in trajectories that participate in non-noise co-membership structure.
+
+This is useful scaffolding, but it does not fully satisfy the sprint ambition. The desired models should learn which retained subset preserves query answers under a fixed budget.
+
+For specialist models, labels should become more query-type-specific and budget-aware:
+
+- Range-QDS should avoid labeling redundant dense in-box points as equally valuable.
+- kNN-QDS should focus on points that preserve nearest-trajectory membership.
+- Similarity-QDS should focus on shape-defining snippets and reference-nearest local structures.
+- Clustering-QDS should focus on trajectory representatives that preserve cluster co-membership.
 
 ### Query-Conditioning Scale Risk
 
 The current model conditions point scores on the full query workload. Each trajectory window attends over the generated query feature tensor.
 
-This is workable for small prototype workloads with hundreds of queries. It is not obviously scalable to the sprint target of:
-
-- `10k-50k` range queries
-- `10k-30k` kNN queries
-- `2k-10k` similarity queries
-- `2k-10k` clustering queries
+This is workable for prototype workloads with hundreds of queries. It is not obviously scalable to the target query volumes listed above.
 
 The current chunked cross-attention makes large workloads more memory-safe, but the computation still grows with query count. Once the workload is larger than the query chunk size, attention is also an approximation because each chunk is softmaxed independently and then averaged.
 
@@ -778,48 +611,22 @@ For large specialist workloads, the sprint likely needs one of these strategies:
 - cached per-point workload labels without feeding every query through the model
 - specialist models that consume compact query-type descriptors instead of full query lists
 
-The practical point is:
+Practical recommendation:
 
 > Large query volume cannot simply be added by increasing `n_queries`.
 
 The model-conditioning path must be made compatible with the intended workload scale.
 
-### Simplification Policy Risk
-
-The current simplifier uses per-trajectory top-k retention. Each trajectory keeps roughly the same fraction of points, and endpoints are always preserved.
-
-This makes comparisons fair and simple, but it is not fully query-driven.
-
-For true query-driven simplification, the model may need to spend more retained-point budget on trajectories that matter for the workload and less budget on trajectories that are irrelevant.
-
-Current limitation:
-
-```text
-fixed compression ratio per trajectory
-```
-
-Desired future behavior:
-
-```text
-fixed global or workload-aware budget across the dataset
-```
-
-This matters especially for range and kNN workloads. If only a subset of vessels or regions matters to the workload, a per-trajectory budget wastes retained points on trajectories that do not help query F1.
-
-The temporal-hybrid simplifier is useful because it prevents badly broken trajectories, but the sprint should not rely entirely on a large temporal base. The learned scorer should eventually make meaningful query-driven choices beyond uniform temporal coverage.
-
 ### Training Objective Risk
 
-The current training objective is still point-ranking based. It trains the model to assign higher scores to points with higher proxy labels.
+The current training objective is point-ranking based. It trains the model to assign higher scores to points with higher proxy labels.
 
-Final evaluation, however, depends on:
+Final evaluation depends on:
 
 1. predicted point scores
 2. top-k retained subset selection
 3. query execution on the simplified data
 4. answer-set F1 and point-support preservation
-
-The training loss does not directly optimize this final retained subset.
 
 This creates a mismatch:
 
@@ -838,13 +645,7 @@ Useful intermediate improvements:
 - add supervision for non-redundant representatives instead of dense positive regions
 - evaluate validation checkpoints by query F1 or uniform-gap, not only proxy loss
 
-The core learning goal is not just:
-
-```text
-rank positive labels above zero labels
-```
-
-It is:
+The core learning goal is:
 
 ```text
 choose the retained subset that preserves the query workload under budget
@@ -865,6 +666,30 @@ The sprint should add stronger negative/background supervision:
 
 This is especially important for kNN and similarity, where many nearby but wrong points can look plausible.
 
+### Simplification Policy Risk
+
+The current simplifier uses per-trajectory top-k retention. Each trajectory keeps roughly the same fraction of points, and endpoints are always preserved.
+
+This makes comparisons fair and simple, but it is not fully query-driven.
+
+Current limitation:
+
+```text
+fixed compression ratio per trajectory
+```
+
+Desired future behavior:
+
+```text
+fixed global or workload-aware budget across the dataset
+```
+
+For true query-driven simplification, the model may need to spend more retained-point budget on trajectories that matter for the workload and less budget on trajectories that are irrelevant.
+
+This matters especially for range and kNN workloads. If only a subset of vessels or regions matters, a per-trajectory budget wastes retained points on trajectories that do not help query F1.
+
+The temporal-hybrid simplifier is useful because it prevents badly broken trajectories, but the sprint should not rely entirely on a large temporal base. The learned scorer should eventually make meaningful query-driven choices beyond uniform temporal coverage.
+
 ### Specialist Model Configuration
 
 The current architecture already has four output heads, one per query type. That is useful for mixed-workload experiments.
@@ -882,11 +707,175 @@ For specialist training, each model should have:
 The default checkpoint selection should be aligned with the sprint goal. A default of training loss is useful for debugging, but final specialist runs should prefer:
 
 - validation query F1
-- or validation uniform-gap selection
+- validation uniform-gap selection
 
-The current `turn_aware` model should be treated carefully. It is not a fundamentally different architecture; it is the same query-conditioned model with an extra turn-score feature. It may be useful, but it should not distract from the core objective, labels, and simplification policy.
+The current `turn_aware` model is not a fundamentally different architecture. It is the same query-conditioned model with an extra turn-score feature. It may be useful, but it should not distract from the core objective, labels, and simplification policy.
 
-### Environment And Reproducibility Findings
+### Model And Training Work Needed
+
+Priority work:
+
+1. Decide how large specialist query workloads will condition the model without feeding every query through every forward pass.
+2. Add query sampling, workload summaries, or query prototypes for scalable training.
+3. Add stronger negative and hard-negative supervision.
+4. Add top-k-aware or retained-subset-aware training diagnostics.
+5. Use validation query F1 or uniform-gap selection for final specialist runs.
+6. Investigate global or workload-aware budget allocation beyond fixed per-trajectory ratios.
+7. Keep temporal-hybrid simplification as a stabilizer, but measure pure learned contribution separately.
+8. Treat `turn_aware` as a feature variant, not a core architecture solution.
+
+Practical recommendation:
+
+> Do not move directly from better query generation to bigger model training.
+
+The model-conditioning path, loss objective, and simplification policy must support the four-specialist ambition first.
+
+## Benchmarking, Experimentation, And Metrics
+
+The current benchmarking layer is useful for prototype experiments, but it is not yet strong enough to prove the sprint ambition.
+
+The existing layer already has important foundations:
+
+- matched-budget evaluation at the same compression ratio
+- baselines for Random, new uniform temporal sampling, Douglas-Peucker-style geometry, and Oracle
+- aggregate and per-query-type F1 reporting
+- point-aware range query scoring
+- kNN, similarity, and clustering scoring that combines answer-set F1 with retained point-support preservation
+- geometric distortion reporting through SED, PED, length loss, and `F1x(1-L)`
+- optional validation query-F1 checkpoint selection
+- JSON and text table outputs for individual runs
+
+This is enough to reveal whether a run is promising or failing. It is not enough to claim that MLQDS beats typical algorithms across range, kNN, similarity, and clustering workloads.
+
+### Benchmark Matrix
+
+The current experiment pipeline runs one model with one train workload mix and one eval workload mix.
+
+For the sprint ambition, the core benchmark should be:
+
+```text
+Train model       Eval: range   Eval: kNN   Eval: similarity   Eval: clustering
+Range-QDS
+kNN-QDS
+Similarity-QDS
+Clustering-QDS
+```
+
+The diagonal is the primary success criterion. Cross-workload scores are useful diagnostics, but they should not define success.
+
+The current shift table is not a reliable workload-shift benchmark yet. It only reports MLQDS aggregate F1, does not compare baselines, and the train-workload side evaluates train-generated queries against test points. That makes the number hard to interpret as true generalization.
+
+The shift benchmark should instead use explicit eval workloads generated from the eval/test split for each query type and should include all baselines.
+
+### Baselines
+
+The baseline set is directionally correct, but it needs tightening before final claims.
+
+Random is valid and important. It keeps the same approximate compression budget as MLQDS, so it answers whether the learned scorer beats chance under equal retained-point budget.
+
+new uniform temporal sampling is currently the strongest practical baseline and should remain a primary comparison target.
+
+Douglas-Peucker is currently only a proxy. The current implementation scores points by perpendicular distance to the first-last trajectory chord, but it is not a true recursive Douglas-Peucker algorithm. For credible comparison against typical simplification algorithms, this should be replaced or supplemented with a true recursive DP baseline.
+
+Oracle should be described carefully. The current Oracle uses heuristic query-derived labels directly, so it is a label Oracle diagnostic, not a theoretical final-F1 optimum. It is useful for checking whether the generated labels contain learnable signal, but it should not be presented as the absolute best possible simplification.
+
+### Metrics And Result Cards
+
+The F1 direction is correct: higher is better.
+
+The current point-aware range metric is an improvement over trajectory-presence scoring because it prevents a method from preserving a whole range answer by keeping only one point from a hit trajectory.
+
+The kNN, similarity, and clustering metrics also move in the right direction by multiplying answer-set agreement with retained support-point quality.
+
+The metrics layer still needs more diagnostics:
+
+- per-query F1 distributions, not only averages
+- answer cardinality distributions
+- empty-query and trivial-query rates
+- broad-query rates
+- per-query support point counts
+- positive label fractions
+- label Oracle score per query type
+- best-baseline gap per query type
+- confidence intervals or standard deviations across seeds
+
+Each specialist result card should report:
+
+- target workload F1
+- best baseline F1
+- gap to best baseline
+- gap to label Oracle
+- compression ratio
+- SED and PED distortion
+- average length loss
+- simplification latency
+- mean and standard deviation across seeds
+
+### Runtime And Scale
+
+Current latency measures the simplification call. For MLQDS this includes model inference and simplification, but it does not represent full end-to-end benchmark time including query generation, query execution, label construction, and geometric metric computation.
+
+Final reports should separate:
+
+- simplification latency
+- query evaluation time
+- geometric metric time
+- training time
+- workload and label generation time
+
+Some current metric implementations may become expensive at larger AIS scale:
+
+- Range point F1 builds Python sets from point rows.
+- Clustering F1 builds co-membership pair sets, which can grow quadratically with cluster size.
+- Geometric distortion scans removed points across all trajectories on CPU.
+
+These are acceptable for small experiments, but larger 10-day and 30-day benchmarks will need caching, sampling, or vectorized implementations.
+
+### Benchmarking Work Needed
+
+Priority work:
+
+1. Add a four-specialist benchmark runner.
+2. Add a true train-model by eval-workload matrix.
+3. Evaluate all baselines in every matrix cell.
+4. Replace or supplement the approximate Douglas-Peucker baseline with a true recursive implementation.
+5. Document Oracle as a label Oracle.
+6. Add multi-seed aggregation with mean and standard deviation.
+7. Add result fields for best baseline, gap to best baseline, and gap to Oracle.
+8. Persist per-query scores and query diagnostics.
+9. Separate simplification latency from full benchmark/evaluation runtime.
+10. Add learning-curve benchmark support for increasing AIS day counts.
+
+Minimum acceptable benchmark protocol:
+
+```text
+Models: Range-QDS, kNN-QDS, Similarity-QDS, Clustering-QDS
+Baselines: Random, newUniformTemporal, true Douglas-Peucker, label Oracle
+Seeds: at least 3
+Compression: same ratio for all methods
+Splits: fixed train/validation/test days
+Metrics: per-type F1, best-baseline gap, Oracle gap, SED/PED, length loss
+```
+
+Preferred benchmark protocol:
+
+```text
+Seeds: 5
+Data volumes: 3, 5, 10, 20, 30 days
+Result reporting: mean, standard deviation, best-baseline gap, and learning curves
+```
+
+Practical recommendation:
+
+> Treat benchmarking as part of the model objective, not as an afterthought.
+
+For this sprint, a model should only be considered successful when its specialist version beats the strongest baseline on its own workload at equal compression, across repeated seeds, with geometry remaining within acceptable bounds.
+
+## Reproducibility, Artifacts, And Visualization
+
+These areas do not define the learning objective, but they determine whether sprint results can be trusted, repeated, and debugged.
+
+### Environment
 
 The local Python environments are not currently ready for repeatable end-to-end sprint work.
 
@@ -906,9 +895,7 @@ Needed work:
 - add a simple command for running tests
 - add a simple command for running one small benchmark smoke test
 
-Without this, benchmark results will be hard to reproduce across machines or across sprint days.
-
-### Artifact And Repository Hygiene Findings
+### Artifact Hygiene
 
 The repository currently tracks many saved model checkpoints under `src/models/saved_models`.
 
@@ -922,9 +909,9 @@ Recommended direction:
 - keep only small intentional example artifacts if needed
 - record artifact metadata in JSON rather than relying on file names
 
-This matters for the sprint because multi-seed, multi-workload benchmarks will generate many more checkpoints and result files.
+This matters because multi-seed, multi-workload benchmarks will generate many more checkpoints and result files.
 
-### Visualization And Debugging Findings
+### Visualization And Debugging
 
 The v2 visualization module is currently a placeholder. Tables and JSON are useful, but they are not enough to debug query-driven simplification behavior.
 
@@ -948,24 +935,60 @@ Did those retained points actually help the target query workload?
 Did the model waste budget on redundant or irrelevant points?
 ```
 
-### Model And Training Work Needed For The Sprint
+## Priority Roadmap
 
-Priority work:
+The findings above imply the following sprint roadmap.
 
-1. Decide how large specialist query workloads will condition the model without feeding every query through every forward pass.
-2. Add query sampling, workload summaries, or query prototypes for scalable training.
-3. Add stronger negative and hard-negative supervision.
-4. Add top-k-aware or retained-subset-aware training diagnostics.
-5. Use validation query F1 or uniform-gap selection for final specialist runs.
-6. Investigate global or workload-aware budget allocation beyond fixed per-trajectory ratios.
-7. Keep temporal-hybrid simplification as a stabilizer, but measure pure learned contribution separately.
-8. Treat `turn_aware` as a feature variant, not a core architecture solution.
-9. Fix the Python environment and dependency reproducibility.
-10. Move generated checkpoints and large artifacts out of source-controlled model code.
-11. Add visual debugging tools for specialist workload behavior.
+### Phase 1: Make The Data Trustworthy
 
-The practical recommendation is:
+1. Add cached preprocessing artifacts.
+2. Segment trajectories by MMSI plus temporal continuity.
+3. Add data audit reports.
+4. Expose segment and sampling controls.
+5. Add real cleaned-CSV smoke tests.
 
-> Do not move directly from better query generation to bigger model training.
+### Phase 2: Make Workloads Trainable
 
-The model-conditioning path, loss objective, simplification policy, and reproducibility setup must support the four-specialist ambition first.
+1. Add query-type-specific generator configs.
+2. Add query acceptance filters and difficulty controls.
+3. Add answer-cardinality, positive-label, and label Oracle diagnostics.
+4. Cache workloads and labels per dataset split.
+5. Build one validated workload generator per specialist model.
+
+### Phase 3: Make Learning Budget-Aware
+
+1. Improve labels around non-redundant retained representatives.
+2. Add stronger negative and hard-negative supervision.
+3. Add top-k-aware or retained-subset-aware training diagnostics.
+4. Decide how large query workloads condition the model.
+5. Investigate global or workload-aware budget allocation.
+
+### Phase 4: Make Claims Defensible
+
+1. Add the four-specialist benchmark runner.
+2. Add multi-seed aggregation.
+3. Replace the approximate DP baseline with a true recursive DP baseline.
+4. Add best-baseline gap and label Oracle gap reporting.
+5. Add learning-curve experiments across data volume.
+
+### Phase 5: Make Results Reproducible And Debuggable
+
+1. Fix the Python environment and dependency reproducibility.
+2. Move generated checkpoints and large artifacts out of source-controlled model code.
+3. Add visual debugging outputs for specialist workload behavior.
+4. Record artifact metadata in structured result files.
+
+## Definition Of Done
+
+The sprint should be considered successful when the project can produce a repeatable benchmark report showing:
+
+- four trained specialist models
+- fixed train/validation/test day splits
+- at least three seeds per model
+- same compression ratio for all compared methods
+- per-workload F1 and geometric distortion
+- best-baseline gap for each specialist
+- label Oracle gap for each specialist
+- clear evidence of whether each specialist beats Random, newUniformTemporal, and true Douglas-Peucker
+
+The strongest version of the sprint result would show all four specialists beating the strongest baseline on their target workload. A still-useful sprint result would show this for Range-QDS and kNN-QDS, with clear diagnostics explaining what blocks Similarity-QDS and Clustering-QDS.
