@@ -130,3 +130,173 @@ Range and kNN are good first targets because their query behavior is more local 
 
 The key technical direction is to move from point-label prediction toward set-aware and budget-aware learning. The model should learn which retained subset preserves query answers, not only which individual points receive heuristic positive labels.
 
+## Data And Pretraining Layer Findings
+
+There is no separate `pretrain` module in `qds_v2`. The current data/pretraining layer is the combination of:
+
+- AIS CSV loading in `src/data/ais_loader.py`.
+- Trajectory flattening and boundary construction in `src/data/trajectory_dataset.py`.
+- Query workload generation in `src/queries/query_generator.py`.
+- Query-derived importance label construction in `src/training/importance_labels.py`.
+- Feature scaling and window batching in `src/training/scaler.py` and `src/training/trajectory_batching.py`.
+
+The cleaned AIS files in `AISDATA/cleaned` match the current v2 loader assumptions reasonably well. They contain columns such as `MMSI`, `# Timestamp`, `Latitude`, `Longitude`, `SOG`, and `COG`, which the loader can resolve through aliases.
+
+The upstream cleaning pipeline already performs useful work:
+
+- Keeps Class A AIS rows.
+- Removes duplicate output rows.
+- Trims repeated stationary points.
+- Fills or removes undefined ship types.
+- Removes selected ship types.
+- Removes GPS outliers.
+
+This is a solid start, but the model-specific data layer still needs work for the sprint ambition.
+
+### Observed Data Characteristics
+
+On `AISDATA/cleaned/aisdk-2026-01-01.cleaned.csv`, the cleaned daily file contains:
+
+- `3,328,209` rows.
+- `1,533` unique MMSIs.
+- Median MMSI length of `338` points.
+- 75th percentile MMSI length of `3,156` points.
+- 99th percentile MMSI length of `14,234` points.
+- Maximum MMSI length of `27,139` points.
+- `715` MMSIs with more than `500` points.
+- `32,367` rows with missing or invalid `COG`.
+- `29,001` duplicate timestamp occurrences within MMSI.
+- Maximum within-MMSI time gap of `16.9` hours.
+- `22` MMSIs with a max time gap above `6` hours.
+
+These numbers matter because the current loader treats each MMSI in the loaded file as one trajectory.
+
+### Main Risk: Trajectory Definition
+
+The current trajectory unit is effectively:
+
+> one MMSI over the loaded file equals one trajectory
+
+For query-driven simplification, this is likely too coarse. A vessel can have separate trips, long inactive periods, or large temporal gaps inside one daily MMSI track.
+
+This affects the four specialized models differently:
+
+- Range-QDS may tolerate this better because range labels are local point hits.
+- kNN-QDS can become noisy because the answer unit is the whole trajectory ID, even if only one local part of a long vessel track is relevant.
+- Similarity-QDS is especially sensitive because unrelated movement segments inside one MMSI can dilute trajectory-level similarity.
+- Clustering-QDS is also sensitive because trajectory representatives and co-membership structure depend heavily on the trajectory unit.
+
+The data layer should therefore segment trajectories by MMSI plus temporal continuity, not just MMSI.
+
+### Loader And Feature Issues
+
+The current loader drops rows with missing or invalid COG because COG is used as the heading feature. This prevents NaNs from reaching the scaler, but it also removes real AIS positions and can create artificial gaps.
+
+A better approach may be:
+
+- Use COG when valid.
+- Derive movement bearing from consecutive latitude/longitude positions when COG is missing.
+- Add a missing-heading flag if needed.
+
+The current feature set is also thin:
+
+- time
+- latitude
+- longitude
+- speed
+- COG/heading
+- `is_start`
+- `is_end`
+- optional `turn_score`
+
+For the four specialized models, richer local features may help:
+
+- delta time to previous/next point
+- distance to previous/next point
+- implied speed
+- acceleration or speed change
+- movement bearing from coordinates
+- heading change
+- local turn intensity
+- local point density
+- normalized progress through segment
+- ship type, if useful and encoded safely
+
+Range and kNN may work with simpler features. Similarity and clustering likely need stronger trajectory-shape and local-context features.
+
+### Scaling And Runtime Issues
+
+The loader currently reads the full CSV with Pandas. The cleaned daily files are roughly `268-377 MB` each, with `3.3-4.7 million` rows per day.
+
+This can work for small experiments, but it is not ideal for training four specialized models across multiple days.
+
+The sprint should add a cached preprocessing stage:
+
+```text
+cleaned CSV -> validated trajectory segments -> cached tensors/parquet/pt artifacts
+```
+
+This would make repeated range/kNN/similarity/clustering experiments much faster and more reproducible.
+
+The existing `max_points_per_ship` option exists in the loader but is not exposed in the experiment config or CLI. Large trajectory control should be exposed as normal run configuration.
+
+Useful controls:
+
+- `min_points_per_segment`
+- `max_points_per_segment`
+- `max_time_gap_seconds`
+- `max_segments`
+- optional per-day or per-MMSI sampling
+
+### Query And Label Preparation Issues
+
+The current label construction is still proxy-based and not budget-aware.
+
+Current behavior:
+
+- Range labels reward points inside query boxes.
+- kNN labels representative in-window points from returned trajectories.
+- Similarity labels reference-nearest support points from returned trajectories.
+- Clustering labels points in trajectories that participate in non-noise co-membership structure.
+
+This is useful scaffolding, but it does not fully satisfy the sprint ambition. The desired models should learn which retained subset preserves query answers under a fixed budget.
+
+For specialized models, labels should become more query-type-specific and budget-aware:
+
+- Range-QDS should avoid labeling redundant dense in-box points as equally valuable.
+- kNN-QDS should focus on points that preserve nearest-trajectory membership.
+- Similarity-QDS should focus on shape-defining snippets and reference-nearest local structures.
+- Clustering-QDS should focus on trajectory representatives that preserve cluster co-membership.
+
+Query coverage and label generation currently scan large point tensors. With millions of points and hundreds or thousands of queries, this can become expensive. Workloads and labels should be cached per query type and per dataset split.
+
+### Environment Finding
+
+The current local Python environments are not aligned:
+
+- System Python has `numpy`, but not `torch`, `pandas`, or `pytest`.
+- The repo `.venv` has `pandas` and `pytest`, but not `torch`.
+
+This blocks local end-to-end training and test execution until the environment is fixed.
+
+### Data Layer Work Needed For The Sprint
+
+The four specialized-model ambition requires data/pretraining work, not only model changes.
+
+Priority work:
+
+1. Add a cached preprocessing stage from cleaned CSVs to validated trajectory segment artifacts.
+2. Segment trajectories by MMSI plus time gap or voyage continuity.
+3. Add data audit reports for row drops, invalid COG, duplicate timestamps, segment lengths, and time gaps.
+4. Expose segment and sampling controls in `DataConfig` and the CLI.
+5. Build query-type-specific workload and label configs for range, kNN, similarity, and clustering.
+6. Cache generated workloads and labels per query type.
+7. Track positive label fraction, Oracle F1, and baseline F1 for each specialized training set.
+8. Make labels more budget-aware before adding more model complexity.
+9. Add smoke tests using real cleaned CSV slices, not only synthetic trajectories.
+
+The practical recommendation is:
+
+> Fix trajectory segmentation and cached preprocessing before making major architecture changes.
+
+The specialized models will only be as good as the trajectory units, query workloads, and label targets they are trained on.
