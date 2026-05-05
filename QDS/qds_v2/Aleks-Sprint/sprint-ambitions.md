@@ -584,3 +584,169 @@ Then run a learning-curve study:
 For each data volume, compare each specialized model against the same baselines at the same compression ratio.
 
 If performance still improves meaningfully from `10` to `30` days, then data volume and preprocessing are still bottlenecks. If performance plateaus before `10` days, the bottleneck is more likely label quality, budget-aware training, model architecture, or query workload design.
+
+## Benchmarking, Experimentation, And Metrics Layer Findings
+
+The current benchmarking layer is useful for prototype experiments, but it is not yet strong enough to prove the sprint ambition.
+
+The existing layer already has important foundations:
+
+- Matched-budget evaluation at the same compression ratio.
+- Baselines for Random, new uniform temporal sampling, Douglas-Peucker-style geometry, and Oracle.
+- Aggregate and per-query-type F1 reporting.
+- Point-aware range query scoring.
+- kNN, similarity, and clustering scoring that combines answer-set F1 with retained point-support preservation.
+- Geometric distortion reporting through SED, PED, length loss, and `F1x(1-L)`.
+- Optional validation query-F1 checkpoint selection.
+- JSON and text table outputs for individual runs.
+
+This is enough to reveal whether a run is promising or failing. It is not enough to claim that MLQDS beats typical algorithms across range, kNN, similarity, and clustering workloads.
+
+### Main Benchmarking Risks
+
+The current experiment pipeline runs one model with one train workload mix and one eval workload mix. It does not yet orchestrate the required four-specialist benchmark:
+
+```text
+Range-QDS      -> evaluated primarily on range
+kNN-QDS        -> evaluated primarily on kNN
+Similarity-QDS -> evaluated primarily on similarity
+Clustering-QDS -> evaluated primarily on clustering
+```
+
+For the sprint ambition, the core benchmark should be a matrix:
+
+```text
+Train model       Eval: range   Eval: kNN   Eval: similarity   Eval: clustering
+Range-QDS
+kNN-QDS
+Similarity-QDS
+Clustering-QDS
+```
+
+The diagonal is the primary success criterion. Cross-workload scores are useful diagnostics, but they should not define success.
+
+The current shift table is not a reliable workload-shift benchmark yet. It only reports MLQDS aggregate F1, does not compare baselines, and the train-workload side evaluates train-generated queries against test points. That makes the number hard to interpret as true generalization.
+
+The shift benchmark should instead use explicit eval workloads generated from the eval/test split for each query type and should include all baselines.
+
+### Baseline Findings
+
+The baseline set is directionally correct, but it needs tightening before final claims.
+
+Random is a valid and important baseline. It keeps the same approximate compression budget as MLQDS, so it answers whether the learned scorer beats chance under equal retained-point budget.
+
+new uniform temporal sampling is currently the strongest practical baseline and should remain a primary comparison target.
+
+Douglas-Peucker is currently only a proxy. The current implementation scores points by perpendicular distance to the first-last trajectory chord, but it is not a true recursive Douglas-Peucker algorithm. For credible comparison against typical simplification algorithms, this should be replaced or supplemented with a real recursive DP baseline.
+
+Oracle should be described carefully. The current Oracle uses heuristic query-derived labels directly, so it is a label-oracle diagnostic, not a theoretical final-F1 optimum. It is useful for checking whether the generated labels contain learnable signal, but it should not be presented as the absolute best possible simplification.
+
+### Metrics Findings
+
+The F1 direction is correct: higher is better.
+
+The current point-aware range metric is an improvement over trajectory-presence scoring because it prevents a method from preserving a whole range answer by keeping only one point from a hit trajectory.
+
+The kNN, similarity, and clustering metrics also move in the right direction by multiplying answer-set agreement with retained support-point quality.
+
+However, the metrics layer still needs more diagnostics:
+
+- per-query F1 distributions, not only averages
+- answer cardinality distributions
+- empty-query and trivial-query rates
+- broad-query rates
+- per-query support point counts
+- positive label fractions
+- Oracle score per query type
+- best-baseline gap per query type
+- confidence intervals or standard deviations across seeds
+
+The current aggregate F1 can hide important failures. A model should not be considered successful if it wins aggregate F1 only because one query type is easy or overrepresented.
+
+For specialist models, each result card should report:
+
+- target workload F1
+- best baseline F1
+- gap to best baseline
+- gap to label Oracle
+- compression ratio
+- SED and PED distortion
+- average length loss
+- simplification latency
+- mean and standard deviation across seeds
+
+### Runtime And Scale Findings
+
+Current latency measures the simplification call. For MLQDS this includes model inference and simplification, but it does not represent full end-to-end benchmark time including query generation, query execution, label construction, and geometric metric computation.
+
+This is acceptable if clearly documented, but final reports should separate:
+
+- simplification latency
+- query evaluation time
+- geometric metric time
+- training time
+- workload and label generation time
+
+Some current metric implementations may become expensive at larger AIS scale:
+
+- Range point F1 builds Python sets from point rows.
+- Clustering F1 builds co-membership pair sets, which can grow quadratically with cluster size.
+- Geometric distortion scans removed points across all trajectories on CPU.
+
+These are acceptable for small experiments, but larger 10-day and 30-day benchmarks will need caching, sampling, or vectorized implementations.
+
+### Experimentation Layer Gaps
+
+The current pipeline does not yet provide:
+
+- a four-specialist benchmark runner
+- a multi-seed runner
+- benchmark aggregation across seeds
+- learning-curve experiments across data volumes
+- fixed day-based split reporting
+- cached workload reuse
+- cached per-query score outputs
+- automatic winner summaries
+- structured comparison against the best baseline
+
+Single-run tables are useful during development, but final sprint evidence should be based on repeated runs.
+
+Minimum acceptable benchmark protocol:
+
+```text
+Models: Range-QDS, kNN-QDS, Similarity-QDS, Clustering-QDS
+Baselines: Random, newUniformTemporal, true Douglas-Peucker, label Oracle
+Seeds: at least 3
+Compression: same ratio for all methods
+Splits: fixed train/validation/test days
+Metrics: per-type F1, best-baseline gap, Oracle gap, SED/PED, length loss
+```
+
+Preferred benchmark protocol:
+
+```text
+Seeds: 5
+Data volumes: 3, 5, 10, 20, 30 days
+Result reporting: mean, standard deviation, best-baseline gap, and learning curves
+```
+
+### Benchmarking Work Needed For The Sprint
+
+Priority work:
+
+1. Add a four-specialist benchmark runner.
+2. Add a true train-model by eval-workload matrix.
+3. Evaluate all baselines in every matrix cell.
+4. Replace or supplement the approximate Douglas-Peucker baseline with a true recursive implementation.
+5. Rename or document Oracle as a label Oracle.
+6. Add multi-seed aggregation with mean and standard deviation.
+7. Add result fields for best baseline, gap to best baseline, and gap to Oracle.
+8. Persist per-query scores and query diagnostics.
+9. Separate simplification latency from full benchmark/evaluation runtime.
+10. Add learning-curve benchmark support for increasing AIS day counts.
+
+The practical recommendation is:
+
+> Treat benchmarking as part of the model objective, not as an afterthought.
+
+For this sprint, a model should only be considered successful when its specialist version beats the strongest baseline on its own workload at equal compression, across repeated seeds, with geometry remaining within acceptable bounds.
