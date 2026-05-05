@@ -300,3 +300,92 @@ The practical recommendation is:
 > Fix trajectory segmentation and cached preprocessing before making major architecture changes.
 
 The specialized models will only be as good as the trajectory units, query workloads, and label targets they are trained on.
+
+## Data Volume Targets
+
+The needed AIS data volume should be judged at two levels:
+
+1. Number of cleaned AIS days.
+2. Number of usable trajectory segments and query-label examples after segmentation.
+
+Days alone are not enough, because one day can contain many long MMSI tracks, noisy gaps, stationary behavior, and uneven traffic density. The model should ultimately train on validated trajectory segments, not raw MMSI-day tracks.
+
+### Minimum Viable Target
+
+Use `5` cleaned AIS days:
+
+```text
+Train: 3 days
+Validation: 1 day
+Test: 1 day
+```
+
+This is enough to debug the four specialized training pipelines and check whether Range-QDS and kNN-QDS have learnable signal.
+
+This is not enough for strong research claims.
+
+### Practical Sprint Target
+
+Use `10` cleaned AIS days.
+
+The current workspace already appears to contain `10` cleaned daily files in `AISDATA/cleaned`, so this is the most practical sprint target.
+
+Suggested split:
+
+```text
+Train: Jan 01-Jan 07
+Validation: Jan 08
+Test: Jan 09-Jan 10
+```
+
+This should be enough to test whether each specialized model can beat Random, new uniform temporal sampling, and Douglas-Peucker on same-region, same-period AIS data.
+
+For this sprint, `10` cleaned days should be treated as the main target.
+
+### Ideal Research Target
+
+Use `30` cleaned AIS days.
+
+Suggested split:
+
+```text
+Train: 20 days
+Validation: 5 days
+Test: 5 days
+```
+
+This gives more temporal variation and reduces overfitting to a few days of traffic, weather, port activity, dense regions, or specific MMSIs.
+
+At the observed cleaned data scale, `30` days would likely mean more than `100M` cleaned AIS rows before segmentation. This makes cached preprocessing, segment sampling, and cached query-label artifacts mandatory.
+
+### Target Query And Segment Scale
+
+For specialized model training, the target should be framed as query-label examples per workload:
+
+- Range-QDS: `10k-50k` generated range queries.
+- kNN-QDS: `10k-30k` generated kNN queries.
+- Similarity-QDS: `2k-10k` generated similarity queries.
+- Clustering-QDS: `2k-10k` generated clustering queries.
+
+Similarity and clustering can use fewer queries initially because their execution and label construction are heavier.
+
+For trajectory segments:
+
+- Minimum useful scale: `10k+` usable trajectory segments.
+- Preferred robust scale: `30k-100k` usable trajectory segments.
+
+These should be counted after MMSI/time-gap segmentation and quality filtering.
+
+### Recommended Growth Plan
+
+Start with the existing `10` cleaned days for the sprint.
+
+Then run a learning-curve study:
+
+```text
+3 days -> 5 days -> 10 days -> 20 days -> 30 days
+```
+
+For each data volume, compare each specialized model against the same baselines at the same compression ratio.
+
+If performance still improves meaningfully from `10` to `30` days, then data volume and preprocessing are still bottlenecks. If performance plateaus before `10` days, the bottleneck is more likely label quality, budget-aware training, model architecture, or query workload design.
