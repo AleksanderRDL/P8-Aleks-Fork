@@ -301,6 +301,201 @@ The practical recommendation is:
 
 The specialized models will only be as good as the trajectory units, query workloads, and label targets they are trained on.
 
+## Query Generator And Sampling Findings
+
+The query generator is a critical part of the training pipeline. For the four specialized-model ambition, query quality matters as much as model quality.
+
+The current generator already has useful behavior:
+
+- Supports all four query types: range, kNN, similarity, and clustering.
+- Normalizes workload mixes.
+- Produces padded query feature tensors and type IDs.
+- Uses density-biased anchor sampling for range and kNN queries.
+- Keeps `n_queries` as a minimum when coverage mode is enabled.
+- Allows range query footprint control through `range_spatial_fraction` and `range_time_fraction`.
+- Allows configurable kNN `k` through `knn_k`.
+- Has tests for coverage mode, density bias, smaller range footprints, and configured kNN `k`.
+
+This is enough for prototype experiments, but not enough for robust specialized MLQDS training.
+
+### Main Query Sampling Risks
+
+The current generator is too generic. It does not yet guarantee that generated queries are informative training examples.
+
+Important missing controls:
+
+- Query difficulty.
+- Answer cardinality.
+- Positive label density.
+- Per-query Oracle score.
+- Empty/easy/hard query rejection.
+- Query diversity across space, time, density, trajectory length, and vessel behavior.
+
+Point coverage is currently used as the main workload coverage signal. This is useful, but it is not the same as query-answer quality. A workload can cover many points while still producing weak or redundant training signal.
+
+For specialized models, coverage should include more diagnostics:
+
+- point coverage
+- trajectory coverage
+- answer set size
+- support point count
+- positive label fraction
+- number of empty queries
+- number of overly broad queries
+- number of repeated or near-duplicate queries
+- Oracle F1 under the generated workload
+
+### Query-Type-Specific Findings
+
+#### Range Queries
+
+Range query generation is currently the strongest and most controllable part of the generator.
+
+Existing controls:
+
+- spatial footprint fraction
+- time footprint fraction
+- density-biased anchors
+- coverage targeting
+
+Needed improvements:
+
+- reject empty boxes
+- reject boxes that hit too much of the dataset
+- target useful hit-count bands
+- track point-hit distribution
+- avoid redundant overlapping boxes unless overlap is intentional
+
+Range-QDS should train on boxes that produce meaningful point-level preservation pressure, not only broad boxes that reward uniform sampling.
+
+#### kNN Queries
+
+kNN generation currently uses density-biased anchors and configurable `k`, which is good.
+
+However, the time window is fixed as:
+
+```text
+t_half_window = 0.25 * dataset_time_span
+```
+
+On a one-day dataset, this is roughly a 6-hour half-window. That may be too broad for local kNN behavior.
+
+Needed improvements:
+
+- configurable kNN time-window distribution
+- configurable `k` distribution instead of only one fixed `k`
+- answer-cardinality and distance-margin diagnostics
+- rejection of ambiguous queries where many trajectories are nearly tied
+- distinction between dense-port kNN and open-water kNN
+
+kNN-QDS should train on queries where retaining the correct local representative points actually matters.
+
+#### Similarity Queries
+
+Similarity generation is currently weaker.
+
+Current behavior:
+
+- picks a random anchor point for the query centroid
+- picks a random trajectory and 5-point reference snippet
+- uses fixed radius fraction
+- hardcodes `top_k=5`
+- query features only include the mean of the reference snippet
+
+Risks:
+
+- the query centroid can be weakly related to the reference snippet
+- a 5-point reference may be too short or too noisy
+- mean reference features lose most shape information
+- fixed `top_k` and radius may produce unstable difficulty
+
+Needed improvements:
+
+- configurable reference snippet length
+- tie query centroid more directly to the reference trajectory or intended candidate region
+- configurable similarity `top_k`
+- configurable radius and time window distributions
+- query acceptance based on answer count and distance separation
+- hard-negative sampling for similar but wrong trajectories
+- richer query encoding for shape, not only reference mean
+
+Similarity-QDS likely needs the most generator work before model changes will pay off.
+
+#### Clustering Queries
+
+Clustering generation currently reuses range boxes and adds:
+
+```text
+eps = 0.02 * max(dataset_lat_span, dataset_lon_span)
+min_samples = random integer from 3 to 6
+```
+
+Risks:
+
+- `eps` is in coordinate degrees, not kilometers
+- global span-based `eps` changes meaning across datasets
+- generated queries may produce no clusters or trivial clusters
+- cluster structure can be unstable under small changes in query region
+
+Needed improvements:
+
+- calibrate `eps` in kilometers or local projected units
+- tune `eps` using local density
+- reject queries with no meaningful co-membership pairs
+- track cluster count, noise fraction, and pair-count distribution
+- generate both dense-region and sparse-region clustering workloads
+
+Clustering-QDS should train on queries with stable and non-trivial cluster structure.
+
+### Query Workload Caching
+
+Generated workloads should be cached per:
+
+- dataset split
+- query type
+- query generator config
+- seed
+- trajectory segmentation version
+
+This matters because query generation and label construction are expensive, especially with millions of AIS points and thousands of queries.
+
+The cache should store:
+
+- typed query dictionaries
+- padded query features
+- type IDs
+- coverage metadata
+- answer-set metadata
+- label statistics
+- Oracle score
+- baseline scores if available
+
+This makes experiments reproducible and prevents every training run from regenerating a slightly different workload.
+
+### Query Generator Work Needed For The Sprint
+
+Priority work:
+
+1. Add query-type-specific generator configs.
+2. Add query acceptance filters for empty, trivial, and overly broad queries.
+3. Add answer-cardinality and positive-label diagnostics.
+4. Add configurable kNN time windows and `k` distributions.
+5. Add configurable similarity reference length, radius, and top-k.
+6. Improve similarity query/reference alignment.
+7. Calibrate clustering `eps` by local distance or density instead of global degree span.
+8. Cache generated workloads and label diagnostics.
+9. Build one validated workload generator per specialized model:
+   - Range-QDS workload generator
+   - kNN-QDS workload generator
+   - Similarity-QDS workload generator
+   - Clustering-QDS workload generator
+
+The practical recommendation is:
+
+> Do not treat query generation as a minor utility. It is part of the learning objective.
+
+If query sampling is noisy, too easy, too broad, or unbalanced, the learned model can fail even if the architecture is otherwise adequate.
+
 ## Data Volume Targets
 
 The needed AIS data volume should be judged at two levels:
