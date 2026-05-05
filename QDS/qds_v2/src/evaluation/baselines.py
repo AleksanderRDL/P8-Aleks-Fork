@@ -8,7 +8,11 @@ from typing import Protocol
 import torch
 
 from src.experiments.experiment_config import TypedQueryWorkload
-from src.simplification.simplify_trajectories import simplify_with_scores
+from src.simplification.simplify_trajectories import (
+    evenly_spaced_indices,
+    simplify_with_scores,
+    simplify_with_temporal_score_hybrid,
+)
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import windowed_predict
 
@@ -35,13 +39,16 @@ class MLQDSMethod:
     trained: TrainingOutputs
     workload: TypedQueryWorkload
     workload_mix: dict[str, float]
+    temporal_fraction: float = 0.75
+    diversity_bonus: float = 0.05
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores.
 
         If the workload contains no queries, keep every point because there is
         no query F1 objective to optimize. Otherwise, use the learned workload-
-        weighted score directly with the standard per-trajectory top-k selector.
+        weighted score with a temporal-coverage base, then fill the remaining
+        budget with learned query-aware scores.
 
         See ``src/evaluation/README.md`` for details.
         """
@@ -64,8 +71,14 @@ class MLQDSMethod:
             mix = torch.ones_like(mix) / mix.numel()
         else:
             mix = mix / mix.sum()
-        score = (pred * mix.unsqueeze(0)).sum(dim=1)
-        return simplify_with_scores(score, boundaries, compression_ratio)
+        score = (torch.sigmoid(pred) * mix.unsqueeze(0)).sum(dim=1)
+        return simplify_with_temporal_score_hybrid(
+            score,
+            boundaries,
+            compression_ratio,
+            temporal_fraction=self.temporal_fraction,
+            diversity_bonus=self.diversity_bonus,
+        )
 
 
 @dataclass
@@ -96,6 +109,26 @@ class UniformTemporalMethod:
             idx = torch.arange(n, dtype=torch.float32)
             scores[start:end] = -torch.abs(idx - (n - 1) / 2.0)
         return simplify_with_scores(scores, boundaries, compression_ratio)
+
+
+@dataclass
+class NewUniformTemporalMethod:
+    """True evenly spaced temporal sampling baseline."""
+
+    name: str = "newUniformTemporal"
+
+    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+        """Retain evenly spaced points per trajectory, including endpoints."""
+        retained = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+        for start, end in boundaries:
+            n = end - start
+            if n <= 0:
+                continue
+            k = max(2, int(torch.ceil(torch.tensor(float(compression_ratio) * n)).item()))
+            k = min(k, n)
+            local_idx = evenly_spaced_indices(n, k, points.device)
+            retained[start + local_idx] = True
+        return retained
 
 
 @dataclass

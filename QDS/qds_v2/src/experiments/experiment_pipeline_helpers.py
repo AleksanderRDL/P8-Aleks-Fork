@@ -27,11 +27,16 @@ from src.data.trajectory_dataset import TrajectoryDataset
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
+    NewUniformTemporalMethod,
     OracleMethod,
     RandomMethod,
-    UniformTemporalMethod,
 )
-from src.evaluation.evaluate_methods import evaluate_method, print_method_comparison_table, print_shift_table
+from src.evaluation.evaluate_methods import (
+    evaluate_method,
+    print_geometric_distortion_table,
+    print_method_comparison_table,
+    print_shift_table,
+)
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
@@ -48,6 +53,7 @@ class ExperimentOutputs:
     matched_table: str
     shift_table: str
     metrics_dump: dict
+    geometric_table: str = ""
 
 
 def split_trajectories(
@@ -97,6 +103,14 @@ def _normalized_coverage_target(value: float | None) -> float | None:
     return target / 100.0 if target > 1.0 else target
 
 
+def _validation_query_count(config: ExperimentConfig) -> int:
+    """Use a broader validation workload for less seed-specific F1 checkpointing."""
+    doubled = max(int(config.query.n_queries), int(config.query.n_queries) * 2)
+    if config.query.max_queries is None:
+        return doubled
+    return min(doubled, max(int(config.query.n_queries), int(config.query.max_queries)))
+
+
 def run_experiment_pipeline(
     config: ExperimentConfig,
     trajectories: list[torch.Tensor],
@@ -126,7 +140,11 @@ def run_experiment_pipeline(
         )
 
     seeds = derive_seed_bundle(config.data.seed)
+    selection_metric = str(getattr(config.model, "checkpoint_selection_metric", "loss")).lower()
+    f1_diag_every = int(getattr(config.model, "f1_diagnostic_every", 0) or 0)
+    needs_validation_f1 = selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
     with _phase("split"):
+        selection_traj: list[torch.Tensor] | None = None
         if eval_trajectories is None:
             # Reproduce split_trajectories' permutation here so we can align the
             # MMSI list with the test split (the helper itself doesn't carry ids).
@@ -140,6 +158,7 @@ def run_experiment_pipeline(
             test_traj = [trajectories[i] for i in perm[n_train + n_val :]]
             if not test_traj:
                 test_traj = _val_traj if _val_traj else train_traj
+            selection_traj = _val_traj if needs_validation_f1 and _val_traj else None
             if trajectory_mmsis is not None and len(trajectory_mmsis) == n:
                 train_mmsis = [trajectory_mmsis[i] for i in perm[:n_train]]
                 test_mmsis = [trajectory_mmsis[i] for i in perm[n_train + n_val :]]
@@ -155,17 +174,34 @@ def run_experiment_pipeline(
             test_traj = eval_trajectories
             train_mmsis = trajectory_mmsis
             test_mmsis = eval_trajectory_mmsis
+            if needs_validation_f1:
+                n = len(train_traj)
+                g = torch.Generator().manual_seed(int(seeds.split_seed))
+                perm = torch.randperm(n, generator=g).tolist()
+                n_val = max(1, int(n * config.data.val_fraction)) if n > 1 else 0
+                val_idx = set(perm[:n_val])
+                selection_traj = [traj for idx, traj in enumerate(train_traj) if idx in val_idx]
+                train_traj = [traj for idx, traj in enumerate(train_traj) if idx not in val_idx]
+                if train_mmsis is not None and len(train_mmsis) == n:
+                    train_mmsis = [mmsi for idx, mmsi in enumerate(train_mmsis) if idx not in val_idx]
             print(f"  split mode=separate CSVs  train={len(train_traj)}  eval={len(test_traj)}", flush=True)
+        if selection_traj:
+            print(f"  checkpoint-selection validation={len(selection_traj)} trajectories", flush=True)
 
     with _phase("build-datasets"):
         train_ds = TrajectoryDataset(train_traj)
         test_ds = TrajectoryDataset(test_traj)
+        selection_ds = TrajectoryDataset(selection_traj) if selection_traj else None
         train_points = train_ds.get_all_points()
         test_points = test_ds.get_all_points()
         train_boundaries = train_ds.get_trajectory_boundaries()
         test_boundaries = test_ds.get_trajectory_boundaries()
+        selection_boundaries = selection_ds.get_trajectory_boundaries() if selection_ds is not None else None
 
     with _phase("generate-workloads"):
+        # Front-load all kNN queries before proportional scheduling for training
+        # so kNN always gets its full quota even if n_queries is small.
+        knn_front_load = int(train_mix.get("knn", 0.0) * config.query.n_queries)
         train_workload = generate_typed_query_workload(
             trajectories=train_traj,
             n_queries=config.query.n_queries,
@@ -173,6 +209,10 @@ def run_experiment_pipeline(
             seed=seeds.train_query_seed,
             target_coverage=config.query.target_coverage,
             max_queries=config.query.max_queries,
+            range_spatial_fraction=config.query.range_spatial_fraction,
+            range_time_fraction=config.query.range_time_fraction,
+            knn_k=config.query.knn_k,
+            front_load_knn=knn_front_load,
         )
         eval_workload = generate_typed_query_workload(
             trajectories=test_traj,
@@ -181,7 +221,23 @@ def run_experiment_pipeline(
             seed=seeds.eval_query_seed,
             target_coverage=config.query.target_coverage,
             max_queries=config.query.max_queries,
+            range_spatial_fraction=config.query.range_spatial_fraction,
+            range_time_fraction=config.query.range_time_fraction,
+            knn_k=config.query.knn_k,
         )
+        selection_workload = None
+        if selection_traj:
+            selection_workload = generate_typed_query_workload(
+                trajectories=selection_traj,
+                n_queries=_validation_query_count(config),
+                workload_mix=eval_mix,
+                seed=seeds.eval_query_seed + 17,
+                target_coverage=config.query.target_coverage,
+                max_queries=config.query.max_queries,
+                range_spatial_fraction=config.query.range_spatial_fraction,
+                range_time_fraction=config.query.range_time_fraction,
+                knn_k=config.query.knn_k,
+            )
         print(
             f"  train_workload={len(train_workload.typed_queries)} queries  "
             f"coverage={_coverage_name(train_workload)}",
@@ -192,6 +248,12 @@ def run_experiment_pipeline(
             f"coverage={_coverage_name(eval_workload)}",
             flush=True,
         )
+        if selection_workload is not None:
+            print(
+                f"  selection_workload={len(selection_workload.typed_queries)} queries  "
+                f"coverage={_coverage_name(selection_workload)}",
+                flush=True,
+            )
         target = _normalized_coverage_target(config.query.target_coverage)
         if target is not None:
             for label, workload in (("train", train_workload), ("eval", eval_workload)):
@@ -199,7 +261,7 @@ def run_experiment_pipeline(
                 if coverage + 1e-9 < target:
                     print(
                         f"  WARNING: {label} workload stopped below requested coverage "
-                        f"({coverage:.2%} < {target:.2%}); raise --max_queries to continue.",
+                        f"({coverage:.2%} < {target:.2%}); raise --n_queries or query footprint to cover more points.",
                         flush=True,
                     )
 
@@ -214,6 +276,11 @@ def run_experiment_pipeline(
             workload=train_workload,
             model_config=config.model,
             seed=seeds.torch_seed,
+            train_mix=train_mix,
+            validation_trajectories=selection_traj,
+            validation_boundaries=selection_boundaries,
+            validation_workload=selection_workload,
+            validation_mix=eval_mix if selection_workload is not None else None,
         )
 
     if save_model:
@@ -235,9 +302,16 @@ def run_experiment_pipeline(
                 flush=True,
             )
     methods = [
-        MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix),
+        MLQDSMethod(
+            name="MLQDS",
+            trained=trained,
+            workload=eval_workload,
+            workload_mix=eval_mix,
+            temporal_fraction=config.model.mlqds_temporal_fraction,
+            diversity_bonus=config.model.mlqds_diversity_bonus,
+        ),
         RandomMethod(seed=config.data.seed),
-        UniformTemporalMethod(),
+        NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
 
@@ -252,6 +326,7 @@ def run_experiment_pipeline(
                     typed_queries=eval_workload.typed_queries,
                     workload_mix=eval_mix,
                     compression_ratio=config.model.compression_ratio,
+                    return_mask=method.name == "MLQDS",
                 )
 
         eval_labels, _ = compute_typed_importance_labels(
@@ -272,32 +347,32 @@ def run_experiment_pipeline(
             )
 
     matched_table = print_method_comparison_table(matched)
+    geometric_table = print_geometric_distortion_table(matched)
 
     with _phase("evaluate-shift"):
-        shift_pairs = {
-            _mix_name(train_mix): {
-                _mix_name(train_mix): float(
-                    evaluate_method(
-                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix),
-                        points=test_points,
-                        boundaries=test_boundaries,
-                        typed_queries=train_workload.typed_queries,
+        train_name = _mix_name(train_mix)
+        eval_name = _mix_name(eval_mix)
+        shift_pairs = {train_name: {eval_name: float(matched["MLQDS"].aggregate_f1)}}
+        if train_name == eval_name:
+            shift_pairs[train_name][train_name] = float(matched["MLQDS"].aggregate_f1)
+        else:
+            shift_pairs[train_name][train_name] = float(
+                evaluate_method(
+                    method=MLQDSMethod(
+                        name="MLQDS",
+                        trained=trained,
+                        workload=train_workload,
                         workload_mix=train_mix,
-                        compression_ratio=config.model.compression_ratio,
-                    ).aggregate_f1
-                ),
-                _mix_name(eval_mix): float(
-                    evaluate_method(
-                        method=MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix),
-                        points=test_points,
-                        boundaries=test_boundaries,
-                        typed_queries=eval_workload.typed_queries,
-                        workload_mix=eval_mix,
-                        compression_ratio=config.model.compression_ratio,
-                    ).aggregate_f1
-                ),
-            }
-        }
+                        temporal_fraction=config.model.mlqds_temporal_fraction,
+                        diversity_bonus=config.model.mlqds_diversity_bonus,
+                    ),
+                    points=test_points,
+                    boundaries=test_boundaries,
+                    typed_queries=train_workload.typed_queries,
+                    workload_mix=train_mix,
+                    compression_ratio=config.model.compression_ratio,
+                ).aggregate_f1
+            )
     shift_table = print_shift_table(shift_pairs)
 
     dump = {
@@ -314,6 +389,12 @@ def run_experiment_pipeline(
                 "per_type_f1": m.per_type_f1,
                 "compression_ratio": m.compression_ratio,
                 "latency_ms": m.latency_ms,
+                "avg_retained_point_gap": m.avg_retained_point_gap,
+                "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
+                "max_retained_point_gap": m.max_retained_point_gap,
+                "geometric_distortion": m.geometric_distortion,
+                "avg_length_loss": m.avg_length_loss,
+                "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in matched.items()
         },
@@ -321,6 +402,7 @@ def run_experiment_pipeline(
         "training_history": trained.history,
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
+        "best_f1": trained.best_f1,
     }
 
     with _phase("write-results"):
@@ -328,6 +410,7 @@ def run_experiment_pipeline(
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
+        (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
         with open(out_dir / "example_run.json", "w", encoding="utf-8") as f:
             json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)
@@ -335,28 +418,19 @@ def run_experiment_pipeline(
     if save_simplified_dir:
         with _phase("write-simplified-csv"):
             out_dir = Path(save_simplified_dir)
-
-            train_mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=train_workload, workload_mix=train_mix)
-            train_mask = train_mlqds.simplify(train_points, train_boundaries, config.model.compression_ratio)
-            write_simplified_csv(
-                str(out_dir / "ML_simplified_train.csv"),
-                train_points,
-                train_boundaries,
-                train_mask,
-                trajectory_mmsis=train_mmsis,
-            )
-
-            eval_mlqds = MLQDSMethod(name="MLQDS", trained=trained, workload=eval_workload, workload_mix=eval_mix)
-            eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
+            eval_mask = matched["MLQDS"].retained_mask
+            if eval_mask is None:
+                eval_mlqds = MLQDSMethod(
+                    name="MLQDS",
+                    trained=trained,
+                    workload=eval_workload,
+                    workload_mix=eval_mix,
+                    temporal_fraction=config.model.mlqds_temporal_fraction,
+                    diversity_bonus=config.model.mlqds_diversity_bonus,
+                )
+                eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             write_simplified_csv(
                 str(out_dir / "ML_simplified_eval.csv"),
-                test_points,
-                test_boundaries,
-                eval_mask,
-                trajectory_mmsis=test_mmsis,
-            )
-            write_simplified_csv(
-                str(out_dir / "ML_simplified.csv"),
                 test_points,
                 test_boundaries,
                 eval_mask,
@@ -367,7 +441,12 @@ def run_experiment_pipeline(
             report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)
 
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
-    return ExperimentOutputs(matched_table=matched_table, shift_table=shift_table, metrics_dump=dump)
+    return ExperimentOutputs(
+        matched_table=matched_table,
+        shift_table=shift_table,
+        metrics_dump=dump,
+        geometric_table=geometric_table,
+    )
 
 
 def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:

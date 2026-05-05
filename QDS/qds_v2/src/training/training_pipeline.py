@@ -15,7 +15,7 @@ from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.scaler import FeatureScaler
 from src.training.train_model import TrainingOutputs
-from src.training.trajectory_batching import build_trajectory_windows
+from src.training.trajectory_batching import batch_windows, build_trajectory_windows
 
 
 @dataclass
@@ -67,7 +67,14 @@ def load_checkpoint(path: str) -> ModelArtifacts:
     model.load_state_dict(payload["model_state"])
     model.eval()
     scaler = FeatureScaler.from_dict(payload["scaler"])
-    return ModelArtifacts(model=model, scaler=scaler, config=cfg)
+    return ModelArtifacts(
+        model=model,
+        scaler=scaler,
+        config=cfg,
+        epochs_trained=int(payload.get("epochs_trained", 0)),
+        train_workload_mix=payload.get("train_workload_mix"),
+        eval_workload_mix=payload.get("eval_workload_mix"),
+    )
 
 
 def save_training_summary(path: str, outputs: TrainingOutputs) -> None:
@@ -85,6 +92,7 @@ def windowed_predict(
     query_type_ids: torch.Tensor,
     window_length: int = 512,
     window_stride: int = 256,
+    batch_size: int = 16,
 ) -> torch.Tensor:
     """Run per-window inference and average overlapping predictions. See src/training/README.md for details.
 
@@ -92,6 +100,7 @@ def windowed_predict(
     trajectory boundaries, matching the behaviour seen during training.
     """
     windows = build_trajectory_windows(norm_points, boundaries, window_length, window_stride)
+    windows = batch_windows(windows, max(1, int(batch_size)))
     n = norm_points.shape[0]
     all_pred = norm_points.new_zeros((n, NUM_QUERY_TYPES))
     pred_count = norm_points.new_zeros((n,))
@@ -104,11 +113,12 @@ def windowed_predict(
                 queries=queries,
                 query_type_ids=query_type_ids,
                 padding_mask=w.padding_mask,
-            )[0]
-            widx = w.global_indices[0]
-            valid = widx >= 0
-            all_pred[widx[valid]] = all_pred[widx[valid]] + wp[valid]
-            pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
+            )
+            for batch_idx in range(wp.shape[0]):
+                widx = w.global_indices[batch_idx]
+                valid = widx >= 0
+                all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx][valid]
+                pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
 
     pred_count = pred_count.clamp(min=1.0)
     return all_pred / pred_count.unsqueeze(1)

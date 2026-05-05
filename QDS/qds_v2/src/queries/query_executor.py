@@ -120,7 +120,7 @@ def _dtw_like_distance(a: torch.Tensor, b: torch.Tensor) -> float:
     ib = torch.linspace(0, lb - 1, n).long()
     pa = a[ia]
     pb = b[ib]
-    d = torch.norm(pa[:, :2] - pb[:, :2], dim=1)
+    d = torch.norm(pa[:, 1:3] - pb[:, 1:3], dim=1)
     return float(d.mean().item())
 
 

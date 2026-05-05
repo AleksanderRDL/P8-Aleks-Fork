@@ -37,23 +37,32 @@ python -m src.experiments.run_ais_experiment \
   --eval_csv_path "C:\path\to\eval.csv" \
   --query_coverage 0.30 \
   --max_queries 1000 \
+  --range_spatial_fraction 0.02 \
+  --range_time_fraction 0.04 \
   --epochs 20 \
+  --lr 0.0005 \
+  --pointwise_loss_weight 0.25 \
+  --gradient_clip_norm 1.0 \
   --workload mixed \
   --compression_ratio 0.20 \
   --model_type baseline
 ```
 
-`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. With coverage mode enabled, `--max_queries` is the safety cap and `--n_queries` only matters when `--max_queries` is omitted, where the cap defaults to `max(n_queries, 1000)`. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, simplified train/eval CSVs are written automatically under `AISDATA/ML_processed_AIS_files` as `ML_simplified_train.csv` and `ML_simplified_eval.csv`; `ML_simplified.csv` is kept as the eval alias for older tooling.
+`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. Coverage mode still emits exactly `--n_queries`; the target coverage is used to bias later query anchors toward points that have not yet been covered. `--max_queries` is accepted only as a positive legacy safety parameter. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the experiment writes only the eval-set simplified CSV under `AISDATA/ML_processed_AIS_files` as `ML_simplified_eval.csv`.
 
 Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
 
+For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, `0.02` spatial and `0.04` time gives smaller local boxes than the default `0.08` and `0.15`.
+
 Use `--model_type turn_aware` to include the extra `turn_score` point feature. Workload mixes can be overridden with `--train_workload_mix` and `--eval_workload_mix` (or the `..._mix_train` / `..._mix_eval` aliases).
+
+Training uses a ranking loss plus balanced pointwise BCE supervision. Exact final query F1 can optionally be used for checkpoint selection with `--checkpoint_selection_metric f1`; this creates a held-out validation workload and restores the epoch with the best validation query F1. If diagnostics collapse to `pred_std=0`, prefer lowering `--lr`, keeping `--gradient_clip_norm` enabled, and increasing query diversity before changing the model architecture.
 
 ## Architecture At A Glance
 
 1. `src/data/` loads AIS CSV files or generates deterministic synthetic trajectories.
 2. `src/queries/` builds typed query workloads and executes range, kNN, similarity, and clustering queries.
-3. `src/training/` computes typed F1-contribution labels, trains the model, restores the best-loss epoch, and persists the scaler and checkpoint artifacts.
+3. `src/training/` computes typed F1-contribution labels, trains the model, restores the selected checkpoint epoch, and persists the scaler and checkpoint artifacts.
 4. `src/models/` contains the query-conditioned trajectory transformer and the turn-aware variant.
 5. `src/simplification/` keeps the highest-scoring points per trajectory with deterministic tie-breaking.
 6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores.
@@ -64,7 +73,7 @@ Use `--model_type turn_aware` to include the extra `turn_score` point feature. W
 
 The experiment runner writes three files into `results/`:
 
-- `example_run.json` - config, workload mixes, per-method metrics, training history, and best-loss epoch metadata.
+- `example_run.json` - config, workload mixes, per-method metrics, training history, and selected-checkpoint metadata.
 - `matched_table.txt` - fixed-width comparison table for the evaluation workload.
 - `shift_table.txt` - shift table comparing the train workload against the eval workload.
 

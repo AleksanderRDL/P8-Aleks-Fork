@@ -34,10 +34,14 @@ from src.data.trajectory_dataset import TrajectoryDataset
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
+    NewUniformTemporalMethod,
     RandomMethod,
-    UniformTemporalMethod,
 )
-from src.evaluation.evaluate_methods import evaluate_method, print_method_comparison_table
+from src.evaluation.evaluate_methods import (
+    evaluate_method,
+    print_geometric_distortion_table,
+    print_method_comparison_table,
+)
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import NUM_QUERY_TYPES
@@ -56,14 +60,27 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="query_coverage",
         type=float,
         default=None,
-        help="Generate queries until this point-coverage target is reached. Accepts 0.30 or 30 for 30%%.",
+        help="Bias generated queries toward this point-coverage target while keeping --n_queries fixed. Accepts 0.30 or 30 for 30%%.",
     )
     p.add_argument(
         "--max_queries",
         type=int,
         default=None,
-        help="Safety cap for dynamic query generation when --query_coverage is set. Default: max(n_queries, 1000).",
+        help="Deprecated compatibility option for coverage-based query generation.",
     )
+    p.add_argument(
+        "--range_spatial_fraction",
+        type=float,
+        default=0.08,
+        help="Range query half-width as a fraction of dataset lat/lon span.",
+    )
+    p.add_argument(
+        "--range_time_fraction",
+        type=float,
+        default=0.15,
+        help="Range query half-window as a fraction of dataset time span.",
+    )
+    p.add_argument("--knn_k", type=int, default=12, help="Number of nearest trajectories in generated kNN queries.")
     p.add_argument(
         "--workload_mix",
         type=str,
@@ -166,6 +183,9 @@ def main() -> None:
         seed=int(args.seed),
         target_coverage=args.query_coverage,
         max_queries=args.max_queries,
+        range_spatial_fraction=args.range_spatial_fraction,
+        range_time_fraction=args.range_time_fraction,
+        knn_k=args.knn_k,
     )
     coverage_msg = ""
     if workload.coverage_fraction is not None:
@@ -194,9 +214,16 @@ def main() -> None:
     )
 
     methods = [
-        MLQDSMethod(name="MLQDS", trained=trained, workload=workload, workload_mix=eval_mix),
+        MLQDSMethod(
+            name="MLQDS",
+            trained=trained,
+            workload=workload,
+            workload_mix=eval_mix,
+            temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
+            diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
+        ),
         RandomMethod(seed=int(args.seed)),
-        UniformTemporalMethod(),
+        NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
 
@@ -220,12 +247,16 @@ def main() -> None:
         raise RuntimeError("MLQDS retained mask was not captured during inference evaluation.")
 
     table = print_method_comparison_table(results)
+    geometric_table = print_geometric_distortion_table(results)
     print("\nMatched-workload table (inference on new CSV)")
     print(table)
+    print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
+    print(geometric_table)
 
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
+    (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
 
     dump = {
         "checkpoint": str(args.checkpoint),
@@ -243,6 +274,12 @@ def main() -> None:
                 "per_type_f1": m.per_type_f1,
                 "compression_ratio": m.compression_ratio,
                 "latency_ms": m.latency_ms,
+                "avg_retained_point_gap": m.avg_retained_point_gap,
+                "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
+                "max_retained_point_gap": m.max_retained_point_gap,
+                "geometric_distortion": m.geometric_distortion,
+                "avg_length_loss": m.avg_length_loss,
+                "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in results.items()
         },

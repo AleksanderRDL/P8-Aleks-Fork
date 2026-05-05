@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+import math
 
 import torch
 import torch.nn.functional as F
@@ -12,6 +13,7 @@ from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES
+from src.simplification.simplify_trajectories import evenly_spaced_indices, simplify_with_temporal_score_hybrid
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
@@ -31,14 +33,41 @@ def _scaled_training_targets(labels: torch.Tensor, labelled_mask: torch.Tensor) 
     return targets
 
 
-def _balanced_mse_loss(
+def _apply_temporal_residual_labels(
+    labels: torch.Tensor,
+    labelled_mask: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    compression_ratio: float,
+    temporal_fraction: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Drop supervision for points the temporal base already keeps."""
+    residual_labels = labels.clone()
+    residual_mask = labelled_mask.clone()
+    base_mask = torch.zeros((labels.shape[0],), dtype=torch.bool, device=labels.device)
+    base_fraction = min(1.0, max(0.0, float(temporal_fraction)))
+
+    for start, end in boundaries:
+        n = int(end - start)
+        if n <= 0:
+            continue
+        k_total = min(n, max(2, int(math.ceil(float(compression_ratio) * n))))
+        k_base = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
+        base_idx = evenly_spaced_indices(n, k_base, labels.device)
+        base_mask[start + base_idx] = True
+
+    residual_labels[base_mask] = 0.0
+    residual_mask[base_mask] = False
+    return residual_labels, residual_mask
+
+
+def _balanced_pointwise_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
     valid_mask: torch.Tensor,
     generator: torch.Generator,
     negatives_per_positive: int = 3,
 ) -> torch.Tensor:
-    """Compute MSE on all positives plus a bounded random set of zero labels."""
+    """Compute balanced BCE on all positives plus a bounded random set of zero labels."""
     valid_idx = torch.where(valid_mask)[0]
     if valid_idx.numel() == 0:
         return pred.new_tensor(0.0)
@@ -54,8 +83,8 @@ def _balanced_mse_loss(
         perm = torch.randperm(zero_idx.numel(), generator=generator)[:max_zero]
         zero_idx = zero_idx[perm.to(zero_idx.device)]
 
-    mse_idx = torch.cat([positive_idx, zero_idx]) if zero_idx.numel() > 0 else positive_idx
-    return F.mse_loss(pred[mse_idx], target[mse_idx])
+    pointwise_idx = torch.cat([positive_idx, zero_idx]) if zero_idx.numel() > 0 else positive_idx
+    return F.binary_cross_entropy_with_logits(pred[pointwise_idx], target[pointwise_idx].clamp(0.0, 1.0))
 
 
 def _discriminative_sample(
@@ -95,6 +124,7 @@ class TrainingOutputs:
     epochs_trained: int = 0
     best_epoch: int = 0
     best_loss: float = float("inf")
+    best_f1: float = 0.0
 
 
 def _sample_epoch_mix(alpha: list[float], generator: torch.Generator) -> torch.Tensor:
@@ -186,10 +216,225 @@ def _ranking_loss_for_type(
     return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), len(a_list)
 
 
-def _selection_score(avg_tau: float, pred_std: float) -> float:
+def _selection_score(avg_tau: float, pred_std: float, loss: float | None = None) -> float:
     """Score checkpoint quality while strongly penalizing collapsed predictions."""
     collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
-    return float(avg_tau - collapse_penalty)
+    if loss is None:
+        return float(avg_tau - collapse_penalty)
+    return float(-float(loss) + 1e-3 * avg_tau - collapse_penalty)
+
+
+def _f1_selection_score(query_f1: float, pred_std: float) -> float:
+    """Score checkpoints by final query-F1 while rejecting collapsed predictions."""
+    collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
+    return float(query_f1 - collapse_penalty)
+
+
+def _normalized_mix_dict(workload_mix: dict[str, float]) -> dict[str, float]:
+    """Normalize workload weights by query type name."""
+    names = ["range", "knn", "similarity", "clustering"]
+    raw = {name: max(0.0, float(workload_mix.get(name, 0.0))) for name in names}
+    total = sum(raw.values())
+    if total <= 0.0:
+        return {name: 1.0 / float(len(names)) for name in names}
+    return {name: value / total for name, value in raw.items()}
+
+
+def _uniform_type_deficit(
+    per_type_f1: dict[str, float],
+    uniform_per_type: dict[str, float],
+    workload_mix: dict[str, float],
+) -> float:
+    """Weighted amount by which a checkpoint loses to fair uniform per type."""
+    type_weights = _normalized_mix_dict(workload_mix)
+    return float(
+        sum(
+            type_weights[name] * max(0.0, float(uniform_per_type.get(name, 0.0)) - float(per_type_f1.get(name, 0.0)))
+            for name in type_weights
+        )
+    )
+
+
+def _uniform_gap_selection_score(
+    query_f1: float,
+    per_type_f1: dict[str, float],
+    uniform_f1: float,
+    uniform_per_type: dict[str, float],
+    workload_mix: dict[str, float],
+    pred_std: float,
+    aggregate_gap_weight: float = 0.5,
+    type_penalty_weight: float = 1.0,
+) -> float:
+    """Score checkpoints by held-out F1 while penalizing losses to fair uniform."""
+    collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
+    aggregate_gap = float(query_f1) - float(uniform_f1)
+    type_deficit = _uniform_type_deficit(per_type_f1, uniform_per_type, workload_mix)
+    return float(
+        float(query_f1)
+        + float(aggregate_gap_weight) * aggregate_gap
+        - float(type_penalty_weight) * type_deficit
+        - collapse_penalty
+    )
+
+
+def _workload_mix_tensor(workload_mix: dict[str, float], device: torch.device) -> torch.Tensor:
+    """Return normalized type weights in model-head order."""
+    values = torch.tensor(
+        [
+            float(workload_mix.get("range", 0.0)),
+            float(workload_mix.get("knn", 0.0)),
+            float(workload_mix.get("similarity", 0.0)),
+            float(workload_mix.get("clustering", 0.0)),
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    total = float(values.sum().item())
+    if total <= 0.0:
+        return torch.ones_like(values) / values.numel()
+    return values / total
+
+
+def _query_frequency_mix(workload: TypedQueryWorkload) -> dict[str, float]:
+    """Infer type weights from a workload when no explicit training mix is provided."""
+    counts = torch.bincount(workload.type_ids.detach().cpu(), minlength=NUM_QUERY_TYPES).float()
+    return {
+        "range": float(counts[0].item()),
+        "knn": float(counts[1].item()),
+        "similarity": float(counts[2].item()),
+        "clustering": float(counts[3].item()),
+    }
+
+
+def _combine_epoch_type_weights(base_weights: torch.Tensor, epoch_mix: torch.Tensor) -> torch.Tensor:
+    """Blend configured workload weights with stochastic epoch weights."""
+    combined = base_weights * epoch_mix.to(base_weights.device)
+    total = combined.sum()
+    if float(total.item()) <= 0.0:
+        return base_weights
+    return combined / total
+
+
+def _predict_workload_scores(
+    model: TrajectoryQDSModel,
+    scaler: FeatureScaler,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_mix: dict[str, float],
+    model_config: ModelConfig,
+    device: torch.device,
+) -> torch.Tensor:
+    """Predict workload-weighted simplification scores for exact query-F1 diagnostics."""
+    point_dim = model.point_dim
+    norm_points, norm_queries = scaler.transform(points[:, :point_dim].float(), workload.query_features)
+    norm_points_dev = norm_points.to(device)
+    norm_queries_dev = norm_queries.to(device)
+    type_ids_dev = workload.type_ids.to(device)
+    windows = build_trajectory_windows(
+        points=norm_points,
+        boundaries=boundaries,
+        window_length=model_config.window_length,
+        stride=model_config.window_stride,
+    )
+    windows = [
+        TrajectoryBatch(
+            points=window.points.to(device),
+            padding_mask=window.padding_mask.to(device),
+            trajectory_ids=window.trajectory_ids,
+            global_indices=window.global_indices.to(device),
+        )
+        for window in windows
+    ]
+    windows = batch_windows(windows, max(1, int(getattr(model_config, "train_batch_size", 1))))
+    all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
+    pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+
+    model.eval()
+    with torch.no_grad():
+        for window in windows:
+            pred = model(
+                points=window.points,
+                queries=norm_queries_dev,
+                query_type_ids=type_ids_dev,
+                padding_mask=window.padding_mask,
+            )
+            for batch_idx in range(pred.shape[0]):
+                global_idx = window.global_indices[batch_idx]
+                valid = global_idx >= 0
+                all_pred[global_idx[valid]] = all_pred[global_idx[valid]] + pred[batch_idx][valid]
+                pred_count[global_idx[valid]] = pred_count[global_idx[valid]] + 1.0
+
+    mix = _workload_mix_tensor(workload_mix, device=device)
+    pred_count = pred_count.clamp(min=1.0)
+    typed_pred = torch.sigmoid(all_pred / pred_count.unsqueeze(1))
+    return (typed_pred * mix.unsqueeze(0)).sum(dim=1).detach().cpu()
+
+
+def _validation_query_f1(
+    model: TrajectoryQDSModel,
+    scaler: FeatureScaler,
+    trajectories: list[torch.Tensor],
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_mix: dict[str, float],
+    model_config: ModelConfig,
+    device: torch.device,
+) -> tuple[float, dict[str, float]]:
+    """Evaluate a model checkpoint with the same query-F1 semantics as final evaluation."""
+    from src.evaluation.evaluate_methods import score_retained_mask
+
+    points = torch.cat(trajectories, dim=0)
+    scores = _predict_workload_scores(
+        model=model,
+        scaler=scaler,
+        points=points,
+        boundaries=boundaries,
+        workload=workload,
+        workload_mix=workload_mix,
+        model_config=model_config,
+        device=device,
+    )
+    retained_mask = simplify_with_temporal_score_hybrid(
+        scores,
+        boundaries,
+        model_config.compression_ratio,
+        temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+        diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
+    )
+    return score_retained_mask(
+        points=points,
+        boundaries=boundaries,
+        retained_mask=retained_mask,
+        typed_queries=workload.typed_queries,
+        workload_mix=workload_mix,
+    )
+
+
+def _validation_uniform_f1(
+    trajectories: list[torch.Tensor],
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_mix: dict[str, float],
+    model_config: ModelConfig,
+) -> tuple[float, dict[str, float]]:
+    """Evaluate fair uniform on the held-out validation workload once per run."""
+    from src.evaluation.baselines import NewUniformTemporalMethod
+    from src.evaluation.evaluate_methods import score_retained_mask
+
+    points = torch.cat(trajectories, dim=0)
+    retained_mask = NewUniformTemporalMethod().simplify(
+        points=points,
+        boundaries=boundaries,
+        compression_ratio=model_config.compression_ratio,
+    )
+    return score_retained_mask(
+        points=points,
+        boundaries=boundaries,
+        retained_mask=retained_mask,
+        typed_queries=workload.typed_queries,
+        workload_mix=workload_mix,
+    )
 
 
 def train_model(
@@ -198,6 +443,11 @@ def train_model(
     workload: TypedQueryWorkload,
     model_config: ModelConfig,
     seed: int,
+    train_mix: dict[str, float] | None = None,
+    validation_trajectories: list[torch.Tensor] | None = None,
+    validation_boundaries: list[tuple[int, int]] | None = None,
+    validation_workload: TypedQueryWorkload | None = None,
+    validation_mix: dict[str, float] | None = None,
 ) -> TrainingOutputs:
     """Train typed-head model with trajectory-window ranking losses. See src/training/README.md for details."""
     torch.manual_seed(int(seed))
@@ -214,6 +464,17 @@ def train_model(
         typed_queries=workload.typed_queries,
         seed=seed,
     )
+    residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
+    if residual_label_mode not in {"none", "temporal"}:
+        raise ValueError("residual_label_mode must be 'none' or 'temporal'.")
+    if residual_label_mode == "temporal":
+        labels, labelled_mask = _apply_temporal_residual_labels(
+            labels=labels,
+            labelled_mask=labelled_mask,
+            boundaries=train_boundaries,
+            compression_ratio=model_config.compression_ratio,
+            temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+        )
     training_targets = _scaled_training_targets(labels, labelled_mask)
     active_type_ids = [t for t in range(NUM_QUERY_TYPES) if bool(labelled_mask[:, t].any().item())]
     if not active_type_ids:
@@ -241,6 +502,7 @@ def train_model(
     type_ids_dev = workload.type_ids.to(device)
     training_targets_dev = training_targets.to(device)
     labelled_mask_dev = labelled_mask.to(device)
+    base_type_weights = _workload_mix_tensor(train_mix or _query_frequency_mix(workload), device=device)
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
     windows_cpu = build_trajectory_windows(
@@ -266,6 +528,44 @@ def train_model(
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
+    run_tag = "main"
+    selection_metric = str(getattr(model_config, "checkpoint_selection_metric", "loss")).lower()
+    if selection_metric not in {"loss", "f1", "uniform_gap"}:
+        raise ValueError("checkpoint_selection_metric must be 'loss', 'f1', or 'uniform_gap'.")
+    f1_diag_every = int(getattr(model_config, "f1_diagnostic_every", 0) or 0)
+    has_validation_f1 = (
+        validation_trajectories is not None
+        and validation_boundaries is not None
+        and validation_workload is not None
+        and validation_mix is not None
+    )
+    if selection_metric in {"f1", "uniform_gap"} and not has_validation_f1:
+        print(
+            f"  [{run_tag}] WARNING: checkpoint_selection_metric={selection_metric} requested without validation workload; "
+            "falling back to loss selection.",
+            flush=True,
+        )
+        selection_metric = "loss"
+    if selection_metric in {"f1", "uniform_gap"} and f1_diag_every <= 0:
+        f1_diag_every = diag_every
+    validation_uniform_result: tuple[float, dict[str, float]] | None = None
+    if selection_metric == "uniform_gap" and has_validation_f1:
+        validation_uniform_result = _validation_uniform_f1(
+            trajectories=validation_trajectories or [],
+            boundaries=validation_boundaries or [],
+            workload=validation_workload,
+            workload_mix=validation_mix or {},
+            model_config=model_config,
+        )
+        uniform_f1, uniform_per_type = validation_uniform_result
+        print(
+            f"  [{run_tag}] validation newUniformTemporal_f1={uniform_f1:.6f}  "
+            f"range={uniform_per_type.get('range', 0.0):.6f}  "
+            f"knn={uniform_per_type.get('knn', 0.0):.6f}  "
+            f"similarity={uniform_per_type.get('similarity', 0.0):.6f}  "
+            f"clustering={uniform_per_type.get('clustering', 0.0):.6f}",
+            flush=True,
+        )
 
     g = torch.Generator().manual_seed(int(seed) + 99)
     # Separate fixed-seed generator for diagnostics so the tau subsample
@@ -274,10 +574,10 @@ def train_model(
     history: list[dict[str, float]] = []
 
     effective_epochs = max(8, int(model_config.epochs))
-    run_tag = "main"
     patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
     best_selection = float("-inf")
     best_loss = float("inf")
+    best_f1 = 0.0
     best_epoch = 0
     best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
@@ -286,7 +586,8 @@ def train_model(
     for epoch in range(effective_epochs):
         epoch_t0 = time.perf_counter()
         model.train()
-        epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g)
+        epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g).to(device)
+        epoch_type_weights = _combine_epoch_type_weights(base_type_weights, epoch_mix)
         epoch_loss = torch.tensor(0.0, device=device)
         positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
         skipped_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
@@ -311,7 +612,8 @@ def train_model(
                 pred_valid = pred_batch[b][valid_window]
 
                 for t in range(NUM_QUERY_TYPES):
-                    if float(epoch_mix[t].item()) <= 0.0:
+                    type_weight = epoch_type_weights[t]
+                    if float(type_weight.item()) <= 0.0:
                         continue
                     t_labels = training_targets_dev[global_idx, t]
                     t_mask = labelled_mask_dev[global_idx, t]
@@ -330,13 +632,8 @@ def train_model(
                         generator=g,
                     )
                     ranking_pair_counts[t] += int(pair_count)
-                    mse_term = _balanced_mse_loss(t_pred, t_labels, t_mask, generator=g)
-                    # MSE term keeps scores anchored near label magnitude so the
-                    # ranking loss operates on a well-scaled output range rather than
-                    # drifting to arbitrary scale.  The small weight (0.05) ensures it
-                    # never overrides the ranking signal; the primary objective is
-                    # correct intra-trajectory ordering, not absolute score value.
-                    loss_terms.append(rank_loss + 0.05 * mse_term)
+                    pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
+                    loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
 
             if loss_terms:
                 loss = (
@@ -345,6 +642,9 @@ def train_model(
                 )
                 opt.zero_grad()
                 loss.backward()
+                clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)
+                if clip_norm > 0.0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
                 opt.step()
                 epoch_loss = epoch_loss + loss.detach()
 
@@ -424,6 +724,37 @@ def train_model(
 
             if stats["pred_std"] < 1e-3:
                 stats["collapse_warning"] = 1.0
+
+            should_run_f1 = has_validation_f1 and (
+                selection_metric == "f1"
+                or (f1_diag_every > 0 and ((epoch + 1) % f1_diag_every == 0 or is_last_epoch))
+            )
+            if should_run_f1:
+                query_f1, per_type_f1 = _validation_query_f1(
+                    model=model,
+                    scaler=scaler,
+                    trajectories=validation_trajectories or [],
+                    boundaries=validation_boundaries or [],
+                    workload=validation_workload,
+                    workload_mix=validation_mix or {},
+                    model_config=model_config,
+                    device=device,
+                )
+                stats["val_query_f1"] = float(query_f1)
+                for type_name, value in per_type_f1.items():
+                    stats[f"val_query_f1_{type_name}"] = float(value)
+                if validation_uniform_result is not None:
+                    uniform_f1, uniform_per_type = validation_uniform_result
+                    stats["val_uniform_f1"] = float(uniform_f1)
+                    stats["val_query_uniform_gap"] = float(query_f1 - uniform_f1)
+                    stats["val_query_type_deficit"] = _uniform_type_deficit(
+                        per_type_f1,
+                        uniform_per_type,
+                        validation_mix or {},
+                    )
+                    for type_name, value in uniform_per_type.items():
+                        stats[f"val_uniform_f1_{type_name}"] = float(value)
+                        stats[f"val_query_f1_gap_{type_name}"] = float(per_type_f1.get(type_name, 0.0) - value)
         else:
             # Skip diagnostics this epoch; log only loss.  Patience counters
             # are only updated on diagnostic epochs below.
@@ -445,7 +776,26 @@ def train_model(
             tau_vals = [stats[f"kendall_tau_t{t}"] for t in active_type_ids]
             avg_tau = sum(tau_vals) / max(1, len(tau_vals))
             collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
-            selection = _selection_score(avg_tau, stats["pred_std"])
+            if selection_metric == "uniform_gap" and "val_query_f1" in stats and validation_uniform_result is not None:
+                uniform_f1, uniform_per_type = validation_uniform_result
+                per_type_f1 = {
+                    name: stats.get(f"val_query_f1_{name}", 0.0)
+                    for name in ["range", "knn", "similarity", "clustering"]
+                }
+                selection = _uniform_gap_selection_score(
+                    query_f1=stats["val_query_f1"],
+                    per_type_f1=per_type_f1,
+                    uniform_f1=uniform_f1,
+                    uniform_per_type=uniform_per_type,
+                    workload_mix=validation_mix or {},
+                    pred_std=stats["pred_std"],
+                    aggregate_gap_weight=float(getattr(model_config, "checkpoint_uniform_gap_weight", 0.5)),
+                    type_penalty_weight=float(getattr(model_config, "checkpoint_type_penalty_weight", 1.0)),
+                )
+            elif selection_metric == "f1" and "val_query_f1" in stats:
+                selection = _f1_selection_score(stats["val_query_f1"], stats["pred_std"])
+            else:
+                selection = _selection_score(avg_tau, stats["pred_std"], stats["loss"])
             stats["selection_score"] = selection
             is_new_best_model = selection > best_selection + 1e-4 or (
                 abs(selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
@@ -461,6 +811,25 @@ def train_model(
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
             )
+            if "val_query_f1" in stats:
+                print(
+                    f"    [{run_tag}] val_query_f1={stats['val_query_f1']:.6f}  "
+                    f"range={stats.get('val_query_f1_range', 0.0):.6f}  "
+                    f"knn={stats.get('val_query_f1_knn', 0.0):.6f}  "
+                    f"similarity={stats.get('val_query_f1_similarity', 0.0):.6f}  "
+                    f"clustering={stats.get('val_query_f1_clustering', 0.0):.6f}",
+                    flush=True,
+                )
+            if "val_uniform_f1" in stats:
+                print(
+                    f"    [{run_tag}] val_vs_uniform aggregate={stats['val_query_uniform_gap']:+.6f}  "
+                    f"type_deficit={stats['val_query_type_deficit']:.6f}  "
+                    f"range={stats.get('val_query_f1_gap_range', 0.0):+.6f}  "
+                    f"knn={stats.get('val_query_f1_gap_knn', 0.0):+.6f}  "
+                    f"similarity={stats.get('val_query_f1_gap_similarity', 0.0):+.6f}  "
+                    f"clustering={stats.get('val_query_f1_gap_clustering', 0.0):+.6f}",
+                    flush=True,
+                )
             diag_parts = []
             for type_idx in active_type_ids:
                 type_name = ID_TO_QUERY_NAME.get(type_idx, f"t{type_idx}")
@@ -476,6 +845,7 @@ def train_model(
             if is_new_best_model:
                 best_selection = selection
                 best_loss = stats["loss"]
+                best_f1 = float(stats.get("val_query_f1", best_f1))
                 best_epoch = epoch + 1
                 best_state_dict = _model_state_on_cpu(model)
 
@@ -505,7 +875,7 @@ def train_model(
         model.load_state_dict(best_state_dict)
         print(
             f"  [{run_tag}] restored best diagnostic epoch {best_epoch}/{epochs_trained} "
-            f"(selection={best_selection:+.3f}, loss={best_loss:.8f})",
+            f"(selection={best_selection:+.3f}, loss={best_loss:.8f}, val_f1={best_f1:.6f})",
             flush=True,
         )
     return TrainingOutputs(
@@ -517,4 +887,5 @@ def train_model(
         epochs_trained=epochs_trained,
         best_epoch=best_epoch,
         best_loss=best_loss,
+        best_f1=best_f1,
     )

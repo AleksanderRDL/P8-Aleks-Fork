@@ -29,6 +29,10 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--workload`
 - `--train_workload_mix` / `--workload_mix_train`
 - `--eval_workload_mix` / `--workload_mix_eval`
+- `--checkpoint_selection_metric {loss,f1,uniform_gap}`
+- `--f1_diagnostic_every`
+- `--checkpoint_uniform_gap_weight`
+- `--checkpoint_type_penalty_weight`
 - `--seed`
 - `--results_dir`
 
@@ -38,7 +42,7 @@ If `--train_csv_path` and `--eval_csv_path` are supplied together, the training 
 
 - `DataConfig` - CSV paths, synthetic data size, and legacy train/validation split fractions.
 - `QueryConfig` - workload size, optional target point coverage, workload label, train/eval workload mixes, and `similarity_top_k`.
-- `ModelConfig` - embedding sizes, transformer depth, chunk size, dropout, compression ratio, and ranking-loss hyperparameters.
+- `ModelConfig` - embedding sizes, transformer depth, chunk size, dropout, compression ratio, ranking-loss hyperparameters, and checkpoint-selection diagnostics.
 - `BaselineConfig` - baseline toggles such as `include_oracle`.
 - `VisualizationConfig` - current hook for optional plotting.
 - `TypedQueryWorkload` - padded query features, original typed query dicts, and query type IDs.
@@ -49,9 +53,9 @@ If `--train_csv_path` and `--eval_csv_path` are supplied together, the training 
 
 1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
 2. Generate independent train and eval typed query workloads from the respective trajectory sets; range/kNN anchors use the 70/30 density sampler described in `src/queries`.
-3. Train the query-aware model and restore the epoch with the best training loss.
+3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is training loss; `checkpoint_selection_metric=f1` uses exact held-out query F1 on a validation workload. `checkpoint_selection_metric=uniform_gap` also scores the fair `newUniformTemporal` baseline on the validation workload and penalizes checkpoints that hide weak range/kNN/similarity scores behind one strong type.
 4. Evaluate MLQDS and baseline methods on the test set.
-5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt` with aggregate/per-type F1 fields plus `best_epoch` and `best_loss` training metadata.
+5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
 
 ## Workload Mixes
 

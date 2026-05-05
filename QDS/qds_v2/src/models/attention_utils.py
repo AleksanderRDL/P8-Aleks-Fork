@@ -16,9 +16,10 @@ def chunked_cross_attention_context(
 ) -> Tensor:
     """Compute per-point query context with points attending to queries. See src/models/README.md for details.
 
-    Normalisation note: context from each query chunk is accumulated and then
-    divided by the total query count ``M`` so context scale does not grow
-    linearly with the number of queries.
+    Normalisation note: a full attention call already returns a softmax-weighted
+    average over its key/value queries, so a single chunk must not be divided by
+    the query count again. When chunking is needed, chunk outputs are averaged
+    by chunk count as a bounded approximation.
 
     Direction: ``point_features`` acts as Q and ``query_features`` as K,V.
     Each point attends over all query embeddings to produce a
@@ -43,6 +44,7 @@ def chunked_cross_attention_context(
 
     context = point_features.new_zeros((batch, length, embed))
     step = max(1, int(query_chunk_size))
+    chunk_count = 0
 
     for start in range(0, n_queries, step):
         end = min(n_queries, start + step)
@@ -57,5 +59,6 @@ def chunked_cross_attention_context(
             value=q_chunk,
         )
         context = context + attn_out
+        chunk_count += 1
 
-    return context / float(n_queries)
+    return context / float(max(1, chunk_count))

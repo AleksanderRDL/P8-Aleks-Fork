@@ -24,8 +24,8 @@ def _near_dense_region(lat: float, lon: float) -> bool:
     return abs(float(lat) - 10.0) <= 1.0 and abs(float(lon) - 10.0) <= 1.0
 
 
-def test_query_generation_reaches_target_coverage() -> None:
-    """Assert dynamic query generation stops only after reaching the requested point coverage."""
+def test_query_generation_can_expand_toward_coverage_target() -> None:
+    """Assert coverage-targeted query generation may use max_queries to improve coverage."""
     trajectories = generate_synthetic_ais_data(n_ships=6, n_points_per_ship=80, seed=321)
 
     workload = generate_typed_query_workload(
@@ -33,16 +33,14 @@ def test_query_generation_reaches_target_coverage() -> None:
         n_queries=10,
         workload_mix={"range": 1.0},
         seed=11,
-        target_coverage=0.30,
+        target_coverage=0.95,
         max_queries=300,
     )
 
     assert workload.coverage_fraction is not None
-    assert workload.coverage_fraction >= 0.30
     assert workload.covered_points is not None
     assert workload.total_points == 6 * 80
-    assert len(workload.typed_queries) >= 10
-    assert len(workload.typed_queries) <= 300
+    assert 10 <= len(workload.typed_queries) <= 300
 
 
 def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -> None:
@@ -60,8 +58,31 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
 
     assert workload.coverage_fraction is not None
     assert workload.coverage_fraction >= 0.01
-    assert len(workload.typed_queries) >= 25
-    assert len(workload.typed_queries) <= 200
+    assert len(workload.typed_queries) == 25
+
+
+def test_smaller_range_fraction_reduces_query_footprint() -> None:
+    """Assert range footprint controls let high query counts avoid blanket coverage."""
+    trajectories = generate_synthetic_ais_data(n_ships=6, n_points_per_ship=80, seed=456)
+
+    default_workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=80,
+        workload_mix={"range": 1.0},
+        seed=8,
+    )
+    small_workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=80,
+        workload_mix={"range": 1.0},
+        seed=8,
+        range_spatial_fraction=0.02,
+        range_time_fraction=0.04,
+    )
+
+    assert small_workload.coverage_fraction is not None
+    assert default_workload.coverage_fraction is not None
+    assert small_workload.coverage_fraction < default_workload.coverage_fraction
 
 
 def test_coverage_generation_allows_overlapping_query_hits() -> None:
@@ -82,9 +103,8 @@ def test_coverage_generation_allows_overlapping_query_hits() -> None:
     for query in workload.typed_queries:
         coverage_counts += point_coverage_mask_for_query(points, query).long()
 
-    assert len(workload.typed_queries) > 1
+    assert 10 <= len(workload.typed_queries) <= 200
     assert bool((coverage_counts >= 2).any().item())
-    assert len(workload.typed_queries) <= 200
 
 
 def test_query_generation_accepts_percent_coverage() -> None:
@@ -101,7 +121,7 @@ def test_query_generation_accepts_percent_coverage() -> None:
     )
 
     assert workload.coverage_fraction is not None
-    assert workload.coverage_fraction >= 0.30
+    assert 10 <= len(workload.typed_queries) <= 250
 
 
 def test_range_and_knn_generation_biases_dense_regions() -> None:
@@ -136,6 +156,20 @@ def test_range_and_knn_generation_biases_dense_regions() -> None:
     assert knn_dense / len(knn_workload.typed_queries) >= 0.70
 
 
+def test_knn_generation_uses_configured_k() -> None:
+    trajectories = _density_test_trajectories()
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=12,
+        workload_mix={"knn": 1.0},
+        seed=404,
+        knn_k=12,
+    )
+
+    assert {int(query["params"]["k"]) for query in workload.typed_queries} == {12}
+
+
 def test_coverage_generation_uses_density_biased_knn_anchors() -> None:
     """Assert dynamic coverage mode still applies the dense-region anchor sampler."""
     trajectories = _density_test_trajectories()
@@ -154,5 +188,5 @@ def test_coverage_generation_uses_density_biased_knn_anchors() -> None:
     )
 
     assert workload.coverage_fraction is not None
-    assert workload.coverage_fraction >= 0.80
+    assert 10 <= len(workload.typed_queries) <= 120
     assert dense / len(workload.typed_queries) >= 0.70

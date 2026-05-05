@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Hashable, Iterable, Mapping, Sequence
 
 import torch
+
+KM_PER_DEG_LAT = 111.32
 
 
 def f1_score(r_o: set[Hashable], r_s: set[Hashable]) -> float:
@@ -70,4 +72,181 @@ class MethodEvaluation:
     per_type_f1: dict[str, float]
     compression_ratio: float
     latency_ms: float
+    avg_retained_point_gap: float = 0.0
+    avg_retained_point_gap_norm: float = 0.0
+    max_retained_point_gap: float = 0.0
+    geometric_distortion: dict[str, float] = field(default_factory=dict)
+    avg_length_loss: float = 0.0
+    combined_query_shape_score: float = 0.0
     retained_mask: torch.Tensor | None = None
+
+
+def _trajectory_sed_ped_km(
+    times: torch.Tensor,
+    lats: torch.Tensor,
+    lons: torch.Tensor,
+    retained: torch.Tensor,
+) -> tuple[float, float, float, float, int]:
+    """Return (sum_sed_km, max_sed_km, sum_ped_km, max_ped_km, removed_count) for one trajectory.
+
+    SED is the time-synchronous distance (Meratnia & de By 2004): for each removed
+    point at time t, distance to the linearly-interpolated (in time) position on the
+    simplified polyline between the two retained points that bracket t.
+    PED is the perpendicular distance (Imai & Iri 1988; what Douglas-Peucker minimizes):
+    distance from each removed point to the chord segment of the bracketing retained
+    points. Both use a local equirectangular projection to km, accurate for the short
+    inter-point segments typical of AIS at Danish latitudes.
+    """
+    n = times.numel()
+    if n < 2:
+        return 0.0, 0.0, 0.0, 0.0, 0
+    retained_idx = torch.where(retained)[0]
+    if retained_idx.numel() < 2:
+        return 0.0, 0.0, 0.0, 0.0, 0
+    removed_idx = torch.where(~retained)[0]
+    if removed_idx.numel() == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0
+
+    pos = torch.searchsorted(retained_idx, removed_idx)
+    valid = (pos > 0) & (pos < retained_idx.numel())
+    if not valid.any():
+        return 0.0, 0.0, 0.0, 0.0, 0
+    pos = pos[valid]
+    removed_idx = removed_idx[valid]
+    left_idx = retained_idx[pos - 1]
+    right_idx = retained_idx[pos]
+
+    t_l = times[left_idx]
+    t_r = times[right_idx]
+    t_p = times[removed_idx]
+    dt = (t_r - t_l).clamp(min=1e-9)
+    alpha = ((t_p - t_l) / dt).clamp(min=0.0, max=1.0)
+    interp_lat = lats[left_idx] + alpha * (lats[right_idx] - lats[left_idx])
+    interp_lon = lons[left_idx] + alpha * (lons[right_idx] - lons[left_idx])
+
+    cos_lat = torch.cos(torch.deg2rad(lats[removed_idx]))
+    dx_km = (lons[removed_idx] - interp_lon) * cos_lat * KM_PER_DEG_LAT
+    dy_km = (lats[removed_idx] - interp_lat) * KM_PER_DEG_LAT
+    sed_km = torch.sqrt(dx_km * dx_km + dy_km * dy_km)
+
+    cos_lat_left = torch.cos(torch.deg2rad(lats[left_idx]))
+    bx_km = (lons[right_idx] - lons[left_idx]) * cos_lat_left * KM_PER_DEG_LAT
+    by_km = (lats[right_idx] - lats[left_idx]) * KM_PER_DEG_LAT
+    px_km = (lons[removed_idx] - lons[left_idx]) * cos_lat_left * KM_PER_DEG_LAT
+    py_km = (lats[removed_idx] - lats[left_idx]) * KM_PER_DEG_LAT
+    chord_len = torch.sqrt(bx_km * bx_km + by_km * by_km).clamp(min=1e-9)
+    cross = bx_km * py_km - by_km * px_km
+    ped_km = torch.abs(cross) / chord_len
+
+    return (
+        float(sed_km.sum().item()),
+        float(sed_km.max().item()),
+        float(ped_km.sum().item()),
+        float(ped_km.max().item()),
+        int(removed_idx.numel()),
+    )
+
+
+def compute_average_length_loss(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+) -> float:
+    """Average per-trajectory length loss = 1 - simp_haversine_km / orig_haversine_km.
+
+    Mirrors the definition in geojson_writers.report_trajectory_length_loss but returns
+    a single scalar averaged over all trajectories with >=2 points. 0 means simplified
+    polyline preserves total path length; 1 means simplified collapsed to a point.
+    Trajectories with fewer than 2 points contribute 0 (no defined length).
+    """
+    points_cpu = points.detach().cpu()
+    mask_cpu = retained_mask.detach().cpu().bool()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+
+    total_loss = 0.0
+    counted = 0
+    for s, e in boundaries:
+        if e - s < 2:
+            continue
+        traj_lat = lats[s:e]
+        traj_lon = lons[s:e]
+        orig_km = _polyline_length_km(traj_lat, traj_lon)
+        if orig_km <= 1e-9:
+            continue
+        traj_mask = mask_cpu[s:e]
+        if int(traj_mask.sum().item()) >= 2:
+            simp_km = _polyline_length_km(traj_lat[traj_mask], traj_lon[traj_mask])
+        else:
+            simp_km = 0.0
+        loss = max(0.0, 1.0 - simp_km / orig_km)
+        total_loss += loss
+        counted += 1
+    if counted == 0:
+        return 0.0
+    return float(total_loss / counted)
+
+
+def _polyline_length_km(lats: torch.Tensor, lons: torch.Tensor) -> float:
+    """Sum of haversine distances between consecutive (lat, lon) points in km."""
+    n = lats.numel()
+    if n < 2:
+        return 0.0
+    radius_km = 6371.0
+    lat_rad = torch.deg2rad(lats)
+    lon_rad = torch.deg2rad(lons)
+    dlat = lat_rad[1:] - lat_rad[:-1]
+    dlon = lon_rad[1:] - lon_rad[:-1]
+    a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat_rad[:-1]) * torch.cos(lat_rad[1:]) * torch.sin(dlon / 2.0) ** 2
+    c = 2.0 * torch.atan2(torch.sqrt(a), torch.sqrt(torch.clamp(1.0 - a, min=1e-9)))
+    return float((radius_km * c).sum().item())
+
+
+def compute_geometric_distortion(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+) -> dict[str, float]:
+    """Average and max SED / PED in km across every removed point in the eval set.
+
+    SED  = time-synchronous distance (Meratnia & de By 2004).
+    PED  = perpendicular distance to chord (Imai & Iri 1988; Douglas-Peucker target).
+    Reports point-weighted averages (sum over all removed points / number of removed
+    points) and global maxima across all trajectories. Removed points that fall outside
+    the retained span (before the first or after the last retained point in a trajectory)
+    are excluded because no valid chord exists for them.
+    """
+    points_cpu = points.detach().cpu()
+    mask_cpu = retained_mask.detach().cpu().bool()
+    times_all = points_cpu[:, 0]
+    lats_all = points_cpu[:, 1]
+    lons_all = points_cpu[:, 2]
+
+    total_sed = 0.0
+    total_ped = 0.0
+    max_sed = 0.0
+    max_ped = 0.0
+    total_removed = 0
+    for s, e in boundaries:
+        if e - s < 2:
+            continue
+        traj_sed_sum, traj_sed_max, traj_ped_sum, traj_ped_max, count = _trajectory_sed_ped_km(
+            times_all[s:e], lats_all[s:e], lons_all[s:e], mask_cpu[s:e]
+        )
+        total_sed += traj_sed_sum
+        total_ped += traj_ped_sum
+        if traj_sed_max > max_sed:
+            max_sed = traj_sed_max
+        if traj_ped_max > max_ped:
+            max_ped = traj_ped_max
+        total_removed += count
+
+    if total_removed == 0:
+        return {"avg_sed_km": 0.0, "max_sed_km": 0.0, "avg_ped_km": 0.0, "max_ped_km": 0.0, "removed_points": 0}
+    return {
+        "avg_sed_km": float(total_sed / total_removed),
+        "max_sed_km": float(max_sed),
+        "avg_ped_km": float(total_ped / total_removed),
+        "max_ped_km": float(max_ped),
+        "removed_points": int(total_removed),
+    }

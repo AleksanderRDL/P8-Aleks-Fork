@@ -17,7 +17,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 1. `compute_typed_importance_labels` turns the typed workload into F1-contribution `labels[N,4]` and `labelled_mask[N,4]`.
 2. `FeatureScaler.fit` learns min-max stats from training points and query features, then normalizes both.
 3. `build_trajectory_windows` produces padded windows that never cross trajectory boundaries.
-4. `train_model` rescales sparse F1 labels per type for optimization, then trains a query-conditioned transformer with per-type margin ranking losses plus a balanced MSE anchor.
+4. `train_model` rescales sparse F1 labels per type for optimization, then trains a query-conditioned transformer with per-type margin ranking losses plus balanced pointwise BCE supervision.
 5. `windowed_predict` and `forward_predict` reuse the same windowing logic for deterministic inference.
 
 ## Label Construction
@@ -32,10 +32,13 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 ## Training Notes
 
 - Epoch-level workload weights are sampled from a lightweight Dirichlet approximation so every type continues to receive signal.
-- Windows with no positive label for a type are skipped for that type; the MSE anchor uses all positives and a bounded random sample of zero labels to avoid all-zero collapse.
+- Windows with no positive label for a type are skipped for that type; the pointwise BCE term uses all positives and a bounded random sample of zero labels to avoid all-zero collapse.
+- `ModelConfig.lr`, `pointwise_loss_weight`, and `gradient_clip_norm` are the main stability knobs for AIS-scale runs.
 - The current loop clamps the effective epoch count to at least 8.
-- The returned model is restored to the epoch with the lowest training loss; `TrainingOutputs.best_epoch` and `TrainingOutputs.best_loss` record that selection.
-- The loop tracks loss, prediction spread, quantiles, and Kendall tau-style diagnostics in `TrainingOutputs.history`.
+- The returned model is restored to the best diagnostic epoch by selection score. By default this is training loss with a small Kendall-tau tie signal and a collapse penalty for near-constant predictions.
+- Set `checkpoint_selection_metric="f1"` with a held-out validation workload to select checkpoints by the same query-F1 semantics used in final evaluation. Use `checkpoint_selection_metric="uniform_gap"` when the restored checkpoint should also be judged against the fair `newUniformTemporal` validation score; this subtracts weighted per-type deficits so clustering cannot mask weak range/kNN/similarity performance. These metrics are useful for model selection, but they are intentionally not used as the training loss because final query F1 is discrete after per-trajectory top-k simplification and query execution.
+- `f1_diagnostic_every` can record held-out query-F1 diagnostics while still selecting by loss. `TrainingOutputs.best_epoch`, `best_loss`, and `best_f1` record the selected checkpoint metadata.
+- The loop tracks loss, prediction spread, quantiles, Kendall tau-style diagnostics, and optional validation query F1 in `TrainingOutputs.history`. Diagnostics run every `diagnostic_every` epochs, which defaults to every epoch so each epoch can be considered for checkpoint restoration.
 - The current implementation uses trajectory-local windows with `window_length=512` and `window_stride=256` by default.
 
 ## Persistence

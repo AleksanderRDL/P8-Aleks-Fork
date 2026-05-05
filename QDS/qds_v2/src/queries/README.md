@@ -36,7 +36,9 @@ This module defines the typed query format used by v2, the workload generator, a
 
 Range and kNN anchors use a 70/30 density sampler. The generator builds a lat/lon density map for the whole dataset; 70% of range/kNN anchors are sampled with probability proportional to the density of the point's grid cell, and 30% are sampled uniformly from all points. Similarity and clustering keep the existing uniform anchor behavior.
 
-When `target_coverage` is provided, the generator switches to dynamic mode: it creates queries one at a time and stops once the union of query-covered points reaches the target or `max_queries` is hit. Range/kNN anchors still use the same 70/30 density sampler, coverage controls only the stop condition, and the same point may be covered by multiple queries. Coverage is measured as point-level query signal coverage: range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal radius regions.
+Range query footprint is configurable. `range_spatial_fraction` controls the latitude/longitude half-width and `range_time_fraction` controls the time half-window as fractions of the dataset spans. Smaller values are useful when increasing `n_queries`, because the default range boxes can cover most of a dense AIS dataset after enough queries.
+
+When `target_coverage` is provided, the generator still emits exactly `n_queries` queries. While the measured union coverage is below the target, anchors are biased toward points not yet covered; once the target is reached, generation returns to the regular sampler. Coverage is measured as point-level query signal coverage: range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal radius regions.
 
 ## Execution Semantics
 

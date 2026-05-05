@@ -46,6 +46,8 @@ class QueryConfig:
     n_queries: int = 128
     target_coverage: float | None = None
     max_queries: int | None = None
+    range_spatial_fraction: float = 0.08
+    range_time_fraction: float = 0.15
     workload: str = "mixed"
     train_workload_mix: dict[str, float] = field(
         default_factory=lambda: {"range": 0.5, "knn": 0.5}
@@ -54,6 +56,7 @@ class QueryConfig:
         default_factory=lambda: {"similarity": 0.5, "clustering": 0.5}
     )
     similarity_top_k: int = 5
+    knn_k: int = 12
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -78,18 +81,28 @@ class ModelConfig:
     window_length: int = 512
     window_stride: int = 256
     epochs: int = 6
-    lr: float = 2e-3
+    lr: float = 5e-4
     compression_ratio: float = 0.2
     model_type: str = "baseline"
     rank_margin: float = 0.05
     ranking_pairs_per_type: int = 96
     ranking_top_quantile: float = 0.80
+    pointwise_loss_weight: float = 0.25
+    gradient_clip_norm: float = 1.0
     l2_score_weight: float = 1e-4
     dirichlet_alpha: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])
     early_stopping_patience: int = 0
     train_batch_size: int = 16
-    diagnostic_every: int = 3
+    diagnostic_every: int = 1
     diagnostic_window_fraction: float = 0.2
+    checkpoint_selection_metric: str = "loss"
+    f1_diagnostic_every: int = 0
+    checkpoint_uniform_gap_weight: float = 0.5
+    checkpoint_type_penalty_weight: float = 1.0
+    mlqds_temporal_fraction: float = 0.0
+    mlqds_diversity_bonus: float = 0.05
+    residual_label_mode: str = "temporal"
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
         return asdict(self)
@@ -216,7 +229,12 @@ def build_experiment_config(
     query_coverage: float | None = None,
     target_query_coverage: float | None = None,
     max_queries: int | None = None,
+    range_spatial_fraction: float = 0.08,
+    range_time_fraction: float = 0.15,
     epochs: int = 6,
+    lr: float = 5e-4,
+    pointwise_loss_weight: float = 0.25,
+    gradient_clip_norm: float = 1.0,
     compression_ratio: float = 0.2,
     csv_path: str | None = None,
     train_csv_path: str | None = None,
@@ -227,6 +245,16 @@ def build_experiment_config(
     eval_workload_mix: dict[str, float] | None = None,
     seed: int = 42,
     early_stopping_patience: int = 0,
+    diagnostic_every: int = 1,
+    diagnostic_window_fraction: float = 0.2,
+    checkpoint_selection_metric: str = "loss",
+    f1_diagnostic_every: int = 0,
+    checkpoint_uniform_gap_weight: float = 0.5,
+    checkpoint_type_penalty_weight: float = 1.0,
+    knn_k: int = 12,
+    mlqds_temporal_fraction: float = 0.0,
+    mlqds_diversity_bonus: float = 0.05,
+    residual_label_mode: str = "temporal",
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -243,15 +271,30 @@ def build_experiment_config(
             n_queries=n_queries,
             target_coverage=target_query_coverage if target_query_coverage is not None else query_coverage,
             max_queries=max_queries,
+            range_spatial_fraction=range_spatial_fraction,
+            range_time_fraction=range_time_fraction,
             workload=workload,
             train_workload_mix=train_workload_mix or {"range": 0.5, "knn": 0.5},
             eval_workload_mix=eval_workload_mix or {"similarity": 0.5, "clustering": 0.5},
+            knn_k=knn_k,
         ),
         model=ModelConfig(
             epochs=epochs,
+            lr=lr,
+            pointwise_loss_weight=pointwise_loss_weight,
+            gradient_clip_norm=gradient_clip_norm,
             compression_ratio=compression_ratio,
             model_type=model_type,
             early_stopping_patience=early_stopping_patience,
+            diagnostic_every=diagnostic_every,
+            diagnostic_window_fraction=diagnostic_window_fraction,
+            checkpoint_selection_metric=checkpoint_selection_metric,
+            f1_diagnostic_every=f1_diagnostic_every,
+            checkpoint_uniform_gap_weight=checkpoint_uniform_gap_weight,
+            checkpoint_type_penalty_weight=checkpoint_type_penalty_weight,
+            mlqds_temporal_fraction=mlqds_temporal_fraction,
+            mlqds_diversity_bonus=mlqds_diversity_bonus,
+            residual_label_mode=residual_label_mode,
         ),
     )
 
