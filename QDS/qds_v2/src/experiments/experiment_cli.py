@@ -11,6 +11,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv_path", type=str, default=None)
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
     parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Optional directory for segmented AIS Parquet caches keyed by source file and load config.",
+    )
+    parser.add_argument(
+        "--refresh_cache",
+        action="store_true",
+        help="Rebuild AIS cache entries even when a matching manifest exists.",
+    )
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
     parser.add_argument(

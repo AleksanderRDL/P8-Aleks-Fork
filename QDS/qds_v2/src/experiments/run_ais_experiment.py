@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
+from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.experiment_cli import build_parser
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes, run_experiment_pipeline
@@ -62,6 +63,32 @@ def _log_load_audit(label: str, audit) -> None:
     )
 
 
+def _load_csv_trajectories(label: str, csv_path: str, args, load_kwargs: dict) -> tuple:
+    """Load one CSV either through the Parquet cache or directly from source."""
+    if args.cache_dir:
+        cache = load_or_build_ais_cache(
+            csv_path,
+            cache_dir=args.cache_dir,
+            refresh_cache=bool(args.refresh_cache),
+            **load_kwargs,
+        )
+        state = "hit" if cache.cache_hit else "built"
+        print(f"[load-data] cache {state}: {cache.cache_dir}", flush=True)
+        _log_load_audit(label, cache.audit)
+        audit_payload = cache.audit.to_dict()
+        audit_payload["cache"] = cache.cache_metadata()
+        return cache.trajectories, cache.mmsis, cache.audit, audit_payload
+
+    trajectories, mmsis, audit = load_ais_csv(
+        csv_path,
+        **load_kwargs,
+        return_mmsis=True,
+        return_audit=True,
+    )
+    _log_load_audit(label, audit)
+    return trajectories, mmsis, audit, audit.to_dict()
+
+
 def _project_root() -> Path:
     """Find the repository root so default AISDATA outputs land in the shared folder."""
     for parent in Path(__file__).resolve().parents:
@@ -98,6 +125,8 @@ def main() -> None:
         max_time_gap_seconds=_normalized_gap_arg(args.max_time_gap_seconds),
         max_segments=args.max_segments,
         max_trajectories=args.max_trajectories,
+        cache_dir=args.cache_dir,
+        refresh_cache=args.refresh_cache,
         n_queries=args.n_queries,
         query_coverage=args.query_coverage,
         max_queries=args.max_queries,
@@ -149,7 +178,8 @@ def main() -> None:
         f"min_points_per_segment={args.min_points_per_segment}  "
         f"max_points_per_segment={args.max_points_per_segment}  "
         f"max_time_gap_seconds={_normalized_gap_arg(args.max_time_gap_seconds)}  "
-        f"max_segments={args.max_segments}",
+        f"max_segments={args.max_segments}  cache_dir={args.cache_dir}  "
+        f"refresh_cache={args.refresh_cache}",
         flush=True,
     )
 
@@ -168,39 +198,36 @@ def main() -> None:
         if not args.train_csv_path or not args.eval_csv_path:
             parser.error("--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together.")
         print(f"[load-data] reading train CSV: {args.train_csv_path}", flush=True)
-        trajectories, mmsis, train_audit = load_ais_csv(
+        trajectories, mmsis, _train_audit, train_audit_payload = _load_csv_trajectories(
+            "train",
             args.train_csv_path,
-            **load_kwargs,
-            return_mmsis=True,
-            return_audit=True,
+            args,
+            load_kwargs,
         )
-        _log_load_audit("train", train_audit)
         trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
         print(f"[load-data] reading eval CSV: {args.eval_csv_path}", flush=True)
-        eval_trajectories, eval_mmsis, eval_audit = load_ais_csv(
+        eval_trajectories, eval_mmsis, _eval_audit, eval_audit_payload = _load_csv_trajectories(
+            "eval",
             args.eval_csv_path,
-            **load_kwargs,
-            return_mmsis=True,
-            return_audit=True,
+            args,
+            load_kwargs,
         )
-        _log_load_audit("eval", eval_audit)
         eval_trajectories, eval_mmsis = _cap_loaded_trajectories(
             eval_trajectories,
             eval_mmsis,
             args.max_trajectories,
         )
-        data_audit = {"train": train_audit.to_dict(), "eval": eval_audit.to_dict()}
+        data_audit = {"train": train_audit_payload, "eval": eval_audit_payload}
     elif args.csv_path:
         print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-        trajectories, mmsis, audit = load_ais_csv(
+        trajectories, mmsis, _audit, audit_payload = _load_csv_trajectories(
+            "csv",
             args.csv_path,
-            **load_kwargs,
-            return_mmsis=True,
-            return_audit=True,
+            args,
+            load_kwargs,
         )
-        _log_load_audit("csv", audit)
         trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
-        data_audit = {"csv": audit.to_dict()}
+        data_audit = {"csv": audit_payload}
     else:
         print(f"[load-data] generating synthetic data "
               f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship})", flush=True)

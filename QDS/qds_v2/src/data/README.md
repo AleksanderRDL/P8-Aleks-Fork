@@ -7,6 +7,7 @@ This module loads AIS trajectories into per-trajectory tensors and provides the 
 | File | Purpose |
 | --- | --- |
 | `ais_loader.py` | Load AIS CSV files or generate deterministic synthetic trajectories. |
+| `trajectory_cache.py` | Persist segmented AIS tensors as Parquet plus manifest/audit metadata. |
 | `trajectory_dataset.py` | Wrap a list of trajectory tensors and expose flattened points plus trajectory boundaries. |
 
 ## AIS Tensor Schema
@@ -35,6 +36,15 @@ Each trajectory tensor has 8 columns:
 - `max_segments` is a loader-level safety cap for smoke runs.
 - `return_audit=True` appends an `AISLoadAudit` object containing invalid-row counts, duplicate timestamp counts, time-gap stats, segment length stats, segment counts, dropped short segments, and downsampling counts.
 - `generate_synthetic_ais_data(n_ships=24, n_points_per_ship=200, seed=42)` produces deterministic pseudo-realistic trajectories when no CSV is supplied.
+
+## Segmented Cache
+
+`trajectory_cache.py` stores the post-cleaning, post-segmentation tensor rows as
+`points.parquet` with a sibling `manifest.json`. The manifest is keyed by source
+file path, file size, modification time, cache schema version, and segmentation
+config, so changing the source file or controls creates a separate cache entry.
+Use `--cache_dir` on experiment/inference commands to enable it, and
+`--refresh_cache` to rebuild a matching entry.
 
 ## Dataset Helpers
 

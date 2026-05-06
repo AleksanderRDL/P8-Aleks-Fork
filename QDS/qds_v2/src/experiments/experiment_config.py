@@ -31,6 +31,8 @@ class DataConfig:
     csv_path: str | None = None
     train_csv_path: str | None = None
     eval_csv_path: str | None = None
+    cache_dir: str | None = None
+    refresh_cache: bool = False
     seed: int = 42
     train_fraction: float = 0.70
     val_fraction: float = 0.15
@@ -251,6 +253,8 @@ def build_experiment_config(
     csv_path: str | None = None,
     train_csv_path: str | None = None,
     eval_csv_path: str | None = None,
+    cache_dir: str | None = None,
+    refresh_cache: bool = False,
     model_type: str = "baseline",
     workload: str = "mixed",
     train_workload_mix: dict[str, float] | None = None,
@@ -284,6 +288,8 @@ def build_experiment_config(
             csv_path=csv_path,
             train_csv_path=train_csv_path,
             eval_csv_path=eval_csv_path,
+            cache_dir=cache_dir,
+            refresh_cache=refresh_cache,
             seed=seed,
         ),
         query=QueryConfig(

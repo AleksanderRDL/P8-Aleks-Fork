@@ -36,7 +36,7 @@ Use the local Makefile for repeatable smoke runs:
 # Tiny synthetic train/eval run. Outputs go to artifacts/results/smoke_synthetic.
 make smoke
 
-# Tiny cleaned-CSV smoke run against AISDATA/cleaned.
+# Tiny cleaned-CSV smoke run against AISDATA/cleaned with segmented Parquet cache.
 make smoke-csv
 ```
 
@@ -87,6 +87,10 @@ post-load cap. CSV loading splits MMSI tracks by default whenever consecutive
 points are more than `--max_time_gap_seconds 3600` seconds apart; set this to
 `0` to disable gap-based segmentation for compatibility checks. Benchmark runs
 should record any caps explicitly or leave them unset.
+
+Add `--cache_dir artifacts/cache/<run-name>` to CSV runs to reuse segmented
+Parquet caches across experiments. Use `--refresh_cache` when changing loader
+code or when you want to force a rebuild of a matching source/config entry.
 
 Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
 

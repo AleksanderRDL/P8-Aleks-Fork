@@ -18,6 +18,8 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--csv_path`
 - `--train_csv_path` / `--train_csv`
 - `--eval_csv_path` / `--eval_csv`
+- `--cache_dir`
+- `--refresh_cache`
 - `--n_ships`
 - `--n_points`
 - `--min_points_per_segment`
@@ -44,6 +46,10 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 If `--train_csv_path` and `--eval_csv_path` are supplied together, the training CSV is used only for training and the evaluation CSV is used only for evaluation/simplified-output writing. If `--csv_path` is supplied instead, trajectories are split at trajectory level as before. If all CSV arguments are omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
 
 CSV loading now segments each MMSI by temporal continuity before training. The default `--max_time_gap_seconds 3600` starts a new segment when consecutive AIS rows for one MMSI are more than one hour apart. Use `--max_time_gap_seconds 0` to disable gap-based segmentation for compatibility checks. CSV runs write loader audit stats into `example_run.json` under `data_audit`.
+
+Use `--cache_dir` to persist segmented CSV data as Parquet. Cache entries are
+keyed by source file identity and segmentation config, and `--refresh_cache`
+forces a rebuild when you want to verify the source parser path.
 
 ## Config Objects
 

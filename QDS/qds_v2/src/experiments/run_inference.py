@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from src.data.ais_loader import load_ais_csv
 from src.data.trajectory_dataset import TrajectoryDataset
+from src.data.trajectory_cache import load_or_build_ais_cache
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
@@ -61,6 +62,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Evaluate a saved AIS-QDS v2 model on a new CSV.")
     p.add_argument("--checkpoint", required=True, help="Path to saved .pt checkpoint.")
     p.add_argument("--csv_path", required=True, help="Preprocessed AIS CSV to evaluate on.")
+    p.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Optional directory for segmented AIS Parquet caches keyed by source file and load config.",
+    )
+    p.add_argument(
+        "--refresh_cache",
+        action="store_true",
+        help="Rebuild AIS cache entries even when a matching manifest exists.",
+    )
     p.add_argument("--n_queries", type=int, default=100, help="Queries to generate for evaluation.")
     p.add_argument(
         "--query_coverage",
@@ -197,15 +209,33 @@ def main() -> None:
 
     t0 = time.perf_counter()
     print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-    trajectories, trajectory_mmsis, data_audit = load_ais_csv(
-        args.csv_path,
-        min_points_per_segment=args.min_points_per_segment,
-        max_points_per_segment=args.max_points_per_segment,
-        max_time_gap_seconds=_normalized_gap_arg(args.max_time_gap_seconds),
-        max_segments=args.max_segments,
-        return_mmsis=True,
-        return_audit=True,
-    )
+    load_kwargs = {
+        "min_points_per_segment": args.min_points_per_segment,
+        "max_points_per_segment": args.max_points_per_segment,
+        "max_time_gap_seconds": _normalized_gap_arg(args.max_time_gap_seconds),
+        "max_segments": args.max_segments,
+    }
+    cache_payload = None
+    if args.cache_dir:
+        cached = load_or_build_ais_cache(
+            args.csv_path,
+            cache_dir=args.cache_dir,
+            refresh_cache=bool(args.refresh_cache),
+            **load_kwargs,
+        )
+        trajectories = cached.trajectories
+        trajectory_mmsis = cached.mmsis
+        data_audit = cached.audit
+        cache_payload = cached.cache_metadata()
+        state = "hit" if cached.cache_hit else "built"
+        print(f"[load-data] cache {state}: {cached.cache_dir}", flush=True)
+    else:
+        trajectories, trajectory_mmsis, data_audit = load_ais_csv(
+            args.csv_path,
+            **load_kwargs,
+            return_mmsis=True,
+            return_audit=True,
+        )
     print(
         f"[load-data] audit: rows={data_audit.rows_loaded} "
         f"dropped_invalid={data_audit.rows_dropped_invalid} "
@@ -318,7 +348,10 @@ def main() -> None:
         "query_coverage": workload.coverage_fraction,
         "covered_points": workload.covered_points,
         "total_points": workload.total_points,
-        "data_audit": data_audit.to_dict(),
+        "data_audit": {
+            **data_audit.to_dict(),
+            **({"cache": cache_payload} if cache_payload is not None else {}),
+        },
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,

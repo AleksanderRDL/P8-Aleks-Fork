@@ -43,8 +43,9 @@ smoke:
 		--results_dir "$(RESULTS_DIR)"
 
 smoke-csv:
-		$(PYTHON) -m src.experiments.run_ais_experiment \
+	$(PYTHON) -m src.experiments.run_ais_experiment \
 		--csv_path "$(CLEANED_CSV)" \
+		--cache_dir artifacts/cache/smoke_cleaned_csv \
 		--max_segments 8 \
 		--max_points_per_segment 24 \
 		--n_queries 4 \
