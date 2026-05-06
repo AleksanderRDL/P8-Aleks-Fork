@@ -20,7 +20,10 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--eval_csv_path` / `--eval_csv`
 - `--n_ships`
 - `--n_points`
-- `--max_points_per_ship`
+- `--min_points_per_segment`
+- `--max_points_per_segment` / `--max_points_per_ship`
+- `--max_time_gap_seconds`
+- `--max_segments`
 - `--max_trajectories`
 - `--n_queries`
 - `--query_coverage` / `--target_query_coverage`
@@ -39,6 +42,8 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--results_dir`
 
 If `--train_csv_path` and `--eval_csv_path` are supplied together, the training CSV is used only for training and the evaluation CSV is used only for evaluation/simplified-output writing. If `--csv_path` is supplied instead, trajectories are split at trajectory level as before. If all CSV arguments are omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
+
+CSV loading now segments each MMSI by temporal continuity before training. The default `--max_time_gap_seconds 3600` starts a new segment when consecutive AIS rows for one MMSI are more than one hour apart. Use `--max_time_gap_seconds 0` to disable gap-based segmentation for compatibility checks. CSV runs write loader audit stats into `example_run.json` under `data_audit`.
 
 ## Config Objects
 

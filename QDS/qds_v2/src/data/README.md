@@ -26,9 +26,14 @@ Each trajectory tensor has 8 columns:
 
 ## Loader Behavior
 
-- `load_ais_csv(csv_path, max_points_per_ship=None)` accepts common column aliases: `mmsi` / `ship_id` / `vessel_id`, `lat` / `latitude`, `lon` / `longitude`, `speed` / `sog`, `heading` / `cog`, and `timestamp` / `time` / `datetime`.
+- `load_ais_csv(...)` accepts common column aliases: `mmsi` / `ship_id` / `vessel_id`, `lat` / `latitude`, `lon` / `longitude`, `speed` / `sog`, `heading` / `cog`, and `timestamp` / `time` / `datetime`.
 - Rows are grouped by vessel id, sorted by timestamp, and trajectories shorter than 4 points are dropped.
-- If `max_points_per_ship` is set, long trajectories are downsampled with evenly spaced indices.
+- By default, one MMSI track is split into new trajectory segments when consecutive points are more than `3600` seconds apart.
+- `min_points_per_segment` controls short-segment dropping.
+- `max_points_per_segment` down-samples long segments with evenly spaced indices. The legacy `max_points_per_ship` argument is still accepted as an alias.
+- `max_time_gap_seconds=None` disables time-gap segmentation.
+- `max_segments` is a loader-level safety cap for smoke runs.
+- `return_audit=True` appends an `AISLoadAudit` object containing invalid-row counts, duplicate timestamp counts, time-gap stats, segment length stats, segment counts, dropped short segments, and downsampling counts.
 - `generate_synthetic_ais_data(n_ships=24, n_points_per_ship=200, seed=42)` produces deterministic pseudo-realistic trajectories when no CSV is supplied.
 
 ## Dataset Helpers

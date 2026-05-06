@@ -15,6 +15,14 @@ from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes, run_experiment_pipeline
 
 
+def _normalized_gap_arg(value: float | None) -> float | None:
+    """Normalize CLI gap controls so <=0 disables time-gap segmentation."""
+    if value is None:
+        return None
+    value = float(value)
+    return None if value <= 0.0 else value
+
+
 def _cap_loaded_trajectories(
     trajectories,
     mmsis: list[int] | None,
@@ -32,6 +40,26 @@ def _cap_loaded_trajectories(
     capped_mmsis = mmsis[:cap] if mmsis is not None else None
     print(f"[load-data] capped trajectories to {cap}", flush=True)
     return capped, capped_mmsis
+
+
+def _log_load_audit(label: str, audit) -> None:
+    """Print a compact AIS load audit for repeatable run logs."""
+    length = audit.segment_length_stats
+    gaps = audit.time_gap_stats
+    print(
+        f"[load-data] {label} audit: rows={audit.rows_loaded} "
+        f"dropped_invalid={audit.rows_dropped_invalid} "
+        f"duplicates={audit.duplicate_timestamp_rows} "
+        f"mmsis={audit.input_mmsi_count} "
+        f"segments={audit.output_segment_count} "
+        f"points={audit.output_point_count} "
+        f"short_segments_dropped={audit.dropped_short_segments} "
+        f"gap_splits={audit.time_gap_over_threshold_count} "
+        f"segment_len_p50={length.get('p50', 0.0):.1f} "
+        f"segment_len_p95={length.get('p95', 0.0):.1f} "
+        f"max_gap_s={gaps.get('max', 0.0):.1f}",
+        flush=True,
+    )
 
 
 def _project_root() -> Path:
@@ -65,7 +93,10 @@ def main() -> None:
     config = build_experiment_config(
         n_ships=args.n_ships,
         n_points=args.n_points,
-        max_points_per_ship=args.max_points_per_ship,
+        min_points_per_segment=args.min_points_per_segment,
+        max_points_per_segment=args.max_points_per_segment,
+        max_time_gap_seconds=_normalized_gap_arg(args.max_time_gap_seconds),
+        max_segments=args.max_segments,
         max_trajectories=args.max_trajectories,
         n_queries=args.n_queries,
         query_coverage=args.query_coverage,
@@ -114,7 +145,11 @@ def main() -> None:
         f"type_penalty_weight={args.checkpoint_type_penalty_weight}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
-        f"residual_label_mode={args.residual_label_mode}",
+        f"residual_label_mode={args.residual_label_mode}  "
+        f"min_points_per_segment={args.min_points_per_segment}  "
+        f"max_points_per_segment={args.max_points_per_segment}  "
+        f"max_time_gap_seconds={_normalized_gap_arg(args.max_time_gap_seconds)}  "
+        f"max_segments={args.max_segments}",
         flush=True,
     )
 
@@ -122,35 +157,50 @@ def main() -> None:
     mmsis: list[int] | None = None
     eval_trajectories = None
     eval_mmsis: list[int] | None = None
+    data_audit = None
+    load_kwargs = {
+        "min_points_per_segment": args.min_points_per_segment,
+        "max_points_per_segment": args.max_points_per_segment,
+        "max_time_gap_seconds": _normalized_gap_arg(args.max_time_gap_seconds),
+        "max_segments": args.max_segments,
+    }
     if args.train_csv_path or args.eval_csv_path:
         if not args.train_csv_path or not args.eval_csv_path:
             parser.error("--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together.")
         print(f"[load-data] reading train CSV: {args.train_csv_path}", flush=True)
-        trajectories, mmsis = load_ais_csv(
+        trajectories, mmsis, train_audit = load_ais_csv(
             args.train_csv_path,
-            max_points_per_ship=args.max_points_per_ship,
+            **load_kwargs,
             return_mmsis=True,
+            return_audit=True,
         )
+        _log_load_audit("train", train_audit)
         trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
         print(f"[load-data] reading eval CSV: {args.eval_csv_path}", flush=True)
-        eval_trajectories, eval_mmsis = load_ais_csv(
+        eval_trajectories, eval_mmsis, eval_audit = load_ais_csv(
             args.eval_csv_path,
-            max_points_per_ship=args.max_points_per_ship,
+            **load_kwargs,
             return_mmsis=True,
+            return_audit=True,
         )
+        _log_load_audit("eval", eval_audit)
         eval_trajectories, eval_mmsis = _cap_loaded_trajectories(
             eval_trajectories,
             eval_mmsis,
             args.max_trajectories,
         )
+        data_audit = {"train": train_audit.to_dict(), "eval": eval_audit.to_dict()}
     elif args.csv_path:
         print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-        trajectories, mmsis = load_ais_csv(
+        trajectories, mmsis, audit = load_ais_csv(
             args.csv_path,
-            max_points_per_ship=args.max_points_per_ship,
+            **load_kwargs,
             return_mmsis=True,
+            return_audit=True,
         )
+        _log_load_audit("csv", audit)
         trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
+        data_audit = {"csv": audit.to_dict()}
     else:
         print(f"[load-data] generating synthetic data "
               f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship})", flush=True)
@@ -185,6 +235,7 @@ def main() -> None:
         trajectory_mmsis=mmsis,
         eval_trajectories=eval_trajectories,
         eval_trajectory_mmsis=eval_mmsis,
+        data_audit=data_audit,
     )
 
     print("\nMatched-workload table")

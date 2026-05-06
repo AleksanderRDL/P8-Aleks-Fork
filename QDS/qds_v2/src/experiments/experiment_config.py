@@ -22,6 +22,10 @@ class DataConfig:
 
     n_ships: int = 24
     n_points_per_ship: int = 200
+    min_points_per_segment: int = 4
+    max_points_per_segment: int | None = None
+    max_time_gap_seconds: float | None = 3600.0
+    max_segments: int | None = None
     max_points_per_ship: int | None = None
     max_trajectories: int | None = None
     csv_path: str | None = None
@@ -227,6 +231,10 @@ class SeedBundle:
 def build_experiment_config(
     n_ships: int = 24,
     n_points: int = 200,
+    min_points_per_segment: int = 4,
+    max_points_per_segment: int | None = None,
+    max_time_gap_seconds: float | None = 3600.0,
+    max_segments: int | None = None,
     max_points_per_ship: int | None = None,
     max_trajectories: int | None = None,
     n_queries: int = 128,
@@ -262,10 +270,15 @@ def build_experiment_config(
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
+    segment_cap = max_points_per_segment if max_points_per_segment is not None else max_points_per_ship
     return ExperimentConfig(
         data=DataConfig(
             n_ships=n_ships,
             n_points_per_ship=n_points,
+            min_points_per_segment=min_points_per_segment,
+            max_points_per_segment=segment_cap,
+            max_time_gap_seconds=max_time_gap_seconds,
+            max_segments=max_segments,
             max_points_per_ship=max_points_per_ship,
             max_trajectories=max_trajectories,
             csv_path=csv_path,

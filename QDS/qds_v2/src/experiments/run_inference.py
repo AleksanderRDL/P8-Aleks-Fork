@@ -49,6 +49,14 @@ from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import load_checkpoint
 
 
+def _normalized_gap_arg(value: float | None) -> float | None:
+    """Normalize CLI gap controls so <=0 disables time-gap segmentation."""
+    if value is None:
+        return None
+    value = float(value)
+    return None if value <= 0.0 else value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Evaluate a saved AIS-QDS v2 model on a new CSV.")
     p.add_argument("--checkpoint", required=True, help="Path to saved .pt checkpoint.")
@@ -109,6 +117,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="If set, write MLQDS-simplified trajectory CSV here.",
     )
     p.add_argument(
+        "--min_points_per_segment",
+        type=int,
+        default=4,
+        help="Minimum points required to keep an AIS trajectory segment.",
+    )
+    p.add_argument(
+        "--max_points_per_segment",
+        "--max_points_per_ship",
+        dest="max_points_per_segment",
+        type=int,
+        default=None,
+        help="Optional AIS CSV downsampling cap per trajectory segment.",
+    )
+    p.add_argument(
+        "--max_time_gap_seconds",
+        type=float,
+        default=3600.0,
+        help="Split one vessel track into new trajectory segments when consecutive points exceed this time gap. Set <=0 to disable.",
+    )
+    p.add_argument(
+        "--max_segments",
+        type=int,
+        default=None,
+        help="Optional cap applied during CSV segmentation.",
+    )
+    p.add_argument(
         "--max_trajectories",
         type=int,
         default=None,
@@ -163,7 +197,23 @@ def main() -> None:
 
     t0 = time.perf_counter()
     print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-    trajectories, trajectory_mmsis = load_ais_csv(args.csv_path, return_mmsis=True)
+    trajectories, trajectory_mmsis, data_audit = load_ais_csv(
+        args.csv_path,
+        min_points_per_segment=args.min_points_per_segment,
+        max_points_per_segment=args.max_points_per_segment,
+        max_time_gap_seconds=_normalized_gap_arg(args.max_time_gap_seconds),
+        max_segments=args.max_segments,
+        return_mmsis=True,
+        return_audit=True,
+    )
+    print(
+        f"[load-data] audit: rows={data_audit.rows_loaded} "
+        f"dropped_invalid={data_audit.rows_dropped_invalid} "
+        f"duplicates={data_audit.duplicate_timestamp_rows} "
+        f"segments={data_audit.output_segment_count} "
+        f"gap_splits={data_audit.time_gap_over_threshold_count}",
+        flush=True,
+    )
     if args.max_trajectories is not None and len(trajectories) > args.max_trajectories:
         trajectories = trajectories[: args.max_trajectories]
         trajectory_mmsis = trajectory_mmsis[: args.max_trajectories]
@@ -268,6 +318,7 @@ def main() -> None:
         "query_coverage": workload.coverage_fraction,
         "covered_points": workload.covered_points,
         "total_points": workload.total_points,
+        "data_audit": data_audit.to_dict(),
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,

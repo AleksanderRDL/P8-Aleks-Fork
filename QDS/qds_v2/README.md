@@ -40,8 +40,8 @@ make smoke
 make smoke-csv
 ```
 
-The cleaned-CSV smoke target uses `--max_points_per_ship` and
-`--max_trajectories` so it validates the real loader without turning into a full
+The cleaned-CSV smoke target uses `--max_points_per_segment` and
+`--max_segments` so it validates the real loader without turning into a full
 research run. New sprint artifacts should be written under `artifacts/` or
 another external run directory, not under `src/models/saved_models`.
 
@@ -50,7 +50,8 @@ To run on a CSV instead of synthetic data:
 ```bash
 python -m src.experiments.run_ais_experiment \
   --csv_path "C:\path\to\ais.csv" \
-  --max_points_per_ship 500 \
+  --max_points_per_segment 500 \
+  --max_time_gap_seconds 3600 \
   --n_queries 250 \
   --epochs 20 \
   --workload mixed \
@@ -79,10 +80,13 @@ python -m src.experiments.run_ais_experiment \
 
 `--query_coverage` accepts either `0.30` or `30` for 30% point coverage. Coverage mode still emits exactly `--n_queries`; the target coverage is used to bias later query anchors toward points that have not yet been covered. `--max_queries` is accepted only as a positive legacy safety parameter. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the experiment writes only the eval-set simplified CSV under `AISDATA/ML_processed_AIS_files` as `ML_simplified_eval.csv`.
 
-For local smoke runs on large cleaned AIS files, `--max_points_per_ship` downsamples
-each loaded vessel trajectory and `--max_trajectories` keeps only the first loaded
-trajectories after CSV parsing. These flags are for debugging and environment
-checks; benchmark runs should record any caps explicitly or leave them unset.
+For local smoke runs on large cleaned AIS files, `--max_points_per_segment`
+downsamples each loaded trajectory segment, `--max_segments` caps the loader
+output during segmentation, and `--max_trajectories` remains as a legacy
+post-load cap. CSV loading splits MMSI tracks by default whenever consecutive
+points are more than `--max_time_gap_seconds 3600` seconds apart; set this to
+`0` to disable gap-based segmentation for compatibility checks. Benchmark runs
+should record any caps explicitly or leave them unset.
 
 Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
 

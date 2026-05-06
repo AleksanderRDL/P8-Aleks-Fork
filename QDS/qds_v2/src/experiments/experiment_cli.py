@@ -14,16 +14,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
     parser.add_argument(
+        "--min_points_per_segment",
+        type=int,
+        default=4,
+        help="Minimum points required to keep an AIS trajectory segment.",
+    )
+    parser.add_argument(
+        "--max_points_per_segment",
         "--max_points_per_ship",
+        dest="max_points_per_segment",
         type=int,
         default=None,
-        help="Optional AIS CSV downsampling cap per vessel, useful for smoke runs.",
+        help="Optional AIS CSV downsampling cap per trajectory segment, useful for smoke runs.",
+    )
+    parser.add_argument(
+        "--max_time_gap_seconds",
+        type=float,
+        default=3600.0,
+        help="Split one vessel track into new trajectory segments when consecutive points exceed this time gap. Set <=0 to disable.",
+    )
+    parser.add_argument(
+        "--max_segments",
+        type=int,
+        default=None,
+        help="Optional cap applied during CSV segmentation, useful for smoke runs.",
     )
     parser.add_argument(
         "--max_trajectories",
         type=int,
         default=None,
-        help="Optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
+        help="Legacy optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
     )
     parser.add_argument("--n_queries", type=int, default=128)
     parser.add_argument(

@@ -123,6 +123,7 @@ def run_experiment_pipeline(
     trajectory_mmsis: list[int] | None = None,
     eval_trajectories: list[torch.Tensor] | None = None,
     eval_trajectory_mmsis: list[int] | None = None,
+    data_audit: dict[str, Any] | None = None,
 ) -> ExperimentOutputs:
     """Run training, matched evaluation, and shifted evaluation tables. See src/experiments/README.md for details."""
     pipeline_t0 = time.perf_counter()
@@ -403,6 +404,7 @@ def run_experiment_pipeline(
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
         "best_f1": trained.best_f1,
+        "data_audit": data_audit,
     }
 
     with _phase("write-results"):
