@@ -1,0 +1,27 @@
+Method                     AggregateF1   Compression    AvgPtGap   Latency(ms)        Type
+------------------------------------------------------------------------------------------
+MLQDS                         0.170661        0.1502        6.67     166302.85         all
+  - range                     0.238345                                               range
+  - knn                       0.151791                                                 knn
+  - similarity                0.097984                                          similarity
+  - clustering                0.213395                                          clustering
+Random                        0.253613        0.1508        6.65        318.36         all
+  - range                     0.262370                                               range
+  - knn                       0.243254                                                 knn
+  - similarity                0.205274                                          similarity
+  - clustering                0.313913                                          clustering
+newUniformTemporal            0.256469        0.1502        6.67        108.70         all
+  - range                     0.260617                                               range
+  - knn                       0.243185                                                 knn
+  - similarity                0.217398                                          similarity
+  - clustering                0.317960                                          clustering
+DouglasPeucker                0.164232        0.1502        6.67        459.94         all
+  - range                     0.248112                                               range
+  - knn                       0.140835                                                 knn
+  - similarity                0.108437                                          similarity
+  - clustering                0.182942                                          clustering
+Oracle                        0.864595        0.1508        6.64        304.72         all
+  - range                     0.844720                                               range
+  - knn                       0.916209                                                 knn
+  - similarity                0.819270                                          similarity
+  - clustering                0.826569                                          clustering

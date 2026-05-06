@@ -29,7 +29,6 @@ from src.evaluation.baselines import (
     MLQDSMethod,
     NewUniformTemporalMethod,
     OracleMethod,
-    RandomMethod,
 )
 from src.evaluation.evaluate_methods import (
     evaluate_method,
@@ -310,7 +309,6 @@ def run_experiment_pipeline(
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
         ),
-        RandomMethod(seed=config.data.seed),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
@@ -393,7 +391,7 @@ def run_experiment_pipeline(
                 "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
-                "avg_length_loss": m.avg_length_loss,
+                "avg_length_preserved": m.avg_length_preserved,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in matched.items()

@@ -99,6 +99,7 @@ class ModelConfig:
     f1_diagnostic_every: int = 0
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
+    checkpoint_smoothing_window: int = 1
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.05
     residual_label_mode: str = "temporal"
@@ -251,6 +252,7 @@ def build_experiment_config(
     f1_diagnostic_every: int = 0,
     checkpoint_uniform_gap_weight: float = 0.5,
     checkpoint_type_penalty_weight: float = 1.0,
+    checkpoint_smoothing_window: int = 1,
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
@@ -292,6 +294,7 @@ def build_experiment_config(
             f1_diagnostic_every=f1_diagnostic_every,
             checkpoint_uniform_gap_weight=checkpoint_uniform_gap_weight,
             checkpoint_type_penalty_weight=checkpoint_type_penalty_weight,
+            checkpoint_smoothing_window=checkpoint_smoothing_window,
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             residual_label_mode=residual_label_mode,

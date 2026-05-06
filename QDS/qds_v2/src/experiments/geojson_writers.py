@@ -199,12 +199,15 @@ def report_trajectory_length_loss(
 
     avg_orig = sum(r[1] for r in rows) / len(rows)
     avg_simp = sum(r[2] for r in rows) / len(rows)
-    avg_loss = sum(r[3] for r in rows) / len(rows)
+    total_orig = sum(r[1] for r in rows)
+    total_simp = sum(r[2] for r in rows)
+    length_preserved = (total_simp / total_orig) if total_orig > 1e-9 else 1.0
+    length_preserved = max(0.0, min(1.0, length_preserved))
     avg_removed = sum(r[5] for r in rows) / len(rows)
     print(
-        f"  [length-loss] {len(rows)} trajectories  "
+        f"  [length] {len(rows)} trajectories  "
         f"avg_orig_km={avg_orig:.2f}  avg_simp_km={avg_simp:.2f}  "
-        f"avg_length_loss={avg_loss:.3f}  avg_points_removed={avg_removed:.1f}",
+        f"length_preserved={length_preserved:.3f}  avg_points_removed={avg_removed:.1f}",
         flush=True,
     )
 
