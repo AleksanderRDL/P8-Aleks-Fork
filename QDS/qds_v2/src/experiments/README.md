@@ -20,6 +20,8 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--eval_csv_path` / `--eval_csv`
 - `--n_ships`
 - `--n_points`
+- `--max_points_per_ship`
+- `--max_trajectories`
 - `--n_queries`
 - `--query_coverage` / `--target_query_coverage`
 - `--max_queries`

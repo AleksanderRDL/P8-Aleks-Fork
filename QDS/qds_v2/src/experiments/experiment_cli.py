@@ -13,6 +13,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
+    parser.add_argument(
+        "--max_points_per_ship",
+        type=int,
+        default=None,
+        help="Optional AIS CSV downsampling cap per vessel, useful for smoke runs.",
+    )
+    parser.add_argument(
+        "--max_trajectories",
+        type=int,
+        default=None,
+        help="Optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
+    )
     parser.add_argument("--n_queries", type=int, default=128)
     parser.add_argument(
         "--query_coverage",

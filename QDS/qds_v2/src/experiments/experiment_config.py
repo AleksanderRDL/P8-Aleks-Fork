@@ -22,6 +22,8 @@ class DataConfig:
 
     n_ships: int = 24
     n_points_per_ship: int = 200
+    max_points_per_ship: int | None = None
+    max_trajectories: int | None = None
     csv_path: str | None = None
     train_csv_path: str | None = None
     eval_csv_path: str | None = None
@@ -225,6 +227,8 @@ class SeedBundle:
 def build_experiment_config(
     n_ships: int = 24,
     n_points: int = 200,
+    max_points_per_ship: int | None = None,
+    max_trajectories: int | None = None,
     n_queries: int = 128,
     query_coverage: float | None = None,
     target_query_coverage: float | None = None,
@@ -262,6 +266,8 @@ def build_experiment_config(
         data=DataConfig(
             n_ships=n_ships,
             n_points_per_ship=n_points,
+            max_points_per_ship=max_points_per_ship,
+            max_trajectories=max_trajectories,
             csv_path=csv_path,
             train_csv_path=train_csv_path,
             eval_csv_path=eval_csv_path,

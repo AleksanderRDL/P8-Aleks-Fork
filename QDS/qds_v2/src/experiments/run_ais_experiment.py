@@ -15,6 +15,25 @@ from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes, run_experiment_pipeline
 
 
+def _cap_loaded_trajectories(
+    trajectories,
+    mmsis: list[int] | None,
+    max_trajectories: int | None,
+):
+    """Cap loaded trajectories for smoke runs while keeping MMSIs aligned."""
+    if max_trajectories is None:
+        return trajectories, mmsis
+    cap = int(max_trajectories)
+    if cap <= 0:
+        raise ValueError("--max_trajectories must be positive when provided.")
+    if len(trajectories) <= cap:
+        return trajectories, mmsis
+    capped = trajectories[:cap]
+    capped_mmsis = mmsis[:cap] if mmsis is not None else None
+    print(f"[load-data] capped trajectories to {cap}", flush=True)
+    return capped, capped_mmsis
+
+
 def _project_root() -> Path:
     """Find the repository root so default AISDATA outputs land in the shared folder."""
     for parent in Path(__file__).resolve().parents:
@@ -46,6 +65,8 @@ def main() -> None:
     config = build_experiment_config(
         n_ships=args.n_ships,
         n_points=args.n_points,
+        max_points_per_ship=args.max_points_per_ship,
+        max_trajectories=args.max_trajectories,
         n_queries=args.n_queries,
         query_coverage=args.query_coverage,
         max_queries=args.max_queries,
@@ -105,12 +126,31 @@ def main() -> None:
         if not args.train_csv_path or not args.eval_csv_path:
             parser.error("--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together.")
         print(f"[load-data] reading train CSV: {args.train_csv_path}", flush=True)
-        trajectories, mmsis = load_ais_csv(args.train_csv_path, return_mmsis=True)
+        trajectories, mmsis = load_ais_csv(
+            args.train_csv_path,
+            max_points_per_ship=args.max_points_per_ship,
+            return_mmsis=True,
+        )
+        trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
         print(f"[load-data] reading eval CSV: {args.eval_csv_path}", flush=True)
-        eval_trajectories, eval_mmsis = load_ais_csv(args.eval_csv_path, return_mmsis=True)
+        eval_trajectories, eval_mmsis = load_ais_csv(
+            args.eval_csv_path,
+            max_points_per_ship=args.max_points_per_ship,
+            return_mmsis=True,
+        )
+        eval_trajectories, eval_mmsis = _cap_loaded_trajectories(
+            eval_trajectories,
+            eval_mmsis,
+            args.max_trajectories,
+        )
     elif args.csv_path:
         print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-        trajectories, mmsis = load_ais_csv(args.csv_path, return_mmsis=True)
+        trajectories, mmsis = load_ais_csv(
+            args.csv_path,
+            max_points_per_ship=args.max_points_per_ship,
+            return_mmsis=True,
+        )
+        trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
     else:
         print(f"[load-data] generating synthetic data "
               f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship})", flush=True)
