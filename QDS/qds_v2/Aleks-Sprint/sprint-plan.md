@@ -146,6 +146,8 @@ Deliverable:
 
 ### Phase 1: Data Segmentation And Cached Preprocessing
 
+Status: Completed for the current sprint scope on 2026-05-06.
+
 Goal: stop treating one MMSI-day as the default trajectory unit.
 
 Tasks:
@@ -182,6 +184,10 @@ Acceptance checks:
 Deliverable:
 
 - reusable segmented dataset cache for the 10-day sprint split
+
+Completion note:
+
+- Implemented MMSI/time-gap segmentation, configurable segment controls, run-level data audit output, Parquet-backed segmented CSV cache, unit tests, and a cleaned-CSV cache smoke command. The cache is reusable per source CSV and segmentation config; building the full 10-day split cache remains a scale-up run using the completed cache API.
 
 ### Phase 2: Range Workload And Label Diagnostics
 
