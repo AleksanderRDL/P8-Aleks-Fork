@@ -92,7 +92,10 @@ def run() -> None:
         .filter(F.col("SOG").isNotNull())
     )
 
-    df = trim_stationary.trim_stationary(df)
+    if os.environ.get("SKIP_TRIM_STATIONARY", "0") != "1":
+        df = trim_stationary.trim_stationary(df)
+    else:
+        print("[ais_pipeline] SKIP_TRIM_STATIONARY=1 -> retaining stationary points", flush=True)
     df = ship_type.fill_ship_type(df)
     df = ship_type.remove_undefined_ship_type(df)
     df = remove_shiptypes.remove_shiptypes(df)

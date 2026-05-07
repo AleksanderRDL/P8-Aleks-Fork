@@ -12,7 +12,7 @@ from src.evaluation.evaluate_methods import (
     print_method_comparison_table,
     score_retained_mask,
 )
-from src.evaluation.metrics import MethodEvaluation, clustering_f1, f1_score
+from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
 from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
 
 
@@ -285,3 +285,57 @@ def test_method_comparison_table_shows_close_f1_values() -> None:
 
     assert "0.182369" in table
     assert "0.182423" in table
+
+
+def test_method_comparison_table_reports_canonical_baseline_diffs() -> None:
+    table = print_method_comparison_table(
+        {
+            "MLQDS": MethodEvaluation(
+                aggregate_f1=0.6,
+                per_type_f1={"range": 0.6},
+                compression_ratio=0.2,
+                latency_ms=0.0,
+            ),
+            "uniform": MethodEvaluation(
+                aggregate_f1=0.5,
+                per_type_f1={"range": 0.5},
+                compression_ratio=0.2,
+                latency_ms=0.0,
+            ),
+            "DouglasPeucker": MethodEvaluation(
+                aggregate_f1=0.55,
+                per_type_f1={"range": 0.55},
+                compression_ratio=0.2,
+                latency_ms=0.0,
+            ),
+        }
+    )
+
+    assert "Diff vs MLQDS" in table
+    assert "vs uniform" in table
+    assert "vs DouglasPeucker" in table
+    assert "vs Random" not in table
+
+
+def test_length_preservation_and_legacy_loss_are_complements() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0, 1.0],
+            [2.0, 0.0, 2.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    retained = torch.tensor([True, False, True])
+
+    preserved = compute_length_preservation(points, [(0, 3)], retained)
+    metrics = MethodEvaluation(
+        aggregate_f1=0.8,
+        per_type_f1={"range": 0.8},
+        compression_ratio=2.0 / 3.0,
+        latency_ms=0.0,
+        avg_length_preserved=preserved,
+    )
+
+    assert preserved == pytest.approx(1.0)
+    assert metrics.avg_length_loss == pytest.approx(0.0)

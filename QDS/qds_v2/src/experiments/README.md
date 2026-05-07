@@ -40,6 +40,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--f1_diagnostic_every`
 - `--checkpoint_uniform_gap_weight`
 - `--checkpoint_type_penalty_weight`
+- `--checkpoint_smoothing_window`
 - `--seed`
 - `--results_dir`
 
@@ -66,9 +67,9 @@ forces a rebuild when you want to verify the source parser path.
 
 1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
 2. Generate independent train and eval typed query workloads from the respective trajectory sets; range/kNN anchors use the 70/30 density sampler described in `src/queries`.
-3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is training loss; `checkpoint_selection_metric=f1` uses exact held-out query F1 on a validation workload. `checkpoint_selection_metric=uniform_gap` also scores the fair `newUniformTemporal` baseline on the validation workload and penalizes checkpoints that hide weak range/kNN/similarity scores behind one strong type.
-4. Evaluate MLQDS and baseline methods on the test set.
-5. Write `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
+3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is training loss; `checkpoint_selection_metric=f1` uses exact held-out query F1 on a validation workload. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints that hide weak range/kNN/similarity scores behind one strong type. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
+4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
+5. Write `results/example_run.json`, `results/matched_table.txt`, `results/shift_table.txt`, and `results/geometric_distortion_table.txt` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
 
 ## Workload Mixes
 

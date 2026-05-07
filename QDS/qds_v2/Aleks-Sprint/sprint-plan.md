@@ -10,6 +10,28 @@ The ambition document describes the full research direction. This plan narrows t
 
 The sprint should prioritize Range-QDS and kNN-QDS because they are the most local, inspectable, and likely to produce a defensible first result. Similarity-QDS and Clustering-QDS should still be prepared, but they should be treated as secondary or stretch targets unless Range-QDS and kNN-QDS are already stable.
 
+## Current Merge Position
+
+Status on 2026-05-07 after incorporating the non-artifact parts of
+`V2_Revamp`:
+
+- Phase 0, Phase 1, and Phase 2 remain the accepted local baseline for this
+  branch.
+- The `V2_Revamp` result artifacts are useful historical/reference outputs, but
+  they do not replace the Phase 2 diagnostics or define the Phase 3 benchmark
+  protocol.
+- The useful incoming code changes are checkpoint smoothing, explicit MLQDS
+  gaps against baselines, length-preservation reporting, optional stationary
+  trimming in the upstream AIS cleaning pipeline, and a multi-file CSV combine
+  helper.
+- The incoming baseline rename from `newUniformTemporal` to `uniform` and the
+  removal of `Random` from matched evaluation are canonical. Phase 3 matched
+  runs should compare MLQDS against `uniform`, Douglas-Peucker, and label
+  Oracle at equal compression.
+- Multi-day CSV combination should preserve MMSIs by default and let the
+  segmented loader split by timestamp gaps; MMSI offsetting is only a
+  compatibility option.
+
 ## Realistic Sprint Targets
 
 ### Primary Targets
@@ -24,7 +46,7 @@ The sprint should prioritize Range-QDS and kNN-QDS because they are the most loc
 
 3. **Train and benchmark Range-QDS**
 
-   Produce a repeatable Range-QDS benchmark where Range-QDS beats Random, newUniformTemporal, and a geometric baseline at equal compression across at least 3 seeds.
+   Produce a repeatable Range-QDS benchmark where Range-QDS beats `uniform` and a geometric baseline at equal compression across at least 3 seeds.
 
 4. **Train and benchmark kNN-QDS**
 
@@ -96,18 +118,18 @@ Every final benchmark run should record:
 
 ```text
 Models: Range-QDS, kNN-QDS
-Baselines: Random, newUniformTemporal, Douglas-Peucker or current geometric proxy, label Oracle
+Baselines: uniform, Douglas-Peucker or current geometric proxy, label Oracle
 Seeds: at least 3
 Compression: same ratio for all methods
 Splits: fixed train/validation/test days
-Metrics: target workload F1, best-baseline gap, label Oracle gap, SED/PED, length loss
+Metrics: target workload F1, best-baseline gap, label Oracle gap, SED/PED, length preservation
 ```
 
 ### Preferred Protocol
 
 ```text
 Models: Range-QDS, kNN-QDS, Similarity-QDS, Clustering-QDS
-Baselines: Random, newUniformTemporal, true Douglas-Peucker, label Oracle
+Baselines: uniform, true Douglas-Peucker, label Oracle
 Seeds: 5
 Data volumes: 3, 5, 10 days
 Reporting: mean, standard deviation, best-baseline gap, label Oracle gap, learning curves
@@ -205,8 +227,7 @@ Tasks:
    - trajectory-hit distribution
    - positive label fraction
    - label Oracle F1
-   - Random F1
-   - newUniformTemporal F1
+   - uniform F1
 3. Add cached range workloads and labels.
 4. Add visual debug output for range queries:
    - query box
@@ -252,10 +273,20 @@ Completion note:
 
 Goal: produce the first defensible specialist win.
 
+Entry state:
+
+- Range workload diagnostics are complete and accepted.
+- The benchmark output now reports SED/PED, `LengthPres`, `F1xLen`, and MLQDS
+  F1 gaps versus `uniform` and Douglas-Peucker.
+- Checkpoint selection can use a rolling diagnostic score through
+  `checkpoint_smoothing_window`, but smoothing is a selection stabilizer, not a
+  training objective.
+
 Tasks:
 
 1. Train Range-QDS on the validated range workload.
-2. Use validation query F1 or uniform-gap checkpoint selection.
+2. Use validation query F1 or uniform-gap checkpoint selection, with
+   `checkpoint_smoothing_window` tested on noisy runs.
 3. Track:
    - prediction spread
    - positive fraction
@@ -263,10 +294,9 @@ Tasks:
    - ranking pairs
    - skipped windows
    - validation F1
-   - validation gap to newUniformTemporal
+   - validation gap to uniform
 4. Evaluate against:
-   - Random
-   - newUniformTemporal
+   - uniform
    - geometric baseline
    - label Oracle
 5. Run at least 3 seeds.
@@ -421,6 +451,7 @@ Deliverable:
 | P1.3 | Add data audit report | Critical | run-level data stats |
 | P2.1 | Add range query acceptance filters | Critical | validated range workloads |
 | P2.2 | Add range workload/label diagnostics | Critical | range diagnostics JSON |
+| P3.0 | Reconcile V2_Revamp benchmark/checkpoint changes with Phase 2 baseline contract | Critical | merge-ready Phase 3 code |
 | P3.1 | Train Range-QDS with validation F1 or uniform-gap selection | Critical | trained Range-QDS runs |
 | P3.2 | Run 3-seed Range-QDS benchmark | Critical | Range-QDS benchmark card |
 | P4.1 | Add configurable kNN time windows and k values | High | validated kNN config |
@@ -502,7 +533,8 @@ Gap to best baseline:
 Label Oracle F1:
 Gap to label Oracle:
 Avg SED/PED:
-Avg length loss:
+Length preserved:
+F1xLen:
 Latency:
 
 Conclusion:

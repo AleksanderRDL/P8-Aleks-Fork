@@ -25,8 +25,8 @@ Implemented:
 - optional range acceptance filters for useful hit-count bands, broad boxes,
   near-duplicate boxes, and acceptance-attempt exhaustion
 - train/eval/selection workload diagnostics and per-query range diagnostics
-- range label diagnostics, label Oracle diagnostics, and Random,
-  newUniformTemporal, and DouglasPeucker baseline diagnostics
+- range label diagnostics, label Oracle diagnostics, and uniform and
+  DouglasPeucker baseline diagnostics
 - stable output artifacts:
   `range_workload_diagnostics.json`, `range_query_diagnostics.jsonl`, and
   `example_run.json.workload_diagnostics`
@@ -153,8 +153,7 @@ Add diagnostics that connect workload quality to learning signal:
 - range label p50/p90/p95/max
 - count of points with nonzero range labels
 - label Oracle range F1 at the target compression ratio
-- Random range F1
-- newUniformTemporal range F1
+- uniform range F1
 - DouglasPeucker range F1
 - Oracle gap over best baseline
 
@@ -162,7 +161,6 @@ The fastest implementation can reuse:
 
 - `compute_typed_importance_labels`
 - `OracleMethod`
-- `RandomMethod`
 - `NewUniformTemporalMethod`
 - `DouglasPeuckerMethod`
 - `evaluate_method`
@@ -304,7 +302,7 @@ Phase 2 should be considered ready for Range-QDS training only when:
 - point-hit and trajectory-hit distributions are saved
 - positive range-label fraction is nonzero and not dominated by a tiny handful
   of points
-- label Oracle range F1 is clearly above Random, newUniformTemporal, and
+- label Oracle range F1 is clearly above uniform and
   DouglasPeucker at the same compression ratio
 - diagnostics are written for train, eval, and checkpoint-selection workloads
   when those workloads exist

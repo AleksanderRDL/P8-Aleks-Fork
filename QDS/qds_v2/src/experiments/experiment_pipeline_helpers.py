@@ -29,7 +29,6 @@ from src.evaluation.baselines import (
     MLQDSMethod,
     NewUniformTemporalMethod,
     OracleMethod,
-    RandomMethod,
 )
 from src.evaluation.evaluate_methods import (
     evaluate_method,
@@ -155,7 +154,6 @@ def _range_signal_diagnostics(
     )
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
     methods = [
-        RandomMethod(seed=seed),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
         OracleMethod(labels=labels, workload_mix={"range": 1.0}),
@@ -175,7 +173,7 @@ def _range_signal_diagnostics(
             "range_f1": float(per_type.get("range", 0.0)),
         }
 
-    baseline_names = ["Random", "newUniformTemporal", "DouglasPeucker"]
+    baseline_names = ["uniform", "DouglasPeucker"]
     best_baseline = max(baseline_names, key=lambda name: method_scores.get(name, {}).get("range_f1", 0.0))
     best_baseline_range_f1 = float(method_scores[best_baseline]["range_f1"])
     oracle_range_f1 = float(method_scores.get("Oracle", {}).get("range_f1", 0.0))
@@ -501,7 +499,6 @@ def run_experiment_pipeline(
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
         ),
-        RandomMethod(seed=config.data.seed),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
@@ -584,6 +581,7 @@ def run_experiment_pipeline(
                 "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
+                "avg_length_preserved": m.avg_length_preserved,
                 "avg_length_loss": m.avg_length_loss,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }

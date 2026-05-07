@@ -7,6 +7,7 @@ This module loads AIS trajectories into per-trajectory tensors and provides the 
 | File | Purpose |
 | --- | --- |
 | `ais_loader.py` | Load AIS CSV files or generate deterministic synthetic trajectories. |
+| `combine_days.py` | Utility for concatenating preprocessed CSVs while preserving MMSIs by default. |
 | `trajectory_cache.py` | Persist segmented AIS tensors as Parquet plus manifest/audit metadata. |
 | `trajectory_dataset.py` | Wrap a list of trajectory tensors and expose flattened points plus trajectory boundaries. |
 
@@ -45,6 +46,14 @@ file path, file size, modification time, cache schema version, and segmentation
 config, so changing the source file or controls creates a separate cache entry.
 Use `--cache_dir` on experiment/inference commands to enable it, and
 `--refresh_cache` to rebuild a matching entry.
+
+## Multi-Day CSV Combination
+
+Use `python -m src.data.combine_days --input ... --output ...` when Phase 3
+runs need one combined training CSV. The utility preserves MMSIs by default so
+`load_ais_csv` can segment continuous vessels by timestamp gaps across file
+boundaries. Use `--offset-mmsi-per-file` only for compatibility experiments
+where every input file should be treated as an isolated vessel set.
 
 ## Dataset Helpers
 

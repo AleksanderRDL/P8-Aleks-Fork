@@ -559,7 +559,7 @@ def train_model(
         )
         uniform_f1, uniform_per_type = validation_uniform_result
         print(
-            f"  [{run_tag}] validation newUniformTemporal_f1={uniform_f1:.6f}  "
+            f"  [{run_tag}] validation uniform_f1={uniform_f1:.6f}  "
             f"range={uniform_per_type.get('range', 0.0):.6f}  "
             f"knn={uniform_per_type.get('knn', 0.0):.6f}  "
             f"similarity={uniform_per_type.get('similarity', 0.0):.6f}  "
@@ -575,6 +575,8 @@ def train_model(
 
     effective_epochs = max(8, int(model_config.epochs))
     patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
+    smoothing_window = max(1, int(getattr(model_config, "checkpoint_smoothing_window", 1) or 1))
+    selection_history: list[float] = []
     best_selection = float("-inf")
     best_loss = float("inf")
     best_f1 = 0.0
@@ -797,17 +799,28 @@ def train_model(
             else:
                 selection = _selection_score(avg_tau, stats["pred_std"], stats["loss"])
             stats["selection_score"] = selection
-            is_new_best_model = selection > best_selection + 1e-4 or (
-                abs(selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
+            selection_history.append(float(selection))
+            window = selection_history[-smoothing_window:]
+            smoothed_selection = float(sum(window) / len(window))
+            stats["selection_score_smoothed"] = smoothed_selection
+            # Use the smoothed score for "best" decisions: averages out
+            # epoch-to-epoch validation F1 noise so we don't lock onto a lucky
+            # spike. Single-epoch loss still tiebreaks on near-equal smoothed.
+            is_new_best_model = smoothed_selection > best_selection + 1e-4 or (
+                abs(smoothed_selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
             )
             markers = []
             if epoch > 0 and is_new_best_model:
                 markers.append("*** NEW BEST MODEL ***")
             best_marker = ("  " + "  ".join(markers)) if markers else ""
+            smoothed_label = (
+                f"  smoothed_w{smoothing_window}={smoothed_selection:+.3f}"
+                if smoothing_window > 1 else ""
+            )
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
                 f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
-                f"pred_std={stats['pred_std']:.6g}  select={selection:+.3f}  "
+                f"pred_std={stats['pred_std']:.6g}  select={selection:+.3f}{smoothed_label}  "
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
             )
@@ -843,7 +856,7 @@ def train_model(
                 print(f"    [{run_tag}] label_diag  " + "  ".join(diag_parts), flush=True)
 
             if is_new_best_model:
-                best_selection = selection
+                best_selection = smoothed_selection
                 best_loss = stats["loss"]
                 best_f1 = float(stats.get("val_query_f1", best_f1))
                 best_epoch = epoch + 1

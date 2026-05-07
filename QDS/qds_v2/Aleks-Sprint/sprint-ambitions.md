@@ -57,12 +57,23 @@ The four supported query workloads are:
 
 Several important improvements are already present:
 
+- The local sprint branch now has documented environment commands, a Makefile,
+  segmented CSV loading, Parquet-backed trajectory caching, and data audit
+  metadata.
+- Range workload acceptance filters and diagnostics are implemented for
+  hit-count bands, broad boxes, duplicate boxes, query JSONL output, positive
+  label signal, label Oracle, `uniform`, and Douglas-Peucker.
 - Oracle is evaluated on the same eval/test workload as MLQDS and baselines.
 - Coverage-targeted query generation keeps `n_queries` as a minimum.
 - Range evaluation is point-aware.
 - kNN, similarity, and clustering evaluation include retained point-support penalties in addition to answer-set F1.
-- Training includes collapse diagnostics, pointwise BCE, gradient clipping, and optional validation F1 checkpoint selection.
+- Training includes collapse diagnostics, pointwise BCE, gradient clipping,
+  optional validation F1 checkpoint selection, uniform-gap checkpoint selection,
+  and optional rolling checkpoint-score smoothing.
 - MLQDS can use a temporal base plus learned score fill through `mlqds_temporal_fraction`.
+- Result reporting now distinguishes query F1 from shape preservation through
+  SED/PED, `LengthPres`, `F1xLen`, and explicit MLQDS gaps versus the main
+  baselines.
 
 The remaining issue is not that the pipeline is conceptually broken. The issue is that the learned scorer is not yet reliably learning the retained subset that preserves final query answers.
 
@@ -93,7 +104,7 @@ It is:
 choose the retained subset that preserves the query workload under budget
 ```
 
-Recent results suggest the temporal-hybrid MLQDS setup can slightly beat Random and new uniform temporal sampling in some runs, but pure learned scoring still struggles. The sprint should focus on making the learned query-specific scorer genuinely useful, not only relying on the temporal base.
+Recent results suggest the temporal-hybrid MLQDS setup can slightly beat uniform temporal sampling in some runs, but pure learned scoring still struggles. The sprint should focus on making the learned query-specific scorer genuinely useful, not only relying on the temporal base.
 
 ## Success Criteria
 
@@ -108,14 +119,13 @@ All comparisons must use the same compression ratio.
 
 The primary comparison should be against:
 
-- Random
-- new uniform temporal sampling
+- uniform temporal sampling
 - true Douglas-Peucker
 - label Oracle as a diagnostic upper reference
 
 Secondary success criteria:
 
-- The learned model should beat Random and new uniform temporal without depending entirely on a large temporal base.
+- The learned model should beat uniform temporal without depending entirely on a large temporal base.
 - The label Oracle should remain substantially above all methods, confirming that the label/evaluation setup still contains learnable signal.
 - Validation checkpoint selection should prefer models that improve final query F1, not merely proxy loss.
 - Geometric distortion should be reported alongside query F1.
@@ -519,7 +529,7 @@ Validation: Jan 08
 Test: Jan 09-Jan 10
 ```
 
-This should be enough to test whether each specialist model can beat Random, new uniform temporal sampling, and Douglas-Peucker on same-region, same-period AIS data.
+This should be enough to test whether each specialist model can beat uniform temporal sampling and Douglas-Peucker on same-region, same-period AIS data.
 
 For this sprint, `10` cleaned days should be treated as the main target.
 
@@ -737,11 +747,11 @@ The current benchmarking layer is useful for prototype experiments, but it is no
 The existing layer already has important foundations:
 
 - matched-budget evaluation at the same compression ratio
-- baselines for Random, new uniform temporal sampling, Douglas-Peucker-style geometry, and Oracle
+- baselines for uniform temporal sampling, Douglas-Peucker-style geometry, and Oracle
 - aggregate and per-query-type F1 reporting
 - point-aware range query scoring
 - kNN, similarity, and clustering scoring that combines answer-set F1 with retained point-support preservation
-- geometric distortion reporting through SED, PED, length loss, and `F1x(1-L)`
+- geometric distortion reporting through SED, PED, length preservation, and `F1xLen`
 - optional validation query-F1 checkpoint selection
 - JSON and text table outputs for individual runs
 
@@ -771,9 +781,7 @@ The shift benchmark should instead use explicit eval workloads generated from th
 
 The baseline set is directionally correct, but it needs tightening before final claims.
 
-Random is valid and important. It keeps the same approximate compression budget as MLQDS, so it answers whether the learned scorer beats chance under equal retained-point budget.
-
-new uniform temporal sampling is currently the strongest practical baseline and should remain a primary comparison target.
+Uniform temporal sampling is currently the strongest practical baseline and should remain a primary comparison target. In code and result JSON, keep the stable method key `uniform`.
 
 Douglas-Peucker is currently only a proxy. The current implementation scores points by perpendicular distance to the first-last trajectory chord, but it is not a true recursive Douglas-Peucker algorithm. For credible comparison against typical simplification algorithms, this should be replaced or supplemented with a true recursive DP baseline.
 
@@ -807,7 +815,7 @@ Each specialist result card should report:
 - gap to label Oracle
 - compression ratio
 - SED and PED distortion
-- average length loss
+- length preservation and `F1xLen`
 - simplification latency
 - mean and standard deviation across seeds
 
@@ -850,11 +858,11 @@ Minimum acceptable benchmark protocol:
 
 ```text
 Models: Range-QDS, kNN-QDS, Similarity-QDS, Clustering-QDS
-Baselines: Random, newUniformTemporal, true Douglas-Peucker, label Oracle
+Baselines: uniform, true Douglas-Peucker, label Oracle
 Seeds: at least 3
 Compression: same ratio for all methods
 Splits: fixed train/validation/test days
-Metrics: per-type F1, best-baseline gap, Oracle gap, SED/PED, length loss
+Metrics: per-type F1, best-baseline gap, Oracle gap, SED/PED, length preservation
 ```
 
 Preferred benchmark protocol:
@@ -877,23 +885,14 @@ These areas do not define the learning objective, but they determine whether spr
 
 ### Environment
 
-The local Python environments are not currently ready for repeatable end-to-end sprint work.
+The local sprint environment has moved from a blocker to a maintained dependency.
 
-Observed state:
+Current local sprint status:
 
-- System Python has `numpy`, but does not have `torch`, `pandas`, or `pytest`.
-- The root `.venv` has `pandas` and `pytest`, but does not have `torch`.
-- `qds_v2/requirements.txt` is unpinned.
-
-This prevents local training and test execution until the environment is fixed.
-
-Needed work:
-
-- create one documented environment for `qds_v2`
-- install a compatible `torch`
-- pin dependency versions or add a reproducible environment file
-- add a simple command for running tests
-- add a simple command for running one small benchmark smoke test
+- `qds_v2` has documented environment commands, pinned requirements, and Makefile
+  targets for environment checks, tests, and smoke runs.
+- Future work should keep those commands current as Phase 3 adds benchmark
+  runner scripts and larger cached datasets.
 
 ### Artifact Hygiene
 
@@ -989,6 +988,6 @@ The sprint should be considered successful when the project can produce a repeat
 - per-workload F1 and geometric distortion
 - best-baseline gap for each specialist
 - label Oracle gap for each specialist
-- clear evidence of whether each specialist beats Random, newUniformTemporal, and true Douglas-Peucker
+- clear evidence of whether each specialist beats uniform and true Douglas-Peucker
 
 The strongest version of the sprint result would show all four specialists beating the strongest baseline on their target workload. A still-useful sprint result would show this for Range-QDS and kNN-QDS, with clear diagnostics explaining what blocks Similarity-QDS and Clustering-QDS.

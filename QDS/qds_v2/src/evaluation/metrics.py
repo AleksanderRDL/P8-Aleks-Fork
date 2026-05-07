@@ -76,9 +76,14 @@ class MethodEvaluation:
     avg_retained_point_gap_norm: float = 0.0
     max_retained_point_gap: float = 0.0
     geometric_distortion: dict[str, float] = field(default_factory=dict)
-    avg_length_loss: float = 0.0
+    avg_length_preserved: float = 1.0
     combined_query_shape_score: float = 0.0
     retained_mask: torch.Tensor | None = None
+
+    @property
+    def avg_length_loss(self) -> float:
+        """Compatibility view for older result consumers: lower is better."""
+        return float(max(0.0, min(1.0, 1.0 - self.avg_length_preserved)))
 
 
 def _trajectory_sed_ped_km(
@@ -147,25 +152,28 @@ def _trajectory_sed_ped_km(
     )
 
 
-def compute_average_length_loss(
+def compute_length_preservation(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     retained_mask: torch.Tensor,
 ) -> float:
-    """Average per-trajectory length loss = 1 - simp_haversine_km / orig_haversine_km.
+    """F1-style length-preservation score in [0, 1].
 
-    Mirrors the definition in geojson_writers.report_trajectory_length_loss but returns
-    a single scalar averaged over all trajectories with >=2 points. 0 means simplified
-    polyline preserves total path length; 1 means simplified collapsed to a point.
-    Trajectories with fewer than 2 points contribute 0 (no defined length).
+    1.0 = simplified polyline preserves total path length perfectly.
+    0.0 = simplified polyline collapsed (lost all length).
+
+    Aggregated as ratio-of-total-km (sum_simp_km / sum_orig_km) so long trajectories
+    are weighted by their length and short / near-stationary trajectories don't
+    dominate the score. This matches the headline avg_orig_km / avg_simp_km numbers
+    printed alongside it.
     """
     points_cpu = points.detach().cpu()
     mask_cpu = retained_mask.detach().cpu().bool()
     lats = points_cpu[:, 1]
     lons = points_cpu[:, 2]
 
-    total_loss = 0.0
-    counted = 0
+    total_orig_km = 0.0
+    total_simp_km = 0.0
     for s, e in boundaries:
         if e - s < 2:
             continue
@@ -179,12 +187,20 @@ def compute_average_length_loss(
             simp_km = _polyline_length_km(traj_lat[traj_mask], traj_lon[traj_mask])
         else:
             simp_km = 0.0
-        loss = max(0.0, 1.0 - simp_km / orig_km)
-        total_loss += loss
-        counted += 1
-    if counted == 0:
-        return 0.0
-    return float(total_loss / counted)
+        total_orig_km += orig_km
+        total_simp_km += simp_km
+    if total_orig_km <= 1e-9:
+        return 1.0
+    return float(max(0.0, min(1.0, total_simp_km / total_orig_km)))
+
+
+def compute_average_length_loss(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+) -> float:
+    """Compatibility wrapper returning length loss in [0, 1]."""
+    return float(1.0 - compute_length_preservation(points, boundaries, retained_mask))
 
 
 def _polyline_length_km(lats: torch.Tensor, lons: torch.Tensor) -> float:

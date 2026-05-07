@@ -36,7 +36,6 @@ from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
     NewUniformTemporalMethod,
-    RandomMethod,
 )
 from src.evaluation.evaluate_methods import (
     evaluate_method,
@@ -302,7 +301,6 @@ def main() -> None:
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
         ),
-        RandomMethod(seed=int(args.seed)),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
@@ -362,6 +360,7 @@ def main() -> None:
                 "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
+                "avg_length_preserved": m.avg_length_preserved,
                 "avg_length_loss": m.avg_length_loss,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
