@@ -278,7 +278,7 @@ def main() -> None:
                 "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
-                "avg_length_loss": m.avg_length_loss,
+                "avg_length_preserved": m.avg_length_preserved,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in results.items()

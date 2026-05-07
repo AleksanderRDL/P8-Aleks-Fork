@@ -115,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="When checkpoint_selection_metric=uniform_gap, penalty weight for per-type F1 deficits versus newUniformTemporal.",
     )
     parser.add_argument(
+        "--checkpoint_smoothing_window",
+        type=int,
+        default=1,
+        help="Pick checkpoints by rolling-mean selection score over the last K diagnostic epochs. Reduces selection bias from noisy single-epoch F1. 1 = original single-epoch behavior; 5 = average over 5 latest diagnostic epochs.",
+    )
+    parser.add_argument(
         "--mlqds_temporal_fraction",
         type=float,
         default=0.0,

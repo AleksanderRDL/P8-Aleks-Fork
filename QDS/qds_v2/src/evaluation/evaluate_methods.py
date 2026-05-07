@@ -280,8 +280,8 @@ def evaluate_method(
     comp = float(retained_mask.float().mean().item())
     avg_gap, avg_norm_gap, max_gap = _retained_point_gap_stats(retained_mask, boundaries)
     geometric = compute_geometric_distortion(points, boundaries, retained_mask)
-    avg_length_loss = compute_average_length_loss(points, boundaries, retained_mask)
-    combined = float(aggregate) * (1.0 - max(0.0, min(1.0, avg_length_loss)))
+    avg_length_preserved = compute_average_length_loss(points, boundaries, retained_mask)
+    combined = float(aggregate) * max(0.0, min(1.0, avg_length_preserved))
 
     return MethodEvaluation(
         aggregate_f1=float(aggregate),
@@ -292,7 +292,7 @@ def evaluate_method(
         avg_retained_point_gap_norm=avg_norm_gap,
         max_retained_point_gap=max_gap,
         geometric_distortion=geometric,
-        avg_length_loss=avg_length_loss,
+        avg_length_preserved=avg_length_preserved,
         combined_query_shape_score=combined,
         retained_mask=retained_mask if return_mask else None,
     )
@@ -331,6 +331,36 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                 f"{'':>{col5}}"
                 f"{t_name:>{col6}}"
             )
+
+    mlqds = results.get("MLQDS")
+    uniform = results.get("uniform")
+    dp = results.get("DouglasPeucker")
+    if mlqds is not None and (uniform is not None or dp is not None):
+        lines.append("-" * len(header))
+        lines.append(f"{'Diff vs MLQDS':<{col1}}")
+        for ref_name, ref in (("uniform", uniform), ("DouglasPeucker", dp)):
+            if ref is None:
+                continue
+            agg_diff = mlqds.aggregate_f1 - ref.aggregate_f1
+            label = f"  vs {ref_name}"
+            lines.append(
+                f"{label:<{col1}}"
+                f"{agg_diff:>+{col2}.6f}"
+                f"{'':>{col3}}"
+                f"{'':>{col4}}"
+                f"{'':>{col5}}"
+                f"{'all':>{col6}}"
+            )
+            for t_name in ("range", "knn", "similarity", "clustering"):
+                t_diff = mlqds.per_type_f1.get(t_name, 0.0) - ref.per_type_f1.get(t_name, 0.0)
+                lines.append(
+                    f"{'    - ' + t_name:<{col1}}"
+                    f"{t_diff:>+{col2}.6f}"
+                    f"{'':>{col3}}"
+                    f"{'':>{col4}}"
+                    f"{'':>{col5}}"
+                    f"{t_name:>{col6}}"
+                )
     return "\n".join(lines)
 
 
@@ -338,12 +368,12 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
     """Render geometric-distortion + shape-aware utility comparison.
 
     SED (Meratnia & de By 2004) and PED (Imai & Iri 1988; what Douglas-Peucker
-    minimises) are reported in km — lower is better. Length-loss is the average
-    fractional path-length lost vs the original trajectory in [0, 1] — lower is better.
-    F1x(1-L) combines aggregate query F1 with shape preservation: equals F1 when shape
-    is perfect (length_loss=0) and equals 0 when the simplified trajectory collapses
-    (length_loss=1) — higher is better. Use this column as the single shape-aware
-    utility number when comparing methods.
+    minimises) are reported in km — lower is better. LengthPres is the fraction of
+    total path length preserved (sum_simp_km / sum_orig_km) in [0, 1] — higher is better.
+    F1xLen combines aggregate query F1 with shape preservation: equals F1 when shape
+    is perfect (length_preserved=1.0) and 0 when simplified trajectory collapses
+    (length_preserved=0.0) — higher is better. Use this column as the single
+    shape-aware utility number when comparing methods.
     """
     col1, col2, col3, col4, col5, col6, col7 = 24, 11, 11, 11, 11, 13, 13
     header = (
@@ -352,8 +382,8 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
         f"{'MaxSED_km':>{col3}}"
         f"{'AvgPED_km':>{col4}}"
         f"{'MaxPED_km':>{col5}}"
-        f"{'AvgLengthL':>{col6}}"
-        f"{'F1x(1-L)':>{col7}}"
+        f"{'LengthPres':>{col6}}"
+        f"{'F1xLen':>{col7}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -364,7 +394,7 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
             f"{g.get('max_sed_km', 0.0):>{col3}.2f}"
             f"{g.get('avg_ped_km', 0.0):>{col4}.4f}"
             f"{g.get('max_ped_km', 0.0):>{col5}.2f}"
-            f"{metrics.avg_length_loss:>{col6}.4f}"
+            f"{metrics.avg_length_preserved:>{col6}.4f}"
             f"{metrics.combined_query_shape_score:>{col7}.6f}"
         )
     return "\n".join(lines)

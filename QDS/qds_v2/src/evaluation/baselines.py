@@ -115,7 +115,7 @@ class UniformTemporalMethod:
 class NewUniformTemporalMethod:
     """True evenly spaced temporal sampling baseline."""
 
-    name: str = "newUniformTemporal"
+    name: str = "uniform"
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Retain evenly spaced points per trajectory, including endpoints."""

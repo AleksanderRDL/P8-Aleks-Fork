@@ -22,9 +22,9 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     )
 
     ml = out.metrics_dump["matched"]["MLQDS"]["aggregate_f1"]
-    rand = out.metrics_dump["matched"]["Random"]["aggregate_f1"]
+    uni = out.metrics_dump["matched"]["uniform"]["aggregate_f1"]
     assert 0.0 <= ml <= 1.0
-    assert 0.0 <= rand <= 1.0
+    assert 0.0 <= uni <= 1.0
     assert "AggregateF1" in out.matched_table
     assert "AggregateErr" not in out.matched_table
     assert "aggregate_error" not in out.metrics_dump["matched"]["MLQDS"]
