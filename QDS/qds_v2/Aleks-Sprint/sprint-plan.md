@@ -225,6 +225,29 @@ Deliverable:
 
 - validated Range-QDS workload generator and cached workload artifacts
 
+Status:
+
+- Completed 2026-05-07.
+
+Completion note:
+
+- Implemented optional range acceptance filters for point hits, trajectory hits,
+  broad boxes, duplicate boxes, and acceptance-attempt exhaustion.
+- Added train/eval/selection range workload diagnostics, per-query JSONL output,
+  range label diagnostics, Oracle diagnostics, and baseline signal diagnostics.
+- Wrote diagnostics to `range_workload_diagnostics.json`,
+  `range_query_diagnostics.jsonl`, and `example_run.json`.
+- Validated with cleaned-CSV smoke runs, F1/loss checkpoint-selection comparison,
+  and scaled range smokes up to 384 segments, 160 points per segment, and 192
+  queries.
+- Phase 2 acceptance checks passed in those runs: intended query counts were met,
+  empty/broad/duplicate query rates were zero, positive label signal was present,
+  label Oracle stayed clearly above baselines, diagnostics were written for
+  train/eval/selection workloads, and the test suite passed.
+- Workload/label caching was intentionally deferred; Phase 2 can proceed to
+  Phase 3 with generated workload diagnostics and the existing segmented CSV
+  cache.
+
 ### Phase 3: Range-QDS Training And Benchmark
 
 Goal: produce the first defensible specialist win.

@@ -15,6 +15,40 @@ Does the range workload contain learnable query-preservation signal, and do the
 labels/oracle/baselines confirm that signal?
 ```
 
+## Completion Status
+
+Completed 2026-05-07. Phase 2 is accepted as ready for Phase 3
+Range-QDS training and benchmarking.
+
+Implemented:
+
+- optional range acceptance filters for useful hit-count bands, broad boxes,
+  near-duplicate boxes, and acceptance-attempt exhaustion
+- train/eval/selection workload diagnostics and per-query range diagnostics
+- range label diagnostics, label Oracle diagnostics, and Random,
+  newUniformTemporal, and DouglasPeucker baseline diagnostics
+- stable output artifacts:
+  `range_workload_diagnostics.json`, `range_query_diagnostics.jsonl`, and
+  `example_run.json.workload_diagnostics`
+- CLI/config wiring and regression tests for the Phase 2 behavior
+
+Validation summary:
+
+- full test suite passed after implementation
+- cleaned-CSV Phase 2 smoke with range filters produced healthy train/eval
+  diagnostics
+- F1 checkpoint-selection smoke produced healthy train/eval/selection
+  diagnostics
+- scaled cleaned-CSV runs, including F1-vs-loss checkpoint selection at 384
+  segments, 160 points per segment, and 192 queries, preserved healthy workload
+  diagnostics
+
+Deferred:
+
+- workload/label caching remains optional and was not added in Phase 2; the
+  existing segmented CSV cache is sufficient for the completed diagnostics and
+  smoke validation.
+
 ## Current Code Facts
 
 - Range queries are created in `src/queries/query_generator.py` by sampling an
@@ -285,4 +319,3 @@ Phase 2 should be considered ready for Range-QDS training only when:
 5. Add CLI/config fields for acceptance thresholds.
 6. Run synthetic and cleaned-CSV Phase 2 smokes.
 7. Only then add workload/label caching if repeated diagnostics become slow.
-
