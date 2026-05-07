@@ -84,6 +84,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Range query half-window as a fraction of dataset time span. Lower values allow more queries without blanketing the dataset.",
     )
     parser.add_argument(
+        "--range_min_point_hits",
+        type=int,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes with fewer point hits.",
+    )
+    parser.add_argument(
+        "--range_max_point_hit_fraction",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes hitting more than this point fraction.",
+    )
+    parser.add_argument(
+        "--range_min_trajectory_hits",
+        type=int,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes hitting fewer trajectories.",
+    )
+    parser.add_argument(
+        "--range_max_trajectory_hit_fraction",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes hitting more than this trajectory fraction.",
+    )
+    parser.add_argument(
+        "--range_max_box_volume_fraction",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes with larger normalized spatiotemporal volume.",
+    )
+    parser.add_argument(
+        "--range_duplicate_iou_threshold",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes with IoU at or above this threshold versus accepted boxes.",
+    )
+    parser.add_argument(
+        "--range_acceptance_max_attempts",
+        type=int,
+        default=None,
+        help="Maximum candidate range boxes to try when acceptance filters are enabled.",
+    )
+    parser.add_argument(
         "--knn_k",
         type=int,
         default=12,

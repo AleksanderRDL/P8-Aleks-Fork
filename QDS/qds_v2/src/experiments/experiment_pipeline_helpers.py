@@ -36,11 +36,13 @@ from src.evaluation.evaluate_methods import (
     print_geometric_distortion_table,
     print_method_comparison_table,
     print_shift_table,
+    score_retained_mask,
 )
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import parse_workload_mix
+from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
@@ -109,6 +111,123 @@ def _validation_query_count(config: ExperimentConfig) -> int:
     if config.query.max_queries is None:
         return doubled
     return min(doubled, max(int(config.query.n_queries), int(config.query.max_queries)))
+
+
+def _range_diagnostic_duplicate_threshold(config: ExperimentConfig) -> float | None:
+    """Use explicit duplicate threshold for diagnostics, or a diagnostic-only default."""
+    threshold = config.query.range_duplicate_iou_threshold
+    return 0.85 if threshold is None else threshold
+
+
+def _range_only_queries(typed_queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only range queries from a mixed workload."""
+    return [query for query in typed_queries if str(query.get("type", "")).lower() == "range"]
+
+
+def _range_signal_diagnostics(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    range_queries: list[dict[str, Any]],
+    workload_mix: dict[str, float],
+    compression_ratio: float,
+    seed: int,
+) -> dict[str, Any]:
+    """Compute label, Oracle, and baseline diagnostics for range workloads."""
+    if not range_queries:
+        return {
+            "range_query_count": 0,
+            "labels": compute_range_label_diagnostics(
+                torch.zeros((0, 4), dtype=torch.float32),
+                torch.zeros((0, 4), dtype=torch.bool),
+            ),
+            "methods": {},
+            "best_baseline": None,
+            "best_baseline_range_f1": 0.0,
+            "oracle_range_f1": 0.0,
+            "oracle_gap_over_best_baseline": 0.0,
+        }
+
+    labels, labelled_mask = compute_typed_importance_labels(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=range_queries,
+        seed=seed,
+    )
+    label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
+    methods = [
+        RandomMethod(seed=seed),
+        NewUniformTemporalMethod(),
+        DouglasPeuckerMethod(),
+        OracleMethod(labels=labels, workload_mix={"range": 1.0}),
+    ]
+    method_scores: dict[str, dict[str, float]] = {}
+    for method in methods:
+        retained_mask = method.simplify(points, boundaries, compression_ratio)
+        aggregate, per_type = score_retained_mask(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            typed_queries=range_queries,
+            workload_mix={"range": 1.0},
+        )
+        method_scores[method.name] = {
+            "aggregate_f1": float(aggregate),
+            "range_f1": float(per_type.get("range", 0.0)),
+        }
+
+    baseline_names = ["Random", "newUniformTemporal", "DouglasPeucker"]
+    best_baseline = max(baseline_names, key=lambda name: method_scores.get(name, {}).get("range_f1", 0.0))
+    best_baseline_range_f1 = float(method_scores[best_baseline]["range_f1"])
+    oracle_range_f1 = float(method_scores.get("Oracle", {}).get("range_f1", 0.0))
+    normalized_mix = sum(float(v) for v in workload_mix.values())
+    range_weight = float(workload_mix.get("range", 0.0)) / normalized_mix if normalized_mix > 0.0 else 0.0
+    return {
+        "range_query_count": int(len(range_queries)),
+        "range_workload_weight": float(range_weight),
+        "labels": label_diagnostics,
+        "methods": method_scores,
+        "best_baseline": best_baseline,
+        "best_baseline_range_f1": best_baseline_range_f1,
+        "oracle_range_f1": oracle_range_f1,
+        "oracle_gap_over_best_baseline": float(oracle_range_f1 - best_baseline_range_f1),
+    }
+
+
+def _range_workload_diagnostics(
+    label: str,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_mix: dict[str, float],
+    config: ExperimentConfig,
+    seed: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Build summary and JSONL rows for one workload."""
+    workload_diagnostics = compute_range_workload_diagnostics(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=workload.typed_queries,
+        max_point_hit_fraction=config.query.range_max_point_hit_fraction,
+        max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
+        max_box_volume_fraction=config.query.range_max_box_volume_fraction,
+        duplicate_iou_threshold=_range_diagnostic_duplicate_threshold(config),
+    )
+    range_queries = _range_only_queries(workload.typed_queries)
+    signal = _range_signal_diagnostics(
+        points=points,
+        boundaries=boundaries,
+        range_queries=range_queries,
+        workload_mix=workload_mix,
+        compression_ratio=config.model.compression_ratio,
+        seed=seed,
+    )
+    summary = {
+        "range": workload_diagnostics["summary"],
+        "range_signal": signal,
+        "generation": workload.generation_diagnostics or {},
+    }
+    rows = [{"workload": label, **row} for row in workload_diagnostics["queries"]]
+    return summary, rows
 
 
 def run_experiment_pipeline(
@@ -195,6 +314,7 @@ def run_experiment_pipeline(
         selection_ds = TrajectoryDataset(selection_traj) if selection_traj else None
         train_points = train_ds.get_all_points()
         test_points = test_ds.get_all_points()
+        selection_points = selection_ds.get_all_points() if selection_ds is not None else None
         train_boundaries = train_ds.get_trajectory_boundaries()
         test_boundaries = test_ds.get_trajectory_boundaries()
         selection_boundaries = selection_ds.get_trajectory_boundaries() if selection_ds is not None else None
@@ -214,6 +334,13 @@ def run_experiment_pipeline(
             range_time_fraction=config.query.range_time_fraction,
             knn_k=config.query.knn_k,
             front_load_knn=knn_front_load,
+            range_min_point_hits=config.query.range_min_point_hits,
+            range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
+            range_min_trajectory_hits=config.query.range_min_trajectory_hits,
+            range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
+            range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
+            range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
+            range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
         )
         eval_workload = generate_typed_query_workload(
             trajectories=test_traj,
@@ -225,6 +352,13 @@ def run_experiment_pipeline(
             range_spatial_fraction=config.query.range_spatial_fraction,
             range_time_fraction=config.query.range_time_fraction,
             knn_k=config.query.knn_k,
+            range_min_point_hits=config.query.range_min_point_hits,
+            range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
+            range_min_trajectory_hits=config.query.range_min_trajectory_hits,
+            range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
+            range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
+            range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
+            range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
         )
         selection_workload = None
         if selection_traj:
@@ -238,6 +372,13 @@ def run_experiment_pipeline(
                 range_spatial_fraction=config.query.range_spatial_fraction,
                 range_time_fraction=config.query.range_time_fraction,
                 knn_k=config.query.knn_k,
+                range_min_point_hits=config.query.range_min_point_hits,
+                range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
+                range_min_trajectory_hits=config.query.range_min_trajectory_hits,
+                range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
+                range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
+                range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
+                range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
             )
         print(
             f"  train_workload={len(train_workload.typed_queries)} queries  "
@@ -265,6 +406,55 @@ def run_experiment_pipeline(
                         f"({coverage:.2%} < {target:.2%}); raise --n_queries or query footprint to cover more points.",
                         flush=True,
                     )
+
+    range_diagnostics_summary: dict[str, Any] = {}
+    range_diagnostics_rows: list[dict[str, Any]] = []
+    with _phase("range-diagnostics"):
+        train_summary, train_rows = _range_workload_diagnostics(
+            "train",
+            train_points,
+            train_boundaries,
+            train_workload,
+            train_mix,
+            config,
+            seeds.train_query_seed,
+        )
+        eval_summary, eval_rows = _range_workload_diagnostics(
+            "eval",
+            test_points,
+            test_boundaries,
+            eval_workload,
+            eval_mix,
+            config,
+            seeds.eval_query_seed,
+        )
+        range_diagnostics_summary["train"] = train_summary
+        range_diagnostics_summary["eval"] = eval_summary
+        range_diagnostics_rows.extend(train_rows)
+        range_diagnostics_rows.extend(eval_rows)
+        if selection_workload is not None and selection_points is not None and selection_boundaries is not None:
+            selection_summary, selection_rows = _range_workload_diagnostics(
+                "selection",
+                selection_points,
+                selection_boundaries,
+                selection_workload,
+                eval_mix,
+                config,
+                seeds.eval_query_seed + 17,
+            )
+            range_diagnostics_summary["selection"] = selection_summary
+            range_diagnostics_rows.extend(selection_rows)
+        for label, summary in range_diagnostics_summary.items():
+            range_summary = summary["range"]
+            signal = summary["range_signal"]
+            print(
+                f"  {label}: range_queries={range_summary['range_query_count']}  "
+                f"empty={range_summary['empty_query_rate']:.2%}  "
+                f"broad={range_summary['too_broad_query_rate']:.2%}  "
+                f"duplicates={range_summary['near_duplicate_query_rate']:.2%}  "
+                f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}",
+                flush=True,
+            )
 
     if save_queries_dir:
         with _phase("write-queries-geojson"):
@@ -405,6 +595,7 @@ def run_experiment_pipeline(
         "best_loss": trained.best_loss,
         "best_f1": trained.best_f1,
         "data_audit": data_audit,
+        "workload_diagnostics": range_diagnostics_summary,
     }
 
     with _phase("write-results"):
@@ -413,6 +604,13 @@ def run_experiment_pipeline(
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+        (out_dir / "range_workload_diagnostics.json").write_text(
+            json.dumps(range_diagnostics_summary, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        with open(out_dir / "range_query_diagnostics.jsonl", "w", encoding="utf-8") as f:
+            for row in range_diagnostics_rows:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
         with open(out_dir / "example_run.json", "w", encoding="utf-8") as f:
             json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)

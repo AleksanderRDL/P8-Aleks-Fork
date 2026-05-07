@@ -8,6 +8,7 @@ import torch
 
 from src.experiments.experiment_config import TypedQueryWorkload
 from src.queries.query_types import normalize_workload_mix, pad_query_features
+from src.queries.workload_diagnostics import range_query_diagnostic
 
 DENSITY_ANCHOR_PROBABILITY = 0.70
 DENSITY_GRID_BINS = 64
@@ -16,6 +17,17 @@ DEFAULT_RANGE_TIME_FRACTION = 0.15
 DEFAULT_SIMILARITY_RADIUS_FRACTION = 0.04
 DEFAULT_SIMILARITY_TIME_FRACTION = 0.04
 DEFAULT_KNN_K = 12
+
+
+def _trajectory_boundaries(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
+    """Return flattened boundaries for generated trajectory lists."""
+    boundaries: list[tuple[int, int]] = []
+    cursor = 0
+    for traj in trajectories:
+        end = cursor + int(traj.shape[0])
+        boundaries.append((cursor, end))
+        cursor = end
+    return boundaries
 
 
 def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
@@ -369,6 +381,7 @@ def _finalize_workload(
     points: torch.Tensor,
     typed: list[dict[str, Any]],
     generator: torch.Generator,
+    generation_diagnostics: dict[str, Any] | None = None,
 ) -> TypedQueryWorkload:
     """Shuffle, featurize, and attach point-coverage metadata."""
     if typed:
@@ -387,7 +400,89 @@ def _finalize_workload(
         coverage_fraction=coverage_fraction,
         covered_points=covered_points,
         total_points=total_points,
+        generation_diagnostics=generation_diagnostics,
     )
+
+
+def _range_acceptance_enabled(
+    range_min_point_hits: int | None,
+    range_max_point_hit_fraction: float | None,
+    range_min_trajectory_hits: int | None,
+    range_max_trajectory_hit_fraction: float | None,
+    range_max_box_volume_fraction: float | None,
+    range_duplicate_iou_threshold: float | None,
+) -> bool:
+    """Return whether any range acceptance filter is active."""
+    return any(
+        value is not None
+        for value in (
+            range_min_point_hits,
+            range_max_point_hit_fraction,
+            range_min_trajectory_hits,
+            range_max_trajectory_hit_fraction,
+            range_max_box_volume_fraction,
+            range_duplicate_iou_threshold,
+        )
+    )
+
+
+def _range_acceptance_state(enabled: bool, max_attempts: int | None, requested_queries: int) -> dict[str, Any]:
+    """Create JSON-safe acceptance counters for workload generation."""
+    return {
+        "enabled": bool(enabled),
+        "attempts": 0,
+        "accepted": 0,
+        "rejected": 0,
+        "rejection_reasons": {},
+        "exhausted": False,
+        "max_attempts": int(max_attempts) if max_attempts is not None else None,
+        "requested_queries": int(requested_queries),
+    }
+
+
+def _record_rejection(state: dict[str, Any], reason: str) -> None:
+    """Update range acceptance rejection counters."""
+    state["rejected"] = int(state.get("rejected", 0)) + 1
+    reasons = state.setdefault("rejection_reasons", {})
+    reasons[reason] = int(reasons.get(reason, 0)) + 1
+
+
+def _accept_range_query(
+    query: dict[str, Any],
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    accepted_range_queries: list[dict[str, Any]],
+    bounds: dict[str, float],
+    *,
+    range_min_point_hits: int | None,
+    range_max_point_hit_fraction: float | None,
+    range_min_trajectory_hits: int | None,
+    range_max_trajectory_hit_fraction: float | None,
+    range_max_box_volume_fraction: float | None,
+    range_duplicate_iou_threshold: float | None,
+) -> tuple[bool, str]:
+    """Validate a generated range query against optional acceptance filters."""
+    diagnostic = range_query_diagnostic(
+        points,
+        boundaries,
+        query,
+        query_index=len(accepted_range_queries),
+        previous_range_queries=accepted_range_queries,
+        bounds=bounds,
+        max_point_hit_fraction=range_max_point_hit_fraction,
+        max_trajectory_hit_fraction=range_max_trajectory_hit_fraction,
+        max_box_volume_fraction=range_max_box_volume_fraction,
+        duplicate_iou_threshold=range_duplicate_iou_threshold,
+    )
+    if range_min_point_hits is not None and diagnostic["point_hits"] < int(range_min_point_hits):
+        return False, "too_few_point_hits"
+    if range_min_trajectory_hits is not None and diagnostic["trajectory_hits"] < int(range_min_trajectory_hits):
+        return False, "too_few_trajectory_hits"
+    if diagnostic["is_too_broad"]:
+        return False, "too_broad"
+    if range_duplicate_iou_threshold is not None and diagnostic["near_duplicate_of"] is not None:
+        return False, "near_duplicate"
+    return True, "accepted"
 
 
 def generate_typed_query_workload(
@@ -401,6 +496,13 @@ def generate_typed_query_workload(
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
     knn_k: int | None = DEFAULT_KNN_K,
     front_load_knn: int = 0,
+    range_min_point_hits: int | None = None,
+    range_max_point_hit_fraction: float | None = None,
+    range_min_trajectory_hits: int | None = None,
+    range_max_trajectory_hit_fraction: float | None = None,
+    range_max_box_volume_fraction: float | None = None,
+    range_duplicate_iou_threshold: float | None = None,
+    range_acceptance_max_attempts: int | None = None,
 ) -> TypedQueryWorkload:
     """Generate a mixed typed-query workload and padded feature tensor. See src/queries/README.md for details.
 
@@ -410,6 +512,7 @@ def generate_typed_query_workload(
     """
     points = torch.cat(trajectories, dim=0)
     b = _dataset_bounds(points)
+    boundaries = _trajectory_boundaries(trajectories)
 
     mix = normalize_workload_mix(workload_mix)
     g = torch.Generator().manual_seed(int(seed))
@@ -418,6 +521,66 @@ def generate_typed_query_workload(
     names = list(mix.keys())
     weights = torch.tensor([mix[n] for n in names], dtype=torch.float32)
     coverage_target = _normalize_target_coverage(target_coverage)
+    acceptance_enabled = _range_acceptance_enabled(
+        range_min_point_hits,
+        range_max_point_hit_fraction,
+        range_min_trajectory_hits,
+        range_max_trajectory_hit_fraction,
+        range_max_box_volume_fraction,
+        range_duplicate_iou_threshold,
+    )
+    requested_for_attempts = max(1, int(n_queries))
+    default_max_attempts = 50 * requested_for_attempts if acceptance_enabled else None
+    max_range_attempts = (
+        int(range_acceptance_max_attempts)
+        if range_acceptance_max_attempts is not None
+        else default_max_attempts
+    )
+    if max_range_attempts is not None and max_range_attempts <= 0:
+        raise ValueError("range_acceptance_max_attempts must be positive when provided.")
+    range_acceptance = _range_acceptance_state(acceptance_enabled, max_range_attempts, requested_for_attempts)
+    accepted_range_queries: list[dict[str, Any]] = []
+
+    def build_query(name: str, anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
+        """Build one query, applying optional range acceptance filters."""
+        if name == "range" and acceptance_enabled:
+            if max_range_attempts is not None and int(range_acceptance["attempts"]) >= max_range_attempts:
+                range_acceptance["exhausted"] = True
+                return None
+            range_acceptance["attempts"] = int(range_acceptance["attempts"]) + 1
+        query = _make_query(
+            name,
+            points,
+            trajectories,
+            b,
+            g,
+            anchor_mask=anchor_mask,
+            density_weights=density_weights,
+            range_spatial_fraction=range_spatial_fraction,
+            range_time_fraction=range_time_fraction,
+            knn_k=knn_k,
+        )
+        if name != "range" or not acceptance_enabled:
+            return query
+        accepted, reason = _accept_range_query(
+            query,
+            points,
+            boundaries,
+            accepted_range_queries,
+            b,
+            range_min_point_hits=range_min_point_hits,
+            range_max_point_hit_fraction=range_max_point_hit_fraction,
+            range_min_trajectory_hits=range_min_trajectory_hits,
+            range_max_trajectory_hit_fraction=range_max_trajectory_hit_fraction,
+            range_max_box_volume_fraction=range_max_box_volume_fraction,
+            range_duplicate_iou_threshold=range_duplicate_iou_threshold,
+        )
+        if not accepted:
+            _record_rejection(range_acceptance, reason)
+            return None
+        range_acceptance["accepted"] = int(range_acceptance["accepted"]) + 1
+        accepted_range_queries.append({"params": query["params"], "query_index": len(accepted_range_queries)})
+        return query
 
     if coverage_target is not None:
         requested_queries = max(1, int(n_queries))
@@ -434,14 +597,9 @@ def generate_typed_query_workload(
         if front_load_knn > 0 and "knn" in names:
             knn_idx = names.index("knn")
             for _ in range(min(front_load_knn, query_limit)):
-                query = _make_query(
-                    "knn", points, trajectories, b, g,
-                    anchor_mask=None,
-                    density_weights=density_weights,
-                    range_spatial_fraction=range_spatial_fraction,
-                    range_time_fraction=range_time_fraction,
-                    knn_k=knn_k,
-                )
+                query = build_query("knn", anchor_mask=None)
+                if query is None:
+                    break
                 typed.append(query)
                 counts[knn_idx] += 1
                 covered |= point_coverage_mask_for_query(points, query)
@@ -454,23 +612,16 @@ def generate_typed_query_workload(
             type_idx = int(torch.argmax(desired - counts.float()).item())
             name = names[type_idx]
             anchor_mask = (~covered) if current_coverage < coverage_target else None
-            query = _make_query(
-                name,
-                points,
-                trajectories,
-                b,
-                g,
-                anchor_mask=anchor_mask,
-                density_weights=density_weights,
-                range_spatial_fraction=range_spatial_fraction,
-                range_time_fraction=range_time_fraction,
-                knn_k=knn_k,
-            )
+            query = build_query(name, anchor_mask=anchor_mask)
+            if query is None:
+                if name == "range" and range_acceptance.get("exhausted"):
+                    break
+                continue
             typed.append(query)
             counts[type_idx] += 1
             covered |= point_coverage_mask_for_query(points, query)
 
-        return _finalize_workload(points, typed, g)
+        return _finalize_workload(points, typed, g, generation_diagnostics={"range_acceptance": range_acceptance})
 
     counts = torch.floor(weights * n_queries).to(torch.long)
     while int(counts.sum().item()) < n_queries:
@@ -483,28 +634,17 @@ def generate_typed_query_workload(
         knn_idx = names.index("knn")
         n_front = min(front_load_knn, int(counts[knn_idx].item()))
         for _ in range(n_front):
-            typed.append(_make_query(
-                "knn", points, trajectories, b, g,
-                density_weights=density_weights,
-                range_spatial_fraction=range_spatial_fraction,
-                range_time_fraction=range_time_fraction,
-                knn_k=knn_k,
-            ))
+            query = build_query("knn")
+            if query is not None:
+                typed.append(query)
         counts[knn_idx] = max(0, counts[knn_idx] - n_front)
     for name, count in zip(names, counts.tolist()):
         for _ in range(int(count)):
-            typed.append(
-                _make_query(
-                    name,
-                    points,
-                    trajectories,
-                    b,
-                    g,
-                    density_weights=density_weights,
-                    range_spatial_fraction=range_spatial_fraction,
-                    range_time_fraction=range_time_fraction,
-                    knn_k=knn_k,
-                )
-            )
+            query = build_query(name)
+            if query is None:
+                if name == "range" and range_acceptance.get("exhausted"):
+                    break
+                continue
+            typed.append(query)
 
-    return _finalize_workload(points, typed, g)
+    return _finalize_workload(points, typed, g, generation_diagnostics={"range_acceptance": range_acceptance})

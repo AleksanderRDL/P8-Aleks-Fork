@@ -132,6 +132,13 @@ def main() -> None:
         max_queries=args.max_queries,
         range_spatial_fraction=args.range_spatial_fraction,
         range_time_fraction=args.range_time_fraction,
+        range_min_point_hits=args.range_min_point_hits,
+        range_max_point_hit_fraction=args.range_max_point_hit_fraction,
+        range_min_trajectory_hits=args.range_min_trajectory_hits,
+        range_max_trajectory_hit_fraction=args.range_max_trajectory_hit_fraction,
+        range_max_box_volume_fraction=args.range_max_box_volume_fraction,
+        range_duplicate_iou_threshold=args.range_duplicate_iou_threshold,
+        range_acceptance_max_attempts=args.range_acceptance_max_attempts,
         knn_k=args.knn_k,
         epochs=args.epochs,
         lr=args.lr,
@@ -173,6 +180,13 @@ def main() -> None:
         f"uniform_gap_weight={args.checkpoint_uniform_gap_weight}  "
         f"type_penalty_weight={args.checkpoint_type_penalty_weight}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
+        f"range_min_point_hits={args.range_min_point_hits}  "
+        f"range_max_point_hit_fraction={args.range_max_point_hit_fraction}  "
+        f"range_min_trajectory_hits={args.range_min_trajectory_hits}  "
+        f"range_max_trajectory_hit_fraction={args.range_max_trajectory_hit_fraction}  "
+        f"range_max_box_volume_fraction={args.range_max_box_volume_fraction}  "
+        f"range_duplicate_iou_threshold={args.range_duplicate_iou_threshold}  "
+        f"range_acceptance_max_attempts={args.range_acceptance_max_attempts}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"residual_label_mode={args.residual_label_mode}  "
         f"min_points_per_segment={args.min_points_per_segment}  "

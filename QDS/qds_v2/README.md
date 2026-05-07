@@ -96,6 +96,14 @@ Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler:
 
 For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, `0.02` spatial and `0.04` time gives smaller local boxes than the default `0.08` and `0.15`.
 
+Phase 2 range diagnostics can be enabled without changing the default generator.
+Use optional acceptance filters such as `--range_min_point_hits`,
+`--range_max_point_hit_fraction`, `--range_max_trajectory_hit_fraction`,
+`--range_max_box_volume_fraction`, `--range_duplicate_iou_threshold`, and
+`--range_acceptance_max_attempts` to reject broad, duplicate, or uninformative
+range boxes during generation. Each run now writes range workload diagnostics
+and range label/baseline signal diagnostics into the result directory.
+
 Use `--model_type turn_aware` to include the extra `turn_score` point feature. Workload mixes can be overridden with `--train_workload_mix` and `--eval_workload_mix` (or the `..._mix_train` / `..._mix_eval` aliases).
 
 Training uses a ranking loss plus balanced pointwise BCE supervision. Exact final query F1 can optionally be used for checkpoint selection with `--checkpoint_selection_metric f1`; this creates a held-out validation workload and restores the epoch with the best validation query F1. If diagnostics collapse to `pred_std=0`, prefer lowering `--lr`, keeping `--gradient_clip_norm` enabled, and increasing query diversity before changing the model architecture.
@@ -118,6 +126,8 @@ The experiment runner writes three files into `results/`:
 - `example_run.json` - config, workload mixes, per-method metrics, training history, and selected-checkpoint metadata.
 - `matched_table.txt` - fixed-width comparison table for the evaluation workload.
 - `shift_table.txt` - shift table comparing the train workload against the eval workload.
+- `range_workload_diagnostics.json` - Phase 2 range workload, label, Oracle, and baseline diagnostics for train/eval/selection workloads.
+- `range_query_diagnostics.jsonl` - one JSON record per generated range query with hit counts, footprint, broad-query flag, and duplicate-query flag.
 
 ## Validation
 

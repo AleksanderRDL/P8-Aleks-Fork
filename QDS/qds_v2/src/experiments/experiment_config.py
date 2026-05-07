@@ -65,6 +65,13 @@ class QueryConfig:
     )
     similarity_top_k: int = 5
     knn_k: int = 12
+    range_min_point_hits: int | None = None
+    range_max_point_hit_fraction: float | None = None
+    range_min_trajectory_hits: int | None = None
+    range_max_trajectory_hit_fraction: float | None = None
+    range_max_box_volume_fraction: float | None = None
+    range_duplicate_iou_threshold: float | None = None
+    range_acceptance_max_attempts: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -163,6 +170,7 @@ class TypedQueryWorkload:
     coverage_fraction: float | None = None
     covered_points: int | None = None
     total_points: int | None = None
+    generation_diagnostics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize workload to a dictionary. See src/queries/README.md for details."""
@@ -173,6 +181,7 @@ class TypedQueryWorkload:
             "coverage_fraction": self.coverage_fraction,
             "covered_points": self.covered_points,
             "total_points": self.total_points,
+            "generation_diagnostics": self.generation_diagnostics,
         }
 
     @classmethod
@@ -185,6 +194,7 @@ class TypedQueryWorkload:
             coverage_fraction=data.get("coverage_fraction"),
             covered_points=data.get("covered_points"),
             total_points=data.get("total_points"),
+            generation_diagnostics=data.get("generation_diagnostics"),
         )
 
 
@@ -245,6 +255,13 @@ def build_experiment_config(
     max_queries: int | None = None,
     range_spatial_fraction: float = 0.08,
     range_time_fraction: float = 0.15,
+    range_min_point_hits: int | None = None,
+    range_max_point_hit_fraction: float | None = None,
+    range_min_trajectory_hits: int | None = None,
+    range_max_trajectory_hit_fraction: float | None = None,
+    range_max_box_volume_fraction: float | None = None,
+    range_duplicate_iou_threshold: float | None = None,
+    range_acceptance_max_attempts: int | None = None,
     epochs: int = 6,
     lr: float = 5e-4,
     pointwise_loss_weight: float = 0.25,
@@ -298,6 +315,13 @@ def build_experiment_config(
             max_queries=max_queries,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            range_min_point_hits=range_min_point_hits,
+            range_max_point_hit_fraction=range_max_point_hit_fraction,
+            range_min_trajectory_hits=range_min_trajectory_hits,
+            range_max_trajectory_hit_fraction=range_max_trajectory_hit_fraction,
+            range_max_box_volume_fraction=range_max_box_volume_fraction,
+            range_duplicate_iou_threshold=range_duplicate_iou_threshold,
+            range_acceptance_max_attempts=range_acceptance_max_attempts,
             workload=workload,
             train_workload_mix=train_workload_mix or {"range": 0.5, "knn": 0.5},
             eval_workload_mix=eval_workload_mix or {"similarity": 0.5, "clustering": 0.5},
