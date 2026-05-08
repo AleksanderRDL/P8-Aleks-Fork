@@ -21,6 +21,27 @@ from src.training.trajectory_batching import TrajectoryBatch, batch_windows, bui
 KENDALL_TIE_THRESHOLD = 1e-4
 
 
+_QUANTILE_SUBSAMPLE_CAP = 1_000_000  # torch.quantile errors past 2^24 on some builds.
+
+
+def _safe_quantile(t: torch.Tensor, q: float | torch.Tensor) -> torch.Tensor:
+    """Quantile that tolerates very large input tensors.
+
+    For tensors larger than ~1M elements, torch.quantile can fail with
+    ``input tensor is too large``. This helper subsamples uniformly to a
+    1M-element view, which gives a sufficiently accurate quantile estimate
+    for diagnostic logging and label-rescaling purposes.
+    """
+    if t.numel() <= _QUANTILE_SUBSAMPLE_CAP:
+        return torch.quantile(t, q)
+    if t.is_floating_point():
+        flat = t.detach().reshape(-1)
+    else:
+        flat = t.reshape(-1)
+    perm = torch.randperm(flat.numel(), device=flat.device)[:_QUANTILE_SUBSAMPLE_CAP]
+    return torch.quantile(flat[perm], q)
+
+
 def _scaled_training_targets(labels: torch.Tensor, labelled_mask: torch.Tensor) -> torch.Tensor:
     """Rescale sparse F1 labels per type for optimization while preserving rank order."""
     targets = labels.clone()
@@ -28,7 +49,7 @@ def _scaled_training_targets(labels: torch.Tensor, labelled_mask: torch.Tensor) 
         positive = labelled_mask[:, type_idx] & (labels[:, type_idx] > 0)
         if not bool(positive.any().item()):
             continue
-        scale = torch.quantile(labels[positive, type_idx].detach(), 0.95).clamp(min=1e-6)
+        scale = _safe_quantile(labels[positive, type_idx].detach(), 0.95).clamp(min=1e-6)
         targets[:, type_idx] = torch.clamp(labels[:, type_idx] / scale, 0.0, 1.0)
     return targets
 
@@ -103,7 +124,7 @@ def _discriminative_sample(
     n = target.numel()
     if n <= 2 * n_each:
         return pred, target
-    q = torch.quantile(target, torch.tensor([0.25, 0.75], dtype=torch.float32, device=target.device))
+    q = _safe_quantile(target, torch.tensor([0.25, 0.75], dtype=torch.float32, device=target.device))
     bot = torch.where(target <= q[0])[0]
     top = torch.where(target >= q[1])[0]
     perm_b = torch.randperm(bot.numel(), generator=generator)[:n_each]
@@ -178,7 +199,7 @@ def _ranking_loss_for_type(
         return pred.new_tensor(0.0), 0
 
     y = target[valid_idx]
-    q_val = torch.quantile(y, torch.tensor(top_quantile, dtype=torch.float32, device=y.device))
+    q_val = _safe_quantile(y, torch.tensor(top_quantile, dtype=torch.float32, device=y.device))
     top_idx = valid_idx[y >= q_val]
     strict_top_idx = valid_idx[y > q_val]
     if strict_top_idx.numel() > 0 and top_idx.numel() > max(4, valid_idx.numel() // 2):
@@ -402,13 +423,17 @@ def _validation_query_f1(
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
     )
-    return score_retained_mask(
+    answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
         boundaries=boundaries,
         retained_mask=retained_mask,
         typed_queries=workload.typed_queries,
         workload_mix=workload_mix,
     )
+    variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
+    if variant == "combined":
+        return combined_agg, combined_pt
+    return answer_agg, answer_pt
 
 
 def _validation_uniform_f1(
@@ -428,13 +453,17 @@ def _validation_uniform_f1(
         boundaries=boundaries,
         compression_ratio=model_config.compression_ratio,
     )
-    return score_retained_mask(
+    answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
         boundaries=boundaries,
         retained_mask=retained_mask,
         typed_queries=workload.typed_queries,
         workload_mix=workload_mix,
     )
+    variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
+    if variant == "combined":
+        return combined_agg, combined_pt
+    return answer_agg, answer_pt
 
 
 def train_model(
@@ -698,15 +727,15 @@ def train_model(
                 stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
             for t in range(NUM_QUERY_TYPES):
                 pt = full_pred[:, t]
-                stats[f"pred_p50_t{t}"] = float(torch.quantile(pt, 0.50).item())
-                stats[f"pred_p90_t{t}"] = float(torch.quantile(pt, 0.90).item())
-                stats[f"pred_p99_t{t}"] = float(torch.quantile(pt, 0.99).item())
+                stats[f"pred_p50_t{t}"] = float(_safe_quantile(pt, 0.50).item())
+                stats[f"pred_p90_t{t}"] = float(_safe_quantile(pt, 0.90).item())
+                stats[f"pred_p99_t{t}"] = float(_safe_quantile(pt, 0.99).item())
                 labelled_type = labelled_mask_dev[:, t]
                 positive_type = labelled_type & (training_targets_dev[:, t] > 0)
                 labelled_count = max(1, int(labelled_type.sum().item()))
                 stats[f"positive_fraction_t{t}"] = float(positive_type.sum().item() / labelled_count)
                 if bool(positive_type.any().item()):
-                    stats[f"label_p95_t{t}"] = float(torch.quantile(training_targets_dev[positive_type, t], 0.95).item())
+                    stats[f"label_p95_t{t}"] = float(_safe_quantile(training_targets_dev[positive_type, t], 0.95).item())
                 else:
                     stats[f"label_p95_t{t}"] = 0.0
                 eval_mask = labelled_mask_dev[:, t] & covered_mask

@@ -154,7 +154,7 @@ def test_score_retained_mask_matches_evaluate_method() -> None:
     ]
     retained = torch.tensor([True, False, True, True])
 
-    aggregate, per_type = score_retained_mask(
+    aggregate, per_type, _, _ = score_retained_mask(
         points=points,
         boundaries=boundaries,
         retained_mask=retained,
@@ -200,7 +200,7 @@ def test_knn_f1_penalizes_missing_representative_points() -> None:
     ]
     retained = torch.tensor([True, False, False, False, True])
 
-    aggregate, per_type = score_retained_mask(
+    aggregate, per_type, agg_combined, per_type_combined = score_retained_mask(
         points=points,
         boundaries=boundaries,
         retained_mask=retained,
@@ -208,8 +208,12 @@ def test_knn_f1_penalizes_missing_representative_points() -> None:
         workload_mix={"knn": 1.0},
     )
 
-    assert aggregate == pytest.approx(0.4)
-    assert per_type["knn"] == pytest.approx(0.4)
+    # Pure answer F1: trajectory 0 still found via point 0 (closest to anchor).
+    assert per_type["knn"] == pytest.approx(1.0)
+    assert aggregate == pytest.approx(1.0)
+    # Combined F1 still penalizes losing the kNN representative points.
+    assert per_type_combined["knn"] == pytest.approx(0.4)
+    assert agg_combined == pytest.approx(0.4)
 
 
 def test_new_uniform_temporal_is_evenly_spaced_not_center_chunk() -> None:
@@ -260,7 +264,8 @@ def test_method_comparison_table_labels_f1() -> None:
         }
     )
 
-    assert "AggregateF1" in table
+    assert "AnswerF1" in table
+    assert "CombinedF1" in table
     assert "AvgPtGap" in table
     assert "AggregateErr" not in table
 

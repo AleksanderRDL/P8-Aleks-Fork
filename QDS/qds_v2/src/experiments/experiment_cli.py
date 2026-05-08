@@ -206,6 +206,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pick checkpoints by rolling-mean selection score over the last K diagnostic epochs. Reduces selection bias from noisy single-epoch F1. 1 = original single-epoch behavior; 5 = average over 5 latest diagnostic epochs.",
     )
     parser.add_argument(
+        "--checkpoint_f1_variant",
+        type=str,
+        default="answer",
+        choices=["answer", "combined"],
+        help="Which F1 to use for validation/checkpoint selection. 'answer' = pure trajectory-set F1 (default). 'combined' = legacy answer_f1 * point_subset_f1 product (rewards keeping the eval-pipeline's support points; aligned with importance labels).",
+    )
+    parser.add_argument(
         "--mlqds_temporal_fraction",
         type=float,
         default=0.0,

@@ -70,8 +70,10 @@ class MethodEvaluation:
 
     aggregate_f1: float
     per_type_f1: dict[str, float]
-    compression_ratio: float
-    latency_ms: float
+    aggregate_combined_f1: float = 0.0
+    per_type_combined_f1: dict[str, float] = field(default_factory=dict)
+    compression_ratio: float = 0.0
+    latency_ms: float = 0.0
     avg_retained_point_gap: float = 0.0
     avg_retained_point_gap_norm: float = 0.0
     max_retained_point_gap: float = 0.0

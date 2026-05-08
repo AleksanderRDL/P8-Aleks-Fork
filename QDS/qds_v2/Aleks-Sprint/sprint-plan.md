@@ -12,7 +12,7 @@ The sprint should prioritize Range-QDS and kNN-QDS because they are the most loc
 
 ## Current Merge Position
 
-Status on 2026-05-07 after incorporating the non-artifact parts of
+Status on 2026-05-08 after incorporating the non-artifact parts of
 `V2_Revamp`:
 
 - Phase 0, Phase 1, and Phase 2 remain the accepted local baseline for this
@@ -21,13 +21,18 @@ Status on 2026-05-07 after incorporating the non-artifact parts of
   they do not replace the Phase 2 diagnostics or define the Phase 3 benchmark
   protocol.
 - The useful incoming code changes are checkpoint smoothing, explicit MLQDS
-  gaps against baselines, length-preservation reporting, optional stationary
-  trimming in the upstream AIS cleaning pipeline, and a multi-file CSV combine
-  helper.
+  gaps against baselines, length-preservation reporting, `AnswerF1` versus
+  `CombinedF1` reporting, selectable validation F1 variant, per-head
+  rank-normalized MLQDS score mixing, true recursive Douglas-Peucker, large
+  tensor sampling/quantile safeguards, optional stationary trimming in the
+  upstream AIS cleaning pipeline, and a multi-file CSV combine helper.
 - The incoming baseline rename from `newUniformTemporal` to `uniform` and the
   removal of `Random` from matched evaluation are canonical. Phase 3 matched
   runs should compare MLQDS against `uniform`, Douglas-Peucker, and label
   Oracle at equal compression.
+- The incoming range sqrt-normalization change is intentionally not carried
+  forward. Range labels should normalize by query count like the other query
+  types until a measured Phase 3 run justifies changing label scale.
 - Multi-day CSV combination should preserve MMSIs by default and let the
   segmented loader split by timestamp gaps; MMSI offsetting is only a
   compatibility option.
@@ -46,7 +51,7 @@ Status on 2026-05-07 after incorporating the non-artifact parts of
 
 3. **Train and benchmark Range-QDS**
 
-   Produce a repeatable Range-QDS benchmark where Range-QDS beats `uniform` and a geometric baseline at equal compression across at least 3 seeds.
+   Produce a repeatable Range-QDS benchmark where Range-QDS beats `uniform` and true Douglas-Peucker at equal compression across at least 3 seeds.
 
 4. **Train and benchmark kNN-QDS**
 
@@ -61,7 +66,7 @@ Status on 2026-05-07 after incorporating the non-artifact parts of
 1. Add initial workload diagnostics for Similarity-QDS and Clustering-QDS.
 2. Identify whether similarity and clustering fail because of query generation, labels, model conditioning, or simplification policy.
 3. Add visual debugging outputs for retained vs removed points and per-query failures.
-4. Start replacing the approximate Douglas-Peucker baseline with a true recursive DP baseline.
+4. Validate the true recursive Douglas-Peucker baseline at larger AIS scale.
 
 ### Stretch Targets
 
@@ -118,7 +123,7 @@ Every final benchmark run should record:
 
 ```text
 Models: Range-QDS, kNN-QDS
-Baselines: uniform, Douglas-Peucker or current geometric proxy, label Oracle
+Baselines: uniform, true Douglas-Peucker, label Oracle
 Seeds: at least 3
 Compression: same ratio for all methods
 Splits: fixed train/validation/test days
@@ -276,11 +281,19 @@ Goal: produce the first defensible specialist win.
 Entry state:
 
 - Range workload diagnostics are complete and accepted.
-- The benchmark output now reports SED/PED, `LengthPres`, `F1xLen`, and MLQDS
-  F1 gaps versus `uniform` and Douglas-Peucker.
+- The benchmark output now reports `AnswerF1`, `CombinedF1`, SED/PED,
+  `LengthPres`, `F1xLen`, and MLQDS F1 gaps versus `uniform` and true
+  Douglas-Peucker.
 - Checkpoint selection can use a rolling diagnostic score through
   `checkpoint_smoothing_window`, but smoothing is a selection stabilizer, not a
   training objective.
+- Checkpoint selection can use `checkpoint_f1_variant=answer` for the primary
+  pure answer-set metric or `checkpoint_f1_variant=combined` for the legacy
+  answer/support product. Phase 3 should default to `answer` unless the run is
+  explicitly testing support-preservation selection.
+- MLQDS matched evaluation now mixes query-type heads by within-trajectory
+  ranks before applying workload weights. This prevents one uncalibrated head
+  from dominating mixed-workload scores.
 
 Tasks:
 
@@ -297,7 +310,7 @@ Tasks:
    - validation gap to uniform
 4. Evaluate against:
    - uniform
-   - geometric baseline
+   - true Douglas-Peucker
    - label Oracle
 5. Run at least 3 seeds.
 6. Report mean, standard deviation, best-baseline gap, label Oracle gap, and geometry.
@@ -355,7 +368,7 @@ Tasks:
 3. Evaluate at the same compression ratio as baselines.
 4. Run at least 3 seeds.
 5. Report mean, standard deviation, best-baseline gap, label Oracle gap, and geometry.
-6. Inspect failure cases where kNN-QDS loses to uniform or random.
+6. Inspect failure cases where kNN-QDS loses to `uniform` or Douglas-Peucker.
 
 Acceptance checks:
 
@@ -451,7 +464,7 @@ Deliverable:
 | P1.3 | Add data audit report | Critical | run-level data stats |
 | P2.1 | Add range query acceptance filters | Critical | validated range workloads |
 | P2.2 | Add range workload/label diagnostics | Critical | range diagnostics JSON |
-| P3.0 | Reconcile V2_Revamp benchmark/checkpoint changes with Phase 2 baseline contract | Critical | merge-ready Phase 3 code |
+| P3.0 | Reconcile V2_Revamp benchmark/checkpoint changes with Phase 2 baseline contract | Critical | done; merge-ready Phase 3 code |
 | P3.1 | Train Range-QDS with validation F1 or uniform-gap selection | Critical | trained Range-QDS runs |
 | P3.2 | Run 3-seed Range-QDS benchmark | Critical | Range-QDS benchmark card |
 | P4.1 | Add configurable kNN time windows and k values | High | validated kNN config |
@@ -463,7 +476,7 @@ Deliverable:
 | P6.3 | Add best-baseline and label Oracle gap reporting | High | comparable result cards |
 | P7.1 | Scope similarity workload blockers | Medium | readiness report |
 | P7.2 | Scope clustering workload blockers | Medium | readiness report |
-| P8.1 | Add true recursive Douglas-Peucker baseline | Medium | stronger geometric baseline |
+| P8.1 | Validate true recursive Douglas-Peucker baseline on larger AIS runs | Medium | scale/performance check |
 | P8.2 | Add visual debug outputs | Medium | per-query inspection plots |
 
 ## Milestones

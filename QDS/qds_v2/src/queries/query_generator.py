@@ -69,6 +69,29 @@ def _density_anchor_weights(points: torch.Tensor, bins: int = DENSITY_GRID_BINS)
     return weights / total
 
 
+def _weighted_sample_one(
+    weights: torch.Tensor,
+    generator: torch.Generator,
+) -> int:
+    """Sample one index from a non-negative weight vector.
+
+    torch.multinomial caps at 2^24 categories, which the AIS combined-day CSVs
+    exceed (23M+ points). Falls back to inverse-CDF sampling via cumsum +
+    searchsorted, which has no size limit.
+    """
+    n = int(weights.numel())
+    if n == 0:
+        return 0
+    total = float(weights.sum().item())
+    if total <= 0.0:
+        return int(torch.randint(0, n, (1,), generator=generator).item())
+    if n <= (1 << 24):
+        return int(torch.multinomial(weights, 1, generator=generator).item())
+    cdf = torch.cumsum(weights, dim=0)
+    r = float(torch.rand(1, generator=generator).item()) * total
+    return int(torch.searchsorted(cdf, torch.tensor(r, dtype=cdf.dtype)).item())
+
+
 def _pick_point(
     points: torch.Tensor,
     generator: torch.Generator,
@@ -91,12 +114,12 @@ def _pick_point(
         if candidates is not None:
             candidate_weights = density_weights[candidates].float()
             if float(candidate_weights.sum().item()) > 0.0:
-                sampled = int(torch.multinomial(candidate_weights, 1, generator=generator).item())
+                sampled = _weighted_sample_one(candidate_weights, generator)
                 return points[int(candidates[sampled].item())]
         else:
             weights = density_weights.float()
             if float(weights.sum().item()) > 0.0:
-                sampled = int(torch.multinomial(weights, 1, generator=generator).item())
+                sampled = _weighted_sample_one(weights, generator)
                 return points[sampled]
 
     if candidates is not None:

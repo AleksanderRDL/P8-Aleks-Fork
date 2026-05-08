@@ -71,9 +71,21 @@ Several important improvements are already present:
   optional validation F1 checkpoint selection, uniform-gap checkpoint selection,
   and optional rolling checkpoint-score smoothing.
 - MLQDS can use a temporal base plus learned score fill through `mlqds_temporal_fraction`.
+- MLQDS now rank-normalizes each query-type head within each trajectory before
+  workload mixing, so mixed workloads are less sensitive to uncalibrated head
+  magnitudes.
 - Result reporting now distinguishes query F1 from shape preservation through
   SED/PED, `LengthPres`, `F1xLen`, and explicit MLQDS gaps versus the main
   baselines.
+- The primary result table now separates `AnswerF1` from `CombinedF1`, where
+  `AnswerF1` is the pure query-answer score and `CombinedF1` is the legacy
+  answer/support product retained for diagnostics and optional checkpoint
+  selection.
+- The geometric baseline is now a true recursive Douglas-Peucker implementation
+  rather than the earlier first-last chord proxy.
+- Large-tensor sampling and quantile safeguards are in place for combined-day
+  AIS workloads. The incoming range sqrt-normalization change is intentionally
+  not part of the accepted sprint baseline.
 
 The remaining issue is not that the pipeline is conceptually broken. The issue is that the learned scorer is not yet reliably learning the retained subset that preserves final query answers.
 
@@ -747,8 +759,8 @@ The current benchmarking layer is useful for prototype experiments, but it is no
 The existing layer already has important foundations:
 
 - matched-budget evaluation at the same compression ratio
-- baselines for uniform temporal sampling, Douglas-Peucker-style geometry, and Oracle
-- aggregate and per-query-type F1 reporting
+- baselines for uniform temporal sampling, true recursive Douglas-Peucker geometry, and Oracle
+- aggregate and per-query-type `AnswerF1` / `CombinedF1` reporting
 - point-aware range query scoring
 - kNN, similarity, and clustering scoring that combines answer-set F1 with retained point-support preservation
 - geometric distortion reporting through SED, PED, length preservation, and `F1xLen`
@@ -783,7 +795,7 @@ The baseline set is directionally correct, but it needs tightening before final 
 
 Uniform temporal sampling is currently the strongest practical baseline and should remain a primary comparison target. In code and result JSON, keep the stable method key `uniform`.
 
-Douglas-Peucker is currently only a proxy. The current implementation scores points by perpendicular distance to the first-last trajectory chord, but it is not a true recursive Douglas-Peucker algorithm. For credible comparison against typical simplification algorithms, this should be replaced or supplemented with a true recursive DP baseline.
+Douglas-Peucker is now implemented as a true recursive baseline: endpoints are retained, the farthest point from the current segment chord is selected, and the process repeats until the compression budget is filled. This is a stronger and more credible geometric comparison than the earlier first-last chord proxy. The remaining risks are scale/performance on large AIS runs and the fact that the implementation uses lat/lon Euclidean geometry rather than a time-aware or haversine DP objective.
 
 Oracle should be described carefully. The current Oracle uses heuristic query-derived labels directly, so it is a label Oracle diagnostic, not a theoretical final-F1 optimum. It is useful for checking whether the generated labels contain learnable signal, but it should not be presented as the absolute best possible simplification.
 
@@ -846,7 +858,7 @@ Priority work:
 1. Add a four-specialist benchmark runner.
 2. Add a true train-model by eval-workload matrix.
 3. Evaluate all baselines in every matrix cell.
-4. Replace or supplement the approximate Douglas-Peucker baseline with a true recursive implementation.
+4. Validate the true recursive Douglas-Peucker baseline on larger AIS runs.
 5. Document Oracle as a label Oracle.
 6. Add multi-seed aggregation with mean and standard deviation.
 7. Add result fields for best baseline, gap to best baseline, and gap to Oracle.
@@ -966,7 +978,7 @@ The findings above imply the following sprint roadmap.
 
 1. Add the four-specialist benchmark runner.
 2. Add multi-seed aggregation.
-3. Replace the approximate DP baseline with a true recursive DP baseline.
+3. Validate true recursive Douglas-Peucker as the geometric baseline at sprint scale.
 4. Add best-baseline gap and label Oracle gap reporting.
 5. Add learning-curve experiments across data volume.
 
