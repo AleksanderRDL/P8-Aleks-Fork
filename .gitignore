@@ -2,6 +2,7 @@
 # Project data and local runtimes
 # ---------------------------------
 AISDATA/*
+AI_lab_setup/
 !AISDATA/README.md
 
 local_hadoop/

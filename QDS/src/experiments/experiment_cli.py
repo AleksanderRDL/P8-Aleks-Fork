@@ -1,0 +1,252 @@
+"""CLI parsing helpers for the AIS-QDS v2 experiment runner. See src/experiments/README.md for details."""
+
+from __future__ import annotations
+
+import argparse
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build experiment CLI parser. See src/experiments/README.md for details."""
+    parser = argparse.ArgumentParser(description="Run AIS-QDS v2 experiment.")
+    parser.add_argument("--csv_path", type=str, default=None)
+    parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Optional directory for segmented AIS Parquet caches keyed by source file and load config.",
+    )
+    parser.add_argument(
+        "--refresh_cache",
+        action="store_true",
+        help="Rebuild AIS cache entries even when a matching manifest exists.",
+    )
+    parser.add_argument("--n_ships", type=int, default=24)
+    parser.add_argument("--n_points", type=int, default=200)
+    parser.add_argument(
+        "--min_points_per_segment",
+        type=int,
+        default=4,
+        help="Minimum points required to keep an AIS trajectory segment.",
+    )
+    parser.add_argument(
+        "--max_points_per_segment",
+        "--max_points_per_ship",
+        dest="max_points_per_segment",
+        type=int,
+        default=None,
+        help="Optional AIS CSV downsampling cap per trajectory segment, useful for smoke runs.",
+    )
+    parser.add_argument(
+        "--max_time_gap_seconds",
+        type=float,
+        default=3600.0,
+        help="Split one vessel track into new trajectory segments when consecutive points exceed this time gap. Set <=0 to disable.",
+    )
+    parser.add_argument(
+        "--max_segments",
+        type=int,
+        default=None,
+        help="Optional cap applied during CSV segmentation, useful for smoke runs.",
+    )
+    parser.add_argument(
+        "--max_trajectories",
+        type=int,
+        default=None,
+        help="Legacy optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
+    )
+    parser.add_argument("--n_queries", type=int, default=128)
+    parser.add_argument(
+        "--query_coverage",
+        "--target_query_coverage",
+        dest="query_coverage",
+        type=float,
+        default=None,
+        help="Bias generated queries toward this point-coverage target while keeping --n_queries fixed. Accepts 0.30 or 30 for 30%%.",
+    )
+    parser.add_argument(
+        "--max_queries",
+        type=int,
+        default=None,
+        help="Deprecated compatibility option for coverage-based query generation.",
+    )
+    parser.add_argument(
+        "--range_spatial_fraction",
+        type=float,
+        default=0.08,
+        help="Range query half-width as a fraction of dataset lat/lon span. Lower values allow more queries without blanketing the dataset.",
+    )
+    parser.add_argument(
+        "--range_time_fraction",
+        type=float,
+        default=0.15,
+        help="Range query half-window as a fraction of dataset time span. Lower values allow more queries without blanketing the dataset.",
+    )
+    parser.add_argument(
+        "--range_min_point_hits",
+        type=int,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes with fewer point hits.",
+    )
+    parser.add_argument(
+        "--range_max_point_hit_fraction",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes hitting more than this point fraction.",
+    )
+    parser.add_argument(
+        "--range_min_trajectory_hits",
+        type=int,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes hitting fewer trajectories.",
+    )
+    parser.add_argument(
+        "--range_max_trajectory_hit_fraction",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes hitting more than this trajectory fraction.",
+    )
+    parser.add_argument(
+        "--range_max_box_volume_fraction",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes with larger normalized spatiotemporal volume.",
+    )
+    parser.add_argument(
+        "--range_duplicate_iou_threshold",
+        type=float,
+        default=None,
+        help="Optional range-query acceptance filter: reject boxes with IoU at or above this threshold versus accepted boxes.",
+    )
+    parser.add_argument(
+        "--range_acceptance_max_attempts",
+        type=int,
+        default=None,
+        help="Maximum candidate range boxes to try when acceptance filters are enabled.",
+    )
+    parser.add_argument(
+        "--knn_k",
+        type=int,
+        default=12,
+        help="Number of nearest trajectories returned by generated kNN queries.",
+    )
+    parser.add_argument("--epochs", type=int, default=6)
+    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument(
+        "--pointwise_loss_weight",
+        type=float,
+        default=0.25,
+        help="Weight for balanced pointwise BCE supervision alongside ranking loss.",
+    )
+    parser.add_argument(
+        "--gradient_clip_norm",
+        type=float,
+        default=1.0,
+        help="Max gradient norm. Set <=0 to disable clipping.",
+    )
+    parser.add_argument("--compression_ratio", type=float, default=0.2)
+    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
+    parser.add_argument("--workload", type=str, default="mixed")
+
+    parser.add_argument("--train_workload_mix", type=str, default=None)
+    parser.add_argument("--eval_workload_mix", type=str, default=None)
+    parser.add_argument("--workload_mix_train", type=str, default=None)
+    parser.add_argument("--workload_mix_eval", type=str, default=None)
+
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--results_dir", type=str, default="results")
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=0,
+        help="Stop training if avg Kendall tau does not improve for this many epochs. 0 disables.",
+    )
+    parser.add_argument(
+        "--diagnostic_every",
+        type=int,
+        default=1,
+        help="Run training diagnostics every N epochs. Use 1 so every epoch can be selected as best.",
+    )
+    parser.add_argument(
+        "--diagnostic_window_fraction",
+        type=float,
+        default=0.2,
+        help="Fraction of trajectory windows used for each diagnostic pass.",
+    )
+    parser.add_argument(
+        "--checkpoint_selection_metric",
+        type=str,
+        default="loss",
+        choices=["loss", "f1", "uniform_gap"],
+        help="Select restored checkpoints by training loss, held-out query F1, or F1 with fair-uniform gap penalties.",
+    )
+    parser.add_argument(
+        "--f1_diagnostic_every",
+        type=int,
+        default=0,
+        help="Run held-out query-F1 diagnostics every N epochs. 0 disables unless checkpoint selection metric is f1 or uniform_gap.",
+    )
+    parser.add_argument(
+        "--checkpoint_uniform_gap_weight",
+        type=float,
+        default=0.5,
+        help="When checkpoint_selection_metric=uniform_gap, bonus/penalty weight for aggregate gap versus uniform.",
+    )
+    parser.add_argument(
+        "--checkpoint_type_penalty_weight",
+        type=float,
+        default=1.0,
+        help="When checkpoint_selection_metric=uniform_gap, penalty weight for per-type F1 deficits versus uniform.",
+    )
+    parser.add_argument(
+        "--checkpoint_smoothing_window",
+        type=int,
+        default=1,
+        help="Pick checkpoints by rolling-mean selection score over the last K diagnostic epochs. Reduces selection bias from noisy single-epoch F1. 1 = original single-epoch behavior; 5 = average over 5 latest diagnostic epochs.",
+    )
+    parser.add_argument(
+        "--checkpoint_f1_variant",
+        type=str,
+        default="answer",
+        choices=["answer", "combined"],
+        help="Which F1 to use for validation/checkpoint selection. 'answer' = pure trajectory-set F1 (default). 'combined' = legacy answer_f1 * point_subset_f1 product (rewards keeping the eval-pipeline's support points; aligned with importance labels).",
+    )
+    parser.add_argument(
+        "--mlqds_temporal_fraction",
+        type=float,
+        default=0.0,
+        help="Fraction of the retained budget reserved for evenly spaced temporal base points before MLQDS score fill. Default 0.0 = pure learned scoring; raise to add a uniform spine.",
+    )
+    parser.add_argument(
+        "--mlqds_diversity_bonus",
+        type=float,
+        default=0.05,
+        help="Small spacing bonus for MLQDS fill candidates away from temporal base points.",
+    )
+    parser.add_argument(
+        "--residual_label_mode",
+        type=str,
+        default="temporal",
+        choices=["none", "temporal"],
+        help="Use labels directly, or train only on points not already kept by the temporal base.",
+    )
+    parser.add_argument(
+        "--save_model",
+        type=str,
+        default=None,
+        help="Path to save trained model checkpoint (.pt). Disabled if not provided.",
+    )
+    parser.add_argument(
+        "--save_queries_dir",
+        type=str,
+        default=None,
+        help="Directory to save eval-workload queries as one GeoJSON per query type.",
+    )
+    parser.add_argument(
+        "--save_simplified_dir",
+        type=str,
+        default=None,
+        help="Directory to save MLQDS simplified trajectories as CSV.",
+    )
+    return parser

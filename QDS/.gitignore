@@ -1,3 +1,6 @@
+# AI-lab
+AI_lab_setup/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
@@ -15,8 +18,8 @@ venv/
 env/
 
 # Trained model weights
-*.pt
 *.pth
+#src/models/saved_models/*.pt
 
 # Generated plots
 *.png
@@ -34,3 +37,10 @@ Thumbs.db
 
 # Experiment output directory
 results/
+!results/
+!results/*.json
+!results/*.txt
+
+# QDS local run artifacts. Historical example results/checkpoints may be
+# tracked, but new sprint runs should live here or outside the source tree.
+artifacts/
