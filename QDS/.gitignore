@@ -39,3 +39,4 @@ results/
 !qds_v2/results/
 !qds_v2/results/*.json
 !qds_v2/results/*.txt
+qds_v2/artifacts/cache
