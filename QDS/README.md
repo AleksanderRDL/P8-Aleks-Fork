@@ -7,7 +7,7 @@ AIS-QDS v2 is the current shift-aware rebuild of the AIS query-driven simplifica
 - `requirements.txt` - Python dependencies for the v2 stack.
 - `src/` - package code for loading data, building queries, training models, and running experiments.
 - `tests/` - regression tests that guard the rebuild.
-- `results/` - example outputs from the experiment runner.
+- `results/` - retained reference outputs and benchmark artifacts.
 
 ## Quick Start
 
@@ -17,11 +17,11 @@ pip install -r requirements.txt
 python -m src.experiments.run_ais_experiment --n_queries 128 --epochs 6 --workload mixed
 ```
 
-## Phase 0 Environment And Smoke Checks
+## Environment And Smoke Checks
 
 The sprint environment is the repository-level virtual environment at `../.venv`
 when commands are run from `QDS`. Requirements are pinned in
-`requirements.txt` to the versions used for the Phase 0 check.
+`requirements.txt` for the local QDS checks.
 
 ```bash
 cd QDS
@@ -117,15 +117,17 @@ Training uses a ranking loss plus balanced pointwise BCE supervision. Exact fina
 5. `src/simplification/` keeps the highest-scoring points per trajectory with deterministic tie-breaking.
 6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores.
 7. `src/experiments/` wires the full pipeline together through the CLI.
-8. `src/visualization/` is currently a placeholder package for future plotting hooks.
+8. `src/visualization/` is a minimal extension point for plotting hooks; current runs write JSON, CSV, GeoJSON, and fixed-width tables.
 
 ## Outputs
 
-The experiment runner writes three files into `results/`:
+The experiment runner writes the core run files into `results/` or the
+directory passed with `--results_dir`:
 
 - `example_run.json` - config, workload mixes, per-method metrics, training history, and selected-checkpoint metadata.
 - `matched_table.txt` - fixed-width comparison table for the evaluation workload.
 - `shift_table.txt` - shift table comparing the train workload against the eval workload.
+- `geometric_distortion_table.txt` - SED/PED, length preservation, and combined geometric/F1 reporting.
 - `range_workload_diagnostics.json` - Phase 2 range workload, label, Oracle, and baseline diagnostics for train/eval/selection workloads.
 - `range_query_diagnostics.jsonl` - one JSON record per generated range query with hit counts, footprint, broad-query flag, and duplicate-query flag.
 
@@ -139,5 +141,3 @@ The `tests/` folder focuses on the rebuild-specific regressions:
 - `test_scaler_persisted.py` - scaler persistence.
 - `test_topk_no_positional_bias.py` - deterministic top-k behavior.
 - `test_training_does_not_collapse.py` - training stability.
-
-For the legacy v1 system, see [qds_project/README.md](../qds_project/README.md).
