@@ -35,7 +35,6 @@ from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
     NewUniformTemporalMethod,
-    RandomMethod,
 )
 from src.evaluation.evaluate_methods import (
     evaluate_method,
@@ -222,12 +221,12 @@ def main() -> None:
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
         ),
-        RandomMethod(seed=int(args.seed)),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
 
     results: dict[str, Any] = {}
+    save_masks = bool(args.save_simplified_dir)
     for method in methods:
         t0 = time.perf_counter()
         print(f"[eval] {method.name} ...", flush=True)
@@ -238,7 +237,7 @@ def main() -> None:
             typed_queries=workload.typed_queries,
             workload_mix=eval_mix,
             compression_ratio=compression_ratio,
-            return_mask=method.name == "MLQDS",
+            return_mask=method.name == "MLQDS" or save_masks,
         )
         print(f"[eval] {method.name} done in {time.perf_counter() - t0:.2f}s", flush=True)
 
@@ -296,9 +295,22 @@ def main() -> None:
         print(f"[trajectory-length-loss] done in {time.perf_counter() - t0:.2f}s", flush=True)
 
     if args.save_simplified_dir:
-        out_path = Path(args.save_simplified_dir) / "ML_simplified.csv"
-        write_simplified_csv(str(out_path), points, boundaries, mlqds_mask, trajectory_mmsis=trajectory_mmsis)
-        print(f"[write] simplified CSV -> {out_path}", flush=True)
+        out_dir_simp = Path(args.save_simplified_dir)
+        out_dir_simp.mkdir(parents=True, exist_ok=True)
+        write_simplified_csv(str(out_dir_simp / "ML_simplified.csv"), points, boundaries, mlqds_mask, trajectory_mmsis=trajectory_mmsis)
+        print(f"[write] simplified CSV -> {out_dir_simp / 'ML_simplified.csv'}", flush=True)
+        for ref_name, csv_name in (("uniform", "uniform_simplified.csv"),
+                                   ("DouglasPeucker", "DP_simplified.csv")):
+            ref_eval = results.get(ref_name)
+            if ref_eval is not None and ref_eval.retained_mask is not None:
+                write_simplified_csv(
+                    str(out_dir_simp / csv_name),
+                    points,
+                    boundaries,
+                    ref_eval.retained_mask,
+                    trajectory_mmsis=trajectory_mmsis,
+                )
+                print(f"[write] simplified CSV -> {out_dir_simp / csv_name}", flush=True)
 
 
 if __name__ == "__main__":

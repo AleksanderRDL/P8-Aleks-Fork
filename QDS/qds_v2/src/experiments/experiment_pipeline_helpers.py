@@ -314,6 +314,7 @@ def run_experiment_pipeline(
     ]
 
     matched: dict[str, Any] = {}
+    save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
         for method in methods:
             with _phase(f"  eval {method.name}"):
@@ -324,7 +325,7 @@ def run_experiment_pipeline(
                     typed_queries=eval_workload.typed_queries,
                     workload_mix=eval_mix,
                     compression_ratio=config.model.compression_ratio,
-                    return_mask=method.name == "MLQDS",
+                    return_mask=method.name == "MLQDS" or save_masks,
                 )
 
         eval_labels, _ = compute_typed_importance_labels(
@@ -434,6 +435,17 @@ def run_experiment_pipeline(
                 eval_mask,
                 trajectory_mmsis=test_mmsis,
             )
+            for ref_name, csv_name in (("uniform", "uniform_simplified_eval.csv"),
+                                       ("DouglasPeucker", "DP_simplified_eval.csv")):
+                ref_mask = matched.get(ref_name).retained_mask if matched.get(ref_name) is not None else None
+                if ref_mask is not None:
+                    write_simplified_csv(
+                        str(out_dir / csv_name),
+                        test_points,
+                        test_boundaries,
+                        ref_mask,
+                        trajectory_mmsis=test_mmsis,
+                    )
 
         with _phase("trajectory-length-loss"):
             report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)

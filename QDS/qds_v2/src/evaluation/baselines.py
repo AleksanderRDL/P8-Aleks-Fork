@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import heapq
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
 import torch
 
 from src.experiments.experiment_config import TypedQueryWorkload
@@ -71,7 +74,23 @@ class MLQDSMethod:
             mix = torch.ones_like(mix) / mix.numel()
         else:
             mix = mix / mix.sum()
-        score = (torch.sigmoid(pred) * mix.unsqueeze(0)).sum(dim=1)
+        # Rank-normalize per head within each trajectory before mixing so
+        # head magnitudes (e.g. range head saturating high while sim head stays
+        # low) don't dominate the workload-weighted sum.
+        score = pred.new_zeros((pred.shape[0],))
+        n_types = pred.shape[1]
+        for s, e in boundaries:
+            length = e - s
+            if length <= 0:
+                continue
+            denom = float(max(1, length - 1))
+            for t_idx in range(n_types):
+                w = float(mix[t_idx].item())
+                if w <= 0.0:
+                    continue
+                head = pred[s:e, t_idx]
+                ranks = head.argsort().argsort().to(torch.float32) / denom
+                score[s:e] = score[s:e] + w * ranks
         return simplify_with_temporal_score_hybrid(
             score,
             boundaries,
@@ -133,31 +152,89 @@ class NewUniformTemporalMethod:
 
 @dataclass
 class DouglasPeuckerMethod:
-    """Douglas-Peucker style geometric baseline. See src/evaluation/README.md for details."""
+    """Recursive Douglas-Peucker geometric baseline (heap-based).
+
+    Standard DP recursion: keep first/last point, split at the inner point with
+    max perpendicular distance to the chord. Implemented as a heap so we only
+    perform the K splits needed to hit the target compression — not the full
+    log(N) recursion depth — which is critical for long AIS trajectories.
+
+    Returns a per-trajectory point retained mask directly; no surrogate scores.
+    """
 
     name: str = "DouglasPeucker"
 
-    def _local_scores(self, traj_xy: torch.Tensor) -> torch.Tensor:
-        """Approximate DP importance by perpendicular-distance proxy. See src/evaluation/README.md for details."""
-        n = traj_xy.shape[0]
-        if n <= 2:
-            return torch.ones((n,), dtype=torch.float32)
-        a = traj_xy[0]
-        b = traj_xy[-1]
+    @staticmethod
+    def _farthest_in_segment(xy: np.ndarray, s: int, e: int) -> tuple[int, float]:
+        """Return (split_idx, max_perp) for points strictly between s and e."""
+        if e - s < 2:
+            return -1, 0.0
+        a = xy[s]
+        b = xy[e]
         v = b - a
-        v_norm = torch.norm(v) + 1e-8
-        rel = traj_xy - a
-        proj = (rel @ v) / v_norm
-        perp = torch.norm(rel - torch.outer(proj / v_norm, v), dim=1)
-        perp[0] = perp[-1] = perp.max() + 1.0
-        return perp
+        v_norm_sq = float(v[0] * v[0] + v[1] * v[1])
+        seg = xy[s + 1 : e]
+        if v_norm_sq < 1e-12:
+            d = np.linalg.norm(seg - a, axis=1)
+        else:
+            rel = seg - a
+            proj = (rel @ v) / v_norm_sq
+            closest = a + proj[:, None] * v
+            d = np.linalg.norm(seg - closest, axis=1)
+        local = int(np.argmax(d))
+        return s + 1 + local, float(d[local])
+
+    def _dp_retained_mask(self, traj_xy_np: np.ndarray, k_keep: int) -> np.ndarray:
+        """Retain the k_keep points produced by DP recursion (largest perp first)."""
+        n = int(traj_xy_np.shape[0])
+        mask = np.zeros((n,), dtype=bool)
+        if n == 0 or k_keep <= 0:
+            return mask
+        mask[0] = True
+        if n == 1 or k_keep == 1:
+            return mask
+        mask[n - 1] = True
+        if k_keep <= 2:
+            return mask
+
+        # Negative-distance heap so largest perp pops first.
+        heap: list[tuple[float, int, int, int]] = []
+        split_idx, perp = self._farthest_in_segment(traj_xy_np, 0, n - 1)
+        if split_idx >= 0:
+            heapq.heappush(heap, (-perp, split_idx, 0, n - 1))
+
+        kept = 2
+        tie = 0  # heap-stability tiebreak counter (keeps push order deterministic)
+        while heap and kept < k_keep:
+            _, split_idx, s, e = heapq.heappop(heap)
+            if mask[split_idx]:
+                continue
+            mask[split_idx] = True
+            kept += 1
+            left_split, left_perp = self._farthest_in_segment(traj_xy_np, s, split_idx)
+            if left_split >= 0:
+                tie += 1
+                heapq.heappush(heap, (-left_perp, left_split, s, split_idx))
+            right_split, right_perp = self._farthest_in_segment(traj_xy_np, split_idx, e)
+            if right_split >= 0:
+                tie += 1
+                heapq.heappush(heap, (-right_perp, right_split, split_idx, e))
+        return mask
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
-        """Simplify with DP-like per-trajectory geometric scores. See src/evaluation/README.md for details."""
-        scores = torch.zeros((points.shape[0],), dtype=torch.float32)
+        """Retain DP-selected points per trajectory at the requested ratio."""
+        retained = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+        ratio = max(0.0, min(1.0, float(compression_ratio)))
+        xy_np = points[:, 1:3].detach().cpu().numpy().astype(np.float64)
         for start, end in boundaries:
-            scores[start:end] = self._local_scores(points[start:end, 1:3])
-        return simplify_with_scores(scores, boundaries, compression_ratio)
+            n = int(end - start)
+            if n <= 0:
+                continue
+            k = max(2, int(math.ceil(ratio * n)))
+            k = min(k, n)
+            traj_mask = self._dp_retained_mask(xy_np[start:end], k)
+            retained[start:end] = torch.from_numpy(traj_mask).to(retained.device)
+        return retained
 
 
 @dataclass

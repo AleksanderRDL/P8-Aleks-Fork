@@ -73,6 +73,7 @@ def main() -> None:
         checkpoint_uniform_gap_weight=args.checkpoint_uniform_gap_weight,
         checkpoint_type_penalty_weight=args.checkpoint_type_penalty_weight,
         checkpoint_smoothing_window=args.checkpoint_smoothing_window,
+        checkpoint_f1_variant=args.checkpoint_f1_variant,
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         residual_label_mode=args.residual_label_mode,
@@ -93,6 +94,7 @@ def main() -> None:
         f"uniform_gap_weight={args.checkpoint_uniform_gap_weight}  "
         f"type_penalty_weight={args.checkpoint_type_penalty_weight}  "
         f"smoothing_window={args.checkpoint_smoothing_window}  "
+        f"f1_variant={args.checkpoint_f1_variant}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"residual_label_mode={args.residual_label_mode}",

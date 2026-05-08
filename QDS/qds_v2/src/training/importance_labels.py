@@ -80,6 +80,192 @@ def _add_distributed_hit_label(labels: torch.Tensor, support: torch.Tensor, type
     labels[support, type_idx] += float(gain) / float(support_count)
 
 
+def _add_weighted_hit_label(
+    labels: torch.Tensor,
+    support: torch.Tensor,
+    type_idx: int,
+    gain: float,
+    weights: torch.Tensor,
+) -> None:
+    """Distribute a trajectory-hit gain over support points, scaled by per-point weights.
+
+    weights[support] should be non-negative. Total mass added equals gain. Falls back to
+    uniform distribution if all weights are zero.
+    """
+    support_idx = torch.where(support)[0]
+    if support_idx.numel() == 0:
+        return
+    w = weights[support_idx]
+    total = float(w.sum().item())
+    if total <= 0.0:
+        labels[support, type_idx] += float(gain) / float(support_idx.numel())
+        return
+    labels[support_idx, type_idx] += float(gain) * (w / total)
+
+
+def _within_box_centroid_weights(
+    points: torch.Tensor,
+    box_mask: torch.Tensor,
+    point_trajectory_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Per-point weights for clustering: squared distance from each in-box point to its
+    trajectory's in-box centroid (lat/lon).
+
+    Squared distance amplifies the contrast between extremes (load-bearing for centroid
+    stability) and near-centroid points (replaceable). Weights are normalized to mean=1
+    per trajectory so total per-query label mass is preserved.
+    """
+    weights = torch.zeros(points.shape[0], dtype=torch.float32, device=points.device)
+    in_box_idx = torch.where(box_mask)[0]
+    if in_box_idx.numel() == 0:
+        return weights
+
+    box_traj_ids = point_trajectory_ids[in_box_idx]
+    box_coords = points[in_box_idx, 1:3]
+    for tid in torch.unique(box_traj_ids).tolist():
+        local = torch.where(box_traj_ids == tid)[0]
+        if local.numel() == 0:
+            continue
+        if local.numel() == 1:
+            weights[in_box_idx[local]] = 1.0
+            continue
+        coords = box_coords[local]
+        centroid = coords.mean(dim=0)
+        dists_sq = torch.sum((coords - centroid) ** 2, dim=1)
+        mean_d_sq = float(dists_sq.mean().item())
+        if mean_d_sq > 1e-12:
+            weights[in_box_idx[local]] = dists_sq / mean_d_sq
+        else:
+            weights[in_box_idx[local]] = 1.0
+    return weights
+
+
+def _range_boundary_and_proximity_weights(
+    points: torch.Tensor,
+    box_mask: torch.Tensor,
+    point_trajectory_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Per-point weights for range: combines two priors that match the query's intent.
+
+    1. Boundary crossings: in-box points whose immediate temporal neighbor (predecessor
+       or successor in the trajectory) is OUT of the box. These mark where a vessel
+       enters or leaves the query region — semantically critical for range queries.
+       Boost: 2x.
+    2. Cross-trajectory proximity: in-box points close to in-box points of *other*
+       trajectories. Encodes "ship is near another ship" — useful inductive bias for
+       multi-vessel queries. Weight ~ 1/(distance + eps), normalized.
+
+    The two factors combine multiplicatively then are mean=1-normalized within each
+    trajectory's in-box subset so total per-query label mass is preserved.
+    """
+    weights = torch.zeros(points.shape[0], dtype=torch.float32, device=points.device)
+    in_box_idx = torch.where(box_mask)[0]
+    n_box = in_box_idx.numel()
+    if n_box == 0:
+        return weights
+    if n_box == 1:
+        weights[in_box_idx] = 1.0
+        return weights
+
+    box_traj_ids = point_trajectory_ids[in_box_idx]
+
+    # 1. Boundary detection: walk the FULL points tensor per trajectory, mark in-box
+    # points whose neighbor is out-of-box (or that are at trajectory edges while in-box).
+    boundary_full = torch.zeros(points.shape[0], dtype=torch.bool, device=points.device)
+    for tid in torch.unique(box_traj_ids).tolist():
+        traj_idx = torch.where(point_trajectory_ids == int(tid))[0]
+        if traj_idx.numel() == 0:
+            continue
+        traj_in = box_mask[traj_idx]
+        prev_out = torch.zeros_like(traj_in)
+        prev_out[1:] = traj_in[1:] & ~traj_in[:-1]
+        prev_out[0] = traj_in[0]
+        next_out = torch.zeros_like(traj_in)
+        next_out[:-1] = traj_in[:-1] & ~traj_in[1:]
+        next_out[-1] = traj_in[-1]
+        boundary_full[traj_idx] = prev_out | next_out
+
+    # 2. Cross-trajectory proximity within the in-box subset.
+    coords = points[in_box_idx, 1:3]
+    dists = torch.cdist(coords, coords)
+    same_traj = box_traj_ids.unsqueeze(0) == box_traj_ids.unsqueeze(1)
+    dists = dists.masked_fill(same_traj, float("inf"))
+    nearest_other = dists.min(dim=1).values
+    finite = torch.isfinite(nearest_other)
+
+    boundary_in_box = boundary_full[in_box_idx].float()
+    BOUNDARY_BOOST = 1.0  # additive on top of base 1.0 → boundary points get 2x raw
+    PROX_EPS = 1e-4
+
+    for tid in torch.unique(box_traj_ids).tolist():
+        local = torch.where(box_traj_ids == tid)[0]
+        if local.numel() == 0:
+            continue
+        b = 1.0 + BOUNDARY_BOOST * boundary_in_box[local]
+        d = nearest_other[local]
+        f = finite[local]
+        if bool(f.any().item()):
+            d_safe = torch.where(f, d, torch.full_like(d, float(d[f].max().item()) + 1.0))
+            prox = 1.0 / (d_safe + PROX_EPS)
+        else:
+            prox = torch.ones_like(d)
+        raw = b * prox
+        mean_raw = float(raw.mean().item())
+        if mean_raw > 1e-12:
+            weights[in_box_idx[local]] = raw / mean_raw
+        else:
+            weights[in_box_idx[local]] = 1.0
+    return weights
+
+
+def _within_box_uniqueness_weights(
+    points: torch.Tensor,
+    box_mask: torch.Tensor,
+    point_trajectory_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Legacy per-point weights for range — distance to nearest in-box point of a DIFFERENT
+    trajectory. Reverted from the range branch in phase 5 (Oracle dropped −9% with this).
+    Kept for reference / experimentation; not currently called.
+    """
+    weights = torch.zeros(points.shape[0], dtype=torch.float32, device=points.device)
+    in_box_idx = torch.where(box_mask)[0]
+    n_box = in_box_idx.numel()
+    if n_box == 0:
+        return weights
+    if n_box == 1:
+        weights[in_box_idx] = 1.0
+        return weights
+
+    coords = points[in_box_idx, 1:3]
+    box_traj_ids = point_trajectory_ids[in_box_idx]
+    dists = torch.cdist(coords, coords)
+    same_traj = box_traj_ids.unsqueeze(0) == box_traj_ids.unsqueeze(1)
+    dists = dists.masked_fill(same_traj, float("inf"))
+    nearest_other = dists.min(dim=1).values
+    finite = torch.isfinite(nearest_other)
+    if not bool(finite.any().item()):
+        weights[in_box_idx] = 1.0
+        return weights
+
+    for tid in torch.unique(box_traj_ids).tolist():
+        local = torch.where(box_traj_ids == tid)[0]
+        if local.numel() == 0:
+            continue
+        traj_dists = nearest_other[local]
+        traj_finite = torch.isfinite(traj_dists)
+        if not bool(traj_finite.any().item()):
+            weights[in_box_idx[local]] = 1.0
+            continue
+        valid = traj_dists[traj_finite]
+        mean_d = float(valid.mean().item())
+        if mean_d <= 1e-12:
+            weights[in_box_idx[local]] = 1.0
+            continue
+        traj_weights = torch.where(traj_finite, traj_dists / mean_d, torch.ones_like(traj_dists))
+        weights[in_box_idx[local]] = traj_weights
+    return weights
+
+
 def _knn_representative_support(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -185,6 +371,12 @@ def compute_typed_importance_labels(
     point_trajectory_ids = _trajectory_id_per_point(n, boundaries, points.device)
     trajectories = _trajectories_from_boundaries(points, boundaries)
 
+    # Column 7 of the trajectory feature tensor is turn_score in [0,1] = normalized |Δheading|.
+    # Used as a Douglas-Peucker-style shape prior for similarity and clustering branches only.
+    # Range is excluded (steals budget from in-box stretches → hurts point recall).
+    turn_score = points[:, 7] if points.shape[1] >= 8 else torch.zeros(n, device=points.device)
+    TURN_BIAS_ALPHA = 0.05
+
     for q in typed_queries:
         qtype = q["type"]
         t_idx = QUERY_NAME_TO_ID[qtype]
@@ -195,7 +387,9 @@ def compute_typed_importance_labels(
             box_support = _box_mask(points, params)
             hit_count = int(box_support.sum().item())
             if hit_count > 0:
-                labels[box_support, t_idx] += float(2.0 / (hit_count + 1.0))
+                base_gain = float(2.0 / (hit_count + 1.0))
+                bp_weights = _range_boundary_and_proximity_weights(points, box_support, point_trajectory_ids)
+                labels[box_support, t_idx] += base_gain * bp_weights[box_support]
 
         elif qtype == "knn":
             original_ids = set(execute_typed_query(points, trajectories, q, boundaries))
@@ -215,6 +409,7 @@ def compute_typed_importance_labels(
                 for trajectory_id in original_ids:
                     support = similarity_support & (point_trajectory_ids == int(trajectory_id))
                     _add_distributed_hit_label(labels, support, t_idx, gain)
+                labels[similarity_support, t_idx] += TURN_BIAS_ALPHA * turn_score[similarity_support]
 
         elif qtype == "clustering":
             original_labels = execute_typed_query(points, trajectories, q, boundaries)
@@ -223,6 +418,8 @@ def compute_typed_importance_labels(
             if pair_count <= 0:
                 continue
             box_support = _box_mask(points, params)
+            centroid_weights = _within_box_centroid_weights(points, box_support, point_trajectory_ids)
+            clustered_traj_mask = torch.zeros_like(box_support)
             for members in clusters.values():
                 degree = len(members) - 1
                 if degree <= 0:
@@ -230,11 +427,21 @@ def compute_typed_importance_labels(
                 gain = float(2.0 * degree / (pair_count + degree))
                 for trajectory_id in members:
                     support = box_support & (point_trajectory_ids == int(trajectory_id))
-                    _add_distributed_hit_label(labels, support, t_idx, gain)
+                    _add_weighted_hit_label(labels, support, t_idx, gain, centroid_weights)
+                    clustered_traj_mask |= point_trajectory_ids == int(trajectory_id)
+            cluster_turn_support = box_support & clustered_traj_mask
+            labels[cluster_turn_support, t_idx] += TURN_BIAS_ALPHA * turn_score[cluster_turn_support]
 
+    range_type_idx = QUERY_NAME_TO_ID["range"]
     for type_idx in range(NUM_QUERY_TYPES):
-        if float(query_counts[type_idx].item()) > 0.0:
-            labels[:, type_idx] = torch.clamp(labels[:, type_idx] / query_counts[type_idx], 0.0, 1.0)
+        count = float(query_counts[type_idx].item())
+        if count > 0.0:
+            # Lever 1.5: sqrt-normalize range labels so per-point magnitudes are large enough
+            # for BCE to surface the density prior (hot regions vs cold regions). Preserves
+            # the 10x spatial contrast but lifts the absolute label scale by ~sqrt(N) relative
+            # to the other types, giving the range head a meaningful gradient.
+            divisor = float(count ** 0.5) if type_idx == range_type_idx else count
+            labels[:, type_idx] = torch.clamp(labels[:, type_idx] / divisor, 0.0, 1.0)
             labelled_mask[:, type_idx] = True
 
     return labels, labelled_mask
