@@ -146,14 +146,14 @@ Reporting: mean, standard deviation, best-baseline gap, label Oracle gap, learni
 
 Goal: make the project runnable and repeatable before adding more experiments.
 
-Status on 2026-05-06: complete for the local sprint setup. `QDS/qds_v2`
+Status on 2026-05-06: complete for the local sprint setup. `QDS`
 now has pinned requirements, a local Makefile with `check-env`, `test`,
 `smoke`, and `smoke-csv` targets, documented environment commands in the root
-qds_v2 README, and ignored `artifacts/` output for future local runs.
+QDS README, and ignored `artifacts/` output for future local runs.
 
 Tasks:
 
-1. Create one documented Python environment for `qds_v2`.
+1. Create one documented Python environment for `QDS`.
 2. Install a compatible `torch`, `pandas`, `numpy`, and `pytest`.
 3. Pin dependency versions or add a reproducible environment file.
 4. Add a simple test command.

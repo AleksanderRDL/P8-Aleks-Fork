@@ -2,7 +2,7 @@
 
 ## Goal
 
-Prepare `qds_v2` for Phase 2 implementation and execution:
+Prepare `QDS` for Phase 2 implementation and execution:
 
 > Generate range-query workloads that are non-empty, non-trivial, not too broad,
 > not heavily duplicated, and diagnostically strong enough to justify Range-QDS

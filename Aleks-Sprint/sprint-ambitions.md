@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The goal of this sprint is to move `QDS/qds_v2` from a promising prototype into a credible research pipeline for machine learned query-driven simplification of AIS trajectories.
+The goal of this sprint is to move `QDS` from a promising prototype into a credible research pipeline for machine learned query-driven simplification of AIS trajectories.
 
 The primary ambition is to train four specialized models:
 
@@ -37,7 +37,7 @@ The highest leverage sequence is:
 
 ## Current Pipeline
 
-The current QDS v2 work lives in `QDS/qds_v2`.
+The current QDS v2 work lives in `QDS`.
 
 The pipeline currently follows this flow:
 
@@ -201,7 +201,7 @@ The key technical direction is to move from point-label prediction toward set-aw
 
 ## Data And Preprocessing
 
-There is no separate `pretrain` module in `qds_v2`. The current data/pretraining layer is the combination of:
+There is no separate `pretrain` module in `QDS`. The current data/pretraining layer is the combination of:
 
 - AIS CSV loading in `src/data/ais_loader.py`
 - trajectory flattening and boundary construction in `src/data/trajectory_dataset.py`
@@ -901,7 +901,7 @@ The local sprint environment has moved from a blocker to a maintained dependency
 
 Current local sprint status:
 
-- `qds_v2` has documented environment commands, pinned requirements, and Makefile
+- `QDS` has documented environment commands, pinned requirements, and Makefile
   targets for environment checks, tests, and smoke runs.
 - Future work should keep those commands current as Phase 3 adds benchmark
   runner scripts and larger cached datasets.
