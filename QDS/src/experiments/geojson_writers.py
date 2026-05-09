@@ -99,8 +99,8 @@ def write_simplified_csv(
     """Write retained simplified trajectories as CSV in the AIS preprocessed schema.
 
     Columns: MMSI, # Timestamp, Latitude, Longitude, SOG, COG.
-    Matches the layout of files in AISDATA/preprocessed_AIS_files so the
-    output drops directly into the same downstream tooling.
+    Uses the same columns as cleaned AIS files, while callers choose the
+    output location for ML-produced data.
     """
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -243,4 +243,3 @@ def report_trajectory_length_loss(
             f"  {rank:>4}  {r[0]:>10d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
             flush=True,
         )
-

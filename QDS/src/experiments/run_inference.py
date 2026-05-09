@@ -8,7 +8,7 @@ Example (PowerShell, from repo root):
 
     python -m src.experiments.run_inference `
         --checkpoint src/models/saved_models/model_2026-02-05_q25_range_766395.pt `
-        --csv_path ../../AISDATA/preprocessed_AIS_files/preprocessed_2026-02-08.csv `
+        --csv_path ../../AISDATA/cleaned/preprocessed_2026-02-08.csv `
         --n_queries 100 `
         --results_dir results/inference_2026-02-08_range
 

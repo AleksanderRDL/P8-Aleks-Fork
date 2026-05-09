@@ -45,11 +45,11 @@ The cleaned-CSV smoke target uses `--max_points_per_segment` and
 research run. New sprint artifacts should be written under `artifacts/` or
 another external run directory, not under `src/models/saved_models`.
 
-To run on a CSV instead of synthetic data:
+To run on a CSV instead of synthetic data, point the CSV path at a cleaned AIS file under `../AISDATA/cleaned/`:
 
 ```bash
 python -m src.experiments.run_ais_experiment \
-  --csv_path "C:\path\to\ais.csv" \
+  --csv_path ../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
   --max_points_per_segment 500 \
   --max_time_gap_seconds 3600 \
   --n_queries 250 \
@@ -59,12 +59,12 @@ python -m src.experiments.run_ais_experiment \
   --model_type baseline
 ```
 
-To train on one CSV and evaluate/clean a different CSV without trajectory splitting:
+To train on one cleaned CSV and evaluate/clean a different cleaned CSV without trajectory splitting:
 
 ```bash
 python -m src.experiments.run_ais_experiment \
-  --train_csv_path "C:\path\to\train.csv" \
-  --eval_csv_path "C:\path\to\eval.csv" \
+  --train_csv_path ../AISDATA/cleaned/train.csv \
+  --eval_csv_path ../AISDATA/cleaned/eval.csv \
   --query_coverage 0.30 \
   --max_queries 1000 \
   --range_spatial_fraction 0.02 \
