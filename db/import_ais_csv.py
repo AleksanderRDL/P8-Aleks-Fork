@@ -274,14 +274,14 @@ def fetch_progress(cur, source_path: str):
 
 def main():
     project_root = Path(__file__).resolve().parents[1]
-    default_aisdata_dir = str(project_root / "AISDATA")
+    default_aisdata_dir = str(project_root / "AISDATA" / "cleaned")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("csv_path", help="CSV file path or filename inside AISDATA/")
+    parser.add_argument("csv_path", help="CSV file path or filename inside AISDATA/cleaned/")
     parser.add_argument(
         "--aisdata-dir",
         default=default_aisdata_dir,
-        help="Fallback directory when csv_path is a filename (default: <repo>/AISDATA)",
+        help="Fallback directory when csv_path is a filename (default: <repo>/AISDATA/cleaned)",
     )
     parser.add_argument("--limit", type=int, default=0, help="0 = no limit")
     parser.add_argument("--chunk-rows", type=int, default=100000, help="Rows per transaction chunk")

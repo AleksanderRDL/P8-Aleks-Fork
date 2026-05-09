@@ -10,8 +10,7 @@ Reports:
     flagged them
 
 Usage:
-    python -m ais_pipeline.tools.validate_cleaning
-    python -m ais_pipeline.tools.validate_cleaning --input AISDATA/other.csv --top 50 --deep 5
+    python -m ais_pipeline.tools.validate_cleaning --input AISDATA/raw/other.csv --top 50 --deep 5
 """
 
 import argparse
@@ -182,7 +181,7 @@ def main():
     )
     parser.add_argument(
         "--input",
-        default=str(AISDATA_DIR / "aisdk-2026-02-05.csv"),
+        required=True,
         help="Path to original AIS CSV file",
     )
     parser.add_argument(

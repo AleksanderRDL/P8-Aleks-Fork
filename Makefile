@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 PYTHON ?= python
-CSV ?= AISDATA/aisdk-2026-02-05.cleaned.csv
+CSV ?=
 QUERY_ARGS ?= --help
 FRONTEND_DIR ?= frontend
 
@@ -50,6 +50,7 @@ db-smoke:
 	$(PYTHON) db/smoke_test_db.py
 
 db-import:
+	@if [ -z "$(CSV)" ]; then echo "Set CSV to a cleaned AIS file, for example: make db-import CSV=AISDATA/cleaned/<file-or-directory>"; exit 2; fi
 	$(PYTHON) db/import_ais_csv.py $(CSV)
 
 db-query:

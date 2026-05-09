@@ -19,13 +19,13 @@ documentation.
 - [`db/README.md`](db/README.md): PostGIS setup, lifecycle, and SQL checks.
 - [`ais_pipeline/environment/README.md`](ais_pipeline/environment/README.md): Java/Hadoop/Spark bootstrap helpers.
 - [`ais_pipeline/tools/README.md`](ais_pipeline/tools/README.md): utility scripts and experiments.
-- [`AISDATA/README.md`](AISDATA/README.md): data folder conventions and expected files.
+- [`AISDATA/README.md`](AISDATA/README.md): data folder conventions for raw and cleaned AIS files.
 
 ## Project Layout (Top-Level)
 
 - `ais_pipeline/`: root AIS Spark cleaning pipeline package.
 - `db/`: local PostGIS compose, SQL assets, and DB operational scripts.
-- `AISDATA/`: AIS input/output data files.
+- `AISDATA/`: AIS data folders. Raw files live in `AISDATA/raw/`; cleaned files live in `AISDATA/cleaned/`.
 - `QDS/`: ML simplification research project.
 - `frontend/`: frontend application.
 - `Makefile`: shortcuts for common local commands.

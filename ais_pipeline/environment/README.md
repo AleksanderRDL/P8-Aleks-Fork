@@ -23,8 +23,8 @@ running the root AIS cleaning pipeline (`main.py` -> `ais_pipeline/pipeline.py`)
 
 Used by the AIS cleaning pipeline:
 
-- `AIS_INPUT_FILE` (default `AISDATA/aisdk-2026-02-05.csv`)
-- `AIS_OUTPUT_PATH` (default `AISDATA/aisdk-2026-02-05.cleaned.csv`)
+- `AIS_INPUT_FILE` (raw AIS CSV to clean; required when `AISDATA/raw/` contains zero or multiple CSVs)
+- `AIS_OUTPUT_PATH` (default `AISDATA/cleaned/pipeline_output.csv`)
 - `SPARK_LOCAL_CORES` (default `4`)
 - `SPARK_SHUFFLE_PARTITIONS` (default `64`)
 - `SPARK_INPUT_PARTITION_MB` (default `64`)

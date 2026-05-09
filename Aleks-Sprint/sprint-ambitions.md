@@ -224,7 +224,7 @@ This is a solid start, but the model-specific data layer still needs work.
 
 ### Observed Data Characteristics
 
-On `AISDATA/cleaned/aisdk-2026-01-01.cleaned.csv`, the cleaned daily file contains:
+On the sampled cleaned daily file under `AISDATA/cleaned/`, the data contains:
 
 - `3,328,209` rows
 - `1,533` unique MMSIs

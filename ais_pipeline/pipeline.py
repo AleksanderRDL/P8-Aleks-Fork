@@ -19,8 +19,21 @@ from .steps import trim_stationary
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 AISDATA_DIR = PROJECT_DIR / "AISDATA"
-DEFAULT_INPUT_FILE = AISDATA_DIR / "aisdk-2026-02-05.csv"
-DEFAULT_OUTPUT_PATH = AISDATA_DIR / "aisdk-2026-02-05.cleaned.csv"
+RAW_AIS_DIR = AISDATA_DIR / "raw"
+DEFAULT_OUTPUT_PATH = AISDATA_DIR / "cleaned" / "pipeline_output.csv"
+
+
+def _default_input_file() -> Path:
+    csv_files = sorted(RAW_AIS_DIR.glob("*.csv"))
+    if len(csv_files) == 1:
+        return csv_files[0]
+    if not csv_files:
+        raise FileNotFoundError(
+            "No raw AIS CSV file found. Set AIS_INPUT_FILE or place one CSV in AISDATA/raw/."
+        )
+    raise RuntimeError(
+        "Multiple raw AIS CSV files found. Set AIS_INPUT_FILE to the file you want to clean."
+    )
 
 
 def _env_int(name: str, default: int, minimum: int) -> int:
@@ -34,7 +47,7 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 
 
 def run() -> None:
-    input_file = Path(os.environ.get("AIS_INPUT_FILE", str(DEFAULT_INPUT_FILE))).expanduser()
+    input_file = Path(os.environ["AIS_INPUT_FILE"]).expanduser() if "AIS_INPUT_FILE" in os.environ else _default_input_file()
     output_path = Path(os.environ.get("AIS_OUTPUT_PATH", str(DEFAULT_OUTPUT_PATH))).expanduser()
     local_cores = _env_int("SPARK_LOCAL_CORES", default=4, minimum=1)
     shuffle_partitions = _env_int("SPARK_SHUFFLE_PARTITIONS", default=64, minimum=8)

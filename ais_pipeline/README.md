@@ -1,6 +1,8 @@
 # AIS Cleaning Pipeline (`ais_pipeline/`)
 
 This package contains the root Spark-based AIS cleaning pipeline code.
+By default it reads raw AIS files from `AISDATA/raw/` and writes cleaned AIS
+output under `AISDATA/cleaned/`.
 
 ## Entry Points
 

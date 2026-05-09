@@ -254,7 +254,7 @@ Cleaned-CSV diagnostics smoke:
 
 ```bash
 python -m src.experiments.run_ais_experiment \
-  --csv_path ../../AISDATA/cleaned/aisdk-2026-01-01.cleaned.csv \
+  --csv_path ../../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
   --cache_dir artifacts/cache/phase2_range_smoke \
   --max_segments 32 \
   --max_points_per_segment 96 \

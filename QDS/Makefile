@@ -5,7 +5,7 @@ PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 
 RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
-CLEANED_CSV ?= $(REPO_ROOT)/AISDATA/cleaned/aisdk-2026-01-01.cleaned.csv
+CLEANED_CSV ?=
 
 .PHONY: help check-env install test smoke smoke-csv
 
@@ -43,6 +43,7 @@ smoke:
 		--results_dir "$(RESULTS_DIR)"
 
 smoke-csv:
+	@if [ -z "$(CLEANED_CSV)" ]; then echo "Set CLEANED_CSV to a cleaned AIS file, for example: make smoke-csv CLEANED_CSV=$(REPO_ROOT)/AISDATA/cleaned/<file-or-directory>"; exit 2; fi
 	$(PYTHON) -m src.experiments.run_ais_experiment \
 		--csv_path "$(CLEANED_CSV)" \
 		--cache_dir artifacts/cache/smoke_cleaned_csv \
