@@ -8,8 +8,8 @@ AISDATA/*
 !AISDATA/cleaned/
 AISDATA/raw/*
 AISDATA/cleaned/*
-!AISDATA/raw/.gitkeep
-!AISDATA/cleaned/.gitkeep
+!AISDATA/raw/README.md
+!AISDATA/cleaned/README.md
 
 local_hadoop/
 local_java/
