@@ -105,6 +105,13 @@ cd QDS
   --float32_matmul_precision high \
   --allow_tf32
 
+# Training batch-size sweep. Use a larger profile/dataset for final decisions.
+../.venv/bin/python -m src.experiments.benchmark_runtime \
+  --mode train \
+  --profile medium \
+  --train_batch_sizes 16,32,64,128 \
+  --results_dir artifacts/benchmarks/batch_size_sweep
+
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode inference \
@@ -119,6 +126,9 @@ Benchmark artifacts are written under the selected `--results_dir`, including
 Torch, CUDA runtime, Triton, TF32/matmul settings, AMP intent, train batch size
 from the run config, phase timings, epoch timings, final F1 metrics, full child
 commands, seed, git commit, and dirty status.
+When `--train_batch_sizes` is provided, the artifact also includes a
+`train_batch_size_sweep` table with epoch-time summary, peak CUDA memory, and
+final F1 fields per batch size.
 
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and

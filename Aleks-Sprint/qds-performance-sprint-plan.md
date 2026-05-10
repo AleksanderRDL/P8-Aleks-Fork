@@ -664,6 +664,28 @@ Acceptance check:
 
 - Compare epoch time, peak memory, and final validation F1.
 
+Completion note, 2026-05-10:
+
+- Exposed `train_batch_size` through `build_experiment_config` and the
+  training CLI via `--train_batch_size`.
+- Added CUDA peak-memory snapshots around the training phase and writes them
+  to `example_run.json` under `cuda_memory.training`.
+- Extended `benchmark_runtime` with `--train_batch_sizes`, which runs one
+  training child process per requested batch size and writes a compact
+  `train_batch_size_sweep` comparison table.
+- Sweep rows include return code, elapsed time, epoch-time mean/min/max, peak
+  CUDA allocated/reserved memory, `best_f1`, and MLQDS aggregate F1.
+- The sweep stops on first failure by default, with
+  `--sweep_continue_on_failure` available for exploratory runs.
+- Added tests for batch-size config round-trip, sweep parsing, and summary
+  extraction.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_torch_runtime_controls.py`.
+- Acceptance smoke:
+  `benchmark_runtime --mode train --profile small --seed 126 --train_batch_sizes 4,8`
+  produced two sweep rows with epoch time, peak CUDA memory, and identical
+  small-smoke MLQDS aggregate F1.
+
 ### 12. Add Optional BF16 Autocast
 
 Task:

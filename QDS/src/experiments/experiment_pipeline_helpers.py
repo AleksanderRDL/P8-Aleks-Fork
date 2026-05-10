@@ -46,7 +46,7 @@ from src.queries.workload_diagnostics import compute_range_label_diagnostics, co
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
-from src.experiments.torch_runtime import torch_runtime_snapshot
+from src.experiments.torch_runtime import cuda_memory_snapshot, reset_cuda_peak_memory_stats, torch_runtime_snapshot
 
 
 @dataclass
@@ -462,6 +462,7 @@ def run_experiment_pipeline(
         with _phase("write-queries-geojson"):
             write_queries_geojson(save_queries_dir, eval_workload.typed_queries)
 
+    reset_cuda_peak_memory_stats()
     with _phase(f"train-model ({config.model.epochs} epochs)"):
         trained = train_model(
             train_trajectories=train_traj,
@@ -474,6 +475,13 @@ def run_experiment_pipeline(
             validation_boundaries=selection_boundaries,
             validation_workload=selection_workload,
             validation_mix=eval_mix if selection_workload is not None else None,
+        )
+    training_cuda_memory = cuda_memory_snapshot()
+    if training_cuda_memory.get("available"):
+        print(
+            f"  train_cuda_peak_allocated={training_cuda_memory['max_allocated_mb']:.1f} MiB  "
+            f"peak_reserved={training_cuda_memory['max_reserved_mb']:.1f} MiB",
+            flush=True,
         )
 
     if save_model:
@@ -613,6 +621,9 @@ def run_experiment_pipeline(
         "data_audit": data_audit,
         "workload_diagnostics": range_diagnostics_summary,
         "torch_runtime": torch_runtime_snapshot(),
+        "cuda_memory": {
+            "training": training_cuda_memory,
+        },
     }
 
     with _phase("write-results"):

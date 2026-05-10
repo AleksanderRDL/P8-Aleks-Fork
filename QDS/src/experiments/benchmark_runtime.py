@@ -283,6 +283,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
         "train_query_count": run_json.get("train_query_count"),
         "eval_query_count": run_json.get("eval_query_count"),
         "torch_runtime": run_json.get("torch_runtime"),
+        "cuda_memory": run_json.get("cuda_memory"),
         "methods": {},
     }
     for name, payload in matched.items():
@@ -380,6 +381,58 @@ def _split_extra_args(raw: str | None) -> list[str]:
     return shlex.split(raw) if raw else []
 
 
+def _parse_train_batch_sizes(raw: str | None) -> list[int] | None:
+    """Parse comma-separated training batch sizes for benchmark sweeps."""
+    if raw is None or not raw.strip():
+        return None
+    values: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        value = int(item)
+        if value <= 0:
+            raise ValueError("--train_batch_sizes values must be positive integers.")
+        values.append(value)
+    if not values:
+        raise ValueError("--train_batch_sizes did not contain any positive integer values.")
+    return values
+
+
+def _batch_size_sweep_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build compact comparison rows for training batch-size sweeps."""
+    rows: list[dict[str, Any]] = []
+    for step in steps:
+        if not str(step.get("name", "")).startswith("train_bs"):
+            continue
+        timings = step.get("timings", {})
+        epoch_times = [float(row["seconds"]) for row in timings.get("epoch_timings", [])]
+        metrics = step.get("metrics", {})
+        methods = metrics.get("methods", {})
+        mlqds = methods.get("MLQDS", {}) if isinstance(methods, dict) else {}
+        cuda_memory = metrics.get("cuda_memory", {}) or {}
+        training_memory = cuda_memory.get("training", {}) if isinstance(cuda_memory, dict) else {}
+        configured = metrics.get("batch_size", {}) if isinstance(metrics, dict) else {}
+        batch_size = step.get("train_batch_size") or configured.get("train_batch_size")
+        rows.append(
+            {
+                "train_batch_size": batch_size,
+                "returncode": step.get("returncode"),
+                "elapsed_seconds": step.get("elapsed_seconds"),
+                "epoch_time_mean_seconds": (
+                    float(sum(epoch_times) / len(epoch_times)) if epoch_times else None
+                ),
+                "epoch_time_min_seconds": min(epoch_times) if epoch_times else None,
+                "epoch_time_max_seconds": max(epoch_times) if epoch_times else None,
+                "peak_allocated_mb": training_memory.get("max_allocated_mb"),
+                "peak_reserved_mb": training_memory.get("max_reserved_mb"),
+                "best_f1": metrics.get("best_f1"),
+                "mlqds_aggregate_f1": mlqds.get("aggregate_f1") if isinstance(mlqds, dict) else None,
+            }
+        )
+    return rows
+
+
 def _runtime_child_args(float32_matmul_precision: str, allow_tf32: bool) -> list[str]:
     """Return precision args forwarded to benchmark child entrypoints."""
     return [
@@ -464,6 +517,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Quoted extra args appended to run_ais_experiment.py, e.g. \"--csv_path ../AISDATA/cleaned/x.csv\".",
     )
     parser.add_argument(
+        "--train_batch_sizes",
+        type=str,
+        default=None,
+        help="Comma-separated train_batch_size sweep, e.g. '16,32,64,128'. Only valid with --mode train.",
+    )
+    parser.add_argument(
+        "--sweep_continue_on_failure",
+        action="store_true",
+        help="Continue a train_batch_sizes sweep after a failed child run. Default stops at first failure.",
+    )
+    parser.add_argument(
         "--inference_extra_args",
         type=str,
         default=None,
@@ -507,6 +571,12 @@ def main() -> None:
         raise SystemExit("--inference_csv_path is required for --mode inference and --mode both.")
     if args.mode == "inference" and not args.checkpoint:
         raise SystemExit("--checkpoint is required for --mode inference.")
+    try:
+        train_batch_sizes = _parse_train_batch_sizes(args.train_batch_sizes)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if train_batch_sizes is not None and args.mode != "train":
+        raise SystemExit("--train_batch_sizes is only supported with --mode train.")
 
     runtime_settings = apply_torch_runtime_settings(
         float32_matmul_precision=args.float32_matmul_precision,
@@ -523,11 +593,34 @@ def main() -> None:
         "seed": int(args.seed),
         "environment": _environment_metadata(args.amp_mode),
         "torch_runtime": runtime_settings,
+        "train_batch_sizes": train_batch_sizes,
         "steps": [],
     }
 
     failures = 0
-    if args.mode in {"train", "both"}:
+    if args.mode == "train" and train_batch_sizes is not None:
+        for batch_size in train_batch_sizes:
+            train_results = results_dir / f"train_bs{batch_size}"
+            checkpoint_for_step = checkpoint.with_name(f"{checkpoint.stem}_bs{batch_size}{checkpoint.suffix or '.pt'}")
+            train_command = [
+                sys.executable,
+                "-m",
+                "src.experiments.run_ais_experiment",
+                *_profile_train_args(args.profile, int(args.seed), train_results, checkpoint_for_step),
+                "--train_batch_size",
+                str(batch_size),
+                *runtime_child_args,
+                *_split_extra_args(args.train_extra_args),
+            ]
+            step = _run_child_step(f"train_bs{batch_size}", train_command, train_results, "example_run.json")
+            step["train_batch_size"] = int(batch_size)
+            artifact["steps"].append(step)
+            failed = int(step["returncode"] != 0)
+            failures += failed
+            if failed and not args.sweep_continue_on_failure:
+                break
+        artifact["train_batch_size_sweep"] = _batch_size_sweep_summary(artifact["steps"])
+    elif args.mode in {"train", "both"}:
         train_results = results_dir / "train"
         train_command = [
             sys.executable,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from src.experiments.experiment_config import ExperimentConfig, build_experiment_config
+from src.experiments.benchmark_runtime import _batch_size_sweep_summary, _parse_train_batch_sizes
 from src.experiments.torch_runtime import apply_torch_runtime_settings
 
 
@@ -24,11 +25,12 @@ def test_apply_torch_runtime_settings_sets_precision_and_tf32() -> None:
 
 
 def test_experiment_config_roundtrips_precision_controls() -> None:
-    cfg = build_experiment_config(float32_matmul_precision="high", allow_tf32=True)
+    cfg = build_experiment_config(float32_matmul_precision="high", allow_tf32=True, train_batch_size=64)
     restored = ExperimentConfig.from_dict(cfg.to_dict())
 
     assert restored.model.float32_matmul_precision == "high"
     assert restored.model.allow_tf32 is True
+    assert restored.model.train_batch_size == 64
 
 
 def test_experiment_config_loads_legacy_precision_defaults() -> None:
@@ -40,3 +42,48 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
 
     assert restored.model.float32_matmul_precision == "highest"
     assert restored.model.allow_tf32 is False
+
+
+def test_parse_train_batch_sizes() -> None:
+    assert _parse_train_batch_sizes("16, 32,64") == [16, 32, 64]
+    assert _parse_train_batch_sizes(None) is None
+
+
+def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
+    rows = _batch_size_sweep_summary(
+        [
+            {
+                "name": "train_bs32",
+                "train_batch_size": 32,
+                "returncode": 0,
+                "elapsed_seconds": 12.5,
+                "timings": {"epoch_timings": [{"seconds": 2.0}, {"seconds": 3.0}]},
+                "metrics": {
+                    "best_f1": 0.4,
+                    "batch_size": {"train_batch_size": 32},
+                    "cuda_memory": {
+                        "training": {
+                            "max_allocated_mb": 123.0,
+                            "max_reserved_mb": 256.0,
+                        }
+                    },
+                    "methods": {"MLQDS": {"aggregate_f1": 0.5}},
+                },
+            }
+        ]
+    )
+
+    assert rows == [
+        {
+            "train_batch_size": 32,
+            "returncode": 0,
+            "elapsed_seconds": 12.5,
+            "epoch_time_mean_seconds": 2.5,
+            "epoch_time_min_seconds": 2.0,
+            "epoch_time_max_seconds": 3.0,
+            "peak_allocated_mb": 123.0,
+            "peak_reserved_mb": 256.0,
+            "best_f1": 0.4,
+            "mlqds_aggregate_f1": 0.5,
+        }
+    ]

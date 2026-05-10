@@ -147,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Max gradient norm. Set <=0 to disable clipping.",
     )
+    parser.add_argument(
+        "--train_batch_size",
+        type=int,
+        default=16,
+        help="Number of trajectory windows per training optimizer step.",
+    )
     parser.add_argument("--compression_ratio", type=float, default=0.2)
     parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
     parser.add_argument("--workload", type=str, default="mixed")

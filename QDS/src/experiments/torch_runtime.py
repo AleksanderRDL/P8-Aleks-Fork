@@ -27,6 +27,32 @@ def torch_runtime_snapshot() -> dict[str, Any]:
     }
 
 
+def reset_cuda_peak_memory_stats() -> dict[str, Any]:
+    """Reset CUDA peak memory stats for the active device when CUDA is available."""
+    if not torch.cuda.is_available():
+        return {"available": False}
+    device = torch.cuda.current_device()
+    torch.cuda.reset_peak_memory_stats(device)
+    return {"available": True, "device_index": int(device)}
+
+
+def cuda_memory_snapshot() -> dict[str, Any]:
+    """Return current and peak CUDA memory stats in MiB for the active device."""
+    if not torch.cuda.is_available():
+        return {"available": False}
+    device = torch.cuda.current_device()
+    torch.cuda.synchronize(device)
+    mib = 1024.0 * 1024.0
+    return {
+        "available": True,
+        "device_index": int(device),
+        "allocated_mb": float(torch.cuda.memory_allocated(device) / mib),
+        "reserved_mb": float(torch.cuda.memory_reserved(device) / mib),
+        "max_allocated_mb": float(torch.cuda.max_memory_allocated(device) / mib),
+        "max_reserved_mb": float(torch.cuda.max_memory_reserved(device) / mib),
+    }
+
+
 def apply_torch_runtime_settings(
     *,
     float32_matmul_precision: str = "highest",

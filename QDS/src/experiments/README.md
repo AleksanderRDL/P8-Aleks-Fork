@@ -47,6 +47,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--lr`
 - `--pointwise_loss_weight`
 - `--gradient_clip_norm`
+- `--train_batch_size`
 - `--compression_ratio`
 - `--model_type {baseline,turn_aware}`
 - `--workload`
@@ -118,6 +119,11 @@ the same artifact schema.
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_runtime --mode train --profile small
 ```
+
+Use `--train_batch_sizes 16,32,64,128` with `--mode train` to run one child
+training benchmark per batch size. Each child gets its own output directory and
+checkpoint, and the top-level JSON includes `train_batch_size_sweep` rows with
+epoch-time summaries, peak CUDA memory, `best_f1`, and MLQDS aggregate F1.
 
 ## Workload Mixes
 
