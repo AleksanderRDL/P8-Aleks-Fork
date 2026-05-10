@@ -13,16 +13,13 @@ optimize for two outcomes at the same time:
 1. faster, more reliable experimentation
 2. better evidence about which model/training changes actually improve QDS
 
-Testing PyTorch nightly builds, CUDA 13.2, or newer Triton is a late optional
-experiment, not the central goal of the sprint.
-
 ## Current Starting Point
 
 Observed on 2026-05-10:
 
 - Local QDS environment: `torch 2.11.0+cu130`, CUDA runtime `13.0`,
   `triton 3.6.0`.
-- The observed `.venv` uses Python 3.14, which may make CUDA/nightly wheel
+- The observed `.venv` uses Python 3.14, which may make some CUDA package
   availability more fragile than a more common Python version.
 - `QDS/requirements.txt` pins Torch, while the repository-root
   `requirements.txt` does not.
@@ -47,8 +44,13 @@ The sprint should proceed in this order:
 3. Apply low-risk speedups.
 4. Add RTX 5060 Ti specific tuning controls.
 5. Tackle behavior-sensitive training-loop refactors.
-6. Optionally test PyTorch nightly / CUDA 13.2 as a final controlled
-   experiment.
+
+## Plan Status
+
+Status: ready to execute.
+
+This plan is intended to guide implementation. Individual tasks can still be
+split into smaller tickets as evidence comes in from benchmarks.
 
 ## Guiding Principles
 
@@ -105,12 +107,92 @@ Expensive diagnostics can have a fast/off switch for iteration, but they should
 not disappear. The project still needs diagnostics to detect weak workloads,
 collapsed models, misleading aggregate F1, and geometry tradeoffs.
 
-### Keep Nightly Isolated
+### Keep Speed And Research Work Distinct
 
-Nightly/CUDA 13.2 testing should use a separate environment. The current
-environment is already fairly modern, so nightly only earns its keep if it
-improves measured iteration time or enables a useful training path without
-making the project harder to run.
+Some tasks improve the speed and reliability of experiments. Other tasks may
+change the model, workload semantics, or training target. Keep those separate
+in run notes so it is clear whether a result changed because the system got
+faster, because the model got better, or because the benchmark changed.
+
+Examples of model-quality work:
+
+- similarity query generation
+- checkpoint selection policy
+- training objective changes
+- label construction changes
+- simplification budget policy
+
+Examples of speed/reliability work:
+
+- package setup
+- benchmark logging
+- CUDA device placement
+- TF32/BF16 controls
+- evaluation caching
+- vectorized ranking loss
+
+### Stop Or Shelve Rules
+
+Pause, revert, or isolate a change if it:
+
+- introduces NaNs
+- creates persistent collapse warnings
+- breaks core tests
+- makes benchmark output less complete
+- slows end-to-end runtime without improving model-quality evidence
+- changes workload semantics without being documented as research work
+- makes the environment harder to recreate
+
+### Python Version Decision
+
+The current `.venv` uses Python 3.14. Keep that as the current working
+reference unless it blocks CUDA package availability. If a future CUDA stack
+experiment needs wheels that are missing or unstable on Python 3.14, create a
+separate Python 3.12 environment rather than mutating the current environment.
+
+### Benchmark Artifact Schema
+
+Each benchmark artifact should include at least:
+
+- timestamp
+- git commit
+- git dirty-status summary
+- full command
+- working directory
+- dataset description
+- seed
+- Python version
+- Torch version
+- Torch CUDA runtime
+- Triton version
+- GPU name and driver when visible
+- TF32/matmul precision settings
+- AMP/BF16/FP16 settings
+- model config
+- query config
+- train/eval workload mix
+- train batch size
+- inference batch size
+- phase timings
+- epoch timings
+- peak GPU memory when available
+- aggregate F1
+- per-type F1
+- collapse diagnostics
+- geometry metrics
+
+### Default Benchmark Matrix
+
+Use three run sizes so changes can be tested at the right cost:
+
+```text
+small:   quick correctness/runtime smoke, cheap enough to run often
+medium:  representative iteration benchmark for most optimization work
+serious: slower benchmark used before accepting major training or CUDA-stack changes
+```
+
+The exact commands should be recorded in the benchmark script or README once
+the first implementation slice lands.
 
 ## Phase 1: Reproducibility And Measurement
 
@@ -151,13 +233,12 @@ Task:
   - base repository dependencies
   - QDS CPU dependencies
   - QDS CUDA dependencies
-  - optional nightly/CUDA experiment constraints
 - Document the current installable CUDA reference stack:
   `torch 2.11.0+cu130`, CUDA runtime `13.0`, `triton 3.6.0`.
 
 Benefit:
 
-- Makes CUDA 13.2/nightly tests reversible.
+- Makes dependency-stack experiments reversible.
 - Reduces the chance of accidentally comparing different dependency stacks.
 - Makes it clear whether a speedup came from code, configuration, or a new
   package stack.
@@ -203,7 +284,7 @@ Benefit:
 
 - Prevents "optimization by vibes."
 - Gives a clean reference point before touching training logic or installing
-  nightly builds.
+  alternate dependency stacks.
 
 Risk:
 
@@ -384,7 +465,7 @@ Acceptance check:
 
 ## Phase 3: RTX 5060 Ti / CUDA-Specific Tuning
 
-Goal: use the hardware better before changing PyTorch builds.
+Goal: use the hardware better with the current project setup.
 
 ### 10. Add TF32 / Matmul Precision Controls
 
@@ -448,7 +529,8 @@ Task:
 Benefit:
 
 - Can use tensor cores more directly on Blackwell-class hardware.
-- May be more impactful than a nightly build if the model remains FP32 today.
+- May be one of the most important hardware-specific tests if the model remains
+  FP32 today.
 
 Risk:
 
@@ -592,76 +674,6 @@ Acceptance check:
 - Produce a diagnostic report showing similarity answer-set sizes, support
   density, and Oracle gap over baselines.
 
-## Phase 5: Optional Nightly / CUDA 13.2 Experiment
-
-Goal: test nightly only as a controlled experiment after the current stack is
-measured and the easier optimization levers have been tried.
-
-### 18. Freeze Current-Stack Reference Results
-
-Task:
-
-- Run the benchmark matrix on the current reference stack:
-  `torch 2.11.0+cu130`.
-
-Benefit:
-
-- Creates the timing and quality reference point for CUDA 13.2/nightly.
-
-Risk:
-
-- Low.
-
-Acceptance check:
-
-- Store benchmark JSON and run logs under an artifact directory.
-
-### 19. Create A Separate Nightly/CUDA 13.2 Environment
-
-Task:
-
-- Do not mutate the current working `.venv`.
-- Create a separate environment for nightly/cu132 tests.
-
-Benefit:
-
-- Easy rollback.
-- Cleaner comparison.
-
-Risk:
-
-- Medium.
-- Nightlies can break installs, APIs, or performance.
-
-Acceptance check:
-
-- Record Torch, CUDA, Triton, driver, and GPU info in the benchmark output.
-
-### 20. Run The Same Benchmark Matrix
-
-Task:
-
-- Compare:
-  - FP32 default
-  - TF32
-  - BF16 autocast
-  - best training batch size
-  - best inference batch size
-
-Benefit:
-
-- Determines whether CUDA 13.2/nightly helps this specific workload.
-
-Risk:
-
-- Medium.
-- Need to separate install noise from actual speedups.
-
-Acceptance check:
-
-- Keep nightly only if it improves wall time meaningfully without unacceptable
-  F1 drift or development friction.
-
 ## Recommended First Implementation Slice
 
 The first practical slice should be:
@@ -678,16 +690,15 @@ The first practical slice should be:
 This gives a strong performance foundation without changing the most
 behavior-sensitive learning logic.
 
-## Decision Rule For Nightly Builds
+## Optional Spare-Time CUDA Stack Experiment
 
-Try nightly/CUDA 13.2 only after these are true:
+This is not a sprint goal. Treat it as a fun end-of-sprint experiment only if
+the main plan is already producing useful benchmark results.
 
-- the current stack has saved benchmark reference results
-- GPU utilization is known during training
-- TF32 and batch-size tuning have been tested
-- CUDA inference/evaluation has been tested
-- serious runs use an explicit checkpoint-selection strategy
+If there is time to spare, create a separate throwaway environment and compare
+an alternate PyTorch/CUDA stack against the same benchmark artifact schema.
+Do not mutate the current working `.venv`.
 
-Keep nightly only if it gives a measured improvement in end-to-end runtime or
-training step time, or enables a useful model/training improvement, without
-making installation, reproducibility, or model-quality interpretation worse.
+Only keep notes from that experiment if it produces a clear speed or iteration
+benefit without making installation, reproducibility, or model-quality
+interpretation worse.
