@@ -526,6 +526,20 @@ cd QDS
 ../.venv/bin/python -m pytest tests/test_range_point_evaluation.py tests/test_metrics.py
 ```
 
+Completion note, 2026-05-10:
+
+- Replaced Python tuple-set construction in range point-F1 with boolean mask
+  math over the original `retained_mask` and the range query box mask.
+- Made full/simplified trajectory views lazy inside `score_retained_mask`, so
+  range-only scoring avoids building simplified point tensors entirely.
+- Range F1 now scores retained point instances directly, so exact duplicate
+  AIS rows count as separate query-hit mass instead of being collapsed by row
+  value.
+- Added a duplicate-row regression in `tests/test_range_point_evaluation.py`.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_range_point_evaluation.py tests/test_metrics.py`
+  and `.venv/bin/python -m pytest QDS/tests`.
+
 ### 9. Cache Reusable Evaluation Query Results
 
 Task:

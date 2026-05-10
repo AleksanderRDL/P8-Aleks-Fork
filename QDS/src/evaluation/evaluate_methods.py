@@ -37,27 +37,10 @@ def _range_box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Ten
     )
 
 
-def _range_point_f1(points: torch.Tensor, simplified: torch.Tensor, params: dict[str, float]) -> float:
-    """Compute range F1 over point hits instead of trajectory-presence hits."""
-    full_mask = _range_box_mask(points, params)
-    simplified_mask = _range_box_mask(simplified, params)
-
-    full_points = {tuple(row) for row in points[full_mask].tolist()}
-    simplified_points = {tuple(row) for row in simplified[simplified_mask].tolist()}
-
-    full_hits = len(full_points)
-    simplified_hits = len(simplified_points)
-    if full_hits == 0 and simplified_hits == 0:
-        return 1.0
-    if full_hits == 0 or simplified_hits == 0:
-        return 0.0
-
-    true_positives = len(full_points.intersection(simplified_points))
-    precision = float(true_positives / simplified_hits)
-    recall = float(true_positives / full_hits)
-    if precision + recall == 0.0:
-        return 0.0
-    return float((2.0 * precision * recall) / (precision + recall))
+def _range_point_f1(points: torch.Tensor, retained_mask: torch.Tensor, params: dict[str, float]) -> float:
+    """Compute range F1 over retained point instances inside the query box."""
+    range_mask = _range_box_mask(points, params)
+    return _point_subset_f1(retained_mask.to(device=points.device, dtype=torch.bool), range_mask)
 
 
 def _trajectory_id_per_point(n_points: int, boundaries: list[tuple[int, int]], device: torch.device) -> torch.Tensor:
@@ -194,28 +177,43 @@ def score_retained_mask(
     kept for diagnostic comparison; it double-penalizes a method that returns
     the right answer set via different points than ground truth's "support".
     """
-    simplified = points[retained_mask]
-    full_traj = _split_by_boundaries(points, boundaries)
-    simp_boundaries: list[tuple[int, int]] = []
-    cursor = 0
-    for start, end in boundaries:
-        n = int(retained_mask[start:end].sum().item())
-        simp_boundaries.append((cursor, cursor + n))
-        cursor += n
-    simp_traj = _split_by_boundaries(simplified, simp_boundaries)
+    full_traj: list[torch.Tensor] | None = None
+    simplified: torch.Tensor | None = None
+    simp_boundaries: list[tuple[int, int]] | None = None
+    simp_traj: list[torch.Tensor] | None = None
+
+    def full_views() -> list[torch.Tensor]:
+        nonlocal full_traj
+        if full_traj is None:
+            full_traj = _split_by_boundaries(points, boundaries)
+        return full_traj
+
+    def simplified_views() -> tuple[torch.Tensor, list[torch.Tensor], list[tuple[int, int]]]:
+        nonlocal simplified, simp_boundaries, simp_traj
+        if simplified is None or simp_boundaries is None or simp_traj is None:
+            simplified = points[retained_mask]
+            simp_boundaries = []
+            cursor = 0
+            for start, end in boundaries:
+                n = int(retained_mask[start:end].sum().item())
+                simp_boundaries.append((cursor, cursor + n))
+                cursor += n
+            simp_traj = _split_by_boundaries(simplified, simp_boundaries)
+        return simplified, simp_traj, simp_boundaries
 
     answer_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
     combined_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
     for query in typed_queries:
         qtype = query["type"]
         if qtype == "range":
-            point_f1 = _range_point_f1(points, simplified, query["params"])
+            point_f1 = _range_point_f1(points, retained_mask, query["params"])
             answer_scores[qtype].append(point_f1)
             combined_scores[qtype].append(point_f1)
             continue
 
-        full_res = execute_typed_query(points, full_traj, query, boundaries)
-        simp_res = execute_typed_query(simplified, simp_traj, query, simp_boundaries)
+        full_res = execute_typed_query(points, full_views(), query, boundaries)
+        simplified_now, simp_traj_now, simp_boundaries_now = simplified_views()
+        simp_res = execute_typed_query(simplified_now, simp_traj_now, query, simp_boundaries_now)
         if qtype == "knn":
             ans = f1_score(set(full_res), set(simp_res))
             support = _knn_representative_mask(points, boundaries, set(full_res), query["params"])

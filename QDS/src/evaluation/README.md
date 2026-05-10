@@ -20,7 +20,7 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Metrics
 
-- Range queries are scored over point hits inside the spatiotemporal box, so sparse point retention is measured by how much of the original query-hit mass it preserves rather than by one retained point recovering an entire trajectory.
+- Range queries are scored over retained point hits inside the spatiotemporal box, so sparse point retention is measured by how much of the original query-hit mass it preserves rather than by one retained point recovering an entire trajectory. Exact duplicate AIS rows are counted as separate point instances.
 - kNN, similarity, and clustering queries report pure answer-set agreement as `AnswerF1`; `CombinedF1` additionally multiplies answer agreement by retained support-point quality for diagnostic comparison.
 - `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.
 - `clustering_f1(original_labels, simplified_labels)` - F1 over same-cluster trajectory co-membership pairs, ignoring noise label `-1`.
