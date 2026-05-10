@@ -27,8 +27,9 @@ Observed on 2026-05-10:
 - `../.venv/bin/python -m pytest tests` passes from inside `QDS`.
 - `.venv/bin/python -m pytest QDS/tests` now passes from the repository root
   through the root `pyproject.toml` pytest configuration.
-- GPU access was blocked from the audit shell, so utilization and real CUDA
-  timing still need to be measured on the local GPU run.
+- GPU telemetry is now visible from the benchmark wrapper on the local shell:
+  Torch and `nvidia-smi` report an RTX 5060 Ti with 16GB class memory. Real
+  utilization under larger training loads still needs measurement.
 - TF32 matmul is currently disabled in the observed environment.
 - Existing QDS runs are useful reference points for timing and sanity checks,
   but they should not be treated as "good model" regression baselines.
@@ -325,6 +326,21 @@ cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_runtime --help
 ```
 
+Completion note, 2026-05-10:
+
+- Added `src.experiments.benchmark_runtime`.
+- The wrapper can run training, saved-checkpoint inference, or both through the
+  existing `run_ais_experiment` and `run_inference` CLIs.
+- It writes `benchmark_runtime.json` plus child stdout logs under
+  `--results_dir`.
+- The artifact records Python, Torch, CUDA runtime, Triton, visible GPU
+  metadata, TF32/matmul settings, AMP intent, git commit/dirty status, full
+  child commands, seed, parsed phase timings, parsed epoch timings, and final
+  matched-workload F1 metrics.
+- Verified `../.venv/bin/python -m src.experiments.benchmark_runtime --help`.
+- Verified a small synthetic train benchmark:
+  `../.venv/bin/python -m src.experiments.benchmark_runtime --mode train --profile small --results_dir artifacts/benchmarks/smoke_runtime --seed 123`.
+
 ### 4. Add GPU Utilization Guidance
 
 Task:
@@ -356,6 +372,15 @@ Acceptance check:
 
 - The normal training shell can see the RTX 5060 Ti with `nvidia-smi`, or the
   benchmark output clearly notes that GPU telemetry was unavailable.
+
+Completion note, 2026-05-10:
+
+- Added runtime benchmark and GPU telemetry guidance to `QDS/README.md`.
+- The benchmark wrapper probes `nvidia-smi` and records either GPU rows or an
+  explicit unavailable reason.
+- On the local shell, the smoke benchmark artifact recorded:
+  `NVIDIA GeForce RTX 5060 Ti`, driver `596.36`, and Torch CUDA availability
+  with `torch 2.11.0+cu130`.
 
 ## Phase 2: Low-Risk Speedups
 

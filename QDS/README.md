@@ -80,6 +80,59 @@ The current `.venv` uses Python 3.14. Keep it as the local reference unless it
 blocks CUDA package availability; if that happens, create a separate Python
 3.12 environment instead of mutating this one.
 
+## Runtime Benchmarks And GPU Telemetry
+
+Use the runtime benchmark wrapper before accepting optimization changes. It
+runs the existing experiment/inference CLIs, captures stdout, parses phase and
+epoch timings, records git state and dependency versions, and writes a stable
+JSON artifact.
+
+```bash
+cd QDS
+../.venv/bin/python -m src.experiments.benchmark_runtime --help
+
+# Cheap synthetic training benchmark.
+../.venv/bin/python -m src.experiments.benchmark_runtime \
+  --mode train \
+  --profile small \
+  --results_dir artifacts/benchmarks/runtime_small
+
+# Saved-checkpoint inference benchmark on a cleaned CSV.
+../.venv/bin/python -m src.experiments.benchmark_runtime \
+  --mode inference \
+  --checkpoint artifacts/benchmarks/runtime_small/benchmark_model.pt \
+  --inference_csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
+  --results_dir artifacts/benchmarks/inference_small \
+  --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16"
+```
+
+Benchmark artifacts are written under the selected `--results_dir`, including
+`benchmark_runtime.json` and child command stdout logs. The JSON records Python,
+Torch, CUDA runtime, Triton, TF32/matmul settings, AMP intent, train batch size
+from the run config, phase timings, epoch timings, final F1 metrics, full child
+commands, seed, git commit, and dirty status.
+
+While a training run is active, measure live GPU utilization from another shell:
+
+```bash
+watch -n 0.5 nvidia-smi
+```
+
+For a streaming console view:
+
+```bash
+nvidia-smi dmon
+```
+
+For one-shot telemetry matching the benchmark artifact fields:
+
+```bash
+nvidia-smi --query-gpu=name,driver_version,memory.total,utilization.gpu,utilization.memory --format=csv
+```
+
+If `nvidia-smi` is unavailable or blocked, `benchmark_runtime.json` records an
+explicit `gpu_telemetry.unavailable_reason`.
+
 The cleaned-CSV smoke target uses `--max_points_per_segment` and
 `--max_segments` so it validates the real loader without turning into a full
 research run. New sprint artifacts should be written under `artifacts/` or

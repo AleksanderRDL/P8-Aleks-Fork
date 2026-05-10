@@ -12,6 +12,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 | `geojson_writers.py` | GeoJSON and simplified-CSV writers plus trajectory length reporting helpers. |
 | `run_ais_experiment.py` | Main entry point. Loads CSV or synthetic data and prints the result tables. |
 | `run_inference.py` | Load a saved checkpoint and evaluate it on a CSV without retraining. |
+| `benchmark_runtime.py` | Runtime benchmark wrapper that records environment, git state, commands, timings, and final metrics. |
 
 ## CLI
 
@@ -96,6 +97,19 @@ forces a rebuild when you want to verify the source parser path.
 4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
 5. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
 6. Optionally write eval queries as GeoJSON through `--save_queries_dir`, and simplified trajectory CSVs through `--save_simplified_dir`.
+
+## Runtime Benchmark Wrapper
+
+`benchmark_runtime.py` shells out to the existing training and inference CLIs so
+the measured path matches normal usage. It writes `benchmark_runtime.json` under
+`--results_dir`, along with child stdout logs. Use it before and after speed
+changes so runtime, environment, GPU visibility, and final F1 are compared from
+the same artifact schema.
+
+```bash
+cd QDS
+../.venv/bin/python -m src.experiments.benchmark_runtime --mode train --profile small
+```
 
 ## Workload Mixes
 

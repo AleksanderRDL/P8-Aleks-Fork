@@ -14,6 +14,8 @@ AISDATA/cleaned/*
 local_hadoop/
 local_java/
 spark_temp/
+artifacts/
+QDS/artifacts/
 
 # ---------------------------------
 # Python: bytecode and extensions
