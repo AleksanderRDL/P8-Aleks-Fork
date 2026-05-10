@@ -56,6 +56,11 @@ Run preflight before starting an expensive tmux benchmark:
 make benchmark-preflight
 ```
 
+Preflight checks tmux availability, Python/Torch import, cleaned CSV presence,
+artifact/cache write access, disk space, available RAM, swap, GPU visibility,
+and git worktree state. RAM/swap and dirty-git findings are warnings so the
+run can still proceed when the choice is intentional.
+
 List benchmark attempts in the active family:
 
 ```bash
@@ -81,6 +86,8 @@ It is safe to delete:
 - `artifacts/results/smoke_*`
 - `artifacts/benchmarks/*smoke*`
 - `artifacts/benchmarks/*layout_smoke*`
+- old task acceptance smoke runs such as `artifacts/benchmarks/task*_smoke`
+  and `artifacts/benchmarks/task*_small`
 - cache directories created only for smoke runs
 
 Keep benchmark family roots that contain serious runs until their comparison

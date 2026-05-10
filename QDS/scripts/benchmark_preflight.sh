@@ -15,10 +15,13 @@ Options:
                        artifacts/benchmarks/range_workload_matrix_min_realistic.
   --python PATH        Python executable. Default: ../.venv/bin/python.
   --min-free-gb N      Required free space on artifact filesystem. Default: 20.
+  --min-ram-gb N       Warn below this available RAM threshold. Default: 32.
+  --min-swap-gb N      Warn below this total swap threshold. Default: 8.
   -h, --help           Show this help.
 
 Environment variables with the same names used by run_range_benchmark_tmux.sh
-are honored: SESSION, CSV_PATH, CACHE_DIR, ARTIFACT_ROOT, PYTHON.
+are honored: SESSION, CSV_PATH, CACHE_DIR, ARTIFACT_ROOT, PYTHON. Thresholds
+can also be set with MIN_FREE_GB, MIN_AVAILABLE_RAM_GB, and MIN_SWAP_GB.
 EOF
 }
 
@@ -29,6 +32,8 @@ CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_matrix_min_realistic}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_matrix_min_realistic}"
 PYTHON="${PYTHON:-$QDS_ROOT/../.venv/bin/python}"
 MIN_FREE_GB="${MIN_FREE_GB:-20}"
+MIN_AVAILABLE_RAM_GB="${MIN_AVAILABLE_RAM_GB:-32}"
+MIN_SWAP_GB="${MIN_SWAP_GB:-8}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +59,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --min-free-gb)
       MIN_FREE_GB="$2"
+      shift 2
+      ;;
+    --min-ram-gb)
+      MIN_AVAILABLE_RAM_GB="$2"
+      shift 2
+      ;;
+    --min-swap-gb)
+      MIN_SWAP_GB="$2"
       shift 2
       ;;
     -h|--help)
@@ -94,6 +107,10 @@ abs_path() {
 
 is_positive_int() {
   [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -gt 0 ]]
+}
+
+kb_to_gb_floor() {
+  echo $(("$1" / 1024 / 1024))
 }
 
 cd "$QDS_ROOT" || exit 2
@@ -173,6 +190,39 @@ else
   fail "--min-free-gb must be a positive integer: $MIN_FREE_GB"
 fi
 
+if [[ -r /proc/meminfo ]]; then
+  mem_available_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+  mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+  swap_total_kb="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
+  swap_free_kb="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
+  mem_available_gb="$(kb_to_gb_floor "${mem_available_kb:-0}")"
+  mem_total_gb="$(kb_to_gb_floor "${mem_total_kb:-0}")"
+  swap_total_gb="$(kb_to_gb_floor "${swap_total_kb:-0}")"
+  swap_free_gb="$(kb_to_gb_floor "${swap_free_kb:-0}")"
+
+  ok "memory available: ${mem_available_gb}GB / ${mem_total_gb}GB; swap free: ${swap_free_gb}GB / ${swap_total_gb}GB"
+
+  if is_positive_int "$MIN_AVAILABLE_RAM_GB"; then
+    min_ram_kb=$((MIN_AVAILABLE_RAM_GB * 1024 * 1024))
+    if [[ "${mem_available_kb:-0}" -lt "$min_ram_kb" ]]; then
+      warn "available RAM is below ${MIN_AVAILABLE_RAM_GB}GB; two-day range benchmarks may hit host-memory pressure"
+    fi
+  else
+    fail "--min-ram-gb must be a positive integer: $MIN_AVAILABLE_RAM_GB"
+  fi
+
+  if is_positive_int "$MIN_SWAP_GB"; then
+    min_swap_kb=$((MIN_SWAP_GB * 1024 * 1024))
+    if [[ "${swap_total_kb:-0}" -lt "$min_swap_kb" ]]; then
+      warn "total swap is below ${MIN_SWAP_GB}GB; crashes may be abrupt if RAM fills"
+    fi
+  else
+    fail "--min-swap-gb must be a positive integer: $MIN_SWAP_GB"
+  fi
+else
+  warn "/proc/meminfo is unavailable; skipping RAM/swap preflight"
+fi
+
 if command -v nvidia-smi >/dev/null 2>&1; then
   gpu_line="$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null | head -1)"
   if [[ -n "$gpu_line" ]]; then
@@ -182,6 +232,18 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   fi
 else
   warn "nvidia-smi is not available; benchmark can run but GPU telemetry will be limited"
+fi
+
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git_commit="$(git rev-parse --short HEAD 2>/dev/null || true)"
+  dirty_count="$(git status --short --untracked-files=all 2>/dev/null | wc -l)"
+  if [[ "$dirty_count" -eq 0 ]]; then
+    ok "git worktree is clean at ${git_commit:-unknown}"
+  else
+    warn "git worktree has $dirty_count changed/untracked paths at ${git_commit:-unknown}; record or commit the exact code state before comparing serious runs"
+  fi
+else
+  warn "git is unavailable or this is not a git worktree; code-state preflight skipped"
 fi
 
 echo "[summary] failures=$failures warnings=$warnings"

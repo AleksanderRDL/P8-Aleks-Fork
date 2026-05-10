@@ -10,6 +10,7 @@ CLEANED_CSV ?=
 BENCHMARK_SESSION ?= qds-range-benchmark
 BENCHMARK_RUN_ID ?=
 BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_matrix_min_realistic
+BENCHMARK_CACHE ?= artifacts/cache/range_workload_matrix_min_realistic
 CONFIRM ?=
 
 .PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv benchmark-preflight list-runs clean-smoke-artifacts range-benchmark-tmux
@@ -35,6 +36,7 @@ help:
 	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
 	@echo "  BENCHMARK_RUN_ID=$(BENCHMARK_RUN_ID)"
 	@echo "  BENCHMARK_FAMILY=$(BENCHMARK_FAMILY)"
+	@echo "  BENCHMARK_CACHE=$(BENCHMARK_CACHE)"
 
 check-env:
 	$(PYTHON) -V
@@ -77,7 +79,7 @@ smoke-csv:
 		--results_dir "$(CSV_RESULTS_DIR)"
 
 benchmark-preflight:
-	SESSION="$(BENCHMARK_SESSION)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" scripts/benchmark_preflight.sh
+	SESSION="$(BENCHMARK_SESSION)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/benchmark_preflight.sh
 
 list-runs:
 	$(PYTHON) scripts/list_benchmark_runs.py --family "$(BENCHMARK_FAMILY)"
@@ -86,4 +88,4 @@ clean-smoke-artifacts:
 	scripts/clean_smoke_artifacts.sh $(if $(CONFIRM),--yes,)
 
 range-benchmark-tmux:
-	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" scripts/run_range_benchmark_tmux.sh
+	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/run_range_benchmark_tmux.sh

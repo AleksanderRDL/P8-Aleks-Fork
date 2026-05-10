@@ -38,6 +38,14 @@ paths=(
   artifacts/benchmarks/matrix_smoke_csv
   artifacts/benchmarks/smoke_range_matrix_patch
   artifacts/benchmarks/smoke_runtime
+  artifacts/benchmarks/task7_smoke
+  artifacts/benchmarks/task10_default_smoke
+  artifacts/benchmarks/task10_tf32_smoke
+  artifacts/benchmarks/task11_bs_smoke
+  artifacts/benchmarks/task12_bf16_small
+  artifacts/benchmarks/task12_tf32_small
+  artifacts/benchmarks/task13_infbs1
+  artifacts/benchmarks/task13_infbs4
   artifacts/benchmarks/tmux_layout_smoke
   artifacts/cache/matrix_smoke_csv
   artifacts/cache/smoke_cleaned_csv

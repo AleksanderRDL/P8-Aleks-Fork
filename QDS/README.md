@@ -268,6 +268,11 @@ The first command is a dry run. The second deletes only known smoke/test
 artifact directories. Artifact layout and cleanup conventions are documented in
 [`artifacts/README.md`](artifacts/README.md).
 
+`make benchmark-preflight` checks tmux, Python/Torch, cleaned CSV availability,
+artifact/cache write access, disk space, RAM/swap, GPU visibility, and git
+worktree state. Low RAM/swap and dirty-git findings are warnings rather than
+hard failures so intentional exploratory runs are still possible.
+
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and
 `--allow_tf32` / `--no-allow_tf32`, plus `--amp_mode {off,bf16,fp16}`.

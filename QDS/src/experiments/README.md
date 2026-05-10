@@ -219,6 +219,9 @@ make clean-smoke-artifacts CONFIRM=1
 dry-runs by default and deletes only known smoke/test artifact directories when
 `CONFIRM=1` is set. The artifact policy is tracked in
 `QDS/artifacts/README.md`.
+`make benchmark-preflight` also reports available RAM, swap, and git worktree
+state before expensive runs; these are warnings unless a required prerequisite
+is missing.
 
 ## Workload Mixes
 
