@@ -19,6 +19,14 @@ artifacts/
 QDS/artifacts/*
 !QDS/artifacts/README.md
 
+
+# ---------------------------------
+# Frontend_ work currently on hold
+# ---------------------------------
+frontend/
+
+
+
 # ---------------------------------
 # Python: bytecode and extensions
 # ---------------------------------
