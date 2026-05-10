@@ -20,8 +20,8 @@ def _known_dataclass_values(cls: type, data: dict[str, Any]) -> dict[str, Any]:
 class DataConfig:
     """Data loading and splitting configuration. See src/data/README.md for details."""
 
-    n_ships: int = 24
-    n_points_per_ship: int = 200
+    n_ships: int | None = 24
+    n_points_per_ship: int | None = 200
     min_points_per_segment: int = 4
     max_points_per_segment: int | None = None
     max_time_gap_seconds: float | None = 3600.0
@@ -138,7 +138,7 @@ class ModelConfig:
 class BaselineConfig:
     """Baseline methods configuration. See src/evaluation/README.md for details."""
 
-    include_oracle: bool = False
+    include_oracle: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -305,10 +305,11 @@ def build_experiment_config(
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
     segment_cap = max_points_per_segment if max_points_per_segment is not None else max_points_per_ship
+    uses_csv = bool(csv_path or train_csv_path or eval_csv_path)
     return ExperimentConfig(
         data=DataConfig(
-            n_ships=n_ships,
-            n_points_per_ship=n_points,
+            n_ships=None if uses_csv else n_ships,
+            n_points_per_ship=None if uses_csv else n_points,
             min_points_per_segment=min_points_per_segment,
             max_points_per_segment=segment_cap,
             max_time_gap_seconds=max_time_gap_seconds,

@@ -112,11 +112,8 @@ def _normalized_coverage_target(value: float | None) -> float | None:
 
 
 def _validation_query_count(config: ExperimentConfig) -> int:
-    """Use a broader validation workload for less seed-specific F1 checkpointing."""
-    doubled = max(int(config.query.n_queries), int(config.query.n_queries) * 2)
-    if config.query.max_queries is None:
-        return doubled
-    return min(doubled, max(int(config.query.n_queries), int(config.query.max_queries)))
+    """Match validation query count to final eval query count for comparable checkpoint F1."""
+    return max(1, int(config.query.n_queries))
 
 
 def _range_diagnostic_duplicate_threshold(config: ExperimentConfig) -> float | None:
@@ -543,23 +540,24 @@ def run_experiment_pipeline(
                     query_cache=eval_query_cache,
                 )
 
-        eval_labels, _ = compute_typed_importance_labels(
-            points=test_points,
-            boundaries=test_boundaries,
-            typed_queries=eval_workload.typed_queries,
-            seed=seeds.eval_query_seed,
-        )
-        oracle = OracleMethod(labels=eval_labels, workload_mix=eval_mix)
-        with _phase(f"  eval {oracle.name}"):
-            matched[oracle.name] = evaluate_method(
-                method=oracle,
+        if config.baselines.include_oracle:
+            eval_labels, _ = compute_typed_importance_labels(
                 points=test_points,
                 boundaries=test_boundaries,
                 typed_queries=eval_workload.typed_queries,
-                workload_mix=eval_mix,
-                compression_ratio=config.model.compression_ratio,
-                query_cache=eval_query_cache,
+                seed=seeds.eval_query_seed,
             )
+            oracle = OracleMethod(labels=eval_labels, workload_mix=eval_mix)
+            with _phase(f"  eval {oracle.name}"):
+                matched[oracle.name] = evaluate_method(
+                    method=oracle,
+                    points=test_points,
+                    boundaries=test_boundaries,
+                    typed_queries=eval_workload.typed_queries,
+                    workload_mix=eval_mix,
+                    compression_ratio=config.model.compression_ratio,
+                    query_cache=eval_query_cache,
+                )
 
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
@@ -604,8 +602,10 @@ def run_experiment_pipeline(
         "eval_mix": eval_mix,
         "train_query_count": len(train_workload.typed_queries),
         "eval_query_count": len(eval_workload.typed_queries),
+        "selection_query_count": len(selection_workload.typed_queries) if selection_workload is not None else None,
         "train_query_coverage": train_workload.coverage_fraction,
         "eval_query_coverage": eval_workload.coverage_fraction,
+        "selection_query_coverage": selection_workload.coverage_fraction if selection_workload is not None else None,
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,

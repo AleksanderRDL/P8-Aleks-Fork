@@ -49,6 +49,8 @@ REAL_USECASE_PROFILE_ARGS = [
     "0.05",
     "--epochs",
     "20",
+    "--early_stopping_patience",
+    "8",
     "--checkpoint_smoothing_window",
     "1",
     "--mlqds_temporal_fraction",
@@ -385,8 +387,10 @@ def _profile_settings(profile: str) -> dict[str, int | float | str]:
             "range_time_fraction": REAL_USECASE_RANGE_TIME_FRACTION,
             "compression_ratio": 0.05,
             "epochs": 20,
+            "early_stopping_patience": 8,
             "checkpoint_selection_metric": "f1",
             "checkpoint_f1_variant": "answer",
+            "f1_diagnostic_every": 1,
             "checkpoint_smoothing_window": 1,
             "mlqds_temporal_fraction": 0.10,
         }
@@ -825,6 +829,9 @@ def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict
                 "example_run_json": row.get("example_run_path"),
                 "stdout_log": row.get("stdout_path"),
                 "matched_table": str(Path(str(row.get("run_dir"))) / "matched_table.txt") if row.get("run_dir") else None,
+                "simplified_eval_dir": str(Path(str(row.get("run_dir"))) / "simplified_eval")
+                if row.get("run_dir")
+                else None,
                 "range_diagnostics": str(Path(str(row.get("run_dir"))) / "range_workload_diagnostics.json")
                 if row.get("run_dir")
                 else None,
@@ -915,7 +922,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--f1_diagnostic_every",
         type=int,
-        default=2,
+        default=1,
         help="Held-out query-F1 diagnostic cadence passed to each child run.",
     )
     parser.add_argument(

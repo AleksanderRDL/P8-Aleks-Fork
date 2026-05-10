@@ -94,7 +94,7 @@ forces a rebuild when you want to verify the source parser path.
 - `DataConfig` - CSV paths, synthetic data size, and legacy train/validation split fractions.
 - `QueryConfig` - workload size, optional target point coverage, workload label, train/eval workload mixes, and `similarity_top_k`.
 - `ModelConfig` - embedding sizes, transformer depth, chunk size, dropout, compression ratio, ranking-loss hyperparameters, checkpoint-selection diagnostics, and torch precision controls.
-- `BaselineConfig` - baseline toggles such as `include_oracle`.
+- `BaselineConfig` - baseline toggles such as `include_oracle`, enabled by default for matched-eval label Oracle comparisons.
 - `VisualizationConfig` - current hook for optional plotting.
 - `TypedQueryWorkload` - padded query features, original typed query dicts, and query type IDs.
 - `ExperimentConfig` - top-level container that nests the other configs.
@@ -104,7 +104,7 @@ forces a rebuild when you want to verify the source parser path.
 
 1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
 2. Generate independent train and eval typed query workloads from the respective trajectory sets; range/kNN anchors use the 70/30 density sampler described in `src/queries`.
-3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is exact held-out query F1 on a validation workload. `f1_diagnostic_every` controls how often held-out F1 is evaluated and therefore which epochs are eligible for F1-based checkpoint selection. `checkpoint_f1_variant=answer` selects on pure answer-set F1; `checkpoint_f1_variant=combined` compares against the legacy answer/support product. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints below that baseline. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
+3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is exact held-out query F1 on a validation workload using the same requested query count as final eval. `f1_diagnostic_every` controls how often held-out F1 is evaluated and therefore which epochs are eligible for F1-based checkpoint selection. `checkpoint_f1_variant=answer` selects on pure answer-set F1; `checkpoint_f1_variant=combined` compares against the legacy answer/support product. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints below that baseline. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
 4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
 5. Reuse one evaluation query cache across matched methods so full-data query answers and support masks are not recomputed for every baseline.
 6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, torch runtime precision settings, plus `best_epoch`, `best_loss`, `best_f1`, `checkpoint_selection_metric`, and `checkpoint_f1_variant` training metadata.
@@ -167,7 +167,8 @@ against cache hits. The profile uses 400 range queries, a 30% target query
 coverage, `range_spatial_fraction=0.018`, `range_time_fraction=0.036`, 5%
 retained-point compression, 20 epochs, answer-set F1 checkpointing, no
 checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics every
-2 epochs. Leave `--max_points_per_segment`, `--max_segments`, and
+epoch. It enables `early_stopping_patience=8` so non-improving F1 runs can stop
+before all 20 epochs. Leave `--max_points_per_segment`, `--max_segments`, and
 `--max_trajectories` unset for this profile so all valid segments and points
 from both days are used.
 
@@ -189,10 +190,12 @@ artifact_index.json
 benchmark_matrix.{json,csv,md}
 logs/
 variants/<variant>/
+  simplified_eval/
 ```
 
 Use one run directory per benchmark attempt. The child experiment artifacts for
-each variant live under `variants/<variant>/`; tmux launcher logs live under
+each variant live under `variants/<variant>/`; default simplified eval CSVs live
+under `variants/<variant>/simplified_eval/`; tmux launcher logs live under
 `logs/`. The family root keeps `runs_index.csv` with the latest status per run
 and `runs_index_events.jsonl` with status history.
 Child experiment stdout is streamed live through the matrix console and written

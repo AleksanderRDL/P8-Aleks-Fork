@@ -108,6 +108,8 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     assert "--n_queries" in args
     assert args[args.index("--n_queries") + 1] == "400"
     assert args[args.index("--compression_ratio") + 1] == "0.05"
+    assert args[args.index("--early_stopping_patience") + 1] == "8"
+    assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
     assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.10"
     assert "--n_ships" not in args

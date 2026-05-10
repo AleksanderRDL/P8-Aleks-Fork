@@ -28,7 +28,8 @@ from src.experiments.benchmark_matrix import (
     _write_family_indexes,
     _variant_run_dir,
 )
-from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes
+from src.experiments.experiment_config import build_experiment_config
+from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_mixes
 
 
 def test_matrix_name_list_rejects_mixed_workloads() -> None:
@@ -96,6 +97,8 @@ def test_profile_args_use_csv_when_provided() -> None:
         "0.05",
         "--epochs",
         "20",
+        "--early_stopping_patience",
+        "8",
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
@@ -151,6 +154,8 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "0.05",
         "--epochs",
         "20",
+        "--early_stopping_patience",
+        "8",
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
@@ -184,7 +189,7 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
 
     profile_args = _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False)
 
-    assert profile_args[4:20] == [
+    assert profile_args[4:22] == [
         "--n_queries",
         "400",
         "--query_coverage",
@@ -197,6 +202,8 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
         "0.05",
         "--epochs",
         "20",
+        "--early_stopping_patience",
+        "8",
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
@@ -205,6 +212,24 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
     assert "--max_points_per_segment" not in profile_args
     assert "--max_segments" not in profile_args
     assert "--max_trajectories" not in profile_args
+
+
+def test_validation_query_count_matches_eval_workload_shape() -> None:
+    cfg = build_experiment_config(n_queries=400, query_coverage=0.30, max_queries=None)
+
+    assert _validation_query_count(cfg) == 400
+
+
+def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:
+    cfg = build_experiment_config(
+        n_ships=24,
+        n_points=200,
+        train_csv_path="../AISDATA/cleaned/day1.csv",
+        eval_csv_path="../AISDATA/cleaned/day2.csv",
+    )
+
+    assert cfg.data.n_ships is None
+    assert cfg.data.n_points_per_ship is None
 
 
 def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:

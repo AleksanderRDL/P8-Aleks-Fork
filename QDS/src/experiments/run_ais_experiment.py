@@ -90,23 +90,9 @@ def _load_csv_trajectories(label: str, csv_path: str, args, load_kwargs: dict) -
     return trajectories, mmsis, audit, audit.to_dict()
 
 
-def _project_root() -> Path:
-    """Find the repository root so default AISDATA outputs land in the shared folder."""
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "AISDATA").is_dir():
-            return parent
-    return Path.cwd()
-
-
 def _default_simplified_dir(args) -> str:
-    """Build a default run directory in AISDATA/ML_processed_AIS_files for simplified CSV output."""
-    eval_stem = Path(args.eval_csv_path).stem if args.eval_csv_path else "eval"
-    cov = args.query_coverage
-    cov_tag = f"cov{float(cov):g}" if cov is not None else f"q{int(args.n_queries)}"
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_workload = str(args.workload).replace("/", "_").replace(" ", "_")
-    run_name = f"run_{eval_stem}_{cov_tag}_{safe_workload}_seed{int(args.seed)}_{timestamp}"
-    return str(_project_root() / "AISDATA" / "ML_processed_AIS_files" / run_name)
+    """Build a run-local default directory for simplified CSV output."""
+    return str(Path(args.results_dir) / "simplified_eval")
 
 
 def main() -> None:
@@ -262,6 +248,8 @@ def main() -> None:
         trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
         data_audit = {"csv": audit_payload}
     else:
+        if config.data.n_ships is None or config.data.n_points_per_ship is None:
+            raise ValueError("Synthetic data generation requires n_ships and n_points_per_ship.")
         print(f"[load-data] generating synthetic data "
               f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship})", flush=True)
         trajectories = generate_synthetic_ais_data(

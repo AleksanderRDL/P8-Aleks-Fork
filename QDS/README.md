@@ -162,7 +162,8 @@ range queries, 30% target query coverage, narrower range boxes
 (`range_spatial_fraction=0.018`, `range_time_fraction=0.036`), 5%
 retained-point compression, 20 epochs, answer-set F1 checkpoint selection,
 no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics
-every 2 epochs.
+every epoch. It also enables `early_stopping_patience=8`, so clearly
+non-improving F1 runs stop before consuming all 20 epochs.
 
 Benchmark matrix runs are organized as one directory per run. The tmux launcher
 uses this layout automatically:
@@ -187,6 +188,7 @@ artifacts/benchmarks/range_real_usecase/
         example_run.json
         matched_table.txt
         range_workload_diagnostics.json
+        simplified_eval/
         stdout.log
 ```
 
@@ -348,7 +350,7 @@ python -m src.experiments.run_ais_experiment \
   --model_type baseline
 ```
 
-`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. Coverage mode still emits exactly `--n_queries`; the target coverage is used to bias later query anchors toward points that have not yet been covered. `--max_queries` is accepted only as a positive legacy safety parameter. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the experiment writes only the eval-set simplified CSV under `AISDATA/ML_processed_AIS_files` as `ML_simplified_eval.csv`.
+`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. Coverage mode still emits exactly `--n_queries`; the target coverage is used to bias later query anchors toward points that have not yet been covered. `--max_queries` is accepted only as a positive legacy safety parameter. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the experiment writes eval-set simplified CSVs under `<results_dir>/simplified_eval`.
 
 For local smoke runs on large cleaned AIS files, `--max_points_per_segment`
 downsamples each loaded trajectory segment, `--max_segments` caps the loader
@@ -382,8 +384,9 @@ single positive query type.
 
 Training uses a ranking loss plus balanced pointwise BCE supervision. Exact
 final query F1 is the default checkpoint selection metric; it creates a
-held-out validation workload and restores the epoch with the best validation
-query F1 among epochs where `--f1_diagnostic_every` runs. Use
+held-out validation workload with the same requested query count as final eval
+and restores the epoch with the best validation query F1 among epochs where
+`--f1_diagnostic_every` runs. Use
 `--checkpoint_f1_variant combined` in matrix runs to compare the legacy
 answer/support product against the default pure answer-set F1. If diagnostics
 collapse to `pred_std=0`, prefer lowering `--lr`, keeping
@@ -397,7 +400,7 @@ the model architecture.
 3. `src/training/` computes typed F1-contribution labels, trains the model, restores the selected checkpoint epoch, and persists the scaler and checkpoint artifacts.
 4. `src/models/` contains the query-conditioned trajectory transformer and the turn-aware variant.
 5. `src/simplification/` keeps the highest-scoring points per trajectory with deterministic tie-breaking.
-6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores.
+6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores; the label Oracle is included by default as an upper-bound diagnostic.
 7. `src/experiments/` wires the full pipeline together through the CLI.
 8. `src/visualization/` is a minimal extension point for plotting hooks; current runs write JSON, CSV, GeoJSON, and fixed-width tables.
 

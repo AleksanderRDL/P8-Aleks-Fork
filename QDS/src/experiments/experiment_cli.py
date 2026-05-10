@@ -180,7 +180,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--early_stopping_patience",
         type=int,
         default=0,
-        help="Stop training if avg Kendall tau does not improve for this many epochs. 0 disables.",
+        help=(
+            "Stop training if the active checkpoint selection score does not improve for this many "
+            "eligible diagnostic epochs. 0 disables."
+        ),
     )
     parser.add_argument(
         "--diagnostic_every",
