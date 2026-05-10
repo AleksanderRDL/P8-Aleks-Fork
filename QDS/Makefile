@@ -8,6 +8,7 @@ RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
 CLEANED_CSV ?=
 BENCHMARK_SESSION ?= qds-range-benchmark
+BENCHMARK_RUN_ID ?=
 
 .PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv range-benchmark-tmux
 
@@ -27,6 +28,7 @@ help:
 	@echo "  QDS_REQUIREMENTS=$(QDS_REQUIREMENTS)"
 	@echo "  CLEANED_CSV=$(CLEANED_CSV)"
 	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
+	@echo "  BENCHMARK_RUN_ID=$(BENCHMARK_RUN_ID)"
 
 check-env:
 	$(PYTHON) -V
@@ -69,4 +71,4 @@ smoke-csv:
 		--results_dir "$(CSV_RESULTS_DIR)"
 
 range-benchmark-tmux:
-	SESSION="$(BENCHMARK_SESSION)" PYTHON="$(PYTHON)" scripts/run_range_benchmark_tmux.sh
+	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" PYTHON="$(PYTHON)" scripts/run_range_benchmark_tmux.sh

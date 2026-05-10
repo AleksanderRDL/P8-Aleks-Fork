@@ -10,12 +10,14 @@ from src.experiments.benchmark_matrix import (
     DEFAULT_VARIANTS,
     DEFAULT_WORKLOADS,
     MatrixDataSources,
+    MatrixVariant,
     PURE_WORKLOADS,
     _format_markdown_table,
     _parse_name_list,
     _profile_args,
     _resolve_data_sources,
     _selected_variants,
+    _variant_run_dir,
 )
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes
 
@@ -116,6 +118,13 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "--cache_dir",
         "artifacts/cache/matrix",
     ]
+
+
+def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:
+    variant = MatrixVariant(name="fp32")
+
+    assert _variant_run_dir(tmp_path, "range", variant, 1) == tmp_path / "variants" / "fp32"
+    assert _variant_run_dir(tmp_path, "knn", variant, 2) == tmp_path / "variants" / "knn" / "fp32"
 
 
 def test_resolve_data_sources_selects_two_cleaned_days(tmp_path) -> None:

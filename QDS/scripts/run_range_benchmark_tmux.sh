@@ -18,7 +18,11 @@ Environment overrides:
   PROFILE                      benchmark_matrix profile. Default: medium.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
-  RESULTS_DIR                  Benchmark artifact directory.
+  ARTIFACT_ROOT                Benchmark family directory. Default:
+                               artifacts/benchmarks/range_workload_matrix_min_realistic.
+  RUN_ID                       Run directory name. Default: timestamped slug.
+  RESULTS_DIR                  Exact benchmark run directory. Overrides
+                               ARTIFACT_ROOT/RUN_ID when set.
   MAX_POINTS_PER_SEGMENT       Per-segment point cap. Default: 3000.
   VARIANTS                     Optional benchmark_matrix --variants value.
   MONITOR_INTERVAL             Monitor sample interval in seconds. Default: 10.
@@ -48,12 +52,14 @@ PYTHON="${PYTHON:-$QDS_ROOT/../.venv/bin/python}"
 PROFILE="${PROFILE:-medium}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_matrix_min_realistic}"
-RESULTS_DIR="${RESULTS_DIR:-artifacts/benchmarks/range_workload_matrix_min_realistic}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-3000}"
 VARIANTS="${VARIANTS:-}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
 ATTACH="${ATTACH:-1}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_matrix_min_realistic}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_2day_cap${MAX_POINTS_PER_SEGMENT}}"
+RESULTS_DIR="${RESULTS_DIR:-$ARTIFACT_ROOT/runs/$RUN_ID}"
 
 extra_args=()
 while [[ $# -gt 0 ]]; do
@@ -95,11 +101,16 @@ fi
 
 results_abs="$(display_path "$RESULTS_DIR")"
 mkdir -p "$results_abs"
+artifact_root_abs="$(display_path "$ARTIFACT_ROOT")"
+mkdir -p "$artifact_root_abs"
+printf '%s\n' "$RESULTS_DIR" > "$artifact_root_abs/latest_run.txt"
 
-console_log="$RESULTS_DIR/console.log"
-monitor_log="$RESULTS_DIR/system_monitor.log"
-status_file="$RESULTS_DIR/tmux_status.txt"
-done_file="$RESULTS_DIR/.benchmark.done"
+logs_dir="$RESULTS_DIR/logs"
+console_log="$logs_dir/console.log"
+monitor_log="$logs_dir/system_monitor.log"
+status_file="$logs_dir/tmux_status.txt"
+done_file="$logs_dir/.benchmark.done"
+mkdir -p "$(display_path "$logs_dir")"
 rm -f "$(display_path "$monitor_log")" "$(display_path "$status_file")" "$(display_path "$done_file")"
 
 benchmark_cmd=(
@@ -111,6 +122,7 @@ benchmark_cmd=(
   --cache_dir "$CACHE_DIR"
   --max_points_per_segment "$MAX_POINTS_PER_SEGMENT"
   --results_dir "$RESULTS_DIR"
+  --run_id "$RUN_ID"
 )
 
 if [[ -n "$VARIANTS" ]]; then
@@ -159,6 +171,8 @@ tmux select-layout -t "$SESSION:benchmark" even-horizontal >/dev/null
 tmux select-pane -t "$SESSION:benchmark.0"
 
 echo "Started tmux session: $SESSION"
+echo "Run ID:        $RUN_ID"
+echo "Run directory: $(display_path "$RESULTS_DIR")"
 echo "Benchmark log: $(display_path "$console_log")"
 echo "Monitor log:   $(display_path "$monitor_log")"
 echo "Status file:   $(display_path "$status_file")"

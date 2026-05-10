@@ -122,7 +122,8 @@ cd QDS
 # Range-only matrix across runtime/batch/checkpoint-F1 variants.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
   --profile medium \
-  --results_dir artifacts/benchmarks/range_workload_matrix
+  --results_dir artifacts/benchmarks/range_workload_matrix/runs/manual_smoke \
+  --run_id manual_smoke
 
 # Minimum realistic range matrix: two cleaned days, cache-warmed, full segment set.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
@@ -130,7 +131,8 @@ cd QDS
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 3000 \
-  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
+  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic/runs/manual_range_medium_2day_cap3000 \
+  --run_id manual_range_medium_2day_cap3000
 
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
@@ -160,6 +162,36 @@ while `--max_points_per_segment 3000` keeps long trajectories bounded and
 retains about 52% of the valid points in the first two cleaned days. Use
 explicit `--train_csv_path` and `--eval_csv_path` to choose different days.
 
+Benchmark matrix runs are organized as one directory per run. The tmux launcher
+uses this layout automatically:
+
+```text
+artifacts/benchmarks/range_workload_matrix_min_realistic/
+  latest_run.txt
+  runs/<run_id>/
+    README.md
+    artifact_index.json
+    benchmark_matrix.json
+    benchmark_matrix.csv
+    benchmark_matrix.md
+    logs/
+      console.log
+      system_monitor.log
+      tmux_status.txt
+    variants/
+      fp32/
+        example_run.json
+        matched_table.txt
+        range_workload_diagnostics.json
+        stdout.log
+      tf32/
+      ...
+```
+
+Use `artifact_index.json` or the run-local `README.md` first when looking for a
+specific output. Caches remain under `artifacts/cache/...` because they are
+reused across runs.
+
 For long matrix runs, use the tmux launcher instead of running directly in an
 interactive shell:
 
@@ -178,15 +210,15 @@ scripts/run_range_benchmark_tmux.sh
 The launcher creates a `qds-range-benchmark` tmux session with two panes:
 
 - left pane: the benchmark command, with stdout/stderr copied to
-  `artifacts/benchmarks/range_workload_matrix_min_realistic/console.log`
+  `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/logs/console.log`
 - right pane: lightweight system monitoring copied to
-  `artifacts/benchmarks/range_workload_matrix_min_realistic/system_monitor.log`
+  `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/logs/system_monitor.log`
 
 The monitor samples RAM/swap, disk space, top RSS processes, GPU utilization,
-GPU memory, temperature, power draw, clocks, and visible CUDA processes. This
-keeps enough context to diagnose common long-run failures such as RAM
-exhaustion, GPU reset/disappearance, thermal/power throttling, or runaway
-Python memory growth.
+GPU memory, temperature, power draw, clocks, visible CUDA processes, and recent
+kernel markers for OOM/GPU/reset/thermal/power events. This keeps enough
+context to diagnose common long-run failures such as RAM exhaustion, GPU
+reset/disappearance, thermal/power throttling, or runaway Python memory growth.
 
 Useful tmux commands:
 
@@ -199,6 +231,12 @@ Detach with `Ctrl-b d`. Set `ATTACH=0` to launch without attaching:
 
 ```bash
 ATTACH=0 make range-benchmark-tmux
+```
+
+Set `BENCHMARK_RUN_ID=<name>` when you want a stable run directory name:
+
+```bash
+BENCHMARK_RUN_ID=range_medium_2day_cap3000_a make range-benchmark-tmux
 ```
 
 Training and inference CLIs expose the same runtime precision knobs:

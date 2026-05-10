@@ -147,7 +147,8 @@ track should stay range-only until the range model is stronger.
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
   --profile medium \
-  --results_dir artifacts/benchmarks/range_workload_matrix
+  --results_dir artifacts/benchmarks/range_workload_matrix/runs/manual_smoke \
+  --run_id manual_smoke
 ```
 
 For the minimum realistic AIS profile, pass the cleaned-data directory. The
@@ -164,7 +165,8 @@ points in the first two cleaned days.
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 3000 \
-  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
+  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic/runs/manual_range_medium_2day_cap3000 \
+  --run_id manual_range_medium_2day_cap3000
 ```
 
 Use `--train_csv_path` and `--eval_csv_path` to choose the two days manually.
@@ -172,6 +174,20 @@ Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
 Default variants compare FP32, TF32, BF16 autocast, larger train/inference
 batches, and `checkpoint_f1_variant=combined`. All variants keep
 `checkpoint_selection_metric=f1`.
+
+Each matrix run writes a run-local guide and index:
+
+```text
+README.md
+artifact_index.json
+benchmark_matrix.{json,csv,md}
+logs/
+variants/<variant>/
+```
+
+Use one run directory per benchmark attempt. The child experiment artifacts for
+each variant live under `variants/<variant>/`; tmux launcher logs live under
+`logs/`.
 
 For long local runs, prefer the tmux launcher:
 
@@ -184,7 +200,8 @@ It creates one pane for the matrix and one pane for
 `scripts/monitor_system.sh`. The monitor writes
 `system_monitor.log` beside the benchmark artifact and samples RAM/swap, disk,
 top RSS processes, GPU utilization, GPU memory, temperature, power draw, clocks,
-and visible CUDA processes.
+visible CUDA processes, and recent kernel markers for OOM/GPU/reset/thermal
+events.
 
 ## Workload Mixes
 

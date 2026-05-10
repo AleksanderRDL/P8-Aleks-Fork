@@ -829,7 +829,8 @@ cd QDS
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 3000 \
-  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
+  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic/runs/manual_range_medium_2day_cap3000 \
+  --run_id manual_range_medium_2day_cap3000
 ```
 
 - Added a tmux-backed long-run workflow for this benchmark:
@@ -840,10 +841,13 @@ make range-benchmark-tmux
 ```
 
   The launcher creates one pane for the benchmark and one pane for lightweight
-  monitoring. Logs are written beside the benchmark artifact as `console.log`,
-  `system_monitor.log`, and `tmux_status.txt`. The monitor samples RAM/swap,
-  disk, top RSS processes, GPU utilization, GPU memory, temperature, power,
-  clocks, and visible CUDA processes so crashes can be checked against recent
+  monitoring. Each launch writes one run directory under
+  `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/`.
+  The run directory contains `README.md`, `artifact_index.json`,
+  `benchmark_matrix.{json,csv,md}`, `logs/`, and `variants/<variant>/`.
+  The monitor samples RAM/swap, disk, top RSS processes, GPU utilization, GPU
+  memory, temperature, power, clocks, visible CUDA processes, and recent kernel
+  OOM/GPU/reset/thermal markers so crashes can be checked against recent
   resource or GPU-state changes.
 
 ## Phase 4: Behavior-Sensitive Training Refactors

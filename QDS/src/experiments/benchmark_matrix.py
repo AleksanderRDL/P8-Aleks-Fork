@@ -227,6 +227,13 @@ def _profile_args(
     return profile_args
 
 
+def _variant_run_dir(results_dir: Path, workload: str, variant: MatrixVariant, workload_count: int) -> Path:
+    """Return the child experiment output directory for a matrix row."""
+    if workload_count == 1:
+        return results_dir / "variants" / variant.name
+    return results_dir / "variants" / workload / variant.name
+
+
 def _variant_args(variant: MatrixVariant) -> list[str]:
     """Return CLI args for a variant."""
     return [
@@ -322,7 +329,9 @@ def _row_from_run(
     command: list[str],
     returncode: int,
     elapsed_seconds: float,
+    run_dir: Path,
     stdout_path: Path,
+    run_json_path: Path,
     timings: dict[str, Any],
     run_json: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -357,6 +366,8 @@ def _row_from_run(
         "amp_mode": variant.amp_mode,
         "train_batch_size": variant.train_batch_size,
         "inference_batch_size": variant.inference_batch_size,
+        "run_dir": str(run_dir),
+        "example_run_path": str(run_json_path) if run_json_path.exists() else None,
         "stdout_path": str(stdout_path),
         "command": command,
     }
@@ -410,6 +421,77 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow({key: row.get(key) for key in fieldnames})
 
 
+def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a readable index of benchmark artifacts and child run outputs."""
+    return {
+        "schema_version": 1,
+        "run_id": artifact.get("run_id"),
+        "artifact_root": str(results_dir),
+        "top_level_files": {
+            "readme": str(results_dir / "README.md"),
+            "benchmark_matrix_json": str(results_dir / "benchmark_matrix.json"),
+            "benchmark_matrix_csv": str(results_dir / "benchmark_matrix.csv"),
+            "benchmark_matrix_markdown": str(results_dir / "benchmark_matrix.md"),
+            "artifact_index_json": str(results_dir / "artifact_index.json"),
+        },
+        "logs": {
+            "console_log": str(results_dir / "logs" / "console.log"),
+            "system_monitor_log": str(results_dir / "logs" / "system_monitor.log"),
+            "tmux_status": str(results_dir / "logs" / "tmux_status.txt"),
+        },
+        "variant_runs": [
+            {
+                "workload": row.get("workload"),
+                "variant": row.get("variant"),
+                "returncode": row.get("returncode"),
+                "run_dir": row.get("run_dir"),
+                "example_run_json": row.get("example_run_path"),
+                "stdout_log": row.get("stdout_path"),
+                "matched_table": str(Path(str(row.get("run_dir"))) / "matched_table.txt") if row.get("run_dir") else None,
+                "range_diagnostics": str(Path(str(row.get("run_dir"))) / "range_workload_diagnostics.json")
+                if row.get("run_dir")
+                else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """Return a short artifact guide for one benchmark matrix run."""
+    run_id = artifact.get("run_id") or "(not set)"
+    lines = [
+        "# QDS Benchmark Matrix Run",
+        "",
+        f"- Run ID: `{run_id}`",
+        f"- Profile: `{artifact.get('profile')}`",
+        f"- Seed: `{artifact.get('seed')}`",
+        f"- Workloads: `{', '.join(artifact.get('workloads', []))}`",
+        f"- Variants: `{', '.join(artifact.get('variants', []))}`",
+        "",
+        "## Top-Level Files",
+        "",
+        "- `benchmark_matrix.md` - compact comparison table",
+        "- `benchmark_matrix.csv` - comparison table as CSV",
+        "- `benchmark_matrix.json` - complete machine-readable matrix artifact",
+        "- `artifact_index.json` - paths to logs and child run artifacts",
+        "- `logs/console.log` - tmux/launcher console capture when launched through tmux",
+        "- `logs/system_monitor.log` - RAM/GPU/system samples when launched through tmux",
+        "- `logs/tmux_status.txt` - launcher start/end status when launched through tmux",
+        "",
+        "## Variant Runs",
+        "",
+        "| workload | variant | returncode | run_dir |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row.get('workload')} | {row.get('variant')} | {row.get('returncode')} | `{row.get('run_dir')}` |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build benchmark matrix CLI."""
     parser = argparse.ArgumentParser(
@@ -420,6 +502,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--variants", type=str, default=",".join(DEFAULT_VARIANTS))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results_dir", type=str, default="artifacts/benchmarks/range_workload_matrix")
+    parser.add_argument(
+        "--run_id",
+        type=str,
+        default=None,
+        help="Optional human-readable run identifier recorded in benchmark_matrix.json and README.md.",
+    )
     parser.add_argument(
         "--csv_path",
         type=str,
@@ -470,6 +558,7 @@ def main() -> None:
     data_sources = _resolve_data_sources(args)
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "logs").mkdir(parents=True, exist_ok=True)
     cache_warmup = _warm_csv_caches(args, data_sources)
     measured_include_refresh = bool(args.refresh_cache and not cache_warmup)
 
@@ -477,7 +566,7 @@ def main() -> None:
     failures = 0
     for workload in workloads:
         for variant in variants:
-            run_dir = results_dir / workload / variant.name
+            run_dir = _variant_run_dir(results_dir, workload, variant, len(workloads))
             command = [
                 sys.executable,
                 "-m",
@@ -512,7 +601,9 @@ def main() -> None:
                 command=command,
                 returncode=proc.returncode,
                 elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
+                run_dir=run_dir,
                 stdout_path=stdout_path,
+                run_json_path=run_json_path,
                 timings=timings,
                 run_json=run_json,
             )
@@ -527,6 +618,8 @@ def main() -> None:
         "schema_version": 2,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "command": [sys.executable, "-m", "src.experiments.benchmark_matrix", *sys.argv[1:]],
+        "run_id": args.run_id,
+        "artifact_root": str(results_dir),
         "profile": args.profile,
         "seed": int(args.seed),
         "workloads": workloads,
@@ -545,6 +638,10 @@ def main() -> None:
         json.dump(artifact, f, indent=2)
     _write_csv(results_dir / "benchmark_matrix.csv", rows)
     _write_text(results_dir / "benchmark_matrix.md", _format_markdown_table(rows))
+    index = _artifact_index(results_dir, artifact, rows)
+    with open(results_dir / "artifact_index.json", "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2)
+    _write_text(results_dir / "README.md", _format_artifact_readme(artifact, rows))
     print(f"[matrix] wrote {results_dir / 'benchmark_matrix.md'}", flush=True)
     if failures:
         raise SystemExit(f"{failures} matrix run(s) failed. See {results_dir / 'benchmark_matrix.json'}.")

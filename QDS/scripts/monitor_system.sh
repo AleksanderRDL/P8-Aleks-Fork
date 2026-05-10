@@ -93,6 +93,17 @@ while true; do
 
     echo "[top-rss]"
     ps -eo pid,ppid,stat,%cpu,%mem,rss,vsz,etime,cmd --sort=-rss | head -20 || true
+
+    echo "[kernel-markers]"
+    if command -v dmesg >/dev/null 2>&1; then
+      dmesg -T 2>/dev/null \
+        | tail -200 \
+        | grep -Ei "oom|out of memory|killed process|nvrm|xid|gpu|cuda|reset|thermal|power" \
+        | tail -40 \
+        || true
+    else
+      echo "dmesg not found on PATH"
+    fi
     echo
   } >> "$output" 2>&1
 
@@ -105,4 +116,3 @@ while true; do
   fi
   sleep "$interval"
 done
-
