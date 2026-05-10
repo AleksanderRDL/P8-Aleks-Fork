@@ -7,8 +7,9 @@ QDS_REQUIREMENTS ?= requirements.txt
 RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
 CLEANED_CSV ?=
+BENCHMARK_SESSION ?= qds-range-benchmark
 
-.PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv
+.PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv range-benchmark-tmux
 
 help:
 	@echo "Targets:"
@@ -19,11 +20,13 @@ help:
 	@echo "  test        Run the QDS pytest suite"
 	@echo "  smoke       Run a tiny synthetic training/evaluation experiment"
 	@echo "  smoke-csv   Run a tiny cleaned-CSV training/evaluation experiment"
+	@echo "  range-benchmark-tmux  Launch the two-day range benchmark in tmux with monitoring"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PYTHON=$(PYTHON)"
 	@echo "  QDS_REQUIREMENTS=$(QDS_REQUIREMENTS)"
 	@echo "  CLEANED_CSV=$(CLEANED_CSV)"
+	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
 
 check-env:
 	$(PYTHON) -V
@@ -64,3 +67,6 @@ smoke-csv:
 		--workload range \
 		--compression_ratio 0.5 \
 		--results_dir "$(CSV_RESULTS_DIR)"
+
+range-benchmark-tmux:
+	SESSION="$(BENCHMARK_SESSION)" PYTHON="$(PYTHON)" scripts/run_range_benchmark_tmux.sh

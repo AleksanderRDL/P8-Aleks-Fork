@@ -173,6 +173,19 @@ Default variants compare FP32, TF32, BF16 autocast, larger train/inference
 batches, and `checkpoint_f1_variant=combined`. All variants keep
 `checkpoint_selection_metric=f1`.
 
+For long local runs, prefer the tmux launcher:
+
+```bash
+cd QDS
+scripts/run_range_benchmark_tmux.sh
+```
+
+It creates one pane for the matrix and one pane for
+`scripts/monitor_system.sh`. The monitor writes
+`system_monitor.log` beside the benchmark artifact and samples RAM/swap, disk,
+top RSS processes, GPU utilization, GPU memory, temperature, power draw, clocks,
+and visible CUDA processes.
+
 ## Workload Mixes
 
 Experiment entrypoints now train one model per pure query workload. The common

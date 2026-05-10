@@ -160,6 +160,47 @@ while `--max_points_per_segment 3000` keeps long trajectories bounded and
 retains about 52% of the valid points in the first two cleaned days. Use
 explicit `--train_csv_path` and `--eval_csv_path` to choose different days.
 
+For long matrix runs, use the tmux launcher instead of running directly in an
+interactive shell:
+
+```bash
+cd QDS
+make range-benchmark-tmux
+```
+
+or:
+
+```bash
+cd QDS
+scripts/run_range_benchmark_tmux.sh
+```
+
+The launcher creates a `qds-range-benchmark` tmux session with two panes:
+
+- left pane: the benchmark command, with stdout/stderr copied to
+  `artifacts/benchmarks/range_workload_matrix_min_realistic/console.log`
+- right pane: lightweight system monitoring copied to
+  `artifacts/benchmarks/range_workload_matrix_min_realistic/system_monitor.log`
+
+The monitor samples RAM/swap, disk space, top RSS processes, GPU utilization,
+GPU memory, temperature, power draw, clocks, and visible CUDA processes. This
+keeps enough context to diagnose common long-run failures such as RAM
+exhaustion, GPU reset/disappearance, thermal/power throttling, or runaway
+Python memory growth.
+
+Useful tmux commands:
+
+```bash
+tmux attach -t qds-range-benchmark
+tmux ls
+```
+
+Detach with `Ctrl-b d`. Set `ATTACH=0` to launch without attaching:
+
+```bash
+ATTACH=0 make range-benchmark-tmux
+```
+
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and
 `--allow_tf32` / `--no-allow_tf32`, plus `--amp_mode {off,bf16,fp16}`.
@@ -170,7 +211,8 @@ validation query-F1 diagnostics. Defaults preserve the FP32 baseline
 sweeps, and `--amp_mode bf16` for CUDA autocast sweeps after checking for NaNs,
 collapse warnings, and final F1 drift.
 
-While a training run is active, measure live GPU utilization from another shell:
+For ad hoc runs outside the tmux launcher, measure live GPU utilization from
+another shell:
 
 ```bash
 watch -n 0.5 nvidia-smi

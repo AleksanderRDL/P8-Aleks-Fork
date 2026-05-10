@@ -832,6 +832,20 @@ cd QDS
   --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
 ```
 
+- Added a tmux-backed long-run workflow for this benchmark:
+
+```bash
+cd QDS
+make range-benchmark-tmux
+```
+
+  The launcher creates one pane for the benchmark and one pane for lightweight
+  monitoring. Logs are written beside the benchmark artifact as `console.log`,
+  `system_monitor.log`, and `tmux_status.txt`. The monitor samples RAM/swap,
+  disk, top RSS processes, GPU utilization, GPU memory, temperature, power,
+  clocks, and visible CUDA processes so crashes can be checked against recent
+  resource or GPU-state changes.
+
 ## Phase 4: Behavior-Sensitive Training Refactors
 
 Goal: improve the actual training loop once the safer changes are measured.
