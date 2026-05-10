@@ -151,16 +151,25 @@ def _trajectory_tensor_from_group(
     return torch.stack([t, lat, lon, speed, heading, is_start, is_end, turn_score], dim=1)
 
 
+LoadAISReturn = (
+    list[torch.Tensor]
+    | tuple[list[torch.Tensor], list[int]]
+    | tuple[list[torch.Tensor], AISLoadAudit]
+    | tuple[list[torch.Tensor], list[int], AISLoadAudit]
+)
+
+
 @overload
 def load_ais_csv(
     csv_path: str,
     max_points_per_ship: int | None = None,
-    return_mmsis: Literal[True] = True,
+    *,
+    return_mmsis: Literal[True],
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
     max_points_per_segment: int | None = None,
     max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
     max_segments: int | None = None,
-    return_audit: Literal[True] = True,
+    return_audit: Literal[True],
 ) -> tuple[list[torch.Tensor], list[int], AISLoadAudit]: ...
 
 
@@ -168,7 +177,8 @@ def load_ais_csv(
 def load_ais_csv(
     csv_path: str,
     max_points_per_ship: int | None = None,
-    return_mmsis: Literal[True] = True,
+    *,
+    return_mmsis: Literal[True],
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
     max_points_per_segment: int | None = None,
     max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
@@ -181,12 +191,13 @@ def load_ais_csv(
 def load_ais_csv(
     csv_path: str,
     max_points_per_ship: int | None = None,
+    *,
     return_mmsis: Literal[False] = False,
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
     max_points_per_segment: int | None = None,
     max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
     max_segments: int | None = None,
-    return_audit: Literal[True] = True,
+    return_audit: Literal[True],
 ) -> tuple[list[torch.Tensor], AISLoadAudit]: ...
 
 
@@ -194,6 +205,7 @@ def load_ais_csv(
 def load_ais_csv(
     csv_path: str,
     max_points_per_ship: int | None = None,
+    *,
     return_mmsis: Literal[False] = False,
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
     max_points_per_segment: int | None = None,
@@ -201,6 +213,20 @@ def load_ais_csv(
     max_segments: int | None = None,
     return_audit: Literal[False] = False,
 ) -> list[torch.Tensor]: ...
+
+
+@overload
+def load_ais_csv(
+    csv_path: str,
+    max_points_per_ship: int | None = None,
+    *,
+    return_mmsis: bool = False,
+    min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
+    max_points_per_segment: int | None = None,
+    max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
+    max_segments: int | None = None,
+    return_audit: bool = False,
+) -> LoadAISReturn: ...
 
 
 def load_ais_csv(
@@ -212,7 +238,7 @@ def load_ais_csv(
     max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
     max_segments: int | None = None,
     return_audit: bool = False,
-) -> list[torch.Tensor] | tuple:
+) -> LoadAISReturn:
     """Load AIS trajectories from CSV into per-trajectory tensors.
 
     If ``return_mmsis=True``, also return the original MMSI identifiers aligned
