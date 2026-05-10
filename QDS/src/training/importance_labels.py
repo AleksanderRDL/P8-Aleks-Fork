@@ -12,6 +12,7 @@ from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
+RANGE_PROXIMITY_FULL_CDIST_LIMIT = 4096
 
 
 def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
@@ -144,6 +145,7 @@ def _range_boundary_and_proximity_weights(
     points: torch.Tensor,
     box_mask: torch.Tensor,
     point_trajectory_ids: torch.Tensor,
+    boundaries: list[tuple[int, int]],
 ) -> torch.Tensor:
     """Per-point weights for range: combines two priors that match the query's intent.
 
@@ -167,34 +169,53 @@ def _range_boundary_and_proximity_weights(
         weights[in_box_idx] = 1.0
         return weights
 
-    box_traj_ids = point_trajectory_ids[in_box_idx]
-
     # 1. Boundary detection: walk the FULL points tensor per trajectory, mark in-box
     # points whose neighbor is out-of-box (or that are at trajectory edges while in-box).
     boundary_full = torch.zeros(points.shape[0], dtype=torch.bool, device=points.device)
-    for tid in torch.unique(box_traj_ids).tolist():
-        traj_idx = torch.where(point_trajectory_ids == int(tid))[0]
-        if traj_idx.numel() == 0:
+    for start, end in boundaries:
+        if end <= start:
             continue
-        traj_in = box_mask[traj_idx]
+        traj_in = box_mask[start:end]
+        if not bool(traj_in.any().item()):
+            continue
         prev_out = torch.zeros_like(traj_in)
         prev_out[1:] = traj_in[1:] & ~traj_in[:-1]
         prev_out[0] = traj_in[0]
         next_out = torch.zeros_like(traj_in)
         next_out[:-1] = traj_in[:-1] & ~traj_in[1:]
         next_out[-1] = traj_in[-1]
-        boundary_full[traj_idx] = prev_out | next_out
+        boundary_full[start:end] = prev_out | next_out
+
+    boundary_in_box = boundary_full[in_box_idx].float()
+    BOUNDARY_BOOST = 1.0  # additive on top of base 1.0 -> boundary points get 2x raw
+
+    if n_box > RANGE_PROXIMITY_FULL_CDIST_LIMIT:
+        weights[in_box_idx] = 1.0 + BOUNDARY_BOOST * boundary_in_box
+        for start, end in boundaries:
+            if end <= start:
+                continue
+            local_mask = box_mask[start:end]
+            if not bool(local_mask.any().item()):
+                continue
+            local_weights = weights[start:end]
+            mean_raw = float(local_weights[local_mask].mean().item())
+            if mean_raw > 1e-12:
+                local_weights[local_mask] = local_weights[local_mask] / mean_raw
+        return weights
 
     # 2. Cross-trajectory proximity within the in-box subset.
+    # Dense cdist is quadratic in the number of in-box points; broad realistic
+    # AIS range boxes can contain hundreds of thousands of points. Keep the
+    # exact proximity prior for small boxes and fall back to boundary-only
+    # weighting when the all-pairs matrix would dominate host RAM.
     coords = points[in_box_idx, 1:3]
+    box_traj_ids = point_trajectory_ids[in_box_idx]
     dists = torch.cdist(coords, coords)
     same_traj = box_traj_ids.unsqueeze(0) == box_traj_ids.unsqueeze(1)
     dists = dists.masked_fill(same_traj, float("inf"))
     nearest_other = dists.min(dim=1).values
     finite = torch.isfinite(nearest_other)
 
-    boundary_in_box = boundary_full[in_box_idx].float()
-    BOUNDARY_BOOST = 1.0  # additive on top of base 1.0 → boundary points get 2x raw
     PROX_EPS = 1e-4
 
     for tid in torch.unique(box_traj_ids).tolist():
@@ -340,7 +361,12 @@ def compute_typed_importance_labels(
             hit_count = int(box_support.sum().item())
             if hit_count > 0:
                 base_gain = float(2.0 / (hit_count + 1.0))
-                bp_weights = _range_boundary_and_proximity_weights(points, box_support, point_trajectory_ids)
+                bp_weights = _range_boundary_and_proximity_weights(
+                    points,
+                    box_support,
+                    point_trajectory_ids,
+                    boundaries,
+                )
                 labels[box_support, t_idx] += base_gain * bp_weights[box_support]
 
         elif qtype == "knn":

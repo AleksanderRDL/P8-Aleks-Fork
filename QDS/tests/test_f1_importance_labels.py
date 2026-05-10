@@ -83,6 +83,55 @@ def test_range_labels_reward_each_in_box_point() -> None:
     assert labels[2, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.0)
 
 
+def test_large_range_labels_skip_quadratic_proximity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Assert broad range labels do not allocate an all-pairs distance matrix."""
+    n_per_trajectory = 2500
+    time = torch.arange(n_per_trajectory * 2, dtype=torch.float32)
+    lat = torch.cat(
+        [
+            torch.linspace(0.0, 1.0, n_per_trajectory),
+            torch.linspace(0.1, 1.1, n_per_trajectory),
+        ]
+    )
+    lon = torch.cat(
+        [
+            torch.linspace(0.0, 1.0, n_per_trajectory),
+            torch.linspace(0.1, 1.1, n_per_trajectory),
+        ]
+    )
+    speed = torch.ones_like(time)
+    heading = torch.zeros_like(time)
+    is_start = torch.zeros_like(time)
+    is_end = torch.zeros_like(time)
+    turn = torch.zeros_like(time)
+    points = torch.stack([time, lat, lon, speed, heading, is_start, is_end, turn], dim=1)
+    boundaries = [(0, n_per_trajectory), (n_per_trajectory, n_per_trajectory * 2)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 2.0,
+                "lon_min": -1.0,
+                "lon_max": 2.0,
+                "t_start": -1.0,
+                "t_end": float(points[-1, 0].item()) + 1.0,
+            },
+        }
+    ]
+
+    def fail_cdist(*args, **kwargs):
+        raise AssertionError("large range labels should not call dense torch.cdist")
+
+    monkeypatch.setattr(torch, "cdist", fail_cdist)
+
+    labels, labelled_mask = compute_typed_importance_labels(points, boundaries, queries, seed=1)
+
+    assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
+    assert float(labels[:, QUERY_TYPE_ID_RANGE].sum().item()) > 0.0
+    assert torch.isfinite(labels).all()
+
+
 def test_knn_labels_follow_f1_trajectory_hits_not_speed() -> None:
     """Assert kNN labels are driven by F1 hit membership instead of speed heuristics."""
     points = torch.tensor(

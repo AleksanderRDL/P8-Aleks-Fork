@@ -22,7 +22,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 ## Label Construction
 
-- Range labels score points inside the spatiotemporal query box as point-level F1 hits, with extra weight for boundary crossings and cross-trajectory proximity. Range labels still normalize by query count like every other query type.
+- Range labels score points inside the spatiotemporal query box as point-level F1 hits, with extra weight for boundary crossings and cross-trajectory proximity. The cross-trajectory proximity prior is exact for small query boxes and skipped for broad boxes so realistic AIS workloads cannot allocate quadratic all-pairs distance matrices. Range labels still normalize by query count like every other query type.
 - kNN and similarity labels execute the query on the original data, identify the original trajectory-ID answer set, and assign points the F1 gain of recovering one true-positive trajectory ID.
 - Similarity and clustering labels can use the optional `turn_score` feature as a small shape prior.
 - Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs. Within a clustered query box, point mass is weighted by distance from the trajectory's in-box centroid.
