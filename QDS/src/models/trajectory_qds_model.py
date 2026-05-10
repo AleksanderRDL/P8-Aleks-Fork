@@ -30,6 +30,7 @@ class TrajectoryQDSModel(nn.Module):
         self.query_dim = query_dim
         self.embed_dim = embed_dim
         self.query_chunk_size = query_chunk_size
+        self.register_buffer("_positional_encoding_cache", torch.empty(0), persistent=False)
 
         self.point_encoder = nn.Sequential(
             nn.Linear(point_dim, embed_dim),
@@ -75,7 +76,12 @@ class TrajectoryQDSModel(nn.Module):
             for _ in range(NUM_QUERY_TYPES)
         ])
 
-    def _positional_encoding(self, length: int, device: torch.device) -> torch.Tensor:
+    def _build_positional_encoding(
+        self,
+        length: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
         """Build sinusoidal positional encoding. See src/models/README.md for details."""
         pos = torch.arange(length, device=device, dtype=torch.float32).unsqueeze(1)
         div = torch.exp(
@@ -85,7 +91,26 @@ class TrajectoryQDSModel(nn.Module):
         pe = torch.zeros((length, self.embed_dim), device=device, dtype=torch.float32)
         pe[:, 0::2] = torch.sin(pos * div)
         pe[:, 1::2] = torch.cos(pos * div)
-        return pe
+        return pe.to(dtype=dtype)
+
+    def _positional_encoding(
+        self,
+        length: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Return cached sinusoidal positional encoding for the requested shape."""
+        cache = self._positional_encoding_cache
+        if (
+            cache.ndim != 2
+            or cache.shape[0] < length
+            or cache.shape[1] != self.embed_dim
+            or cache.device != device
+            or cache.dtype != dtype
+        ):
+            cache = self._build_positional_encoding(length, device, dtype)
+            self._positional_encoding_cache = cache
+        return cache[:length]
 
     def forward(
         self,
@@ -101,7 +126,7 @@ class TrajectoryQDSModel(nn.Module):
             query_type_ids = torch.zeros((queries.shape[0],), dtype=torch.long, device=queries.device)
 
         h = self.point_encoder(points)
-        h = h + self._positional_encoding(h.shape[1], h.device).unsqueeze(0)
+        h = h + self._positional_encoding(h.shape[1], h.device, h.dtype).unsqueeze(0)
         h = self.local_transformer(h, src_key_padding_mask=padding_mask)
 
         q_type_emb = self.type_embedding(query_type_ids)

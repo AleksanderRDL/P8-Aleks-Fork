@@ -57,6 +57,7 @@ def chunked_cross_attention_context(
             query=point_features,
             key=q_chunk,
             value=q_chunk,
+            need_weights=False,
         )
         context = context + attn_out
         chunk_count += 1

@@ -22,7 +22,9 @@ H + C -> four per-type heads -> logits[L,4]
 ## Key Behavior
 
 - `TrajectoryQDSModel` expects `query_type_ids` during training and falls back to zero IDs only in eval mode.
-- `chunked_cross_attention_context` accumulates query-chunk outputs and divides by the total query count, so context scale stays stable as workloads grow.
+- `chunked_cross_attention_context` accumulates query-chunk outputs and divides by the chunk count, so context scale stays stable as workloads grow.
+- Cross-attention disables attention-weight materialization because the weights are not consumed by the pipeline.
+- Sinusoidal positional encodings are cached in a non-persistent buffer keyed by effective length/device/dtype behavior, so repeated fixed-window training and inference forwards avoid rebuilding them.
 - The attention direction is point-to-query, which keeps the per-point representation query-conditioned without leaking across trajectories.
 - `normalize_points_and_queries` is the shared min-max transform used by the persisted `FeatureScaler`.
 

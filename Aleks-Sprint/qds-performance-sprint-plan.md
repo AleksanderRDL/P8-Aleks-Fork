@@ -411,6 +411,13 @@ cd QDS
 ../.venv/bin/python -m pytest tests/test_attention_context_scaling.py
 ```
 
+Completion note, 2026-05-10:
+
+- Added `need_weights=False` to the point-to-query `MultiheadAttention` call in
+  `chunked_cross_attention_context`.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_attention_context_scaling.py tests/test_positional_encoding_cache.py`.
+
 ### 6. Cache Positional Encodings
 
 Task:
@@ -435,6 +442,17 @@ Acceptance check:
 cd QDS
 ../.venv/bin/python -m pytest tests/test_no_cross_trajectory_attention_leakage.py tests/test_training_does_not_collapse.py
 ```
+
+Completion note, 2026-05-10:
+
+- Added a non-persistent positional-encoding cache buffer to
+  `TrajectoryQDSModel`.
+- The cache reuses encodings for matching `(length <= cached_length, device,
+  dtype)` requests and rebuilds when length, device, dtype, or embedding
+  dimension require it.
+- Added `tests/test_positional_encoding_cache.py`.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_no_cross_trajectory_attention_leakage.py tests/test_training_does_not_collapse.py`.
 
 ### 7. Run MLQDS Inference/Evaluation On CUDA
 
