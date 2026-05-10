@@ -706,7 +706,7 @@ def train_model(
                     torch.stack(loss_terms).sum() / float(B)
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
-                opt.zero_grad()
+                opt.zero_grad(set_to_none=True)
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite training loss with amp_mode={amp_mode}: {float(loss.item())}")
                 clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)

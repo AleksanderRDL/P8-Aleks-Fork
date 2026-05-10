@@ -86,13 +86,15 @@ def test_profile_args_use_csv_when_provided() -> None:
         "--csv_path",
         "../AISDATA/cleaned/day.csv",
         "--n_queries",
-        "400",
+        "512",
         "--query_coverage",
         "0.30",
         "--range_spatial_fraction",
-        "0.018",
+        "0.0165",
         "--range_time_fraction",
-        "0.036",
+        "0.033",
+        "--query_chunk_size",
+        "512",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -143,13 +145,15 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "--eval_csv_path",
         "../AISDATA/cleaned/day2.csv",
         "--n_queries",
-        "400",
+        "512",
         "--query_coverage",
         "0.30",
         "--range_spatial_fraction",
-        "0.018",
+        "0.0165",
         "--range_time_fraction",
-        "0.036",
+        "0.033",
+        "--query_chunk_size",
+        "512",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -189,15 +193,17 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
 
     profile_args = _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False)
 
-    assert profile_args[4:22] == [
+    assert profile_args[4:24] == [
         "--n_queries",
-        "400",
+        "512",
         "--query_coverage",
         "0.30",
         "--range_spatial_fraction",
-        "0.018",
+        "0.0165",
         "--range_time_fraction",
-        "0.036",
+        "0.033",
+        "--query_chunk_size",
+        "512",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -215,9 +221,9 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
 
 
 def test_validation_query_count_matches_eval_workload_shape() -> None:
-    cfg = build_experiment_config(n_queries=400, query_coverage=0.30, max_queries=None)
+    cfg = build_experiment_config(n_queries=512, query_coverage=0.30, max_queries=None)
 
-    assert _validation_query_count(cfg) == 400
+    assert _validation_query_count(cfg) == 512
 
 
 def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:

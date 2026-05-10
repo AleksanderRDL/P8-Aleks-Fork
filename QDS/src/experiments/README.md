@@ -50,6 +50,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--gradient_clip_norm`
 - `--train_batch_size`
 - `--inference_batch_size`
+- `--query_chunk_size`
 - `--compression_ratio`
 - `--model_type {baseline,turn_aware}`
 - `--workload {range,knn,similarity,clustering}`
@@ -163,14 +164,14 @@ cd QDS
 For the real-usecase AIS profile, pass the cleaned-data directory. The matrix
 selects the first two sorted cleaned CSV files as train/eval days, warms their
 segmented Parquet caches before measured runs, and then runs the variants
-against cache hits. The profile uses 400 range queries, a 30% target query
-coverage, `range_spatial_fraction=0.018`, `range_time_fraction=0.036`, 5%
-retained-point compression, 20 epochs, answer-set F1 checkpointing, no
-checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics every
-epoch. It enables `early_stopping_patience=8` so non-improving F1 runs can stop
-before all 20 epochs. Leave `--max_points_per_segment`, `--max_segments`, and
-`--max_trajectories` unset for this profile so all valid segments and points
-from both days are used.
+against cache hits. The profile uses 512 range queries, a 30% target query
+coverage, `range_spatial_fraction=0.0165`, `range_time_fraction=0.033`, 5%
+retained-point compression, `query_chunk_size=512`, 20 epochs, answer-set F1
+checkpointing, no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1
+diagnostics every epoch. It enables `early_stopping_patience=8` so non-improving
+F1 runs can stop before all 20 epochs. Leave `--max_points_per_segment`,
+`--max_segments`, and `--max_trajectories` unset for this profile so all valid
+segments and points from both days are used.
 
 Use `--train_csv_path` and `--eval_csv_path` to choose the two days manually.
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.

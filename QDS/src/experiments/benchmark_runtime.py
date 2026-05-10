@@ -44,13 +44,15 @@ DEFAULT_PROFILE = "range_real_usecase"
 PROFILE_CHOICES = (DEFAULT_PROFILE,)
 REAL_USECASE_PROFILE_ARGS = [
     "--n_queries",
-    "400",
+    "512",
     "--query_coverage",
     "0.30",
     "--range_spatial_fraction",
-    "0.018",
+    "0.0165",
     "--range_time_fraction",
-    "0.036",
+    "0.033",
+    "--query_chunk_size",
+    "512",
     "--compression_ratio",
     "0.05",
     "--epochs",

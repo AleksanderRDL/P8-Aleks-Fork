@@ -29,10 +29,8 @@ def chunked_cross_attention_context(
     giving the per-type head a clear conditioning signal.
 
     Chunking splits the key/value (query) space.  Because softmax is applied
-    independently inside each chunk, this is an approximation; with the
-    default ``query_chunk_size`` of 128 and typical workloads of ≤ 200
-    queries the entire query set fits in a single chunk and the approximation
-    is exact.
+    independently inside each chunk, this is an approximation unless
+    ``query_chunk_size`` is at least the workload query count.
     """
     if point_features.dim() != 3 or query_features.dim() != 3:
         raise ValueError("point_features and query_features must be [B,L,D] and [B,M,D].")

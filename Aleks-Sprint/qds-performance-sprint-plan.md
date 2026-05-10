@@ -195,9 +195,10 @@ Each benchmark artifact should include at least:
 
 Use one explicit range real-usecase matrix profile for model-quality decisions:
 two cleaned CSV days, first day for training, second day for final evaluation,
-400 range queries, 30% target coverage, 5% retained-point compression, 20
-epochs, no loader caps by default, answer-set F1 checkpointing, no checkpoint
-smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics every 2 epochs.
+512 range queries, 30% target coverage, 5% retained-point compression,
+`query_chunk_size=512`, 20 epochs, no loader caps by default, answer-set F1
+checkpointing, no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1
+diagnostics every epoch.
 
 ## Phase 1: Reproducibility And Measurement
 
@@ -827,11 +828,11 @@ cd QDS
   --run_id manual_range_real_usecase_a
 ```
 
-  This profile uses 400 range queries, 30% target query coverage,
-  `range_spatial_fraction=0.018`, `range_time_fraction=0.036`, 5%
-  retained-point compression, 20 epochs, normal answer-set F1 checkpointing, no
-  checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics
-  every 2 epochs.
+  This profile uses 512 range queries, 30% target query coverage,
+  `range_spatial_fraction=0.0165`, `range_time_fraction=0.033`, 5%
+  retained-point compression, `query_chunk_size=512`, 20 epochs, normal
+  answer-set F1 checkpointing, no checkpoint smoothing,
+  `mlqds_temporal_fraction=0.10`, and F1 diagnostics every epoch.
 
 - Removed the old synthetic `small`/`medium`/`serious` runtime benchmark
   profiles from `benchmark_runtime.py`. The runtime wrapper now exposes only

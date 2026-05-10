@@ -143,6 +143,7 @@ def main() -> None:
         early_stopping_patience=args.early_stopping_patience,
         train_batch_size=args.train_batch_size,
         inference_batch_size=args.inference_batch_size,
+        query_chunk_size=args.query_chunk_size,
         diagnostic_every=args.diagnostic_every,
         diagnostic_window_fraction=args.diagnostic_window_fraction,
         checkpoint_selection_metric=args.checkpoint_selection_metric,
@@ -174,6 +175,7 @@ def main() -> None:
         f"gradient_clip_norm={args.gradient_clip_norm}  "
         f"train_batch_size={args.train_batch_size}  "
         f"inference_batch_size={args.inference_batch_size}  "
+        f"query_chunk_size={args.query_chunk_size}  "
         f"diagnostic_every={args.diagnostic_every}  "
         f"checkpoint_selection_metric={args.checkpoint_selection_metric}  "
         f"f1_diagnostic_every={args.f1_diagnostic_every}  "

@@ -22,7 +22,7 @@ H + C -> four per-type heads -> logits[L,4]
 ## Key Behavior
 
 - `TrajectoryQDSModel` expects `query_type_ids` during training and falls back to zero IDs only in eval mode.
-- `chunked_cross_attention_context` accumulates query-chunk outputs and divides by the chunk count, so context scale stays stable as workloads grow.
+- `chunked_cross_attention_context` accumulates query-chunk outputs and divides by the chunk count, so context scale stays stable as workloads grow. The result is exact when `query_chunk_size >= n_queries`; otherwise it is a bounded approximation because each chunk has its own attention softmax.
 - Cross-attention disables attention-weight materialization because the weights are not consumed by the pipeline.
 - Sinusoidal positional encodings are cached in a non-persistent buffer keyed by effective length/device/dtype behavior, so repeated fixed-window training and inference forwards avoid rebuilding them.
 - The attention direction is point-to-query, which keeps the per-point representation query-conditioned without leaking across trajectories.
@@ -33,4 +33,4 @@ H + C -> four per-type heads -> logits[L,4]
 - Point features: 7 columns for the baseline model, 8 for the turn-aware model.
 - Query features: 12 padded features from `src.queries.query_types.pad_query_features`.
 - Output: one logit per query type for each point.
-- Default query chunk size: 128, which keeps the attention helper exact for the common case where the whole workload fits in one chunk.
+- Default query chunk size: 128. Real-usecase range benchmarks override this to 512 so the 512-query workload fits in one exact attention chunk.

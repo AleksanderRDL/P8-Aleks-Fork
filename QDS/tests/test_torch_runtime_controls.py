@@ -42,6 +42,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         allow_tf32=True,
         train_batch_size=64,
         inference_batch_size=32,
+        query_chunk_size=512,
         amp_mode="bf16",
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
@@ -50,6 +51,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.allow_tf32 is True
     assert restored.model.train_batch_size == 64
     assert restored.model.inference_batch_size == 32
+    assert restored.model.query_chunk_size == 512
     assert restored.model.amp_mode == "bf16"
     assert restored.model.checkpoint_selection_metric == "f1"
 
@@ -106,8 +108,9 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     args = _profile_train_args(DEFAULT_PROFILE, seed=42, results_dir=tmp_path / "run", checkpoint=tmp_path / "m.pt")
 
     assert "--n_queries" in args
-    assert args[args.index("--n_queries") + 1] == "400"
+    assert args[args.index("--n_queries") + 1] == "512"
     assert args[args.index("--compression_ratio") + 1] == "0.05"
+    assert args[args.index("--query_chunk_size") + 1] == "512"
     assert args[args.index("--early_stopping_patience") + 1] == "8"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"

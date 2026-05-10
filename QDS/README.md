@@ -157,13 +157,13 @@ real-usecase profile leaves `--max_points_per_segment`, `--max_segments`, and
 days are used. Use explicit `--train_csv_path` and `--eval_csv_path` to choose
 different days.
 
-Use `--profile range_real_usecase` for baseline model-quality runs. It uses 400
+Use `--profile range_real_usecase` for baseline model-quality runs. It uses 512
 range queries, 30% target query coverage, narrower range boxes
-(`range_spatial_fraction=0.018`, `range_time_fraction=0.036`), 5%
-retained-point compression, 20 epochs, answer-set F1 checkpoint selection,
-no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics
-every epoch. It also enables `early_stopping_patience=8`, so clearly
-non-improving F1 runs stop before consuming all 20 epochs.
+(`range_spatial_fraction=0.0165`, `range_time_fraction=0.033`), 5%
+retained-point compression, `query_chunk_size=512`, 20 epochs, answer-set F1
+checkpoint selection, no checkpoint smoothing, `mlqds_temporal_fraction=0.10`,
+and F1 diagnostics every epoch. It also enables `early_stopping_patience=8`, so
+clearly non-improving F1 runs stop before consuming all 20 epochs.
 
 Benchmark matrix runs are organized as one directory per run. The tmux launcher
 uses this layout automatically:
@@ -339,8 +339,9 @@ python -m src.experiments.run_ais_experiment \
   --eval_csv_path ../AISDATA/cleaned/eval.csv \
   --query_coverage 0.30 \
   --max_queries 1000 \
-  --range_spatial_fraction 0.018 \
-  --range_time_fraction 0.036 \
+  --range_spatial_fraction 0.0165 \
+  --range_time_fraction 0.033 \
+  --query_chunk_size 512 \
   --epochs 20 \
   --lr 0.0005 \
   --pointwise_loss_weight 0.25 \
@@ -366,7 +367,7 @@ code or when you want to force a rebuild of a matching source/config entry.
 
 Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
 
-For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, the real-usecase profile uses `0.018` spatial and `0.036` time to keep 400 range queries aimed near the 30% target coverage instead of blanketing the dataset.
+For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, the real-usecase profile uses `0.0165` spatial and `0.033` time to keep 512 range queries aimed near the 30% target coverage instead of blanketing the dataset. `--query_chunk_size` controls how many workload queries are attended in one cross-attention chunk; set it at least as high as `--n_queries` when memory allows so the attention softmax is exact rather than chunk-approximated.
 
 Phase 2 range diagnostics can be enabled without changing the default generator.
 Use optional acceptance filters such as `--range_min_point_hits`,

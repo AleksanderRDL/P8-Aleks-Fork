@@ -159,6 +159,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=16,
         help="Number of trajectory windows per MLQDS inference or validation-F1 diagnostic batch.",
     )
+    parser.add_argument(
+        "--query_chunk_size",
+        type=int,
+        default=128,
+        help=(
+            "Number of workload queries attended per cross-attention chunk. "
+            "Set at least --n_queries to use one exact attention softmax for the full workload."
+        ),
+    )
     parser.add_argument("--compression_ratio", type=float, default=0.2)
     parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
     parser.add_argument(
