@@ -96,56 +96,39 @@ JSON artifact.
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_runtime --help
 
-# Cheap synthetic training benchmark.
+# Runtime wrapper on the real-usecase training shape.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode train \
-  --profile small \
-  --results_dir artifacts/benchmarks/runtime_small
-
-# Same profile with TF32-enabled matmul for paired speed/F1 checks.
-../.venv/bin/python -m src.experiments.benchmark_runtime \
-  --mode train \
-  --profile small \
-  --results_dir artifacts/benchmarks/runtime_small_tf32 \
+  --profile range_real_usecase \
+  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
+  --results_dir artifacts/benchmarks/runtime_range_real_usecase \
   --float32_matmul_precision high \
-  --allow_tf32
-
-# Same profile with CUDA BF16 autocast. Losses and metrics remain FP32.
-../.venv/bin/python -m src.experiments.benchmark_runtime \
-  --mode train \
-  --profile small \
-  --results_dir artifacts/benchmarks/runtime_small_bf16 \
+  --allow_tf32 \
   --amp_mode bf16
 
-# Training batch-size sweep. Use a larger profile/dataset for final decisions.
+# Training batch-size sweep on the same real-usecase shape.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode train \
-  --profile medium \
+  --profile range_real_usecase \
+  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
   --train_batch_sizes 16,32,64,128 \
   --results_dir artifacts/benchmarks/batch_size_sweep
 
-# Range-only matrix across runtime/batch/checkpoint-F1 variants.
+# Real-usecase range baseline: two cleaned days, cache-warmed, full segment set.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile medium \
-  --results_dir artifacts/benchmarks/range_workload_matrix/runs/manual_smoke \
-  --run_id manual_smoke
-
-# Minimum realistic range baseline: two cleaned days, cache-warmed, full segment set.
-../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile serious \
+  --profile range_real_usecase \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
-  --max_points_per_segment 3000 \
-  --variants tf32_bf16_bs32_inf32_combined \
-  --results_dir artifacts/benchmarks/range_workload_baseline_min_realistic/runs/manual_range_serious_2day_cap3000_combined \
-  --run_id manual_range_serious_2day_cap3000_combined
+  --cache_dir artifacts/cache/range_real_usecase \
+  --variants tf32_bf16_bs32_inf32 \
+  --results_dir artifacts/benchmarks/range_real_usecase/runs/manual_range_real_usecase_a \
+  --run_id manual_range_real_usecase_a
 
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode inference \
-  --checkpoint artifacts/benchmarks/runtime_small/benchmark_model.pt \
+  --checkpoint artifacts/benchmarks/runtime_range_real_usecase/benchmark_model.pt \
   --inference_csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
-  --results_dir artifacts/benchmarks/inference_small \
+  --results_dir artifacts/benchmarks/inference_range_real_usecase \
   --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16 --inference_device auto --inference_batch_size 32"
 ```
 
@@ -160,31 +143,32 @@ final F1 fields per batch size.
 
 The benchmark matrix defaults to range-only while range model quality is the
 active target. It also defaults to the current baseline variant,
-`tf32_bf16_bs32_inf32_combined`, to avoid accidentally launching a broad matrix
-when one baseline run is needed. Pass an explicit comma-separated `--variants`
+`tf32_bf16_bs32_inf32`, to avoid accidentally launching a broad matrix when one
+baseline run is needed. This variant uses TF32-enabled matmul, BF16 CUDA
+autocast, train/inference batches of 32, `checkpoint_selection_metric=f1`, and
+the normal answer-set F1 variant. Pass an explicit comma-separated `--variants`
 list when intentionally comparing runtime/checkpoint configurations.
 
 When `--csv_path` points at a cleaned-data directory, the matrix uses the first
 two sorted CSV files as train/eval days, prebuilds their segmented Parquet cache
 entries, and records cache warmup metadata in `benchmark_matrix.json`. The
-minimum realistic profile should leave `--max_segments` unset so all valid
-trajectory segments from both days are used, while `--max_points_per_segment
-3000` keeps long trajectories bounded and retains about 52% of the valid points
-in the first two cleaned days. Use explicit `--train_csv_path` and
-`--eval_csv_path` to choose different days.
+real-usecase profile leaves `--max_points_per_segment`, `--max_segments`, and
+`--max_trajectories` unset so all valid trajectory segments and points from both
+days are used. Use explicit `--train_csv_path` and `--eval_csv_path` to choose
+different days.
 
-Use `--profile serious` for baseline model-quality runs. It uses 250 queries,
-30% target query coverage, narrower range boxes (`range_spatial_fraction=0.02`,
-`range_time_fraction=0.04`), and 20 epochs, matching the current minimum
-cleaned-CSV training shape. `medium` uses only 64 queries and 8 epochs, so it is
-useful for iteration/runtime checks but too small for accepting model-quality
-conclusions.
+Use `--profile range_real_usecase` for baseline model-quality runs. It uses 400
+range queries, 30% target query coverage, narrower range boxes
+(`range_spatial_fraction=0.018`, `range_time_fraction=0.036`), 5%
+retained-point compression, 20 epochs, answer-set F1 checkpoint selection,
+no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics
+every 2 epochs.
 
 Benchmark matrix runs are organized as one directory per run. The tmux launcher
 uses this layout automatically:
 
 ```text
-artifacts/benchmarks/range_workload_baseline_min_realistic/
+artifacts/benchmarks/range_real_usecase/
   latest_run.txt
   runs/<run_id>/
     README.md
@@ -199,7 +183,7 @@ artifacts/benchmarks/range_workload_baseline_min_realistic/
       system_monitor.log
       tmux_status.txt
     variants/
-      tf32_bf16_bs32_inf32_combined/
+      tf32_bf16_bs32_inf32/
         example_run.json
         matched_table.txt
         range_workload_diagnostics.json
@@ -235,9 +219,9 @@ scripts/run_range_benchmark_tmux.sh
 The launcher creates a `qds-range-benchmark` tmux session with two panes:
 
 - left pane: the benchmark command, with stdout/stderr copied to
-  `artifacts/benchmarks/range_workload_baseline_min_realistic/runs/<run_id>/logs/console.log`
+  `artifacts/benchmarks/range_real_usecase/runs/<run_id>/logs/console.log`
 - right pane: lightweight system monitoring copied to
-  `artifacts/benchmarks/range_workload_baseline_min_realistic/runs/<run_id>/logs/system_monitor.log`
+  `artifacts/benchmarks/range_real_usecase/runs/<run_id>/logs/system_monitor.log`
 
 The monitor samples RAM/swap, disk space, top RSS processes, GPU utilization,
 GPU memory, temperature, power draw, clocks, visible CUDA processes, and kernel
@@ -264,13 +248,12 @@ ATTACH=0 make range-benchmark-tmux
 Set `BENCHMARK_RUN_ID=<name>` when you want a stable run directory name:
 
 ```bash
-BENCHMARK_RUN_ID=range_serious_2day_cap3000_combined_a make range-benchmark-tmux
+BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
 ```
 
 Use stable run IDs for comparable attempts. Include the workload, profile, data
-span, point cap, and a short iteration suffix, for example
-`range_serious_2day_cap3000_combined_a`. Timestamped defaults are fine for
-exploratory runs.
+span, variant when relevant, and a short iteration suffix, for example
+`range_real_usecase_a`. Timestamped defaults are fine for exploratory runs.
 
 List the current benchmark family with:
 
@@ -354,8 +337,8 @@ python -m src.experiments.run_ais_experiment \
   --eval_csv_path ../AISDATA/cleaned/eval.csv \
   --query_coverage 0.30 \
   --max_queries 1000 \
-  --range_spatial_fraction 0.02 \
-  --range_time_fraction 0.04 \
+  --range_spatial_fraction 0.018 \
+  --range_time_fraction 0.036 \
   --epochs 20 \
   --lr 0.0005 \
   --pointwise_loss_weight 0.25 \
@@ -381,7 +364,7 @@ code or when you want to force a rebuild of a matching source/config entry.
 
 Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
 
-For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, `0.02` spatial and `0.04` time gives smaller local boxes than the default `0.08` and `0.15`.
+For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, the real-usecase profile uses `0.018` spatial and `0.036` time to keep 400 range queries aimed near the 30% target coverage instead of blanketing the dataset.
 
 Phase 2 range diagnostics can be enabled without changing the default generator.
 Use optional acceptance filters such as `--range_min_point_hits`,
@@ -400,9 +383,10 @@ single positive query type.
 Training uses a ranking loss plus balanced pointwise BCE supervision. Exact
 final query F1 is the default checkpoint selection metric; it creates a
 held-out validation workload and restores the epoch with the best validation
-query F1. Use `--checkpoint_f1_variant combined` in matrix runs to compare the
-legacy answer/support product against the default pure answer-set F1. If
-diagnostics collapse to `pred_std=0`, prefer lowering `--lr`, keeping
+query F1 among epochs where `--f1_diagnostic_every` runs. Use
+`--checkpoint_f1_variant combined` in matrix runs to compare the legacy
+answer/support product against the default pure answer-set F1. If diagnostics
+collapse to `pred_std=0`, prefer lowering `--lr`, keeping
 `--gradient_clip_norm` enabled, and increasing query diversity before changing
 the model architecture.
 

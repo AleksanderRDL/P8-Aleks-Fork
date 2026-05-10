@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/benchmark_preflight.sh [options]
 
-Check local prerequisites before launching the minimum realistic range benchmark.
+Check local prerequisites before launching the range real-usecase benchmark.
 
 Options:
   --session NAME       tmux session name. Default: qds-range-benchmark.
@@ -157,7 +157,7 @@ if [[ -d "$csv_abs" ]]; then
   fi
 elif [[ -f "$csv_abs" ]]; then
   ok "cleaned CSV file exists: $csv_abs"
-  warn "minimum realistic profile normally expects a directory with two cleaned CSV days"
+  warn "range real-usecase profile normally expects a directory with two cleaned CSV days"
 else
   fail "cleaned CSV path does not exist: $csv_abs"
 fi
@@ -240,7 +240,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
   if [[ "$dirty_count" -eq 0 ]]; then
     ok "git worktree is clean at ${git_commit:-unknown}"
   else
-    warn "git worktree has $dirty_count changed/untracked paths at ${git_commit:-unknown}; record or commit the exact code state before comparing serious runs"
+    warn "git worktree has $dirty_count changed/untracked paths at ${git_commit:-unknown}; record or commit the exact code state before comparing real-usecase runs"
   fi
 else
   warn "git is unavailable or this is not a git worktree; code-state preflight skipped"

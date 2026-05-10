@@ -344,6 +344,19 @@ def test_temporal_score_hybrid_keeps_base_and_score_fill() -> None:
     assert torch.where(retained)[0].tolist() == [0, 5, 9]
 
 
+def test_temporal_score_hybrid_zero_temporal_fraction_is_pure_score() -> None:
+    scores = torch.tensor([0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 4.0, 5.0, 6.0])
+    retained = simplify_with_temporal_score_hybrid(
+        scores=scores,
+        boundaries=[(0, 10)],
+        compression_ratio=0.3,
+        temporal_fraction=0.0,
+        diversity_bonus=0.0,
+    )
+
+    assert torch.where(retained)[0].tolist() == [4, 5, 6]
+
+
 def test_retained_point_gap_stats_measure_original_spacing() -> None:
     retained = torch.tensor([True, False, False, True, False, True, True, False, True])
 

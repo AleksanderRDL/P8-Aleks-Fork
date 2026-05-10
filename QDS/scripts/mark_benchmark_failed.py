@@ -30,6 +30,7 @@ DEFAULT_INDEX_FIELDS: list[str] = [
     "csv_path",
     "max_points_per_segment",
     "max_segments",
+    "max_trajectories",
     "results_dir",
     "best_mlqds_f1",
     "best_mlqds_variant",

@@ -104,7 +104,7 @@ forces a rebuild when you want to verify the source parser path.
 
 1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
 2. Generate independent train and eval typed query workloads from the respective trajectory sets; range/kNN anchors use the 70/30 density sampler described in `src/queries`.
-3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is exact held-out query F1 on a validation workload. `checkpoint_f1_variant=answer` selects on pure answer-set F1; `checkpoint_f1_variant=combined` compares against the legacy answer/support product. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints below that baseline. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
+3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is exact held-out query F1 on a validation workload. `f1_diagnostic_every` controls how often held-out F1 is evaluated and therefore which epochs are eligible for F1-based checkpoint selection. `checkpoint_f1_variant=answer` selects on pure answer-set F1; `checkpoint_f1_variant=combined` compares against the legacy answer/support product. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints below that baseline. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
 4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
 5. Reuse one evaluation query cache across matched methods so full-data query answers and support masks are not recomputed for every baseline.
 6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, torch runtime precision settings, plus `best_epoch`, `best_loss`, `best_f1`, `checkpoint_selection_metric`, and `checkpoint_f1_variant` training metadata.
@@ -120,13 +120,19 @@ the same artifact schema.
 
 ```bash
 cd QDS
-../.venv/bin/python -m src.experiments.benchmark_runtime --mode train --profile small
+../.venv/bin/python -m src.experiments.benchmark_runtime \
+  --mode train \
+  --profile range_real_usecase \
+  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
+  --results_dir artifacts/benchmarks/runtime_range_real_usecase
 ```
 
 Use `--train_batch_sizes 16,32,64,128` with `--mode train` to run one child
 training benchmark per batch size. Each child gets its own output directory and
 checkpoint, and the top-level JSON includes `train_batch_size_sweep` rows with
 epoch-time summaries, peak CUDA memory, `best_f1`, and MLQDS aggregate F1.
+Training modes require real CSV data in `--train_extra_args`; the old synthetic
+`small`/`medium`/`serious` runtime profiles have been removed.
 Use `--inference_batch_size` on the training or inference CLI to tune MLQDS
 window batches independently of optimizer batches. It applies to matched/shift
 evaluation, saved-checkpoint inference, and held-out validation query-F1
@@ -146,40 +152,32 @@ track should stay range-only until the range model is stronger.
 ```bash
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile medium \
-  --results_dir artifacts/benchmarks/range_workload_matrix/runs/manual_smoke \
-  --run_id manual_smoke
-```
-
-For the minimum realistic AIS profile, pass the cleaned-data directory. The
-matrix selects the first two sorted cleaned CSV files as train/eval days, warms
-their segmented Parquet caches before measured runs, and then runs the variants
-against cache hits. Leave `--max_segments` unset for this profile so all valid
-trajectory segments from both days are used; use `--max_points_per_segment
-3000` to keep long trajectories bounded while retaining about 52% of the valid
-points in the first two cleaned days. Use `--profile serious` for baseline
-model-quality runs; it uses 250 queries, 30% target query coverage, narrower
-range boxes, and 20 epochs. `medium` is an iteration/runtime profile and is too
-small for accepting model-quality conclusions.
-
-```bash
-../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile serious \
+  --profile range_real_usecase \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
-  --max_points_per_segment 3000 \
-  --variants tf32_bf16_bs32_inf32_combined \
-  --results_dir artifacts/benchmarks/range_workload_baseline_min_realistic/runs/manual_range_serious_2day_cap3000_combined \
-  --run_id manual_range_serious_2day_cap3000_combined
+  --cache_dir artifacts/cache/range_real_usecase \
+  --variants tf32_bf16_bs32_inf32 \
+  --results_dir artifacts/benchmarks/range_real_usecase/runs/manual_range_real_usecase_a \
+  --run_id manual_range_real_usecase_a
 ```
+
+For the real-usecase AIS profile, pass the cleaned-data directory. The matrix
+selects the first two sorted cleaned CSV files as train/eval days, warms their
+segmented Parquet caches before measured runs, and then runs the variants
+against cache hits. The profile uses 400 range queries, a 30% target query
+coverage, `range_spatial_fraction=0.018`, `range_time_fraction=0.036`, 5%
+retained-point compression, 20 epochs, answer-set F1 checkpointing, no
+checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics every
+2 epochs. Leave `--max_points_per_segment`, `--max_segments`, and
+`--max_trajectories` unset for this profile so all valid segments and points
+from both days are used.
 
 Use `--train_csv_path` and `--eval_csv_path` to choose the two days manually.
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
 The default variant is the current baseline candidate
-`tf32_bf16_bs32_inf32_combined`: TF32 enabled, BF16 autocast, train/inference
-batches of 32, `checkpoint_selection_metric=f1`, and
-`checkpoint_f1_variant=combined`. Pass an explicit comma-separated `--variants`
-list when intentionally running a comparison matrix.
+`tf32_bf16_bs32_inf32`: TF32 enabled, BF16 autocast, train/inference batches of
+32, `checkpoint_selection_metric=f1`, and `checkpoint_f1_variant=answer`. Pass
+an explicit comma-separated `--variants` list when intentionally running a
+comparison matrix.
 
 Each matrix run writes a run-local guide and index:
 

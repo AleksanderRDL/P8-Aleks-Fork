@@ -83,7 +83,7 @@ def simplify_with_temporal_score_hybrid(
             continue
         k_total = max(2, int(math.ceil(float(compression_ratio) * n)))
         k_total = min(k_total, n)
-        k_base = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
+        k_base = 0 if base_fraction <= 0.0 else min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
         base_idx = evenly_spaced_indices(n, k_base, scores.device)
         retained[start + base_idx] = True
 

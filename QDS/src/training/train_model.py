@@ -74,7 +74,7 @@ def _apply_temporal_residual_labels(
         if n <= 0:
             continue
         k_total = min(n, max(2, int(math.ceil(float(compression_ratio) * n))))
-        k_base = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
+        k_base = 0 if base_fraction <= 0.0 else min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
         base_idx = evenly_spaced_indices(n, k_base, labels.device)
         base_mask[start + base_idx] = True
 
@@ -797,9 +797,9 @@ def train_model(
             if stats["pred_std"] < 1e-3:
                 stats["collapse_warning"] = 1.0
 
-            should_run_f1 = has_validation_f1 and (
-                selection_metric == "f1"
-                or (f1_diag_every > 0 and ((epoch + 1) % f1_diag_every == 0 or is_last_epoch))
+            f1_due = f1_diag_every <= 0 or ((epoch + 1) % f1_diag_every == 0 or is_last_epoch or epoch == 0)
+            should_run_f1 = has_validation_f1 and f1_due and (
+                selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
             )
             if should_run_f1:
                 query_f1, per_type_f1 = _validation_query_f1(
@@ -850,6 +850,7 @@ def train_model(
             tau_vals = [stats[f"kendall_tau_t{t}"] for t in active_type_ids]
             avg_tau = sum(tau_vals) / max(1, len(tau_vals))
             collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
+            selection: float | None
             if selection_metric == "uniform_gap" and "val_query_f1" in stats and validation_uniform_result is not None:
                 uniform_f1, uniform_per_type = validation_uniform_result
                 per_type_f1 = {
@@ -868,31 +869,39 @@ def train_model(
                 )
             elif selection_metric == "f1" and "val_query_f1" in stats:
                 selection = _f1_selection_score(stats["val_query_f1"], stats["pred_std"])
+            elif selection_metric in {"f1", "uniform_gap"}:
+                selection = None
             else:
                 selection = _selection_score(avg_tau, stats["pred_std"], stats["loss"])
-            stats["selection_score"] = selection
-            selection_history.append(float(selection))
-            window = selection_history[-smoothing_window:]
-            smoothed_selection = float(sum(window) / len(window))
-            stats["selection_score_smoothed"] = smoothed_selection
-            # Use the smoothed score for "best" decisions: averages out
-            # epoch-to-epoch validation F1 noise so we don't lock onto a lucky
-            # spike. Single-epoch loss still tiebreaks on near-equal smoothed.
-            is_new_best_model = smoothed_selection > best_selection + 1e-4 or (
-                abs(smoothed_selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
-            )
+            if selection is not None:
+                stats["selection_score"] = selection
+                selection_history.append(float(selection))
+                window = selection_history[-smoothing_window:]
+                smoothed_selection = float(sum(window) / len(window))
+                stats["selection_score_smoothed"] = smoothed_selection
+                # Use the smoothed score for "best" decisions: averages out
+                # epoch-to-epoch validation F1 noise so we don't lock onto a lucky
+                # spike. Single-epoch loss still tiebreaks on near-equal smoothed.
+                is_new_best_model = smoothed_selection > best_selection + 1e-4 or (
+                    abs(smoothed_selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
+                )
+            else:
+                smoothed_selection = None
+                is_new_best_model = False
             markers = []
             if epoch > 0 and is_new_best_model:
                 markers.append("*** NEW BEST MODEL ***")
             best_marker = ("  " + "  ".join(markers)) if markers else ""
             smoothed_label = (
                 f"  smoothed_w{smoothing_window}={smoothed_selection:+.3f}"
-                if smoothing_window > 1 else ""
+                if smoothing_window > 1 and smoothed_selection is not None
+                else ""
             )
+            selection_text = f"{selection:+.3f}" if selection is not None else "skipped"
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
                 f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
-                f"pred_std={stats['pred_std']:.6g}  select={selection:+.3f}{smoothed_label}  "
+                f"pred_std={stats['pred_std']:.6g}  select={selection_text}{smoothed_label}  "
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
             )
@@ -934,7 +943,7 @@ def train_model(
                 best_epoch = epoch + 1
                 best_state_dict = _model_state_on_cpu(model)
 
-            if patience > 0:
+            if patience > 0 and selection is not None:
                 if is_new_best_model:
                     epochs_no_improve = 0
                 else:

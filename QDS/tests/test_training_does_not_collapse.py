@@ -98,6 +98,22 @@ def test_temporal_residual_labels_drop_base_points() -> None:
     assert bool(residual_mask[5].all().item())
 
 
+def test_temporal_residual_labels_keep_all_labels_when_base_disabled() -> None:
+    labels = torch.ones((10, 4), dtype=torch.float32)
+    labelled_mask = torch.ones((10, 4), dtype=torch.bool)
+
+    residual_labels, residual_mask = _apply_temporal_residual_labels(
+        labels=labels,
+        labelled_mask=labelled_mask,
+        boundaries=[(0, 10)],
+        compression_ratio=0.3,
+        temporal_fraction=0.0,
+    )
+
+    assert bool(residual_mask.all().item())
+    assert float(residual_labels.sum().item()) == pytest.approx(float(labels.sum().item()))
+
+
 def test_epoch_type_weights_respect_train_mix() -> None:
     base_weights = torch.tensor([0.2, 0.4, 0.2, 0.2])
     epoch_mix = torch.ones(4) / 4.0
@@ -122,7 +138,7 @@ def test_training_records_validation_query_f1() -> None:
         n_queries=4,
         workload="range",
         checkpoint_selection_metric="f1",
-        f1_diagnostic_every=1,
+        f1_diagnostic_every=2,
         compression_ratio=0.5,
     )
     cfg.model.embed_dim = 16
@@ -162,7 +178,9 @@ def test_training_records_validation_query_f1() -> None:
 
     f1_rows = [row for row in out.history if "val_query_f1" in row]
     assert f1_rows
+    assert [int(row["epoch"]) for row in f1_rows] == [0, 1, 3, 5, 7]
     assert all(0.0 <= row["val_query_f1"] <= 1.0 for row in f1_rows)
+    assert all("selection_score" not in row for row in out.history if "val_query_f1" not in row)
     assert out.best_f1 == pytest.approx(max(row["val_query_f1"] for row in f1_rows))
 
 

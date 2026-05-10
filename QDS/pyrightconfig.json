@@ -2,6 +2,7 @@
   "include": [
     "scripts/mark_benchmark_failed.py",
     "src/experiments/benchmark_matrix.py",
+    "src/experiments/benchmark_runtime.py",
     "tests/test_benchmark_matrix.py"
   ],
   "extraPaths": [

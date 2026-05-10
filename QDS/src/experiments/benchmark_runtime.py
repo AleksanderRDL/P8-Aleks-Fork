@@ -40,6 +40,32 @@ INFERENCE_STEP_RE = re.compile(
     r"^\[(?P<name>eval|workload|load-data|trajectory-length-loss)\].*?(?:done|generated|in)\s+"
     r"(?P<seconds>[0-9.]+)s"
 )
+DEFAULT_PROFILE = "range_real_usecase"
+PROFILE_CHOICES = (DEFAULT_PROFILE,)
+REAL_USECASE_PROFILE_ARGS = [
+    "--n_queries",
+    "400",
+    "--query_coverage",
+    "0.30",
+    "--range_spatial_fraction",
+    "0.018",
+    "--range_time_fraction",
+    "0.036",
+    "--compression_ratio",
+    "0.05",
+    "--epochs",
+    "20",
+    "--workload",
+    "range",
+    "--checkpoint_selection_metric",
+    "f1",
+    "--f1_diagnostic_every",
+    "2",
+    "--checkpoint_smoothing_window",
+    "1",
+    "--mlqds_temporal_fraction",
+    "0.10",
+]
 
 
 def _qds_root() -> Path:
@@ -311,7 +337,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _profile_train_args(profile: str, seed: int, results_dir: Path, checkpoint: Path) -> list[str]:
-    """Return a stable synthetic training command profile."""
+    """Return stable training command args for a runtime benchmark profile."""
     common = [
         "--seed",
         str(seed),
@@ -320,70 +346,21 @@ def _profile_train_args(profile: str, seed: int, results_dir: Path, checkpoint: 
         "--save_model",
         str(checkpoint),
     ]
-    if profile == "small":
-        return [
-            "--n_ships",
-            "6",
-            "--n_points",
-            "48",
-            "--n_queries",
-            "12",
-            "--epochs",
-            "1",
-            "--workload",
-            "range",
-            "--compression_ratio",
-            "0.4",
-            *common,
-        ]
-    if profile == "medium":
-        return [
-            "--n_ships",
-            "16",
-            "--n_points",
-            "128",
-            "--n_queries",
-            "64",
-            "--epochs",
-            "8",
-            "--workload",
-            "range",
-            "--compression_ratio",
-            "0.2",
-            "--checkpoint_selection_metric",
-            "f1",
-            "--f1_diagnostic_every",
-            "2",
-            *common,
-        ]
-    if profile == "serious":
-        return [
-            "--n_ships",
-            "32",
-            "--n_points",
-            "256",
-            "--n_queries",
-            "192",
-            "--epochs",
-            "20",
-            "--workload",
-            "range",
-            "--compression_ratio",
-            "0.2",
-            "--checkpoint_selection_metric",
-            "f1",
-            "--f1_diagnostic_every",
-            "2",
-            "--checkpoint_smoothing_window",
-            "3",
-            *common,
-        ]
+    if profile == DEFAULT_PROFILE:
+        return [*REAL_USECASE_PROFILE_ARGS, *common]
     raise ValueError(f"Unknown benchmark profile: {profile}")
 
 
 def _split_extra_args(raw: str | None) -> list[str]:
     """Split optional extra CLI args with shell-like quoting."""
     return shlex.split(raw) if raw else []
+
+
+def _extra_args_include_training_data_source(raw: str | None) -> bool:
+    """Return whether train extra args provide real CSV training data."""
+    tokens = _split_extra_args(raw)
+    data_flags = {"--csv_path", "--train_csv_path", "--train_csv"}
+    return any(token in data_flags or any(token.startswith(f"{flag}=") for flag in data_flags) for token in tokens)
 
 
 def _parse_train_batch_sizes(raw: str | None) -> list[int] | None:
@@ -494,11 +471,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        choices=["small", "medium", "serious"],
-        default="small",
-        help="Synthetic training profile used when no custom train args are supplied.",
+        choices=PROFILE_CHOICES,
+        default=DEFAULT_PROFILE,
+        help="Training profile for runtime benchmarking. Training modes require CSV data in --train_extra_args.",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Seed recorded and passed to default profiles.")
+    parser.add_argument("--seed", type=int, default=42, help="Seed recorded and passed to default profile commands.")
     parser.add_argument(
         "--results_dir",
         type=str,
@@ -578,6 +555,11 @@ def main() -> None:
         raise SystemExit("--inference_csv_path is required for --mode inference and --mode both.")
     if args.mode == "inference" and not args.checkpoint:
         raise SystemExit("--checkpoint is required for --mode inference.")
+    if args.mode in {"train", "both"} and not _extra_args_include_training_data_source(args.train_extra_args):
+        raise SystemExit(
+            "--mode train/both with --profile range_real_usecase requires --train_extra_args "
+            "containing --csv_path or --train_csv_path/--eval_csv_path."
+        )
     try:
         train_batch_sizes = _parse_train_batch_sizes(args.train_batch_sizes)
     except ValueError as exc:

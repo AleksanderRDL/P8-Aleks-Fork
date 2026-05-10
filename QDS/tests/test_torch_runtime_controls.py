@@ -5,8 +5,11 @@ from __future__ import annotations
 import torch
 
 from src.experiments.benchmark_runtime import (
+    DEFAULT_PROFILE,
     _batch_size_sweep_summary,
+    _extra_args_include_training_data_source,
     _parse_train_batch_sizes,
+    _profile_train_args,
     _runtime_child_args,
 )
 from src.experiments.experiment_config import ExperimentConfig, build_experiment_config
@@ -97,6 +100,24 @@ def test_runtime_child_args_forward_amp_mode() -> None:
 def test_parse_train_batch_sizes() -> None:
     assert _parse_train_batch_sizes("16, 32,64") == [16, 32, 64]
     assert _parse_train_batch_sizes(None) is None
+
+
+def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
+    args = _profile_train_args(DEFAULT_PROFILE, seed=42, results_dir=tmp_path / "run", checkpoint=tmp_path / "m.pt")
+
+    assert "--n_queries" in args
+    assert args[args.index("--n_queries") + 1] == "400"
+    assert args[args.index("--compression_ratio") + 1] == "0.05"
+    assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
+    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.10"
+    assert "--n_ships" not in args
+    assert "--n_points" not in args
+
+
+def test_runtime_profile_requires_real_training_data_source() -> None:
+    assert _extra_args_include_training_data_source("--csv_path ../AISDATA/cleaned/day.csv")
+    assert _extra_args_include_training_data_source("--train_csv_path=train.csv --eval_csv_path eval.csv")
+    assert not _extra_args_include_training_data_source("--max_segments 10")
 
 
 def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:

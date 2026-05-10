@@ -14,6 +14,7 @@ import pytest
 from src.experiments.benchmark_matrix import (
     DEFAULT_VARIANTS,
     DEFAULT_WORKLOADS,
+    DEFAULT_PROFILE,
     MatrixDataSources,
     MatrixVariant,
     PURE_WORKLOADS,
@@ -48,12 +49,12 @@ def test_experiment_workload_resolution_is_pure_only() -> None:
         resolve_workload_mixes("range=0.5,knn=0.5", None, workload_keyword="range")
 
 
-def test_selected_variants_defaults_and_combined_variant() -> None:
+def test_selected_variants_default_to_answer_f1_baseline() -> None:
     variants = _selected_variants(None)
 
     assert [variant.name for variant in variants] == list(DEFAULT_VARIANTS)
-    assert [variant.name for variant in variants] == ["tf32_bf16_bs32_inf32_combined"]
-    assert variants[0].checkpoint_f1_variant == "combined"
+    assert [variant.name for variant in variants] == ["tf32_bf16_bs32_inf32"]
+    assert variants[0].checkpoint_f1_variant == "answer"
     assert variants[0].amp_mode == "bf16"
 
 
@@ -76,16 +77,29 @@ def test_profile_args_use_csv_when_provided() -> None:
         max_points_per_segment=128,
         max_time_gap_seconds=3600.0,
         max_segments=16,
+        max_trajectories=8,
     )
     data_sources = MatrixDataSources(csv_path="../AISDATA/cleaned/day.csv")
 
-    assert _profile_args("medium", args, data_sources) == [
+    assert _profile_args(DEFAULT_PROFILE, args, data_sources) == [
         "--csv_path",
         "../AISDATA/cleaned/day.csv",
         "--n_queries",
-        "64",
+        "400",
+        "--query_coverage",
+        "0.30",
+        "--range_spatial_fraction",
+        "0.018",
+        "--range_time_fraction",
+        "0.036",
+        "--compression_ratio",
+        "0.05",
         "--epochs",
-        "8",
+        "20",
+        "--checkpoint_smoothing_window",
+        "1",
+        "--mlqds_temporal_fraction",
+        "0.10",
         "--min_points_per_segment",
         "4",
         "--max_time_gap_seconds",
@@ -94,6 +108,8 @@ def test_profile_args_use_csv_when_provided() -> None:
         "128",
         "--max_segments",
         "16",
+        "--max_trajectories",
+        "8",
         "--cache_dir",
         "artifacts/cache/matrix",
         "--refresh_cache",
@@ -108,36 +124,47 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         cache_dir="artifacts/cache/matrix",
         refresh_cache=True,
         min_points_per_segment=4,
-        max_points_per_segment=3000,
+        max_points_per_segment=None,
         max_time_gap_seconds=3600.0,
         max_segments=None,
+        max_trajectories=None,
     )
     data_sources = MatrixDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
         eval_csv_path="../AISDATA/cleaned/day2.csv",
     )
 
-    assert _profile_args("medium", args, data_sources, include_refresh_cache=False) == [
+    assert _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False) == [
         "--train_csv_path",
         "../AISDATA/cleaned/day1.csv",
         "--eval_csv_path",
         "../AISDATA/cleaned/day2.csv",
         "--n_queries",
-        "64",
+        "400",
+        "--query_coverage",
+        "0.30",
+        "--range_spatial_fraction",
+        "0.018",
+        "--range_time_fraction",
+        "0.036",
+        "--compression_ratio",
+        "0.05",
         "--epochs",
-        "8",
+        "20",
+        "--checkpoint_smoothing_window",
+        "1",
+        "--mlqds_temporal_fraction",
+        "0.10",
         "--min_points_per_segment",
         "4",
         "--max_time_gap_seconds",
         "3600.0",
-        "--max_points_per_segment",
-        "3000",
         "--cache_dir",
         "artifacts/cache/matrix",
     ]
 
 
-def test_serious_profile_uses_baseline_training_shape() -> None:
+def test_real_usecase_profile_uses_requested_training_shape() -> None:
     args = argparse.Namespace(
         csv_path=None,
         train_csv_path="../AISDATA/cleaned/day1.csv",
@@ -145,29 +172,39 @@ def test_serious_profile_uses_baseline_training_shape() -> None:
         cache_dir="artifacts/cache/matrix",
         refresh_cache=False,
         min_points_per_segment=4,
-        max_points_per_segment=3000,
+        max_points_per_segment=None,
         max_time_gap_seconds=3600.0,
         max_segments=None,
+        max_trajectories=None,
     )
     data_sources = MatrixDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
         eval_csv_path="../AISDATA/cleaned/day2.csv",
     )
 
-    profile_args = _profile_args("serious", args, data_sources, include_refresh_cache=False)
+    profile_args = _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False)
 
-    assert profile_args[4:14] == [
+    assert profile_args[4:20] == [
         "--n_queries",
-        "250",
+        "400",
         "--query_coverage",
         "0.30",
         "--range_spatial_fraction",
-        "0.02",
+        "0.018",
         "--range_time_fraction",
-        "0.04",
+        "0.036",
+        "--compression_ratio",
+        "0.05",
         "--epochs",
         "20",
+        "--checkpoint_smoothing_window",
+        "1",
+        "--mlqds_temporal_fraction",
+        "0.10",
     ]
+    assert "--max_points_per_segment" not in profile_args
+    assert "--max_segments" not in profile_args
+    assert "--max_trajectories" not in profile_args
 
 
 def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:
@@ -179,10 +216,11 @@ def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:
 
 def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> None:
     args = argparse.Namespace(
-        profile="small",
+        profile=DEFAULT_PROFILE,
         seed=42,
         max_points_per_segment=3000,
         max_segments=None,
+        max_trajectories=None,
     )
     variants = [MatrixVariant(name="fp32")]
     sources = MatrixDataSources(train_csv_path="day1.csv", eval_csv_path="day2.csv")

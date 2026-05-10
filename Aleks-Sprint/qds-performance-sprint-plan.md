@@ -193,16 +193,11 @@ Each benchmark artifact should include at least:
 
 ### Default Benchmark Matrix
 
-Use three run sizes so changes can be tested at the right cost:
-
-```text
-small:   quick correctness/runtime smoke, cheap enough to run often
-medium:  representative iteration benchmark for most optimization work
-serious: slower benchmark used before accepting major training or CUDA-stack changes
-```
-
-The exact commands should be recorded in the benchmark script or README once
-the first implementation slice lands.
+Use one explicit range real-usecase matrix profile for model-quality decisions:
+two cleaned CSV days, first day for training, second day for final evaluation,
+400 range queries, 30% target coverage, 5% retained-point compression, 20
+epochs, no loader caps by default, answer-set F1 checkpointing, no checkpoint
+smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics every 2 epochs.
 
 ## Phase 1: Reproducibility And Measurement
 
@@ -812,32 +807,36 @@ Range benchmark tightening, 2026-05-10:
 - Added cache warmup for cleaned-CSV matrix runs. When `--cache_dir` is set,
   the matrix prebuilds the segmented Parquet caches before measured variants
   and records warmup metadata in `benchmark_matrix.json`.
-- Updated the minimum realistic matrix profile to use two cleaned CSV days:
+- Updated the range real-usecase matrix profile to use two cleaned CSV days:
   passing `--csv_path ../AISDATA/cleaned` selects the first two sorted cleaned
   files as train/eval days. Explicit `--train_csv_path` and `--eval_csv_path`
   can be used to choose the days manually.
-- Removed the segment-count cap from the recommended two-day profile so the
-  benchmark uses all valid segments from both days. Keep
-  `--max_points_per_segment 3000` to bound very long trajectories while
-  retaining about 52% of the valid points in the first two cleaned days.
-- Recommended next range benchmark shape:
+- Removed loader caps from the recommended two-day profile so the benchmark
+  uses all valid segments and points from both days unless a cap is explicitly
+  passed.
+- Current range real-usecase benchmark shape:
 
 ```bash
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile serious \
+  --profile range_real_usecase \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
-  --max_points_per_segment 3000 \
-  --variants tf32_bf16_bs32_inf32_combined \
-  --results_dir artifacts/benchmarks/range_workload_baseline_min_realistic/runs/manual_range_serious_2day_cap3000_combined \
-  --run_id manual_range_serious_2day_cap3000_combined
+  --cache_dir artifacts/cache/range_real_usecase \
+  --variants tf32_bf16_bs32_inf32 \
+  --results_dir artifacts/benchmarks/range_real_usecase/runs/manual_range_real_usecase_a \
+  --run_id manual_range_real_usecase_a
 ```
 
-  `medium` remains useful for iteration/runtime checks, but it is too small
-  for accepting model-quality conclusions because it uses only 64 queries and
-  8 epochs. The baseline-quality profile uses 250 queries, 30% target query
-  coverage, narrower range boxes, and 20 epochs.
+  This profile uses 400 range queries, 30% target query coverage,
+  `range_spatial_fraction=0.018`, `range_time_fraction=0.036`, 5%
+  retained-point compression, 20 epochs, normal answer-set F1 checkpointing, no
+  checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1 diagnostics
+  every 2 epochs.
+
+- Removed the old synthetic `small`/`medium`/`serious` runtime benchmark
+  profiles from `benchmark_runtime.py`. The runtime wrapper now exposes only
+  `range_real_usecase` and requires real CSV data in `--train_extra_args` for
+  training modes.
 
 - Added a tmux-backed long-run workflow for this benchmark:
 
@@ -848,7 +847,7 @@ make range-benchmark-tmux
 
   The launcher creates one pane for the benchmark and one pane for lightweight
   monitoring. Each launch writes one run directory under
-  `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/`.
+  `artifacts/benchmarks/range_real_usecase/runs/<run_id>/`.
   The run directory contains `README.md`, `run_config.json`,
   `run_status.json`, `artifact_index.json`, `benchmark_matrix.{json,csv,md}`,
   `logs/`, and `variants/<variant>/`. The benchmark family root also gets
@@ -922,8 +921,8 @@ Benefit:
 Risk:
 
 - Medium.
-- Diagnostics are valuable; do not hide important warnings by default in serious
-  runs.
+- Diagnostics are valuable; do not hide important warnings by default in
+  real-usecase runs.
 
 Acceptance check:
 
@@ -933,7 +932,7 @@ Acceptance check:
 
 Task:
 
-- Keep `checkpoint_selection_metric="f1"` as the default for serious runs.
+- Keep `checkpoint_selection_metric="f1"` as the default for real-usecase runs.
 - Compare `checkpoint_f1_variant="answer"` against `"combined"` in benchmark
   matrices.
 - Keep `uniform_gap` available as an explicit experimental variant rather than

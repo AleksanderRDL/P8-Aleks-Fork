@@ -3,7 +3,7 @@ SHELL := /bin/bash
 REPO_ROOT := $(abspath ..)
 PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 QDS_REQUIREMENTS ?= requirements.txt
-TYPECHECK_PATHS ?= scripts/mark_benchmark_failed.py src/experiments/benchmark_matrix.py tests/test_benchmark_matrix.py
+TYPECHECK_PATHS ?= scripts/mark_benchmark_failed.py src/experiments/benchmark_matrix.py src/experiments/benchmark_runtime.py tests/test_benchmark_matrix.py
 
 RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
@@ -11,10 +11,10 @@ CLEANED_CSV ?=
 BENCHMARK_SESSION ?= qds-range-benchmark
 BENCHMARK_RUN_ID ?=
 ATTACH ?=
-BENCHMARK_PROFILE ?= serious
-BENCHMARK_VARIANTS ?= tf32_bf16_bs32_inf32_combined
-BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_baseline_min_realistic
-BENCHMARK_CACHE ?= artifacts/cache/range_workload_matrix_min_realistic
+BENCHMARK_PROFILE ?= range_real_usecase
+BENCHMARK_VARIANTS ?= tf32_bf16_bs32_inf32
+BENCHMARK_FAMILY ?= artifacts/benchmarks/range_real_usecase
+BENCHMARK_CACHE ?= artifacts/cache/range_real_usecase
 CONFIRM ?=
 
 .PHONY: help check-env install install-cpu install-cuda test typecheck smoke smoke-csv benchmark-preflight list-runs clean-smoke-artifacts range-benchmark-tmux

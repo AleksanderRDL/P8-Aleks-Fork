@@ -32,6 +32,28 @@ PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 2
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
+DEFAULT_PROFILE = "range_real_usecase"
+PROFILE_CHOICES = (DEFAULT_PROFILE,)
+REAL_USECASE_RANGE_SPATIAL_FRACTION = 0.018
+REAL_USECASE_RANGE_TIME_FRACTION = 0.036
+REAL_USECASE_PROFILE_ARGS = [
+    "--n_queries",
+    "400",
+    "--query_coverage",
+    "0.30",
+    "--range_spatial_fraction",
+    f"{REAL_USECASE_RANGE_SPATIAL_FRACTION:.3f}",
+    "--range_time_fraction",
+    f"{REAL_USECASE_RANGE_TIME_FRACTION:.3f}",
+    "--compression_ratio",
+    "0.05",
+    "--epochs",
+    "20",
+    "--checkpoint_smoothing_window",
+    "1",
+    "--mlqds_temporal_fraction",
+    "0.10",
+]
 
 
 @dataclass(frozen=True)
@@ -81,9 +103,7 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         checkpoint_f1_variant="combined",
     ),
 }
-DEFAULT_VARIANTS = (
-    "tf32_bf16_bs32_inf32_combined",
-)
+DEFAULT_VARIANTS = ("tf32_bf16_bs32_inf32",)
 
 
 @dataclass(frozen=True)
@@ -318,29 +338,8 @@ def _profile_args(
     *,
     include_refresh_cache: bool = True,
 ) -> list[str]:
-    """Return data-size arguments for a matrix profile."""
-    if profile == "small":
-        size_args = ["--n_ships", "6", "--n_points", "48", "--n_queries", "12", "--epochs", "1"]
-    elif profile == "medium":
-        size_args = ["--n_ships", "16", "--n_points", "128", "--n_queries", "64", "--epochs", "8"]
-    elif profile == "serious":
-        size_args = [
-            "--n_ships",
-            "32",
-            "--n_points",
-            "256",
-            "--n_queries",
-            "250",
-            "--query_coverage",
-            "0.30",
-            "--range_spatial_fraction",
-            "0.02",
-            "--range_time_fraction",
-            "0.04",
-            "--epochs",
-            "20",
-        ]
-    else:
+    """Return effective child CLI arguments for a matrix profile."""
+    if profile != DEFAULT_PROFILE:
         raise ValueError(f"Unknown matrix profile: {profile}")
 
     data_sources = data_sources or _resolve_data_sources(args)
@@ -350,12 +349,12 @@ def _profile_args(
             data_sources.train_csv_path,
             "--eval_csv_path",
             data_sources.eval_csv_path,
-            *size_args[4:],
+            *REAL_USECASE_PROFILE_ARGS,
         ]
     elif data_sources.csv_path:
-        profile_args = ["--csv_path", data_sources.csv_path, *size_args[4:]]
+        profile_args = ["--csv_path", data_sources.csv_path, *REAL_USECASE_PROFILE_ARGS]
     else:
-        return size_args
+        raise ValueError(f"{DEFAULT_PROFILE} requires --csv_path or --train_csv_path/--eval_csv_path.")
 
     if data_sources.csv_sources:
         profile_args += ["--min_points_per_segment", str(args.min_points_per_segment)]
@@ -364,6 +363,8 @@ def _profile_args(
             profile_args += ["--max_points_per_segment", str(args.max_points_per_segment)]
         if args.max_segments is not None:
             profile_args += ["--max_segments", str(args.max_segments)]
+        if args.max_trajectories is not None:
+            profile_args += ["--max_trajectories", str(args.max_trajectories)]
         if args.cache_dir is not None:
             profile_args += ["--cache_dir", str(args.cache_dir)]
         if args.refresh_cache and include_refresh_cache:
@@ -371,21 +372,23 @@ def _profile_args(
     return profile_args
 
 
-def _profile_settings(profile: str) -> dict[str, int | float]:
+def _profile_settings(profile: str) -> dict[str, int | float | str]:
     """Return compact profile settings recorded in run_config.json."""
-    if profile == "small":
-        return {"n_ships": 6, "n_points": 48, "n_queries": 12, "epochs": 1}
-    if profile == "medium":
-        return {"n_ships": 16, "n_points": 128, "n_queries": 64, "epochs": 8}
-    if profile == "serious":
+    if profile == DEFAULT_PROFILE:
         return {
-            "n_ships": 32,
-            "n_points": 256,
-            "n_queries": 250,
+            "data_mode": "two_cleaned_csv_days",
+            "train_day": "first sorted cleaned CSV",
+            "eval_day": "second sorted cleaned CSV",
+            "n_queries": 400,
             "query_coverage": 0.30,
-            "range_spatial_fraction": 0.02,
-            "range_time_fraction": 0.04,
+            "range_spatial_fraction": REAL_USECASE_RANGE_SPATIAL_FRACTION,
+            "range_time_fraction": REAL_USECASE_RANGE_TIME_FRACTION,
+            "compression_ratio": 0.05,
             "epochs": 20,
+            "checkpoint_selection_metric": "f1",
+            "checkpoint_f1_variant": "answer",
+            "checkpoint_smoothing_window": 1,
+            "mlqds_temporal_fraction": 0.10,
         }
     raise ValueError(f"Unknown matrix profile: {profile}")
 
@@ -675,6 +678,7 @@ def _run_config(
             "max_points_per_segment": args.max_points_per_segment,
             "max_time_gap_seconds": float(args.max_time_gap_seconds),
             "max_segments": args.max_segments,
+            "max_trajectories": args.max_trajectories,
         },
         "checkpoint_selection_metric": "f1",
         "f1_diagnostic_every": int(args.f1_diagnostic_every),
@@ -699,6 +703,7 @@ RUN_INDEX_FIELDS = [
     "csv_path",
     "max_points_per_segment",
     "max_segments",
+    "max_trajectories",
     "results_dir",
     "best_mlqds_f1",
     "best_mlqds_variant",
@@ -752,6 +757,7 @@ def _index_entry(
         "csv_path": data_sources.csv_path,
         "max_points_per_segment": args.max_points_per_segment,
         "max_segments": args.max_segments,
+        "max_trajectories": args.max_trajectories,
         "results_dir": str(results_dir),
         "best_mlqds_f1": best_f1,
         "best_mlqds_variant": best_variant,
@@ -872,7 +878,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a range-focused AIS-QDS benchmark matrix and write compact comparison tables.",
     )
-    parser.add_argument("--profile", choices=["small", "medium", "serious"], default="medium")
+    parser.add_argument("--profile", choices=PROFILE_CHOICES, default=DEFAULT_PROFILE)
     parser.add_argument("--workloads", type=str, default=",".join(DEFAULT_WORKLOADS))
     parser.add_argument("--variants", type=str, default=",".join(DEFAULT_VARIANTS))
     parser.add_argument("--seed", type=int, default=42)
@@ -888,8 +894,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Optional cleaned AIS CSV or directory. A directory selects the first two sorted "
-            "CSV files as train/eval days for the minimum realistic range benchmark."
+            "Cleaned AIS CSV or directory. A directory selects the first two sorted "
+            "CSV files as train/eval days for the range real-usecase benchmark."
         ),
     )
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
@@ -905,6 +911,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_points_per_segment", type=int, default=None)
     parser.add_argument("--max_time_gap_seconds", type=float, default=3600.0)
     parser.add_argument("--max_segments", type=int, default=None)
+    parser.add_argument("--max_trajectories", type=int, default=None)
     parser.add_argument(
         "--f1_diagnostic_every",
         type=int,
