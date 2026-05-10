@@ -130,14 +130,15 @@ cd QDS
   --results_dir artifacts/benchmarks/range_workload_matrix/runs/manual_smoke \
   --run_id manual_smoke
 
-# Minimum realistic range matrix: two cleaned days, cache-warmed, full segment set.
+# Minimum realistic range baseline: two cleaned days, cache-warmed, full segment set.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile medium \
+  --profile serious \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 3000 \
-  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic/runs/manual_range_medium_2day_cap3000 \
-  --run_id manual_range_medium_2day_cap3000
+  --variants tf32_bf16_bs32_inf32_combined \
+  --results_dir artifacts/benchmarks/range_workload_baseline_min_realistic/runs/manual_range_serious_2day_cap3000_combined \
+  --run_id manual_range_serious_2day_cap3000_combined
 
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
@@ -158,20 +159,32 @@ When `--train_batch_sizes` is provided, the artifact also includes a
 final F1 fields per batch size.
 
 The benchmark matrix defaults to range-only while range model quality is the
-active target. When `--csv_path` points at a cleaned-data directory, the matrix
-uses the first two sorted CSV files as train/eval days, prebuilds their
-segmented Parquet cache entries, and records cache warmup metadata in
-`benchmark_matrix.json`. The minimum realistic profile should leave
-`--max_segments` unset so all valid trajectory segments from both days are used,
-while `--max_points_per_segment 3000` keeps long trajectories bounded and
-retains about 52% of the valid points in the first two cleaned days. Use
-explicit `--train_csv_path` and `--eval_csv_path` to choose different days.
+active target. It also defaults to the current baseline variant,
+`tf32_bf16_bs32_inf32_combined`, to avoid accidentally launching a broad matrix
+when one baseline run is needed. Pass an explicit comma-separated `--variants`
+list when intentionally comparing runtime/checkpoint configurations.
+
+When `--csv_path` points at a cleaned-data directory, the matrix uses the first
+two sorted CSV files as train/eval days, prebuilds their segmented Parquet cache
+entries, and records cache warmup metadata in `benchmark_matrix.json`. The
+minimum realistic profile should leave `--max_segments` unset so all valid
+trajectory segments from both days are used, while `--max_points_per_segment
+3000` keeps long trajectories bounded and retains about 52% of the valid points
+in the first two cleaned days. Use explicit `--train_csv_path` and
+`--eval_csv_path` to choose different days.
+
+Use `--profile serious` for baseline model-quality runs. It uses 250 queries,
+30% target query coverage, narrower range boxes (`range_spatial_fraction=0.02`,
+`range_time_fraction=0.04`), and 20 epochs, matching the current minimum
+cleaned-CSV training shape. `medium` uses only 64 queries and 8 epochs, so it is
+useful for iteration/runtime checks but too small for accepting model-quality
+conclusions.
 
 Benchmark matrix runs are organized as one directory per run. The tmux launcher
 uses this layout automatically:
 
 ```text
-artifacts/benchmarks/range_workload_matrix_min_realistic/
+artifacts/benchmarks/range_workload_baseline_min_realistic/
   latest_run.txt
   runs/<run_id>/
     README.md
@@ -186,13 +199,11 @@ artifacts/benchmarks/range_workload_matrix_min_realistic/
       system_monitor.log
       tmux_status.txt
     variants/
-      fp32/
+      tf32_bf16_bs32_inf32_combined/
         example_run.json
         matched_table.txt
         range_workload_diagnostics.json
         stdout.log
-      tf32/
-      ...
 ```
 
 Use `artifact_index.json` or the run-local `README.md` first when looking for a
@@ -224,14 +235,15 @@ scripts/run_range_benchmark_tmux.sh
 The launcher creates a `qds-range-benchmark` tmux session with two panes:
 
 - left pane: the benchmark command, with stdout/stderr copied to
-  `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/logs/console.log`
+  `artifacts/benchmarks/range_workload_baseline_min_realistic/runs/<run_id>/logs/console.log`
 - right pane: lightweight system monitoring copied to
-  `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/logs/system_monitor.log`
+  `artifacts/benchmarks/range_workload_baseline_min_realistic/runs/<run_id>/logs/system_monitor.log`
 
 The monitor samples RAM/swap, disk space, top RSS processes, GPU utilization,
-GPU memory, temperature, power draw, clocks, visible CUDA processes, and recent
-kernel markers for OOM/GPU/reset/thermal/power events. This keeps enough
-context to diagnose common long-run failures such as RAM exhaustion, GPU
+GPU memory, temperature, power draw, clocks, visible CUDA processes, and kernel
+markers for OOM/GPU/reset/thermal/power events emitted after the monitor starts.
+This keeps enough context to diagnose common long-run failures such as RAM
+exhaustion, GPU
 reset/disappearance, thermal/power throttling, or runaway Python memory growth.
 If an abnormal launcher exit leaves `run_status.json` in `running`, the launcher
 now marks it `failed` and updates the family run index.
@@ -252,13 +264,13 @@ ATTACH=0 make range-benchmark-tmux
 Set `BENCHMARK_RUN_ID=<name>` when you want a stable run directory name:
 
 ```bash
-BENCHMARK_RUN_ID=range_medium_2day_cap3000_a make range-benchmark-tmux
+BENCHMARK_RUN_ID=range_serious_2day_cap3000_combined_a make range-benchmark-tmux
 ```
 
 Use stable run IDs for comparable attempts. Include the workload, profile, data
 span, point cap, and a short iteration suffix, for example
-`range_medium_2day_cap3000_a`. Timestamped defaults are fine for exploratory
-runs.
+`range_serious_2day_cap3000_combined_a`. Timestamped defaults are fine for
+exploratory runs.
 
 List the current benchmark family with:
 

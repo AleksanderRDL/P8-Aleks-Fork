@@ -52,8 +52,17 @@ def test_selected_variants_defaults_and_combined_variant() -> None:
     variants = _selected_variants(None)
 
     assert [variant.name for variant in variants] == list(DEFAULT_VARIANTS)
-    assert variants[-1].checkpoint_f1_variant == "combined"
-    assert variants[-1].amp_mode == "bf16"
+    assert [variant.name for variant in variants] == ["tf32_bf16_bs32_inf32_combined"]
+    assert variants[0].checkpoint_f1_variant == "combined"
+    assert variants[0].amp_mode == "bf16"
+
+
+def test_selected_variants_can_run_explicit_sweeps() -> None:
+    variants = _selected_variants("fp32,tf32_bf16_bs32_inf32")
+
+    assert [variant.name for variant in variants] == ["fp32", "tf32_bf16_bs32_inf32"]
+    assert variants[0].checkpoint_f1_variant == "answer"
+    assert variants[1].amp_mode == "bf16"
 
 
 def test_profile_args_use_csv_when_provided() -> None:
@@ -125,6 +134,39 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "3000",
         "--cache_dir",
         "artifacts/cache/matrix",
+    ]
+
+
+def test_serious_profile_uses_baseline_training_shape() -> None:
+    args = argparse.Namespace(
+        csv_path=None,
+        train_csv_path="../AISDATA/cleaned/day1.csv",
+        eval_csv_path="../AISDATA/cleaned/day2.csv",
+        cache_dir="artifacts/cache/matrix",
+        refresh_cache=False,
+        min_points_per_segment=4,
+        max_points_per_segment=3000,
+        max_time_gap_seconds=3600.0,
+        max_segments=None,
+    )
+    data_sources = MatrixDataSources(
+        train_csv_path="../AISDATA/cleaned/day1.csv",
+        eval_csv_path="../AISDATA/cleaned/day2.csv",
+    )
+
+    profile_args = _profile_args("serious", args, data_sources, include_refresh_cache=False)
+
+    assert profile_args[4:14] == [
+        "--n_queries",
+        "250",
+        "--query_coverage",
+        "0.30",
+        "--range_spatial_fraction",
+        "0.02",
+        "--range_time_fraction",
+        "0.04",
+        "--epochs",
+        "20",
     ]
 
 

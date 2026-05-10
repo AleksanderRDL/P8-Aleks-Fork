@@ -10,7 +10,10 @@ CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
 CLEANED_CSV ?=
 BENCHMARK_SESSION ?= qds-range-benchmark
 BENCHMARK_RUN_ID ?=
-BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_matrix_min_realistic
+ATTACH ?=
+BENCHMARK_PROFILE ?= serious
+BENCHMARK_VARIANTS ?= tf32_bf16_bs32_inf32_combined
+BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_baseline_min_realistic
 BENCHMARK_CACHE ?= artifacts/cache/range_workload_matrix_min_realistic
 CONFIRM ?=
 
@@ -29,7 +32,7 @@ help:
 	@echo "  benchmark-preflight  Check tmux/GPU/data/artifact prerequisites"
 	@echo "  list-runs   List benchmark runs from BENCHMARK_FAMILY"
 	@echo "  clean-smoke-artifacts  Dry-run smoke artifact cleanup; set CONFIRM=1 to delete"
-	@echo "  range-benchmark-tmux  Launch the two-day range benchmark in tmux with monitoring"
+	@echo "  range-benchmark-tmux  Launch the two-day range baseline benchmark in tmux with monitoring"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PYTHON=$(PYTHON)"
@@ -38,6 +41,9 @@ help:
 	@echo "  CLEANED_CSV=$(CLEANED_CSV)"
 	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
 	@echo "  BENCHMARK_RUN_ID=$(BENCHMARK_RUN_ID)"
+	@echo "  ATTACH=$(ATTACH)"
+	@echo "  BENCHMARK_PROFILE=$(BENCHMARK_PROFILE)"
+	@echo "  BENCHMARK_VARIANTS=$(BENCHMARK_VARIANTS)"
 	@echo "  BENCHMARK_FAMILY=$(BENCHMARK_FAMILY)"
 	@echo "  BENCHMARK_CACHE=$(BENCHMARK_CACHE)"
 
@@ -94,4 +100,4 @@ clean-smoke-artifacts:
 	scripts/clean_smoke_artifacts.sh $(if $(CONFIRM),--yes,)
 
 range-benchmark-tmux:
-	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/run_range_benchmark_tmux.sh
+	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" ATTACH="$(ATTACH)" PROFILE="$(BENCHMARK_PROFILE)" VARIANTS="$(BENCHMARK_VARIANTS)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/run_range_benchmark_tmux.sh

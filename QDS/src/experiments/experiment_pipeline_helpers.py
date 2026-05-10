@@ -627,6 +627,9 @@ def run_experiment_pipeline(
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
         "best_f1": trained.best_f1,
+        "checkpoint_selection_metric": config.model.checkpoint_selection_metric,
+        "checkpoint_f1_variant": config.model.checkpoint_f1_variant,
+        "checkpoint_smoothing_window": config.model.checkpoint_smoothing_window,
         "data_audit": data_audit,
         "workload_diagnostics": range_diagnostics_summary,
         "torch_runtime": {

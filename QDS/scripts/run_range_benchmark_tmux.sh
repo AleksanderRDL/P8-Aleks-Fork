@@ -15,16 +15,17 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_matrix profile. Default: medium.
+  PROFILE                      benchmark_matrix profile. Default: serious.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
-                               artifacts/benchmarks/range_workload_matrix_min_realistic.
+                               artifacts/benchmarks/range_workload_baseline_min_realistic.
   RUN_ID                       Run directory name. Default: timestamped slug.
   RESULTS_DIR                  Exact benchmark run directory. Overrides
                                ARTIFACT_ROOT/RUN_ID when set.
   MAX_POINTS_PER_SEGMENT       Per-segment point cap. Default: 3000.
-  VARIANTS                     Optional benchmark_matrix --variants value.
+  VARIANTS                     benchmark_matrix --variants value. Default:
+                               tf32_bf16_bs32_inf32_combined.
   MONITOR_INTERVAL             Monitor sample interval in seconds. Default: 10.
   ATTACH                       Attach to tmux after start. Default: 1.
 
@@ -49,16 +50,17 @@ display_path() {
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-$QDS_ROOT/../.venv/bin/python}"
-PROFILE="${PROFILE:-medium}"
+PROFILE="${PROFILE:-serious}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_matrix_min_realistic}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-3000}"
-VARIANTS="${VARIANTS:-}"
+VARIANTS="${VARIANTS:-tf32_bf16_bs32_inf32_combined}"
+VARIANT_SLUG="$(printf '%s' "$VARIANTS" | tr -cs '[:alnum:]' '_' | sed 's/_$//')"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
 ATTACH="${ATTACH:-1}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_matrix_min_realistic}"
-RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_2day_cap${MAX_POINTS_PER_SEGMENT}}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_baseline_min_realistic}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_2day_cap${MAX_POINTS_PER_SEGMENT}_${VARIANT_SLUG}}"
 RESULTS_DIR="${RESULTS_DIR:-$ARTIFACT_ROOT/runs/$RUN_ID}"
 
 extra_args=()
@@ -125,9 +127,7 @@ benchmark_cmd=(
   --run_id "$RUN_ID"
 )
 
-if [[ -n "$VARIANTS" ]]; then
-  benchmark_cmd+=(--variants "$VARIANTS")
-fi
+benchmark_cmd+=(--variants "$VARIANTS")
 
 if [[ "${#extra_args[@]}" -gt 0 ]]; then
   benchmark_cmd+=("${extra_args[@]}")

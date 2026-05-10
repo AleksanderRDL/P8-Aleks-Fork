@@ -825,13 +825,19 @@ Range benchmark tightening, 2026-05-10:
 ```bash
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile medium \
+  --profile serious \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 3000 \
-  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic/runs/manual_range_medium_2day_cap3000 \
-  --run_id manual_range_medium_2day_cap3000
+  --variants tf32_bf16_bs32_inf32_combined \
+  --results_dir artifacts/benchmarks/range_workload_baseline_min_realistic/runs/manual_range_serious_2day_cap3000_combined \
+  --run_id manual_range_serious_2day_cap3000_combined
 ```
+
+  `medium` remains useful for iteration/runtime checks, but it is too small
+  for accepting model-quality conclusions because it uses only 64 queries and
+  8 epochs. The baseline-quality profile uses 250 queries, 30% target query
+  coverage, narrower range boxes, and 20 epochs.
 
 - Added a tmux-backed long-run workflow for this benchmark:
 

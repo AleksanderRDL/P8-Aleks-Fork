@@ -82,11 +82,6 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
     ),
 }
 DEFAULT_VARIANTS = (
-    "fp32",
-    "tf32",
-    "tf32_bf16",
-    "tf32_bs32_inf32",
-    "tf32_bf16_bs32_inf32",
     "tf32_bf16_bs32_inf32_combined",
 )
 
@@ -329,7 +324,22 @@ def _profile_args(
     elif profile == "medium":
         size_args = ["--n_ships", "16", "--n_points", "128", "--n_queries", "64", "--epochs", "8"]
     elif profile == "serious":
-        size_args = ["--n_ships", "32", "--n_points", "256", "--n_queries", "192", "--epochs", "20"]
+        size_args = [
+            "--n_ships",
+            "32",
+            "--n_points",
+            "256",
+            "--n_queries",
+            "250",
+            "--query_coverage",
+            "0.30",
+            "--range_spatial_fraction",
+            "0.02",
+            "--range_time_fraction",
+            "0.04",
+            "--epochs",
+            "20",
+        ]
     else:
         raise ValueError(f"Unknown matrix profile: {profile}")
 
@@ -361,14 +371,22 @@ def _profile_args(
     return profile_args
 
 
-def _profile_settings(profile: str) -> dict[str, int]:
+def _profile_settings(profile: str) -> dict[str, int | float]:
     """Return compact profile settings recorded in run_config.json."""
     if profile == "small":
         return {"n_ships": 6, "n_points": 48, "n_queries": 12, "epochs": 1}
     if profile == "medium":
         return {"n_ships": 16, "n_points": 128, "n_queries": 64, "epochs": 8}
     if profile == "serious":
-        return {"n_ships": 32, "n_points": 256, "n_queries": 192, "epochs": 20}
+        return {
+            "n_ships": 32,
+            "n_points": 256,
+            "n_queries": 250,
+            "query_coverage": 0.30,
+            "range_spatial_fraction": 0.02,
+            "range_time_fraction": 0.04,
+            "epochs": 20,
+        }
     raise ValueError(f"Unknown matrix profile: {profile}")
 
 

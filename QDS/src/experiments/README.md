@@ -107,7 +107,7 @@ forces a rebuild when you want to verify the source parser path.
 3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is exact held-out query F1 on a validation workload. `checkpoint_f1_variant=answer` selects on pure answer-set F1; `checkpoint_f1_variant=combined` compares against the legacy answer/support product. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints below that baseline. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
 4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
 5. Reuse one evaluation query cache across matched methods so full-data query answers and support masks are not recomputed for every baseline.
-6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, torch runtime precision settings, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
+6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, torch runtime precision settings, plus `best_epoch`, `best_loss`, `best_f1`, `checkpoint_selection_metric`, and `checkpoint_f1_variant` training metadata.
 7. Optionally write eval queries as GeoJSON through `--save_queries_dir`, and simplified trajectory CSVs through `--save_simplified_dir`.
 
 ## Runtime Benchmark Wrapper
@@ -157,23 +157,29 @@ their segmented Parquet caches before measured runs, and then runs the variants
 against cache hits. Leave `--max_segments` unset for this profile so all valid
 trajectory segments from both days are used; use `--max_points_per_segment
 3000` to keep long trajectories bounded while retaining about 52% of the valid
-points in the first two cleaned days.
+points in the first two cleaned days. Use `--profile serious` for baseline
+model-quality runs; it uses 250 queries, 30% target query coverage, narrower
+range boxes, and 20 epochs. `medium` is an iteration/runtime profile and is too
+small for accepting model-quality conclusions.
 
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile medium \
+  --profile serious \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 3000 \
-  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic/runs/manual_range_medium_2day_cap3000 \
-  --run_id manual_range_medium_2day_cap3000
+  --variants tf32_bf16_bs32_inf32_combined \
+  --results_dir artifacts/benchmarks/range_workload_baseline_min_realistic/runs/manual_range_serious_2day_cap3000_combined \
+  --run_id manual_range_serious_2day_cap3000_combined
 ```
 
 Use `--train_csv_path` and `--eval_csv_path` to choose the two days manually.
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
-Default variants compare FP32, TF32, BF16 autocast, larger train/inference
-batches, and `checkpoint_f1_variant=combined`. All variants keep
-`checkpoint_selection_metric=f1`.
+The default variant is the current baseline candidate
+`tf32_bf16_bs32_inf32_combined`: TF32 enabled, BF16 autocast, train/inference
+batches of 32, `checkpoint_selection_metric=f1`, and
+`checkpoint_f1_variant=combined`. Pass an explicit comma-separated `--variants`
+list when intentionally running a comparison matrix.
 
 Each matrix run writes a run-local guide and index:
 
@@ -208,8 +214,8 @@ It creates one pane for the matrix and one pane for
 `scripts/monitor_system.sh`. The monitor writes
 `system_monitor.log` beside the benchmark artifact and samples RAM/swap, disk,
 top RSS processes, GPU utilization, GPU memory, temperature, power draw, clocks,
-visible CUDA processes, and recent kernel markers for OOM/GPU/reset/thermal
-events.
+visible CUDA processes, and kernel markers for OOM/GPU/reset/thermal events
+emitted after the monitor starts.
 If the matrix process exits abnormally before it can finalize `run_status.json`,
 the launcher marks any stale `running` status as `failed` and updates the family
 run index.

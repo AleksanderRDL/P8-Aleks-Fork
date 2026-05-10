@@ -58,8 +58,29 @@ fi
 
 output_dir="$(dirname "$output")"
 mkdir -p "$output_dir"
+monitor_start_epoch="$(date +%s)"
 
-echo "[monitor] started_at=$(date -Is) interval=${interval}s output=$output stop_file=${stop_file:-none}" >> "$output"
+recent_kernel_markers() {
+  if ! command -v dmesg >/dev/null 2>&1; then
+    echo "dmesg not found on PATH"
+    return 0
+  fi
+
+  dmesg -T 2>/dev/null \
+    | grep -Ei "oom|out of memory|killed process|nvrm|xid|gpu|cuda|reset|thermal|power" \
+    | while IFS= read -r line; do
+        if [[ "$line" =~ ^\[([^]]+)\] ]]; then
+          marker_epoch="$(date -d "${BASH_REMATCH[1]}" +%s 2>/dev/null || true)"
+          if [[ -n "$marker_epoch" && "$marker_epoch" =~ ^[0-9]+$ && "$marker_epoch" -ge "$monitor_start_epoch" ]]; then
+            printf '%s\n' "$line"
+          fi
+        fi
+      done \
+    | tail -40 \
+    || true
+}
+
+echo "[monitor] started_at=$(date -Is) start_epoch=$monitor_start_epoch interval=${interval}s output=$output stop_file=${stop_file:-none}" >> "$output"
 
 trap 'echo "[monitor] stopped_by_signal_at=$(date -Is)" >> "$output"; exit 130' INT TERM
 
@@ -95,15 +116,7 @@ while true; do
     ps -eo pid,ppid,stat,%cpu,%mem,rss,vsz,etime,cmd --sort=-rss | head -20 || true
 
     echo "[kernel-markers]"
-    if command -v dmesg >/dev/null 2>&1; then
-      dmesg -T 2>/dev/null \
-        | tail -200 \
-        | grep -Ei "oom|out of memory|killed process|nvrm|xid|gpu|cuda|reset|thermal|power" \
-        | tail -40 \
-        || true
-    else
-      echo "dmesg not found on PATH"
-    fi
+    recent_kernel_markers
     echo
   } >> "$output" 2>&1
 
