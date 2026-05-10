@@ -32,6 +32,7 @@ class Method(Protocol):
         compression_ratio: float,
     ) -> torch.Tensor:
         """Return retained point mask. See src/evaluation/README.md for details."""
+        ...
 
 
 @dataclass

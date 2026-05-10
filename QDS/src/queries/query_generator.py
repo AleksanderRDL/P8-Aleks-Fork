@@ -111,6 +111,7 @@ def _pick_point(
         and float(torch.rand(1, generator=generator).item()) < float(density_probability)
     )
     if use_density:
+        assert density_weights is not None
         if candidates is not None:
             candidate_weights = density_weights[candidates].float()
             if float(candidate_weights.sum().item()) > 0.0:

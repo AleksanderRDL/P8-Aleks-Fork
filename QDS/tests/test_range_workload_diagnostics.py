@@ -112,6 +112,7 @@ def test_range_acceptance_rejects_overly_broad_queries() -> None:
         range_acceptance_max_attempts=4,
     )
 
+    assert workload.generation_diagnostics is not None
     generation = workload.generation_diagnostics["range_acceptance"]
     assert len(workload.typed_queries) == 0
     assert generation["exhausted"] is True
@@ -133,6 +134,7 @@ def test_range_acceptance_keeps_requested_query_count_when_possible() -> None:
         range_acceptance_max_attempts=40,
     )
 
+    assert workload.generation_diagnostics is not None
     generation = workload.generation_diagnostics["range_acceptance"]
     assert len(workload.typed_queries) == 8
     assert generation["accepted"] == 8

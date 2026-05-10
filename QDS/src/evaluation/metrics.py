@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Hashable, Iterable, Mapping, Sequence
+from typing import AbstractSet, Hashable, Iterable, Mapping, Sequence
 
 import torch
 
 KM_PER_DEG_LAT = 111.32
 
 
-def f1_score(r_o: set[Hashable], r_s: set[Hashable]) -> float:
+def f1_score(r_o: AbstractSet[Hashable], r_s: AbstractSet[Hashable]) -> float:
     """Compute F1 agreement between original and simplified query answer sets."""
     if not r_o and not r_s:
         return 1.0

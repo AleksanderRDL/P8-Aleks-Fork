@@ -3,7 +3,7 @@ SHELL := /bin/bash
 REPO_ROOT := $(abspath ..)
 PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 QDS_REQUIREMENTS ?= requirements.txt
-TYPECHECK_PATHS ?= scripts/mark_benchmark_failed.py src/experiments/benchmark_matrix.py src/experiments/benchmark_runtime.py tests/test_benchmark_matrix.py
+TYPECHECK_PATHS ?= src scripts tests
 
 RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv

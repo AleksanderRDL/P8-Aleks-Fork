@@ -683,7 +683,8 @@ def run_experiment_pipeline(
             )
             for ref_name, csv_name in (("uniform", "uniform_simplified_eval.csv"),
                                        ("DouglasPeucker", "DP_simplified_eval.csv")):
-                ref_mask = matched.get(ref_name).retained_mask if matched.get(ref_name) is not None else None
+                ref_eval = matched.get(ref_name)
+                ref_mask = ref_eval.retained_mask if ref_eval is not None else None
                 if ref_mask is not None:
                     write_simplified_csv(
                         str(out_dir / csv_name),

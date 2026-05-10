@@ -68,6 +68,7 @@ def test_load_ais_csv_can_disable_time_gap_segmentation(tmp_path: Path) -> None:
         str(csv_path),
         min_points_per_segment=3,
         max_time_gap_seconds=None,
+        return_mmsis=False,
         return_audit=True,
     )
 
@@ -95,6 +96,7 @@ def test_load_ais_csv_audit_counts_invalid_rows_duplicates_and_downsampling(tmp_
         str(csv_path),
         min_points_per_segment=2,
         max_points_per_segment=3,
+        return_mmsis=False,
         return_audit=True,
     )
 

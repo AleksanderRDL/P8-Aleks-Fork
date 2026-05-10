@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload, cast
 
 import pandas as pd
 import torch
@@ -151,6 +151,58 @@ def _trajectory_tensor_from_group(
     return torch.stack([t, lat, lon, speed, heading, is_start, is_end, turn_score], dim=1)
 
 
+@overload
+def load_ais_csv(
+    csv_path: str,
+    max_points_per_ship: int | None = None,
+    return_mmsis: Literal[True] = True,
+    min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
+    max_points_per_segment: int | None = None,
+    max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
+    max_segments: int | None = None,
+    return_audit: Literal[True] = True,
+) -> tuple[list[torch.Tensor], list[int], AISLoadAudit]: ...
+
+
+@overload
+def load_ais_csv(
+    csv_path: str,
+    max_points_per_ship: int | None = None,
+    return_mmsis: Literal[True] = True,
+    min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
+    max_points_per_segment: int | None = None,
+    max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
+    max_segments: int | None = None,
+    return_audit: Literal[False] = False,
+) -> tuple[list[torch.Tensor], list[int]]: ...
+
+
+@overload
+def load_ais_csv(
+    csv_path: str,
+    max_points_per_ship: int | None = None,
+    return_mmsis: Literal[False] = False,
+    min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
+    max_points_per_segment: int | None = None,
+    max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
+    max_segments: int | None = None,
+    return_audit: Literal[True] = True,
+) -> tuple[list[torch.Tensor], AISLoadAudit]: ...
+
+
+@overload
+def load_ais_csv(
+    csv_path: str,
+    max_points_per_ship: int | None = None,
+    return_mmsis: Literal[False] = False,
+    min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
+    max_points_per_segment: int | None = None,
+    max_time_gap_seconds: float | None = DEFAULT_MAX_TIME_GAP_SECONDS,
+    max_segments: int | None = None,
+    return_audit: Literal[False] = False,
+) -> list[torch.Tensor]: ...
+
+
 def load_ais_csv(
     csv_path: str,
     max_points_per_ship: int | None = None,
@@ -193,7 +245,7 @@ def load_ais_csv(
     time_col = _resolve_col(df, ["timestamp", "time", "datetime"])
 
     df = df[[mmsi_col, lat_col, lon_col, speed_col, heading_col, time_col]].copy()
-    df["_time"] = _to_time_seconds(df[time_col])
+    df["_time"] = _to_time_seconds(cast(pd.Series, df[time_col]))
 
     # Coerce numeric columns so non-numeric entries become NaN, then drop
     # invalid rows. AIS feeds frequently contain missing heading/speed and
@@ -202,18 +254,25 @@ def load_ais_csv(
     for col in (lat_col, lon_col, speed_col, heading_col):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    invalid_time = df["_time"].isna()
-    invalid_lat = df[lat_col].isna() | (df[lat_col] < -90) | (df[lat_col] > 90)
-    invalid_lon = df[lon_col].isna() | (df[lon_col] < -180) | (df[lon_col] > 180)
-    invalid_speed = df[speed_col].isna() | (df[speed_col] < 0) | (df[speed_col] > 102.2)
-    invalid_heading = df[heading_col].isna() | (df[heading_col] < 0) | (df[heading_col] >= 360)
-    duplicate_timestamp_rows = int(df.duplicated([mmsi_col, "_time"], keep=False).sum())
+    time_values = cast(pd.Series, df["_time"])
+    lat_values = cast(pd.Series, df[lat_col])
+    lon_values = cast(pd.Series, df[lon_col])
+    speed_values = cast(pd.Series, df[speed_col])
+    heading_values = cast(pd.Series, df[heading_col])
+    invalid_time = time_values.isna()
+    invalid_lat = lat_values.isna() | (lat_values < -90) | (lat_values > 90)
+    invalid_lon = lon_values.isna() | (lon_values < -180) | (lon_values > 180)
+    invalid_speed = speed_values.isna() | (speed_values < 0) | (speed_values > 102.2)
+    invalid_heading = heading_values.isna() | (heading_values < 0) | (heading_values >= 360)
+    duplicate_key_frame = cast(pd.DataFrame, df[[mmsi_col, "_time"]])
+    duplicate_timestamp_rows = int(duplicate_key_frame.duplicated(keep=False).sum())
 
     df.loc[invalid_heading, heading_col] = float("nan")
     df.loc[invalid_speed, speed_col] = float("nan")
     df.loc[invalid_lat, lat_col] = float("nan")
     df.loc[invalid_lon, lon_col] = float("nan")
-    df = df.dropna(subset=[lat_col, lon_col, speed_col, heading_col, "_time"])
+    valid_rows = ~(invalid_time | invalid_lat | invalid_lon | invalid_speed | invalid_heading)
+    df = df.loc[valid_rows].copy()
 
     df = df.sort_values([mmsi_col, "_time"]).reset_index(drop=True)
 
@@ -273,7 +332,7 @@ def load_ais_csv(
         invalid_speed_rows=int(invalid_speed.sum()),
         invalid_heading_rows=int(invalid_heading.sum()),
         duplicate_timestamp_rows=duplicate_timestamp_rows,
-        input_mmsi_count=int(df[mmsi_col].nunique()),
+        input_mmsi_count=int(cast(pd.Series, df[mmsi_col]).nunique()),
         output_segment_count=int(len(trajectories)),
         output_point_count=int(sum(t.shape[0] for t in trajectories)),
         dropped_short_segments=int(dropped_short_segments),

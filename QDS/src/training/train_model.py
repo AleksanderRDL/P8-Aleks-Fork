@@ -596,17 +596,23 @@ def train_model(
     if has_validation_f1:
         from src.evaluation.evaluate_methods import EvaluationQueryCache
 
-        validation_points_for_f1 = torch.cat(validation_trajectories or [], dim=0)
+        assert validation_trajectories is not None
+        assert validation_boundaries is not None
+        assert validation_workload is not None
+        validation_points_for_f1 = torch.cat(validation_trajectories, dim=0)
         validation_query_cache = EvaluationQueryCache.for_workload(
             validation_points_for_f1,
-            validation_boundaries or [],
+            validation_boundaries,
             validation_workload.typed_queries,
         )
     validation_uniform_result: tuple[float, dict[str, float]] | None = None
     if selection_metric == "uniform_gap" and has_validation_f1:
+        assert validation_trajectories is not None
+        assert validation_boundaries is not None
+        assert validation_workload is not None
         validation_uniform_result = _validation_uniform_f1(
-            trajectories=validation_trajectories or [],
-            boundaries=validation_boundaries or [],
+            trajectories=validation_trajectories,
+            boundaries=validation_boundaries,
             workload=validation_workload,
             workload_mix=validation_mix or {},
             model_config=model_config,
@@ -802,11 +808,14 @@ def train_model(
                 selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
             )
             if should_run_f1:
+                assert validation_trajectories is not None
+                assert validation_boundaries is not None
+                assert validation_workload is not None
                 query_f1, per_type_f1 = _validation_query_f1(
                     model=model,
                     scaler=scaler,
-                    trajectories=validation_trajectories or [],
-                    boundaries=validation_boundaries or [],
+                    trajectories=validation_trajectories,
+                    boundaries=validation_boundaries,
                     workload=validation_workload,
                     workload_mix=validation_mix or {},
                     model_config=model_config,
@@ -877,13 +886,14 @@ def train_model(
                 stats["selection_score"] = selection
                 selection_history.append(float(selection))
                 window = selection_history[-smoothing_window:]
-                smoothed_selection = float(sum(window) / len(window))
-                stats["selection_score_smoothed"] = smoothed_selection
+                smoothed_score = float(sum(window) / len(window))
+                smoothed_selection = smoothed_score
+                stats["selection_score_smoothed"] = smoothed_score
                 # Use the smoothed score for "best" decisions: averages out
                 # epoch-to-epoch validation F1 noise so we don't lock onto a lucky
                 # spike. Single-epoch loss still tiebreaks on near-equal smoothed.
-                is_new_best_model = smoothed_selection > best_selection + 1e-4 or (
-                    abs(smoothed_selection - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
+                is_new_best_model = smoothed_score > best_selection + 1e-4 or (
+                    abs(smoothed_score - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
                 )
             else:
                 smoothed_selection = None
@@ -937,7 +947,7 @@ def train_model(
                 print(f"    [{run_tag}] label_diag  " + "  ".join(diag_parts), flush=True)
 
             if is_new_best_model:
-                best_selection = smoothed_selection
+                best_selection = float(stats["selection_score_smoothed"])
                 best_loss = stats["loss"]
                 best_f1 = float(stats.get("val_query_f1", best_f1))
                 best_epoch = epoch + 1

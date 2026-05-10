@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import torch
 
@@ -390,7 +390,7 @@ def compute_typed_importance_labels(
                 labels[similarity_support, t_idx] += TURN_BIAS_ALPHA * turn_score[similarity_support]
 
         elif qtype == "clustering":
-            original_labels = execute_typed_query(points, trajectories, q, boundaries)
+            original_labels = cast(list[int], execute_typed_query(points, trajectories, q, boundaries))
             clusters = _cluster_members(original_labels)
             pair_count = sum(len(members) * (len(members) - 1) // 2 for members in clusters.values())
             if pair_count <= 0:

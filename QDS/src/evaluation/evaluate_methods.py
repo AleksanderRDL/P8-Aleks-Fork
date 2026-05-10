@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -327,10 +327,12 @@ def score_retained_mask(
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "clustering":
-            ans = clustering_f1(full_res, simp_res)
+            full_labels = cast(list[int], full_res)
+            simp_labels = cast(list[int], simp_res)
+            ans = clustering_f1(full_labels, simp_labels)
             support = support_mask(
                 query_index,
-                lambda full_res=full_res, query=query: _clustering_support_mask(
+                lambda full_res=full_labels, query=query: _clustering_support_mask(
                     points,
                     boundaries,
                     list(full_res),

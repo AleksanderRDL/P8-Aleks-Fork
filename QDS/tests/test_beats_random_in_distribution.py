@@ -36,8 +36,8 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert out.metrics_dump["checkpoint_smoothing_window"] == 1
 
     # F1 is higher-is-better, so callers should rank with max(), not min().
-    scores = {name: metrics["aggregate_f1"] for name, metrics in out.metrics_dump["matched"].items()}
-    assert scores[max(scores, key=scores.get)] >= scores[min(scores, key=scores.get)]
+    scores = [float(metrics["aggregate_f1"]) for metrics in out.metrics_dump["matched"].values()]
+    assert max(scores) >= min(scores)
     assert (tmp_path / "simplified" / "ML_simplified_eval.csv").exists()
     assert not (tmp_path / "simplified" / "ML_simplified_train.csv").exists()
     assert not (tmp_path / "simplified" / "ML_simplified.csv").exists()
