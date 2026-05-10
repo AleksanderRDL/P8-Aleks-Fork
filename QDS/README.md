@@ -170,6 +170,8 @@ artifacts/benchmarks/range_workload_matrix_min_realistic/
   latest_run.txt
   runs/<run_id>/
     README.md
+    run_config.json
+    run_status.json
     artifact_index.json
     benchmark_matrix.json
     benchmark_matrix.csv
@@ -189,8 +191,11 @@ artifacts/benchmarks/range_workload_matrix_min_realistic/
 ```
 
 Use `artifact_index.json` or the run-local `README.md` first when looking for a
-specific output. Caches remain under `artifacts/cache/...` because they are
-reused across runs.
+specific output. `run_config.json` records the compact run shape, while
+`run_status.json` marks `running`, `completed`, `failed`, or `interrupted`.
+The family root also contains `runs_index.csv` with the latest status for each
+run and `runs_index_events.jsonl` with the append-only status history. Caches
+remain under `artifacts/cache/...` because they are reused across runs.
 
 For long matrix runs, use the tmux launcher instead of running directly in an
 interactive shell:

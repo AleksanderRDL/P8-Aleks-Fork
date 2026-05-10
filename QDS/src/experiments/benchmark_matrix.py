@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import signal
 import shlex
 import sys
 import time
@@ -15,6 +16,7 @@ from typing import Any
 
 from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.benchmark_runtime import (
+    _environment_metadata,
     _git_metadata,
     _parse_timings,
     _qds_root,
@@ -227,6 +229,17 @@ def _profile_args(
     return profile_args
 
 
+def _profile_settings(profile: str) -> dict[str, int]:
+    """Return compact profile settings recorded in run_config.json."""
+    if profile == "small":
+        return {"n_ships": 6, "n_points": 48, "n_queries": 12, "epochs": 1}
+    if profile == "medium":
+        return {"n_ships": 16, "n_points": 128, "n_queries": 64, "epochs": 8}
+    if profile == "serious":
+        return {"n_ships": 32, "n_points": 256, "n_queries": 192, "epochs": 20}
+    raise ValueError(f"Unknown matrix profile: {profile}")
+
+
 def _variant_run_dir(results_dir: Path, workload: str, variant: MatrixVariant, workload_count: int) -> Path:
     """Return the child experiment output directory for a matrix row."""
     if workload_count == 1:
@@ -421,6 +434,210 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow({key: row.get(key) for key in fieldnames})
 
 
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write JSON with a stable pretty format."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+
+def _utc_now() -> str:
+    """Return an ISO UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _family_root(results_dir: Path) -> Path:
+    """Return the benchmark-family root that owns runs_index files."""
+    if results_dir.parent.name == "runs":
+        return results_dir.parent.parent
+    return results_dir.parent
+
+
+def _write_status(
+    results_dir: Path,
+    *,
+    run_id: str,
+    status: str,
+    started_at_utc: str,
+    finished_at_utc: str | None = None,
+    exit_status: int | None = None,
+    failures: int | None = None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Write the current status marker for one run."""
+    payload = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "status": status,
+        "started_at_utc": started_at_utc,
+        "finished_at_utc": finished_at_utc,
+        "exit_status": exit_status,
+        "failures": failures,
+        "message": message,
+        "results_dir": str(results_dir),
+    }
+    _write_json(results_dir / "run_status.json", payload)
+    return payload
+
+
+def _run_config(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    workloads: list[str],
+    variants: list[MatrixVariant],
+    data_sources: MatrixDataSources,
+    results_dir: Path,
+) -> dict[str, Any]:
+    """Build a compact config file for a matrix run."""
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "results_dir": str(results_dir),
+        "profile": args.profile,
+        "profile_settings": _profile_settings(args.profile),
+        "seed": int(args.seed),
+        "workloads": workloads,
+        "variants": [
+            {
+                "name": variant.name,
+                "float32_matmul_precision": variant.float32_matmul_precision,
+                "allow_tf32": variant.allow_tf32,
+                "amp_mode": variant.amp_mode,
+                "train_batch_size": variant.train_batch_size,
+                "inference_batch_size": variant.inference_batch_size,
+                "checkpoint_f1_variant": variant.checkpoint_f1_variant,
+            }
+            for variant in variants
+        ],
+        "data_sources": {
+            "csv_path": data_sources.csv_path,
+            "train_csv_path": data_sources.train_csv_path,
+            "eval_csv_path": data_sources.eval_csv_path,
+            "selected_cleaned_csv_files": list(data_sources.selected_cleaned_csv_files),
+        },
+        "loader": {
+            "cache_dir": args.cache_dir,
+            "refresh_cache": bool(args.refresh_cache),
+            "cache_warmup": not bool(args.no_cache_warmup),
+            "min_points_per_segment": int(args.min_points_per_segment),
+            "max_points_per_segment": args.max_points_per_segment,
+            "max_time_gap_seconds": float(args.max_time_gap_seconds),
+            "max_segments": args.max_segments,
+        },
+        "checkpoint_selection_metric": "f1",
+        "f1_diagnostic_every": int(args.f1_diagnostic_every),
+        "extra_args": _split_extra_args(args.extra_args),
+        "continue_on_failure": bool(args.continue_on_failure),
+    }
+
+
+RUN_INDEX_FIELDS = [
+    "run_id",
+    "status",
+    "started_at_utc",
+    "finished_at_utc",
+    "exit_status",
+    "failures",
+    "profile",
+    "seed",
+    "workloads",
+    "variants",
+    "train_csv_path",
+    "eval_csv_path",
+    "csv_path",
+    "max_points_per_segment",
+    "max_segments",
+    "results_dir",
+    "best_mlqds_f1",
+    "best_mlqds_variant",
+    "git_commit",
+    "git_dirty",
+]
+
+
+def _best_mlqds(rows: list[dict[str, Any]]) -> tuple[float | None, str | None]:
+    """Return the best MLQDS aggregate F1 and variant name from completed rows."""
+    best_value: float | None = None
+    best_variant: str | None = None
+    for row in rows:
+        value = row.get("mlqds_f1")
+        if value is None:
+            continue
+        numeric = float(value)
+        if best_value is None or numeric > best_value:
+            best_value = numeric
+            best_variant = str(row.get("variant"))
+    return best_value, best_variant
+
+
+def _index_entry(
+    *,
+    run_id: str,
+    status_payload: dict[str, Any],
+    args: argparse.Namespace,
+    workloads: list[str],
+    variants: list[MatrixVariant],
+    data_sources: MatrixDataSources,
+    results_dir: Path,
+    rows: list[dict[str, Any]],
+    git: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one family-level index row."""
+    best_f1, best_variant = _best_mlqds(rows)
+    return {
+        "run_id": run_id,
+        "status": status_payload.get("status"),
+        "started_at_utc": status_payload.get("started_at_utc"),
+        "finished_at_utc": status_payload.get("finished_at_utc"),
+        "exit_status": status_payload.get("exit_status"),
+        "failures": status_payload.get("failures"),
+        "profile": args.profile,
+        "seed": int(args.seed),
+        "workloads": ",".join(workloads),
+        "variants": ",".join(variant.name for variant in variants),
+        "train_csv_path": data_sources.train_csv_path,
+        "eval_csv_path": data_sources.eval_csv_path,
+        "csv_path": data_sources.csv_path,
+        "max_points_per_segment": args.max_points_per_segment,
+        "max_segments": args.max_segments,
+        "results_dir": str(results_dir),
+        "best_mlqds_f1": best_f1,
+        "best_mlqds_variant": best_variant,
+        "git_commit": git.get("commit"),
+        "git_dirty": git.get("dirty"),
+    }
+
+
+def _write_family_indexes(family_root: Path, entry: dict[str, Any]) -> None:
+    """Update current run index CSV and append an event JSONL row."""
+    family_root.mkdir(parents=True, exist_ok=True)
+    (family_root / "latest_run.txt").write_text(str(entry.get("results_dir", "")) + "\n", encoding="utf-8")
+    csv_path = family_root / "runs_index.csv"
+    rows: list[dict[str, Any]] = []
+    if csv_path.exists():
+        with open(csv_path, encoding="utf-8", newline="") as f:
+            rows = list(csv.DictReader(f))
+    replaced = False
+    for idx, row in enumerate(rows):
+        if row.get("run_id") == entry.get("run_id"):
+            rows[idx] = {field: entry.get(field) for field in RUN_INDEX_FIELDS}
+            replaced = True
+            break
+    if not replaced:
+        rows.append({field: entry.get(field) for field in RUN_INDEX_FIELDS})
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=RUN_INDEX_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    event = dict(entry)
+    event["event_recorded_at_utc"] = _utc_now()
+    with open(family_root / "runs_index_events.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, sort_keys=True) + "\n")
+
+
 def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Build a readable index of benchmark artifacts and child run outputs."""
     return {
@@ -429,10 +646,14 @@ def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict
         "artifact_root": str(results_dir),
         "top_level_files": {
             "readme": str(results_dir / "README.md"),
+            "run_config": str(results_dir / "run_config.json"),
+            "run_status": str(results_dir / "run_status.json"),
             "benchmark_matrix_json": str(results_dir / "benchmark_matrix.json"),
             "benchmark_matrix_csv": str(results_dir / "benchmark_matrix.csv"),
             "benchmark_matrix_markdown": str(results_dir / "benchmark_matrix.md"),
             "artifact_index_json": str(results_dir / "artifact_index.json"),
+            "family_runs_index_csv": str(_family_root(results_dir) / "runs_index.csv"),
+            "family_runs_index_events_jsonl": str(_family_root(results_dir) / "runs_index_events.jsonl"),
         },
         "logs": {
             "console_log": str(results_dir / "logs" / "console.log"),
@@ -471,6 +692,8 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         "",
         "## Top-Level Files",
         "",
+        "- `run_config.json` - compact benchmark configuration",
+        "- `run_status.json` - current/final run status marker",
         "- `benchmark_matrix.md` - compact comparison table",
         "- `benchmark_matrix.csv` - comparison table as CSV",
         "- `benchmark_matrix.json` - complete machine-readable matrix artifact",
@@ -478,6 +701,8 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         "- `logs/console.log` - tmux/launcher console capture when launched through tmux",
         "- `logs/system_monitor.log` - RAM/GPU/system samples when launched through tmux",
         "- `logs/tmux_status.txt` - launcher start/end status when launched through tmux",
+        "- family `runs_index.csv` - current status summary for sibling runs",
+        "- family `runs_index_events.jsonl` - append-only status history",
         "",
         "## Variant Runs",
         "",
@@ -559,71 +784,169 @@ def main() -> None:
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     (results_dir / "logs").mkdir(parents=True, exist_ok=True)
-    cache_warmup = _warm_csv_caches(args, data_sources)
-    measured_include_refresh = bool(args.refresh_cache and not cache_warmup)
-
+    run_id = args.run_id or results_dir.name
+    family_root = _family_root(results_dir)
+    started_at_utc = _utc_now()
+    git = _git_metadata()
+    environment = _environment_metadata("off")
     rows: list[dict[str, Any]] = []
     failures = 0
-    for workload in workloads:
-        for variant in variants:
-            run_dir = _variant_run_dir(results_dir, workload, variant, len(workloads))
-            command = [
-                sys.executable,
-                "-m",
-                "src.experiments.run_ais_experiment",
-                *_profile_args(
-                    args.profile,
-                    args,
-                    data_sources,
-                    include_refresh_cache=measured_include_refresh,
-                ),
-                "--workload",
-                workload,
-                "--seed",
-                str(args.seed),
-                "--results_dir",
-                str(run_dir),
-                "--f1_diagnostic_every",
-                str(args.f1_diagnostic_every),
-                *_variant_args(variant),
-                *_split_extra_args(args.extra_args),
-            ]
-            print(f"[matrix] {workload}/{variant.name}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
-            proc = _run_capture(command, cwd=_qds_root())
-            stdout_path = run_dir / "stdout.log"
-            _write_text(stdout_path, proc.stdout)
-            run_json_path = run_dir / "example_run.json"
-            run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
-            timings = _parse_timings(proc.stdout)
-            row = _row_from_run(
-                workload=workload,
-                variant=variant,
-                command=command,
-                returncode=proc.returncode,
-                elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
-                run_dir=run_dir,
-                stdout_path=stdout_path,
-                run_json_path=run_json_path,
-                timings=timings,
-                run_json=run_json,
-            )
-            rows.append(row)
-            failures += int(proc.returncode != 0)
-            if proc.returncode != 0 and not args.continue_on_failure:
+    run_config = _run_config(
+        args=args,
+        run_id=run_id,
+        workloads=workloads,
+        variants=variants,
+        data_sources=data_sources,
+        results_dir=results_dir,
+    )
+    _write_json(results_dir / "run_config.json", run_config)
+    status_payload = _write_status(
+        results_dir,
+        run_id=run_id,
+        status="running",
+        started_at_utc=started_at_utc,
+        message="benchmark matrix started",
+    )
+    _write_family_indexes(
+        family_root,
+        _index_entry(
+            run_id=run_id,
+            status_payload=status_payload,
+            args=args,
+            workloads=workloads,
+            variants=variants,
+            data_sources=data_sources,
+            results_dir=results_dir,
+            rows=[],
+            git=git,
+        ),
+    )
+
+    def _mark_interrupted(signum: int, _frame: Any) -> None:
+        signal_name = signal.Signals(signum).name
+        interrupted = _write_status(
+            results_dir,
+            run_id=run_id,
+            status="interrupted",
+            started_at_utc=started_at_utc,
+            finished_at_utc=_utc_now(),
+            exit_status=128 + int(signum),
+            failures=failures,
+            message=f"benchmark matrix interrupted by {signal_name}",
+        )
+        _write_family_indexes(
+            family_root,
+            _index_entry(
+                run_id=run_id,
+                status_payload=interrupted,
+                args=args,
+                workloads=workloads,
+                variants=variants,
+                data_sources=data_sources,
+                results_dir=results_dir,
+                rows=rows,
+                git=git,
+            ),
+        )
+        raise KeyboardInterrupt(signal_name)
+
+    signal.signal(signal.SIGINT, _mark_interrupted)
+    signal.signal(signal.SIGTERM, _mark_interrupted)
+
+    try:
+        cache_warmup = _warm_csv_caches(args, data_sources)
+        measured_include_refresh = bool(args.refresh_cache and not cache_warmup)
+
+        for workload in workloads:
+            for variant in variants:
+                run_dir = _variant_run_dir(results_dir, workload, variant, len(workloads))
+                command = [
+                    sys.executable,
+                    "-m",
+                    "src.experiments.run_ais_experiment",
+                    *_profile_args(
+                        args.profile,
+                        args,
+                        data_sources,
+                        include_refresh_cache=measured_include_refresh,
+                    ),
+                    "--workload",
+                    workload,
+                    "--seed",
+                    str(args.seed),
+                    "--results_dir",
+                    str(run_dir),
+                    "--f1_diagnostic_every",
+                    str(args.f1_diagnostic_every),
+                    *_variant_args(variant),
+                    *_split_extra_args(args.extra_args),
+                ]
+                print(f"[matrix] {workload}/{variant.name}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
+                proc = _run_capture(command, cwd=_qds_root())
+                stdout_path = run_dir / "stdout.log"
+                _write_text(stdout_path, proc.stdout)
+                run_json_path = run_dir / "example_run.json"
+                run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
+                timings = _parse_timings(proc.stdout)
+                row = _row_from_run(
+                    workload=workload,
+                    variant=variant,
+                    command=command,
+                    returncode=proc.returncode,
+                    elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
+                    run_dir=run_dir,
+                    stdout_path=stdout_path,
+                    run_json_path=run_json_path,
+                    timings=timings,
+                    run_json=run_json,
+                )
+                rows.append(row)
+                failures += int(proc.returncode != 0)
+                if proc.returncode != 0 and not args.continue_on_failure:
+                    break
+            if failures and not args.continue_on_failure:
                 break
-        if failures and not args.continue_on_failure:
-            break
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        failed_status = _write_status(
+            results_dir,
+            run_id=run_id,
+            status="failed",
+            started_at_utc=started_at_utc,
+            finished_at_utc=_utc_now(),
+            exit_status=1,
+            failures=failures,
+            message=f"{type(exc).__name__}: {exc}",
+        )
+        _write_family_indexes(
+            family_root,
+            _index_entry(
+                run_id=run_id,
+                status_payload=failed_status,
+                args=args,
+                workloads=workloads,
+                variants=variants,
+                data_sources=data_sources,
+                results_dir=results_dir,
+                rows=rows,
+                git=git,
+            ),
+        )
+        raise
 
     artifact = {
-        "schema_version": 2,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 3,
+        "timestamp_utc": _utc_now(),
         "command": [sys.executable, "-m", "src.experiments.benchmark_matrix", *sys.argv[1:]],
-        "run_id": args.run_id,
+        "run_id": run_id,
         "artifact_root": str(results_dir),
+        "family_root": str(family_root),
         "profile": args.profile,
         "seed": int(args.seed),
         "workloads": workloads,
         "variants": [variant.name for variant in variants],
+        "run_config": run_config,
         "data_sources": {
             "csv_path": data_sources.csv_path,
             "train_csv_path": data_sources.train_csv_path,
@@ -631,17 +954,43 @@ def main() -> None:
             "selected_cleaned_csv_files": list(data_sources.selected_cleaned_csv_files),
         },
         "cache_warmup": cache_warmup,
-        "git": _git_metadata(),
+        "environment": environment,
+        "git": git,
         "rows": rows,
     }
-    with open(results_dir / "benchmark_matrix.json", "w", encoding="utf-8") as f:
-        json.dump(artifact, f, indent=2)
+    finished_at_utc = _utc_now()
+    status = "failed" if failures else "completed"
+    status_payload = _write_status(
+        results_dir,
+        run_id=run_id,
+        status=status,
+        started_at_utc=started_at_utc,
+        finished_at_utc=finished_at_utc,
+        exit_status=1 if failures else 0,
+        failures=failures,
+        message=f"{failures} matrix run(s) failed" if failures else "benchmark matrix completed",
+    )
+    artifact["run_status"] = status_payload
+    _write_json(results_dir / "benchmark_matrix.json", artifact)
     _write_csv(results_dir / "benchmark_matrix.csv", rows)
     _write_text(results_dir / "benchmark_matrix.md", _format_markdown_table(rows))
     index = _artifact_index(results_dir, artifact, rows)
-    with open(results_dir / "artifact_index.json", "w", encoding="utf-8") as f:
-        json.dump(index, f, indent=2)
+    _write_json(results_dir / "artifact_index.json", index)
     _write_text(results_dir / "README.md", _format_artifact_readme(artifact, rows))
+    _write_family_indexes(
+        family_root,
+        _index_entry(
+            run_id=run_id,
+            status_payload=status_payload,
+            args=args,
+            workloads=workloads,
+            variants=variants,
+            data_sources=data_sources,
+            results_dir=results_dir,
+            rows=rows,
+            git=git,
+        ),
+    )
     print(f"[matrix] wrote {results_dir / 'benchmark_matrix.md'}", flush=True)
     if failures:
         raise SystemExit(f"{failures} matrix run(s) failed. See {results_dir / 'benchmark_matrix.json'}.")

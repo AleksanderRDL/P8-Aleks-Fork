@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 
 import pytest
 
@@ -13,10 +14,12 @@ from src.experiments.benchmark_matrix import (
     MatrixVariant,
     PURE_WORKLOADS,
     _format_markdown_table,
+    _index_entry,
     _parse_name_list,
     _profile_args,
     _resolve_data_sources,
     _selected_variants,
+    _write_family_indexes,
     _variant_run_dir,
 )
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes
@@ -125,6 +128,70 @@ def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:
 
     assert _variant_run_dir(tmp_path, "range", variant, 1) == tmp_path / "variants" / "fp32"
     assert _variant_run_dir(tmp_path, "knn", variant, 2) == tmp_path / "variants" / "knn" / "fp32"
+
+
+def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> None:
+    args = argparse.Namespace(
+        profile="small",
+        seed=42,
+        max_points_per_segment=3000,
+        max_segments=None,
+    )
+    variants = [MatrixVariant(name="fp32")]
+    sources = MatrixDataSources(train_csv_path="day1.csv", eval_csv_path="day2.csv")
+    git = {"commit": "abc123", "dirty": False}
+    running_status = {
+        "status": "running",
+        "started_at_utc": "2026-05-10T00:00:00+00:00",
+        "finished_at_utc": None,
+        "exit_status": None,
+        "failures": None,
+    }
+    completed_status = {
+        **running_status,
+        "status": "completed",
+        "finished_at_utc": "2026-05-10T00:01:00+00:00",
+        "exit_status": 0,
+        "failures": 0,
+    }
+
+    _write_family_indexes(
+        tmp_path,
+        _index_entry(
+            run_id="run-a",
+            status_payload=running_status,
+            args=args,
+            workloads=["range"],
+            variants=variants,
+            data_sources=sources,
+            results_dir=tmp_path / "runs" / "run-a",
+            rows=[],
+            git=git,
+        ),
+    )
+    _write_family_indexes(
+        tmp_path,
+        _index_entry(
+            run_id="run-a",
+            status_payload=completed_status,
+            args=args,
+            workloads=["range"],
+            variants=variants,
+            data_sources=sources,
+            results_dir=tmp_path / "runs" / "run-a",
+            rows=[{"variant": "fp32", "mlqds_f1": 0.4}],
+            git=git,
+        ),
+    )
+
+    with open(tmp_path / "runs_index.csv", encoding="utf-8", newline="") as f:
+        index_rows = list(csv.DictReader(f))
+    events_text = (tmp_path / "runs_index_events.jsonl").read_text(encoding="utf-8")
+    assert len(index_rows) == 1
+    assert index_rows[0]["run_id"] == "run-a"
+    assert index_rows[0]["status"] == "completed"
+    assert index_rows[0]["best_mlqds_f1"] == "0.4"
+    assert events_text.count('"run_id": "run-a"') == 2
 
 
 def test_resolve_data_sources_selects_two_cleaned_days(tmp_path) -> None:

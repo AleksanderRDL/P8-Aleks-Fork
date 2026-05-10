@@ -179,6 +179,8 @@ Each matrix run writes a run-local guide and index:
 
 ```text
 README.md
+run_config.json
+run_status.json
 artifact_index.json
 benchmark_matrix.{json,csv,md}
 logs/
@@ -187,7 +189,8 @@ variants/<variant>/
 
 Use one run directory per benchmark attempt. The child experiment artifacts for
 each variant live under `variants/<variant>/`; tmux launcher logs live under
-`logs/`.
+`logs/`. The family root keeps `runs_index.csv` with the latest status per run
+and `runs_index_events.jsonl` with status history.
 
 For long local runs, prefer the tmux launcher:
 

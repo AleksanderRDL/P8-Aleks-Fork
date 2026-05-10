@@ -843,8 +843,10 @@ make range-benchmark-tmux
   The launcher creates one pane for the benchmark and one pane for lightweight
   monitoring. Each launch writes one run directory under
   `artifacts/benchmarks/range_workload_matrix_min_realistic/runs/<run_id>/`.
-  The run directory contains `README.md`, `artifact_index.json`,
-  `benchmark_matrix.{json,csv,md}`, `logs/`, and `variants/<variant>/`.
+  The run directory contains `README.md`, `run_config.json`,
+  `run_status.json`, `artifact_index.json`, `benchmark_matrix.{json,csv,md}`,
+  `logs/`, and `variants/<variant>/`. The benchmark family root also gets
+  `runs_index.csv` and `runs_index_events.jsonl`.
   The monitor samples RAM/swap, disk, top RSS processes, GPU utilization, GPU
   memory, temperature, power, clocks, visible CUDA processes, and recent kernel
   OOM/GPU/reset/thermal markers so crashes can be checked against recent
