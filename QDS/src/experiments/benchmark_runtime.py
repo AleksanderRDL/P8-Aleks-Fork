@@ -24,6 +24,7 @@ from typing import Any
 
 import torch
 
+from src.experiments.benchmark_profiles import DEFAULT_PROFILE, PROFILE_CHOICES, benchmark_profile_args
 from src.experiments.torch_runtime import (
     AMP_MODE_CHOICES,
     FLOAT32_MATMUL_PRECISION_CHOICES,
@@ -40,36 +41,12 @@ INFERENCE_STEP_RE = re.compile(
     r"^\[(?P<name>eval|workload|load-data|trajectory-length-loss)\].*?(?:done|generated|in)\s+"
     r"(?P<seconds>[0-9.]+)s"
 )
-DEFAULT_PROFILE = "range_real_usecase"
-PROFILE_CHOICES = (DEFAULT_PROFILE,)
-REAL_USECASE_PROFILE_ARGS = [
-    "--n_queries",
-    "512",
-    "--query_coverage",
-    "0.30",
-    "--range_spatial_fraction",
-    "0.0165",
-    "--range_time_fraction",
-    "0.033",
-    "--query_chunk_size",
-    "512",
-    "--compression_ratio",
-    "0.05",
-    "--epochs",
-    "20",
-    "--early_stopping_patience",
-    "8",
-    "--workload",
-    "range",
-    "--checkpoint_selection_metric",
-    "f1",
-    "--f1_diagnostic_every",
-    "1",
-    "--checkpoint_smoothing_window",
-    "1",
-    "--mlqds_temporal_fraction",
-    "0.10",
-]
+REAL_USECASE_PROFILE_ARGS = benchmark_profile_args(
+    DEFAULT_PROFILE,
+    include_workload=True,
+    include_checkpoint_selection=True,
+    include_f1_diagnostic=True,
+)
 
 
 def _qds_root() -> Path:

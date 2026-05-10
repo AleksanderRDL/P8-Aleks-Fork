@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import Any
 
 from src.data.trajectory_cache import load_or_build_ais_cache
+from src.experiments.benchmark_profiles import (
+    DEFAULT_PROFILE,
+    PROFILE_CHOICES,
+    benchmark_profile_args,
+    benchmark_profile_settings,
+)
 from src.experiments.benchmark_runtime import (
     EPOCH_RE,
     INFERENCE_STEP_RE,
@@ -32,34 +38,7 @@ PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 2
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
-DEFAULT_PROFILE = "range_real_usecase"
-PROFILE_CHOICES = (DEFAULT_PROFILE,)
-REAL_USECASE_QUERY_COUNT = 512
-REAL_USECASE_QUERY_CHUNK_SIZE = 512
-REAL_USECASE_RANGE_SPATIAL_FRACTION = 0.0165
-REAL_USECASE_RANGE_TIME_FRACTION = 0.033
-REAL_USECASE_PROFILE_ARGS = [
-    "--n_queries",
-    str(REAL_USECASE_QUERY_COUNT),
-    "--query_coverage",
-    "0.30",
-    "--range_spatial_fraction",
-    str(REAL_USECASE_RANGE_SPATIAL_FRACTION),
-    "--range_time_fraction",
-    str(REAL_USECASE_RANGE_TIME_FRACTION),
-    "--query_chunk_size",
-    str(REAL_USECASE_QUERY_CHUNK_SIZE),
-    "--compression_ratio",
-    "0.05",
-    "--epochs",
-    "20",
-    "--early_stopping_patience",
-    "8",
-    "--checkpoint_smoothing_window",
-    "1",
-    "--mlqds_temporal_fraction",
-    "0.10",
-]
+REAL_USECASE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE)
 
 
 @dataclass(frozen=True)
@@ -380,26 +359,7 @@ def _profile_args(
 
 def _profile_settings(profile: str) -> dict[str, int | float | str]:
     """Return compact profile settings recorded in run_config.json."""
-    if profile == DEFAULT_PROFILE:
-        return {
-            "data_mode": "two_cleaned_csv_days",
-            "train_day": "first sorted cleaned CSV",
-            "eval_day": "second sorted cleaned CSV",
-            "n_queries": REAL_USECASE_QUERY_COUNT,
-            "query_coverage": 0.30,
-            "range_spatial_fraction": REAL_USECASE_RANGE_SPATIAL_FRACTION,
-            "range_time_fraction": REAL_USECASE_RANGE_TIME_FRACTION,
-            "query_chunk_size": REAL_USECASE_QUERY_CHUNK_SIZE,
-            "compression_ratio": 0.05,
-            "epochs": 20,
-            "early_stopping_patience": 8,
-            "checkpoint_selection_metric": "f1",
-            "checkpoint_f1_variant": "answer",
-            "f1_diagnostic_every": 1,
-            "checkpoint_smoothing_window": 1,
-            "mlqds_temporal_fraction": 0.10,
-        }
-    raise ValueError(f"Unknown matrix profile: {profile}")
+    return benchmark_profile_settings(profile)
 
 
 def _variant_run_dir(results_dir: Path, workload: str, variant: MatrixVariant, workload_count: int) -> Path:
