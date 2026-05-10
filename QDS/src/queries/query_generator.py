@@ -527,7 +527,7 @@ def generate_typed_query_workload(
     range_duplicate_iou_threshold: float | None = None,
     range_acceptance_max_attempts: int | None = None,
 ) -> TypedQueryWorkload:
-    """Generate a mixed typed-query workload and padded feature tensor. See src/queries/README.md for details.
+    """Generate a typed-query workload and padded feature tensor. See src/queries/README.md for details.
 
     front_load_knn: generate this many kNN queries first, before proportional
     scheduling starts.  Use this when kNN weight is high but coverage is low,

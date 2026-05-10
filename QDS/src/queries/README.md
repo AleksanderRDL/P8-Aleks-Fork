@@ -22,7 +22,7 @@ This module defines the typed query format used by v2, the workload generator, a
 ## Workload Format
 
 - `normalize_workload_mix` lowercases the keys, drops non-positive weights, validates query names, and normalizes the mix to sum to 1.
-- `parse_workload_mix` accepts CLI strings like `range=0.8,knn=0.2`.
+- `parse_workload_mix` accepts CLI strings like `range=1.0`. Low-level query generation can still build multi-type diagnostic workloads, but experiment entrypoints now require one positive query type per model run.
 - `pad_query_features` converts heterogeneous typed query dicts into a `[M, 12]` tensor plus a `[M]` tensor of type IDs.
 - Feature layout:
     - range: `lat_min`, `lat_max`, `lon_min`, `lon_max`, `t_start`, `t_end`
@@ -32,7 +32,7 @@ This module defines the typed query format used by v2, the workload generator, a
 
 ## Workload Generation
 
-`generate_typed_query_workload` builds a mixed workload from the full trajectory set, allocates query counts from the requested mix, shuffles the result deterministically, and returns the `TypedQueryWorkload` container used by experiments and training.
+`generate_typed_query_workload` builds a typed workload from the full trajectory set, allocates query counts from the requested mix, shuffles the result deterministically, and returns the `TypedQueryWorkload` container used by experiments and training. Current experiment runs use pure mixes such as `{"range": 1.0}` so one trained model targets one query type.
 
 Range and kNN anchors use a 70/30 density sampler. The generator builds a lat/lon density map for the whole dataset; 70% of range/kNN anchors are sampled with probability proportional to the density of the point's grid cell, and 30% are sampled uniformly from all points. Similarity and clustering keep the existing uniform anchor behavior.
 

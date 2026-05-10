@@ -13,6 +13,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 | `run_ais_experiment.py` | Main entry point. Loads CSV or synthetic data and prints the result tables. |
 | `run_inference.py` | Load a saved checkpoint and evaluate it on a CSV without retraining. |
 | `benchmark_runtime.py` | Runtime benchmark wrapper that records environment, git state, commands, timings, and final metrics. |
+| `benchmark_matrix.py` | Pure-workload matrix runner for comparing runtime/batch/checkpoint-F1 variants. |
 
 ## CLI
 
@@ -51,7 +52,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--inference_batch_size`
 - `--compression_ratio`
 - `--model_type {baseline,turn_aware}`
-- `--workload`
+- `--workload {range,knn,similarity,clustering}`
 - `--train_workload_mix` / `--workload_mix_train`
 - `--eval_workload_mix` / `--workload_mix_eval`
 - `--early_stopping_patience`
@@ -103,7 +104,7 @@ forces a rebuild when you want to verify the source parser path.
 
 1. Use separate train/eval trajectory sets when provided, otherwise split one dataset into train, validation, and test sets at trajectory level.
 2. Generate independent train and eval typed query workloads from the respective trajectory sets; range/kNN anchors use the 70/30 density sampler described in `src/queries`.
-3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is training loss; `checkpoint_selection_metric=f1` uses exact held-out query F1 on a validation workload. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints that hide weak range/kNN/similarity scores behind one strong type. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
+3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is exact held-out query F1 on a validation workload. `checkpoint_f1_variant=answer` selects on pure answer-set F1; `checkpoint_f1_variant=combined` compares against the legacy answer/support product. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints below that baseline. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
 4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
 5. Reuse one evaluation query cache across matched methods so full-data query answers and support masks are not recomputed for every baseline.
 6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, torch runtime precision settings, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
@@ -134,6 +135,40 @@ Use `--amp_mode bf16` to benchmark CUDA autocast; the wrapper forwards the mode
 to child training/inference commands and records effective AMP metadata in both
 the child run JSON and the top-level benchmark artifact.
 
+## Pure Workload Matrix
+
+`benchmark_matrix.py` runs one child experiment per pure workload and
+configuration variant, then writes `benchmark_matrix.json`,
+`benchmark_matrix.csv`, and a compact `benchmark_matrix.md` table.
+
+```bash
+cd QDS
+../.venv/bin/python -m src.experiments.benchmark_matrix \
+  --profile medium \
+  --workloads range,knn,similarity,clustering \
+  --results_dir artifacts/benchmarks/pure_workload_matrix
+```
+
+For realistic AIS tuning, pass a cleaned CSV or directory and loader caps:
+
+```bash
+../.venv/bin/python -m src.experiments.benchmark_matrix \
+  --csv_path ../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
+  --cache_dir artifacts/cache/matrix \
+  --max_points_per_segment 500 \
+  --max_segments 64 \
+  --workloads range,knn,similarity,clustering \
+  --results_dir artifacts/benchmarks/pure_workload_matrix_csv
+```
+
+Default variants compare FP32, TF32, BF16 autocast, larger train/inference
+batches, and `checkpoint_f1_variant=combined`. All variants keep
+`checkpoint_selection_metric=f1`.
+
 ## Workload Mixes
 
-`resolve_workload_mixes` parses comma-separated strings such as `range=0.8,knn=0.2`. Explicit `--train_workload_mix` and `--eval_workload_mix` strings win. Otherwise, the `--workload` keyword is used for both train and eval mixes; the default `--workload mixed` resolves to `range=0.4,knn=0.2,similarity=0.2,clustering=0.2`. The older mixed-shift defaults (`range=0.8,knn=0.2` for training and `range=0.2,clustering=0.8` for evaluation) are now only used if the workload keyword is absent or unrecognized.
+Experiment entrypoints now train one model per pure query workload. The common
+path is `--workload {range,knn,similarity,clustering}`, which uses the same
+pure type for train, validation, and eval workloads. Explicit
+`--train_workload_mix` and `--eval_workload_mix` strings are still parsed for
+compatibility, but they must contain exactly one positive query type.

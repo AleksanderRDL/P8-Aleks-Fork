@@ -56,12 +56,12 @@ class QueryConfig:
     max_queries: int | None = None
     range_spatial_fraction: float = 0.08
     range_time_fraction: float = 0.15
-    workload: str = "mixed"
+    workload: str = "range"
     train_workload_mix: dict[str, float] = field(
-        default_factory=lambda: {"range": 0.5, "knn": 0.5}
+        default_factory=lambda: {"range": 1.0}
     )
     eval_workload_mix: dict[str, float] = field(
-        default_factory=lambda: {"similarity": 0.5, "clustering": 0.5}
+        default_factory=lambda: {"range": 1.0}
     )
     similarity_top_k: int = 5
     knn_k: int = 12
@@ -111,7 +111,7 @@ class ModelConfig:
     inference_batch_size: int = 16
     diagnostic_every: int = 1
     diagnostic_window_fraction: float = 0.2
-    checkpoint_selection_metric: str = "loss"
+    checkpoint_selection_metric: str = "f1"
     f1_diagnostic_every: int = 0
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
@@ -279,7 +279,7 @@ def build_experiment_config(
     cache_dir: str | None = None,
     refresh_cache: bool = False,
     model_type: str = "baseline",
-    workload: str = "mixed",
+    workload: str = "range",
     train_workload_mix: dict[str, float] | None = None,
     eval_workload_mix: dict[str, float] | None = None,
     seed: int = 42,
@@ -288,7 +288,7 @@ def build_experiment_config(
     inference_batch_size: int = 16,
     diagnostic_every: int = 1,
     diagnostic_window_fraction: float = 0.2,
-    checkpoint_selection_metric: str = "loss",
+    checkpoint_selection_metric: str = "f1",
     f1_diagnostic_every: int = 0,
     checkpoint_uniform_gap_weight: float = 0.5,
     checkpoint_type_penalty_weight: float = 1.0,
@@ -336,8 +336,8 @@ def build_experiment_config(
             range_duplicate_iou_threshold=range_duplicate_iou_threshold,
             range_acceptance_max_attempts=range_acceptance_max_attempts,
             workload=workload,
-            train_workload_mix=train_workload_mix or {"range": 0.5, "knn": 0.5},
-            eval_workload_mix=eval_workload_mix or {"similarity": 0.5, "clustering": 0.5},
+            train_workload_mix=train_workload_mix or {"range": 1.0},
+            eval_workload_mix=eval_workload_mix or {"range": 1.0},
             knn_k=knn_k,
         ),
         model=ModelConfig(

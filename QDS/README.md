@@ -14,7 +14,7 @@ AIS-QDS v2 is the current shift-aware rebuild of the AIS query-driven simplifica
 ```bash
 cd QDS
 pip install -r requirements.txt
-python -m src.experiments.run_ais_experiment --n_queries 128 --epochs 6 --workload mixed
+python -m src.experiments.run_ais_experiment --n_queries 128 --epochs 6 --workload range
 ```
 
 ## Environment And Smoke Checks
@@ -119,6 +119,21 @@ cd QDS
   --train_batch_sizes 16,32,64,128 \
   --results_dir artifacts/benchmarks/batch_size_sweep
 
+# Pure-workload matrix across runtime/batch/checkpoint-F1 variants.
+../.venv/bin/python -m src.experiments.benchmark_matrix \
+  --profile medium \
+  --workloads range,knn,similarity,clustering \
+  --results_dir artifacts/benchmarks/pure_workload_matrix
+
+# Same matrix shape on cleaned AIS data with loader caps/cache.
+../.venv/bin/python -m src.experiments.benchmark_matrix \
+  --csv_path ../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
+  --cache_dir artifacts/cache/pure_workload_matrix \
+  --max_points_per_segment 500 \
+  --max_segments 64 \
+  --workloads range,knn,similarity,clustering \
+  --results_dir artifacts/benchmarks/pure_workload_matrix_csv
+
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode inference \
@@ -182,7 +197,7 @@ python -m src.experiments.run_ais_experiment \
   --max_time_gap_seconds 3600 \
   --n_queries 250 \
   --epochs 20 \
-  --workload mixed \
+  --workload range \
   --compression_ratio 0.20 \
   --model_type baseline
 ```
@@ -201,7 +216,7 @@ python -m src.experiments.run_ais_experiment \
   --lr 0.0005 \
   --pointwise_loss_weight 0.25 \
   --gradient_clip_norm 1.0 \
-  --workload mixed \
+  --workload range \
   --compression_ratio 0.20 \
   --model_type baseline
 ```
@@ -232,9 +247,20 @@ Use optional acceptance filters such as `--range_min_point_hits`,
 range boxes during generation. Each run now writes range workload diagnostics
 and range label/baseline signal diagnostics into the result directory.
 
-Use `--model_type turn_aware` to include the extra `turn_score` point feature. Workload mixes can be overridden with `--train_workload_mix` and `--eval_workload_mix` (or the `..._mix_train` / `..._mix_eval` aliases).
+Use `--model_type turn_aware` to include the extra `turn_score` point feature.
+Experiment runs now train one model per pure query workload. Use
+`--workload {range,knn,similarity,clustering}` for the common path; explicit
+`--train_workload_mix` and `--eval_workload_mix` overrides must also contain a
+single positive query type.
 
-Training uses a ranking loss plus balanced pointwise BCE supervision. Exact final query F1 can optionally be used for checkpoint selection with `--checkpoint_selection_metric f1`; this creates a held-out validation workload and restores the epoch with the best validation query F1. If diagnostics collapse to `pred_std=0`, prefer lowering `--lr`, keeping `--gradient_clip_norm` enabled, and increasing query diversity before changing the model architecture.
+Training uses a ranking loss plus balanced pointwise BCE supervision. Exact
+final query F1 is the default checkpoint selection metric; it creates a
+held-out validation workload and restores the epoch with the best validation
+query F1. Use `--checkpoint_f1_variant combined` in matrix runs to compare the
+legacy answer/support product against the default pure answer-set F1. If
+diagnostics collapse to `pred_std=0`, prefer lowering `--lr`, keeping
+`--gradient_clip_norm` enabled, and increasing query diversity before changing
+the model architecture.
 
 ## Architecture At A Glance
 

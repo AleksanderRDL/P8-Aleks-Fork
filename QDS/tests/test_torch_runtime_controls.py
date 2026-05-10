@@ -48,6 +48,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.train_batch_size == 64
     assert restored.model.inference_batch_size == 32
     assert restored.model.amp_mode == "bf16"
+    assert restored.model.checkpoint_selection_metric == "f1"
 
 
 def test_experiment_config_loads_legacy_precision_defaults() -> None:
@@ -63,6 +64,7 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     assert restored.model.allow_tf32 is False
     assert restored.model.inference_batch_size == 16
     assert restored.model.amp_mode == "off"
+    assert restored.model.checkpoint_selection_metric == "f1"
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:

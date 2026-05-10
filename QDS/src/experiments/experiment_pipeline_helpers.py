@@ -126,7 +126,7 @@ def _range_diagnostic_duplicate_threshold(config: ExperimentConfig) -> float | N
 
 
 def _range_only_queries(typed_queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only range queries from a mixed workload."""
+    """Return only range queries from a typed workload."""
     return [query for query in typed_queries if str(query.get("type", "")).lower() == "range"]
 
 
@@ -267,7 +267,7 @@ def run_experiment_pipeline(
         )
 
     seeds = derive_seed_bundle(config.data.seed)
-    selection_metric = str(getattr(config.model, "checkpoint_selection_metric", "loss")).lower()
+    selection_metric = str(getattr(config.model, "checkpoint_selection_metric", "f1")).lower()
     f1_diag_every = int(getattr(config.model, "f1_diagnostic_every", 0) or 0)
     needs_validation_f1 = selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
     with _phase("split"):
@@ -705,23 +705,17 @@ def run_experiment_pipeline(
 def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:
     """Translate a --workload keyword to a concrete mix, or return None.
 
-    - "mixed"        -> all 4 types (range-heavy: 0.4/0.2/0.2/0.2).
-    - "local_mixed"  -> local/point-based types (range=0.6, knn=0.4).
-                        These use small boxes / neighbourhood lookups, cheap to eval.
-    - "global_mixed" -> trajectory-global types (similarity=0.5, clustering=0.5).
-                        DBSCAN + DTW; expensive, needs long wall time.
     - "range"/"knn"/"similarity"/"clustering" -> 100% that type.
     - anything else -> None (fall back to caller default).
     """
     if not keyword:
         return None
     k = keyword.strip().lower()
-    if k == "mixed":
-        return {"range": 0.4, "knn": 0.2, "similarity": 0.2, "clustering": 0.2}
-    if k == "local_mixed":
-        return {"range": 0.6, "knn": 0.4}
-    if k == "global_mixed":
-        return {"similarity": 0.5, "clustering": 0.5}
+    if k in {"mixed", "local_mixed", "global_mixed"}:
+        raise ValueError(
+            f"workload='{k}' is no longer supported for model runs; use one pure type: "
+            "range, knn, similarity, or clustering."
+        )
     if k in {"range", "knn", "similarity", "clustering"}:
         return {k: 1.0}
     return None
@@ -736,15 +730,21 @@ def resolve_workload_mixes(
 
     Priority: explicit --train_workload_mix / --eval_workload_mix strings win.
     Otherwise, if --workload is a recognised keyword, both mixes follow it.
-    Otherwise, fall back to the historical mixed-shift defaults.
+    Otherwise, fall back to the pure range default.
     """
     keyword_mix = _workload_keyword_to_mix(workload_keyword)
     if keyword_mix is not None:
         default_train = keyword_mix
         default_eval = keyword_mix
     else:
-        default_train = {"range": 0.8, "knn": 0.2}
-        default_eval = {"range": 0.2, "clustering": 0.8}
+        default_train = {"range": 1.0}
+        default_eval = {"range": 1.0}
     train_mix = parse_workload_mix(train_workload_mix_arg, default=default_train)
     eval_mix = parse_workload_mix(eval_workload_mix_arg, default=default_eval)
+    for name, mix in (("train", train_mix), ("eval", eval_mix)):
+        active = [query_type for query_type, weight in mix.items() if float(weight) > 0.0]
+        if len(active) != 1:
+            raise ValueError(
+                f"{name} workload mix must contain exactly one query type for model runs; got {mix}."
+            )
     return train_mix, eval_mix

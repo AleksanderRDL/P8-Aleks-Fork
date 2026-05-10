@@ -161,7 +161,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--compression_ratio", type=float, default=0.2)
     parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
-    parser.add_argument("--workload", type=str, default="mixed")
+    parser.add_argument(
+        "--workload",
+        type=str,
+        default="range",
+        choices=["range", "knn", "similarity", "clustering"],
+        help="Pure query workload type for this model run.",
+    )
 
     parser.add_argument("--train_workload_mix", type=str, default=None)
     parser.add_argument("--eval_workload_mix", type=str, default=None)
@@ -191,9 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint_selection_metric",
         type=str,
-        default="loss",
+        default="f1",
         choices=["loss", "f1", "uniform_gap"],
-        help="Select restored checkpoints by training loss, held-out query F1, or F1 with fair-uniform gap penalties.",
+        help="Select restored checkpoints by held-out query F1, training loss, or F1 with fair-uniform gap penalties.",
     )
     parser.add_argument(
         "--f1_diagnostic_every",

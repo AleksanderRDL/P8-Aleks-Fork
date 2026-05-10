@@ -572,7 +572,7 @@ def train_model(
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
     run_tag = "main"
-    selection_metric = str(getattr(model_config, "checkpoint_selection_metric", "loss")).lower()
+    selection_metric = str(getattr(model_config, "checkpoint_selection_metric", "f1")).lower()
     if selection_metric not in {"loss", "f1", "uniform_gap"}:
         raise ValueError("checkpoint_selection_metric must be 'loss', 'f1', or 'uniform_gap'.")
     f1_diag_every = int(getattr(model_config, "f1_diagnostic_every", 0) or 0)

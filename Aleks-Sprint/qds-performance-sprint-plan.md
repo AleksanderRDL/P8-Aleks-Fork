@@ -562,7 +562,7 @@ Risk:
 Acceptance check:
 
 - Existing matched tables should be numerically unchanged.
-- Evaluation wall time should drop on mixed/global workloads.
+- Evaluation wall time should drop on larger pure-query workloads.
 
 Completion note, 2026-05-10:
 
@@ -788,6 +788,22 @@ Completion note, 2026-05-10:
   MLQDS aggregate F1 (`0.3333333333333333`). MLQDS eval latency dropped from
   `25.57 ms` to `18.61 ms` in this small smoke.
 
+Post-phase benchmarking update, 2026-05-10:
+
+- Shifted experiment defaults to pure-query model runs: `--workload` now
+  accepts `range`, `knn`, `similarity`, or `clustering`; mixed workload
+  keywords are rejected at the experiment layer.
+- Set checkpoint selection default to `f1` so restored checkpoints are selected
+  by held-out retained-set query F1 rather than training loss. The
+  `checkpoint_f1_variant=combined` option remains available for comparison.
+- Added `src.experiments.benchmark_matrix`, which runs pure-workload
+  configuration matrices and writes `benchmark_matrix.json`,
+  `benchmark_matrix.csv`, and `benchmark_matrix.md`.
+- Matrix variants compare FP32, TF32, BF16 autocast, larger train/inference
+  batches, and answer-vs-combined F1 checkpoint selection.
+- Verified a small smoke matrix over `range,knn` and two variants; all four
+  child runs completed and wrote compact comparison artifacts.
+
 ## Phase 4: Behavior-Sensitive Training Refactors
 
 Goal: improve the actual training loop once the safer changes are measured.
@@ -857,10 +873,11 @@ Acceptance check:
 
 Task:
 
-- Review whether `checkpoint_selection_metric="loss"` should remain the
-  default for serious runs.
-- Consider documenting or defaulting benchmark scripts to `f1` or
-  `uniform_gap`.
+- Keep `checkpoint_selection_metric="f1"` as the default for serious runs.
+- Compare `checkpoint_f1_variant="answer"` against `"combined"` in benchmark
+  matrices.
+- Keep `uniform_gap` available as an explicit experimental variant rather than
+  the default.
 
 Benefit:
 

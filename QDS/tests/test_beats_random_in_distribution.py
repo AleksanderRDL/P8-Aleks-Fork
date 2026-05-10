@@ -10,7 +10,7 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     """Assert matched-workload metrics use F1 fields and valid score polarity."""
     trajectories, _ = synthetic_dataset
     cfg = build_experiment_config(n_queries=64, epochs=3)
-    mix = {"range": 0.7, "knn": 0.3}
+    mix = {"range": 1.0}
 
     out = run_experiment_pipeline(
         config=cfg,
