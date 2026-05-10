@@ -124,13 +124,12 @@ cd QDS
   --profile medium \
   --results_dir artifacts/benchmarks/range_workload_matrix
 
-# Minimum realistic range matrix: two cleaned days, cache-warmed, capped segments.
+# Minimum realistic range matrix: two cleaned days, cache-warmed, full segment set.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
   --profile medium \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
-  --max_points_per_segment 500 \
-  --max_segments 512 \
+  --max_points_per_segment 3000 \
   --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
 
 # Saved-checkpoint inference benchmark on a cleaned CSV.
@@ -155,8 +154,11 @@ The benchmark matrix defaults to range-only while range model quality is the
 active target. When `--csv_path` points at a cleaned-data directory, the matrix
 uses the first two sorted CSV files as train/eval days, prebuilds their
 segmented Parquet cache entries, and records cache warmup metadata in
-`benchmark_matrix.json`. Use explicit `--train_csv_path` and `--eval_csv_path`
-to choose different days.
+`benchmark_matrix.json`. The minimum realistic profile should leave
+`--max_segments` unset so all valid trajectory segments from both days are used,
+while `--max_points_per_segment 3000` keeps long trajectories bounded and
+retains about 52% of the valid points in the first two cleaned days. Use
+explicit `--train_csv_path` and `--eval_csv_path` to choose different days.
 
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and

@@ -89,9 +89,9 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         cache_dir="artifacts/cache/matrix",
         refresh_cache=True,
         min_points_per_segment=4,
-        max_points_per_segment=500,
+        max_points_per_segment=3000,
         max_time_gap_seconds=3600.0,
-        max_segments=512,
+        max_segments=None,
     )
     data_sources = MatrixDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
@@ -112,9 +112,7 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "--max_time_gap_seconds",
         "3600.0",
         "--max_points_per_segment",
-        "500",
-        "--max_segments",
-        "512",
+        "3000",
         "--cache_dir",
         "artifacts/cache/matrix",
     ]

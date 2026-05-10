@@ -816,6 +816,10 @@ Range benchmark tightening, 2026-05-10:
   passing `--csv_path ../AISDATA/cleaned` selects the first two sorted cleaned
   files as train/eval days. Explicit `--train_csv_path` and `--eval_csv_path`
   can be used to choose the days manually.
+- Removed the segment-count cap from the recommended two-day profile so the
+  benchmark uses all valid segments from both days. Keep
+  `--max_points_per_segment 3000` to bound very long trajectories while
+  retaining about 52% of the valid points in the first two cleaned days.
 - Recommended next range benchmark shape:
 
 ```bash
@@ -824,8 +828,7 @@ cd QDS
   --profile medium \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
-  --max_points_per_segment 500 \
-  --max_segments 512 \
+  --max_points_per_segment 3000 \
   --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
 ```
 

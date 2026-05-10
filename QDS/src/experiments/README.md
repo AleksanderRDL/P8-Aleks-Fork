@@ -153,15 +153,17 @@ cd QDS
 For the minimum realistic AIS profile, pass the cleaned-data directory. The
 matrix selects the first two sorted cleaned CSV files as train/eval days, warms
 their segmented Parquet caches before measured runs, and then runs the variants
-against cache hits.
+against cache hits. Leave `--max_segments` unset for this profile so all valid
+trajectory segments from both days are used; use `--max_points_per_segment
+3000` to keep long trajectories bounded while retaining about 52% of the valid
+points in the first two cleaned days.
 
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
   --profile medium \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
-  --max_points_per_segment 500 \
-  --max_segments 512 \
+  --max_points_per_segment 3000 \
   --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
 ```
 
