@@ -119,20 +119,19 @@ cd QDS
   --train_batch_sizes 16,32,64,128 \
   --results_dir artifacts/benchmarks/batch_size_sweep
 
-# Pure-workload matrix across runtime/batch/checkpoint-F1 variants.
+# Range-only matrix across runtime/batch/checkpoint-F1 variants.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
   --profile medium \
-  --workloads range,knn,similarity,clustering \
-  --results_dir artifacts/benchmarks/pure_workload_matrix
+  --results_dir artifacts/benchmarks/range_workload_matrix
 
-# Same matrix shape on cleaned AIS data with loader caps/cache.
+# Minimum realistic range matrix: two cleaned days, cache-warmed, capped segments.
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --csv_path ../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
-  --cache_dir artifacts/cache/pure_workload_matrix \
+  --profile medium \
+  --csv_path ../AISDATA/cleaned \
+  --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 500 \
-  --max_segments 64 \
-  --workloads range,knn,similarity,clustering \
-  --results_dir artifacts/benchmarks/pure_workload_matrix_csv
+  --max_segments 512 \
+  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
 
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
@@ -151,6 +150,13 @@ commands, seed, git commit, and dirty status.
 When `--train_batch_sizes` is provided, the artifact also includes a
 `train_batch_size_sweep` table with epoch-time summary, peak CUDA memory, and
 final F1 fields per batch size.
+
+The benchmark matrix defaults to range-only while range model quality is the
+active target. When `--csv_path` points at a cleaned-data directory, the matrix
+uses the first two sorted CSV files as train/eval days, prebuilds their
+segmented Parquet cache entries, and records cache warmup metadata in
+`benchmark_matrix.json`. Use explicit `--train_csv_path` and `--eval_csv_path`
+to choose different days.
 
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and
@@ -192,7 +198,7 @@ To run on a CSV instead of synthetic data, point the CSV path at a cleaned AIS f
 
 ```bash
 python -m src.experiments.run_ais_experiment \
-  --csv_path ../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
+  --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
   --max_points_per_segment 500 \
   --max_time_gap_seconds 3600 \
   --n_queries 250 \

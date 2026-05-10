@@ -13,7 +13,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 | `run_ais_experiment.py` | Main entry point. Loads CSV or synthetic data and prints the result tables. |
 | `run_inference.py` | Load a saved checkpoint and evaluate it on a CSV without retraining. |
 | `benchmark_runtime.py` | Runtime benchmark wrapper that records environment, git state, commands, timings, and final metrics. |
-| `benchmark_matrix.py` | Pure-workload matrix runner for comparing runtime/batch/checkpoint-F1 variants. |
+| `benchmark_matrix.py` | Range-focused matrix runner for comparing runtime/batch/checkpoint-F1 variants. |
 
 ## CLI
 
@@ -135,32 +135,38 @@ Use `--amp_mode bf16` to benchmark CUDA autocast; the wrapper forwards the mode
 to child training/inference commands and records effective AMP metadata in both
 the child run JSON and the top-level benchmark artifact.
 
-## Pure Workload Matrix
+## Range Benchmark Matrix
 
-`benchmark_matrix.py` runs one child experiment per pure workload and
-configuration variant, then writes `benchmark_matrix.json`,
-`benchmark_matrix.csv`, and a compact `benchmark_matrix.md` table.
+`benchmark_matrix.py` defaults to the range workload and runs one child
+experiment per configuration variant, then writes `benchmark_matrix.json`,
+`benchmark_matrix.csv`, and a compact `benchmark_matrix.md` table. Non-range
+workloads remain available through `--workloads`, but the current benchmark
+track should stay range-only until the range model is stronger.
 
 ```bash
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
   --profile medium \
-  --workloads range,knn,similarity,clustering \
-  --results_dir artifacts/benchmarks/pure_workload_matrix
+  --results_dir artifacts/benchmarks/range_workload_matrix
 ```
 
-For realistic AIS tuning, pass a cleaned CSV or directory and loader caps:
+For the minimum realistic AIS profile, pass the cleaned-data directory. The
+matrix selects the first two sorted cleaned CSV files as train/eval days, warms
+their segmented Parquet caches before measured runs, and then runs the variants
+against cache hits.
 
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --csv_path ../AISDATA/cleaned/<cleaned-ais-file-or-directory> \
-  --cache_dir artifacts/cache/matrix \
+  --profile medium \
+  --csv_path ../AISDATA/cleaned \
+  --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
   --max_points_per_segment 500 \
-  --max_segments 64 \
-  --workloads range,knn,similarity,clustering \
-  --results_dir artifacts/benchmarks/pure_workload_matrix_csv
+  --max_segments 512 \
+  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
 ```
 
+Use `--train_csv_path` and `--eval_csv_path` to choose the two days manually.
+Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
 Default variants compare FP32, TF32, BF16 autocast, larger train/inference
 batches, and `checkpoint_f1_variant=combined`. All variants keep
 `checkpoint_selection_metric=f1`.

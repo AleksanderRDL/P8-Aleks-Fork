@@ -1,4 +1,4 @@
-"""Run pure-workload benchmark matrices for AIS-QDS configuration tuning."""
+"""Run range-focused benchmark matrices for AIS-QDS configuration tuning."""
 
 from __future__ import annotations
 
@@ -7,11 +7,13 @@ import csv
 import json
 import shlex
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.benchmark_runtime import (
     _git_metadata,
     _parse_timings,
@@ -22,11 +24,13 @@ from src.experiments.benchmark_runtime import (
 )
 
 PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
+DEFAULT_WORKLOADS = ("range",)
+MIN_REALISTIC_CSV_DAYS = 2
 
 
 @dataclass(frozen=True)
 class MatrixVariant:
-    """Runtime/config variant for one pure-workload matrix run."""
+    """Runtime/config variant for one matrix run."""
 
     name: str
     float32_matmul_precision: str = "highest"
@@ -81,6 +85,26 @@ DEFAULT_VARIANTS = (
 )
 
 
+@dataclass(frozen=True)
+class MatrixDataSources:
+    """Resolved CSV inputs for a benchmark matrix run."""
+
+    csv_path: str | None = None
+    train_csv_path: str | None = None
+    eval_csv_path: str | None = None
+    selected_cleaned_csv_files: tuple[str, ...] = ()
+
+    @property
+    def csv_sources(self) -> tuple[str, ...]:
+        """Return unique CSV sources used by the run."""
+        candidates = [self.csv_path, self.train_csv_path, self.eval_csv_path]
+        values: list[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in values:
+                values.append(candidate)
+        return tuple(values)
+
+
 def _parse_name_list(raw: str | None, *, allowed: tuple[str, ...] | set[str], arg_name: str) -> list[str]:
     """Parse a comma-separated list and validate all names."""
     allowed_set = set(allowed)
@@ -105,7 +129,66 @@ def _selected_variants(raw: str | None) -> list[MatrixVariant]:
     return [MATRIX_VARIANTS[name] for name in names]
 
 
-def _profile_args(profile: str, args: argparse.Namespace) -> list[str]:
+def _cleaned_csv_files(path: str | Path) -> list[Path]:
+    """Return sorted cleaned CSV files for a file or directory input."""
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"CSV path does not exist: {source}")
+    if source.is_file():
+        return [source]
+    if not source.is_dir():
+        raise ValueError(f"CSV path is neither a file nor directory: {source}")
+    files = sorted(p for p in source.iterdir() if p.is_file() and p.suffix.lower() == ".csv")
+    if not files:
+        raise ValueError(f"No cleaned CSV files found in directory: {source}")
+    return files
+
+
+def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
+    """Resolve matrix CSV inputs, using two cleaned days for directory inputs."""
+    has_train_eval = bool(args.train_csv_path or args.eval_csv_path)
+    if has_train_eval:
+        if not args.train_csv_path or not args.eval_csv_path:
+            raise ValueError("--train_csv_path and --eval_csv_path must be supplied together.")
+        if args.csv_path:
+            raise ValueError("--csv_path cannot be combined with --train_csv_path/--eval_csv_path.")
+        train_path = str(Path(args.train_csv_path))
+        eval_path = str(Path(args.eval_csv_path))
+        for source in (train_path, eval_path):
+            if not Path(source).is_file():
+                raise FileNotFoundError(f"CSV path does not exist or is not a file: {source}")
+        return MatrixDataSources(
+            train_csv_path=train_path,
+            eval_csv_path=eval_path,
+            selected_cleaned_csv_files=(train_path, eval_path),
+        )
+
+    if not args.csv_path:
+        return MatrixDataSources()
+
+    source_path = Path(args.csv_path)
+    files = _cleaned_csv_files(args.csv_path)
+    if source_path.is_dir():
+        if len(files) < MIN_REALISTIC_CSV_DAYS:
+            raise ValueError(f"Expected at least {MIN_REALISTIC_CSV_DAYS} cleaned CSV files in {args.csv_path}.")
+        selected = tuple(str(path) for path in files[:MIN_REALISTIC_CSV_DAYS])
+        return MatrixDataSources(
+            train_csv_path=selected[0],
+            eval_csv_path=selected[1],
+            selected_cleaned_csv_files=selected,
+        )
+    if len(files) == 1:
+        return MatrixDataSources(csv_path=str(files[0]), selected_cleaned_csv_files=(str(files[0]),))
+    raise ValueError(f"Expected a cleaned CSV file or directory: {args.csv_path}")
+
+
+def _profile_args(
+    profile: str,
+    args: argparse.Namespace,
+    data_sources: MatrixDataSources | None = None,
+    *,
+    include_refresh_cache: bool = True,
+) -> list[str]:
     """Return data-size arguments for a matrix profile."""
     if profile == "small":
         size_args = ["--n_ships", "6", "--n_points", "48", "--n_queries", "12", "--epochs", "1"]
@@ -116,19 +199,32 @@ def _profile_args(profile: str, args: argparse.Namespace) -> list[str]:
     else:
         raise ValueError(f"Unknown matrix profile: {profile}")
 
-    if args.csv_path:
-        profile_args = ["--csv_path", str(args.csv_path), *size_args[4:]]
+    data_sources = data_sources or _resolve_data_sources(args)
+    if data_sources.train_csv_path and data_sources.eval_csv_path:
+        profile_args = [
+            "--train_csv_path",
+            data_sources.train_csv_path,
+            "--eval_csv_path",
+            data_sources.eval_csv_path,
+            *size_args[4:],
+        ]
+    elif data_sources.csv_path:
+        profile_args = ["--csv_path", data_sources.csv_path, *size_args[4:]]
+    else:
+        return size_args
+
+    if data_sources.csv_sources:
+        profile_args += ["--min_points_per_segment", str(args.min_points_per_segment)]
+        profile_args += ["--max_time_gap_seconds", str(args.max_time_gap_seconds)]
         if args.max_points_per_segment is not None:
             profile_args += ["--max_points_per_segment", str(args.max_points_per_segment)]
         if args.max_segments is not None:
             profile_args += ["--max_segments", str(args.max_segments)]
         if args.cache_dir is not None:
             profile_args += ["--cache_dir", str(args.cache_dir)]
-        if args.refresh_cache:
+        if args.refresh_cache and include_refresh_cache:
             profile_args.append("--refresh_cache")
-        return profile_args
-
-    return size_args
+    return profile_args
 
 
 def _variant_args(variant: MatrixVariant) -> list[str]:
@@ -177,6 +273,46 @@ def _has_collapse_warning(run_json: dict[str, Any] | None) -> bool | None:
     if not run_json:
         return None
     return any("collapse_warning" in row for row in run_json.get("training_history", []))
+
+
+def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) -> list[dict[str, Any]]:
+    """Prebuild segmented AIS caches for all CSV sources used by the matrix."""
+    if not args.cache_dir or not data_sources.csv_sources or args.no_cache_warmup:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for source in data_sources.csv_sources:
+        started = time.perf_counter()
+        result = load_or_build_ais_cache(
+            source,
+            cache_dir=str(args.cache_dir),
+            refresh_cache=bool(args.refresh_cache),
+            min_points_per_segment=int(args.min_points_per_segment),
+            max_points_per_segment=args.max_points_per_segment,
+            max_time_gap_seconds=float(args.max_time_gap_seconds),
+            max_segments=args.max_segments,
+        )
+        elapsed = time.perf_counter() - started
+        audit = result.audit.to_dict()
+        row = {
+            "source_path": source,
+            "cache_hit": bool(result.cache_hit),
+            "elapsed_seconds": float(elapsed),
+            "cache_dir": result.cache_dir,
+            "manifest_path": result.manifest_path,
+            "parquet_path": result.parquet_path,
+            "output_segment_count": audit.get("output_segment_count"),
+            "output_point_count": audit.get("output_point_count"),
+            "segment_limit_reached": audit.get("segment_limit_reached"),
+        }
+        rows.append(row)
+        state = "hit" if result.cache_hit else "built"
+        print(
+            "[matrix] cache warmup "
+            f"{state}: {source} ({row['output_segment_count']} segments, {row['elapsed_seconds']:.2f}s)",
+            flush=True,
+        )
+    return rows
 
 
 def _row_from_run(
@@ -277,17 +413,34 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     """Build benchmark matrix CLI."""
     parser = argparse.ArgumentParser(
-        description="Run a pure-workload AIS-QDS benchmark matrix and write compact comparison tables.",
+        description="Run a range-focused AIS-QDS benchmark matrix and write compact comparison tables.",
     )
     parser.add_argument("--profile", choices=["small", "medium", "serious"], default="medium")
-    parser.add_argument("--workloads", type=str, default=",".join(PURE_WORKLOADS))
+    parser.add_argument("--workloads", type=str, default=",".join(DEFAULT_WORKLOADS))
     parser.add_argument("--variants", type=str, default=",".join(DEFAULT_VARIANTS))
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--results_dir", type=str, default="artifacts/benchmarks/pure_workload_matrix")
-    parser.add_argument("--csv_path", type=str, default=None, help="Optional cleaned AIS CSV or directory for realistic runs.")
+    parser.add_argument("--results_dir", type=str, default="artifacts/benchmarks/range_workload_matrix")
+    parser.add_argument(
+        "--csv_path",
+        type=str,
+        default=None,
+        help=(
+            "Optional cleaned AIS CSV or directory. A directory selects the first two sorted "
+            "CSV files as train/eval days for the minimum realistic range benchmark."
+        ),
+    )
+    parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
     parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--refresh_cache", action="store_true")
+    parser.add_argument(
+        "--no_cache_warmup",
+        action="store_true",
+        help="Skip prebuilding segmented AIS caches before measured child runs.",
+    )
+    parser.add_argument("--min_points_per_segment", type=int, default=4)
     parser.add_argument("--max_points_per_segment", type=int, default=None)
+    parser.add_argument("--max_time_gap_seconds", type=float, default=3600.0)
     parser.add_argument("--max_segments", type=int, default=None)
     parser.add_argument(
         "--f1_diagnostic_every",
@@ -314,8 +467,11 @@ def main() -> None:
     args = _build_parser().parse_args()
     workloads = _parse_name_list(args.workloads, allowed=PURE_WORKLOADS, arg_name="--workloads")
     variants = _selected_variants(args.variants)
+    data_sources = _resolve_data_sources(args)
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
+    cache_warmup = _warm_csv_caches(args, data_sources)
+    measured_include_refresh = bool(args.refresh_cache and not cache_warmup)
 
     rows: list[dict[str, Any]] = []
     failures = 0
@@ -326,7 +482,12 @@ def main() -> None:
                 sys.executable,
                 "-m",
                 "src.experiments.run_ais_experiment",
-                *_profile_args(args.profile, args),
+                *_profile_args(
+                    args.profile,
+                    args,
+                    data_sources,
+                    include_refresh_cache=measured_include_refresh,
+                ),
                 "--workload",
                 workload,
                 "--seed",
@@ -363,13 +524,20 @@ def main() -> None:
             break
 
     artifact = {
-        "schema_version": 1,
+        "schema_version": 2,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "command": [sys.executable, "-m", "src.experiments.benchmark_matrix", *sys.argv[1:]],
         "profile": args.profile,
         "seed": int(args.seed),
         "workloads": workloads,
         "variants": [variant.name for variant in variants],
+        "data_sources": {
+            "csv_path": data_sources.csv_path,
+            "train_csv_path": data_sources.train_csv_path,
+            "eval_csv_path": data_sources.eval_csv_path,
+            "selected_cleaned_csv_files": list(data_sources.selected_cleaned_csv_files),
+        },
+        "cache_warmup": cache_warmup,
         "git": _git_metadata(),
         "rows": rows,
     }

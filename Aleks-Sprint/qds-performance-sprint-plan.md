@@ -804,6 +804,31 @@ Post-phase benchmarking update, 2026-05-10:
 - Verified a small smoke matrix over `range,knn` and two variants; all four
   child runs completed and wrote compact comparison artifacts.
 
+Range benchmark tightening, 2026-05-10:
+
+- Narrowed the benchmark matrix default to `range` only. kNN, similarity, and
+  clustering remain available as explicit workloads, but they are shelved until
+  the range-focused model reaches a stronger baseline.
+- Added cache warmup for cleaned-CSV matrix runs. When `--cache_dir` is set,
+  the matrix prebuilds the segmented Parquet caches before measured variants
+  and records warmup metadata in `benchmark_matrix.json`.
+- Updated the minimum realistic matrix profile to use two cleaned CSV days:
+  passing `--csv_path ../AISDATA/cleaned` selects the first two sorted cleaned
+  files as train/eval days. Explicit `--train_csv_path` and `--eval_csv_path`
+  can be used to choose the days manually.
+- Recommended next range benchmark shape:
+
+```bash
+cd QDS
+../.venv/bin/python -m src.experiments.benchmark_matrix \
+  --profile medium \
+  --csv_path ../AISDATA/cleaned \
+  --cache_dir artifacts/cache/range_workload_matrix_min_realistic \
+  --max_points_per_segment 500 \
+  --max_segments 512 \
+  --results_dir artifacts/benchmarks/range_workload_matrix_min_realistic
+```
+
 ## Phase 4: Behavior-Sensitive Training Refactors
 
 Goal: improve the actual training loop once the safer changes are measured.
