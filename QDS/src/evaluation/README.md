@@ -8,7 +8,7 @@ This module compares query-aware ML simplification against temporal, geometric, 
 | --- | --- |
 | `baselines.py` | Simplification methods: `MLQDSMethod`, `NewUniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
 | `metrics.py` | F1 functions and the `MethodEvaluation` container. |
-| `evaluate_methods.py` | Runs a method on flattened points and boundaries, then formats the comparison tables. |
+| `evaluate_methods.py` | Runs a method on flattened points and boundaries, caches reusable query results, then formats the comparison tables. |
 
 ## Methods
 
@@ -29,4 +29,4 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Reporting
 
-`evaluate_method` evaluates one simplification method against a typed query workload. `print_method_comparison_table` renders F1 values to six decimals so close methods are not hidden by rounding, includes `AvgPtGap` for retained-point spacing, and appends MLQDS gaps versus `uniform` and Douglas-Peucker when those baselines are present. `print_geometric_distortion_table` reports SED/PED plus `LengthPres` and `F1xLen`, where both length columns are higher-is-better. `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline. Tables should be read as higher-is-better F1 scores, while lower `AvgPtGap` means smaller average spacing between retained points.
+`evaluate_method` evaluates one simplification method against a typed query workload. Pass an `EvaluationQueryCache` when several methods are evaluated on the same points, boundaries, and query list; it reuses full-data query answers and support masks while still recomputing simplified-query answers for each retained mask. `print_method_comparison_table` renders F1 values to six decimals so close methods are not hidden by rounding, includes `AvgPtGap` for retained-point spacing, and appends MLQDS gaps versus `uniform` and Douglas-Peucker when those baselines are present. `print_geometric_distortion_table` reports SED/PED plus `LengthPres` and `F1xLen`, where both length columns are higher-is-better. `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline. Tables should be read as higher-is-better F1 scores, while lower `AvgPtGap` means smaller average spacing between retained points.

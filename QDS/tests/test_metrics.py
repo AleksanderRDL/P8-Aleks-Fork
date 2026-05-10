@@ -7,6 +7,7 @@ import torch
 
 from src.evaluation.baselines import NewUniformTemporalMethod, UniformTemporalMethod
 from src.evaluation.evaluate_methods import (
+    EvaluationQueryCache,
     _retained_point_gap_stats,
     evaluate_method,
     print_method_comparison_table,
@@ -172,6 +173,107 @@ def test_score_retained_mask_matches_evaluate_method() -> None:
 
     assert aggregate == pytest.approx(evaluated.aggregate_f1)
     assert per_type == pytest.approx(evaluated.per_type_f1)
+
+
+def test_score_retained_mask_cache_reuses_full_query_results(monkeypatch) -> None:
+    import src.evaluation.evaluate_methods as eval_methods
+
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.2, 1.0],
+            [0.0, 5.0, 5.0, 1.0],
+            [1.0, 5.0, 5.2, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 2), (2, 4)]
+    queries = [
+        {
+            "type": "knn",
+            "params": {
+                "lat": 0.0,
+                "lon": 0.0,
+                "t_center": 0.5,
+                "t_half_window": 2.0,
+                "k": 1,
+            },
+        }
+    ]
+    original_execute = eval_methods.execute_typed_query
+    calls = {"full": 0, "simplified": 0}
+
+    def counting_execute(
+        query_points: torch.Tensor,
+        trajectories: list[torch.Tensor],
+        query: dict,
+        query_boundaries: list[tuple[int, int]] | None = None,
+    ):
+        if query_points.data_ptr() == points.data_ptr() and tuple(query_points.shape) == tuple(points.shape):
+            calls["full"] += 1
+        else:
+            calls["simplified"] += 1
+        return original_execute(query_points, trajectories, query, query_boundaries)
+
+    monkeypatch.setattr(eval_methods, "execute_typed_query", counting_execute)
+    query_cache = EvaluationQueryCache.for_workload(points, boundaries, queries)
+
+    for retained in (
+        torch.tensor([True, False, True, True]),
+        torch.tensor([True, True, True, False]),
+    ):
+        score_retained_mask(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained,
+            typed_queries=queries,
+            workload_mix={"knn": 1.0},
+            query_cache=query_cache,
+        )
+
+    assert calls == {"full": 1, "simplified": 2}
+
+
+def test_score_retained_mask_cache_rejects_different_workload() -> None:
+    points = torch.tensor([[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]], dtype=torch.float32)
+    boundaries = [(0, 2)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 0.5,
+                "lon_min": -1.0,
+                "lon_max": 0.5,
+                "t_start": -1.0,
+                "t_end": 0.5,
+            },
+        }
+    ]
+    other_queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 2.0,
+                "lon_min": -1.0,
+                "lon_max": 2.0,
+                "t_start": -1.0,
+                "t_end": 2.0,
+            },
+        }
+    ]
+    query_cache = EvaluationQueryCache.for_workload(points, boundaries, queries)
+
+    with pytest.raises(ValueError, match="EvaluationQueryCache"):
+        score_retained_mask(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=torch.tensor([True, False]),
+            typed_queries=other_queries,
+            workload_mix={"range": 1.0},
+            query_cache=query_cache,
+        )
 
 
 def test_knn_f1_penalizes_missing_representative_points() -> None:

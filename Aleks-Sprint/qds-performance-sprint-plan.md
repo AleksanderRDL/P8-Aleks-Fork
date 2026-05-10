@@ -564,6 +564,25 @@ Acceptance check:
 - Existing matched tables should be numerically unchanged.
 - Evaluation wall time should drop on mixed/global workloads.
 
+Completion note, 2026-05-10:
+
+- Added caller-owned `EvaluationQueryCache` support to `score_retained_mask`
+  and `evaluate_method`.
+- The cache is scoped to one points tensor, boundary list, and typed-query
+  list; reuse with a different workload raises immediately instead of leaking
+  stale answers.
+- Cached data includes full-data query answers, full-data trajectory views, and
+  support masks for range, kNN, similarity, and clustering queries. Simplified
+  query answers still run per retained mask/method.
+- Matched experiment evaluation, saved-checkpoint inference, range signal
+  diagnostics, and validation query-F1 diagnostics now share the appropriate
+  cache for their evaluation scope.
+- Added regression tests that verify full-data query execution is reused across
+  retained masks and that mismatched workloads are rejected.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_metrics.py tests/test_range_point_evaluation.py`
+  and `.venv/bin/python -m pytest QDS/tests`.
+
 ## Phase 3: RTX 5060 Ti / CUDA-Specific Tuning
 
 Goal: use the hardware better with the current project setup.

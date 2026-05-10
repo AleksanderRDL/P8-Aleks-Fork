@@ -38,6 +38,7 @@ from src.evaluation.baselines import (
     NewUniformTemporalMethod,
 )
 from src.evaluation.evaluate_methods import (
+    EvaluationQueryCache,
     evaluate_method,
     print_geometric_distortion_table,
     print_method_comparison_table,
@@ -315,6 +316,7 @@ def main() -> None:
 
     results: dict[str, Any] = {}
     save_masks = bool(args.save_simplified_dir)
+    query_cache = EvaluationQueryCache.for_workload(points, boundaries, workload.typed_queries)
     for method in methods:
         t0 = time.perf_counter()
         print(f"[eval] {method.name} ...", flush=True)
@@ -326,6 +328,7 @@ def main() -> None:
             workload_mix=eval_mix,
             compression_ratio=compression_ratio,
             return_mask=method.name == "MLQDS" or save_masks,
+            query_cache=query_cache,
         )
         print(f"[eval] {method.name} done in {time.perf_counter() - t0:.2f}s", flush=True)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 import math
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -401,11 +402,13 @@ def _validation_query_f1(
     workload_mix: dict[str, float],
     model_config: ModelConfig,
     device: torch.device,
+    validation_points: torch.Tensor | None = None,
+    query_cache: Any | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate a model checkpoint with the same query-F1 semantics as final evaluation."""
     from src.evaluation.evaluate_methods import score_retained_mask
 
-    points = torch.cat(trajectories, dim=0)
+    points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
     scores = _predict_workload_scores(
         model=model,
         scaler=scaler,
@@ -429,6 +432,7 @@ def _validation_query_f1(
         retained_mask=retained_mask,
         typed_queries=workload.typed_queries,
         workload_mix=workload_mix,
+        query_cache=query_cache,
     )
     variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
     if variant == "combined":
@@ -442,12 +446,14 @@ def _validation_uniform_f1(
     workload: TypedQueryWorkload,
     workload_mix: dict[str, float],
     model_config: ModelConfig,
+    validation_points: torch.Tensor | None = None,
+    query_cache: Any | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate fair uniform on the held-out validation workload once per run."""
     from src.evaluation.baselines import NewUniformTemporalMethod
     from src.evaluation.evaluate_methods import score_retained_mask
 
-    points = torch.cat(trajectories, dim=0)
+    points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
     retained_mask = NewUniformTemporalMethod().simplify(
         points=points,
         boundaries=boundaries,
@@ -459,6 +465,7 @@ def _validation_uniform_f1(
         retained_mask=retained_mask,
         typed_queries=workload.typed_queries,
         workload_mix=workload_mix,
+        query_cache=query_cache,
     )
     variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
     if variant == "combined":
@@ -577,6 +584,17 @@ def train_model(
         selection_metric = "loss"
     if selection_metric in {"f1", "uniform_gap"} and f1_diag_every <= 0:
         f1_diag_every = diag_every
+    validation_points_for_f1: torch.Tensor | None = None
+    validation_query_cache: Any | None = None
+    if has_validation_f1:
+        from src.evaluation.evaluate_methods import EvaluationQueryCache
+
+        validation_points_for_f1 = torch.cat(validation_trajectories or [], dim=0)
+        validation_query_cache = EvaluationQueryCache.for_workload(
+            validation_points_for_f1,
+            validation_boundaries or [],
+            validation_workload.typed_queries,
+        )
     validation_uniform_result: tuple[float, dict[str, float]] | None = None
     if selection_metric == "uniform_gap" and has_validation_f1:
         validation_uniform_result = _validation_uniform_f1(
@@ -585,6 +603,8 @@ def train_model(
             workload=validation_workload,
             workload_mix=validation_mix or {},
             model_config=model_config,
+            validation_points=validation_points_for_f1,
+            query_cache=validation_query_cache,
         )
         uniform_f1, uniform_per_type = validation_uniform_result
         print(
@@ -770,6 +790,8 @@ def train_model(
                     workload_mix=validation_mix or {},
                     model_config=model_config,
                     device=device,
+                    validation_points=validation_points_for_f1,
+                    query_cache=validation_query_cache,
                 )
                 stats["val_query_f1"] = float(query_f1)
                 for type_name, value in per_type_f1.items():

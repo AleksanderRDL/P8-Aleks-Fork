@@ -31,6 +31,7 @@ from src.evaluation.baselines import (
     OracleMethod,
 )
 from src.evaluation.evaluate_methods import (
+    EvaluationQueryCache,
     evaluate_method,
     print_geometric_distortion_table,
     print_method_comparison_table,
@@ -159,6 +160,7 @@ def _range_signal_diagnostics(
         OracleMethod(labels=labels, workload_mix={"range": 1.0}),
     ]
     method_scores: dict[str, dict[str, float]] = {}
+    query_cache = EvaluationQueryCache.for_workload(points, boundaries, range_queries)
     for method in methods:
         retained_mask = method.simplify(points, boundaries, compression_ratio)
         aggregate, per_type, _, _ = score_retained_mask(
@@ -167,6 +169,7 @@ def _range_signal_diagnostics(
             retained_mask=retained_mask,
             typed_queries=range_queries,
             workload_mix={"range": 1.0},
+            query_cache=query_cache,
         )
         method_scores[method.name] = {
             "aggregate_f1": float(aggregate),
@@ -506,6 +509,11 @@ def run_experiment_pipeline(
     matched: dict[str, Any] = {}
     save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
+        eval_query_cache = EvaluationQueryCache.for_workload(
+            test_points,
+            test_boundaries,
+            eval_workload.typed_queries,
+        )
         for method in methods:
             with _phase(f"  eval {method.name}"):
                 matched[method.name] = evaluate_method(
@@ -516,6 +524,7 @@ def run_experiment_pipeline(
                     workload_mix=eval_mix,
                     compression_ratio=config.model.compression_ratio,
                     return_mask=method.name == "MLQDS" or save_masks,
+                    query_cache=eval_query_cache,
                 )
 
         eval_labels, _ = compute_typed_importance_labels(
@@ -533,6 +542,7 @@ def run_experiment_pipeline(
                 typed_queries=eval_workload.typed_queries,
                 workload_mix=eval_mix,
                 compression_ratio=config.model.compression_ratio,
+                query_cache=eval_query_cache,
             )
 
     matched_table = print_method_comparison_table(matched)
@@ -545,6 +555,11 @@ def run_experiment_pipeline(
         if train_name == eval_name:
             shift_pairs[train_name][train_name] = float(matched["MLQDS"].aggregate_f1)
         else:
+            train_query_cache = EvaluationQueryCache.for_workload(
+                test_points,
+                test_boundaries,
+                train_workload.typed_queries,
+            )
             shift_pairs[train_name][train_name] = float(
                 evaluate_method(
                     method=MLQDSMethod(
@@ -560,6 +575,7 @@ def run_experiment_pipeline(
                     typed_queries=train_workload.typed_queries,
                     workload_mix=train_mix,
                     compression_ratio=config.model.compression_ratio,
+                    query_cache=train_query_cache,
                 ).aggregate_f1
             )
     shift_table = print_shift_table(shift_pairs)

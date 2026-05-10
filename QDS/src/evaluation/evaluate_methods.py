@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -18,6 +21,75 @@ from src.queries.query_executor import execute_typed_query
 
 POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 POINT_AWARE_SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
+
+
+def _points_cache_token(points: torch.Tensor) -> tuple[int, int, tuple[int, ...], str, str]:
+    """Return an identity token for caller-owned evaluation caches."""
+    data_ptr = int(points.data_ptr()) if points.numel() > 0 else 0
+    return (id(points), data_ptr, tuple(int(dim) for dim in points.shape), str(points.device), str(points.dtype))
+
+
+def _queries_cache_token(typed_queries: list[dict]) -> tuple[int, int, tuple[int, ...]]:
+    """Return an identity token for a typed-query workload list."""
+    return (id(typed_queries), len(typed_queries), tuple(id(query) for query in typed_queries))
+
+
+@dataclass
+class EvaluationQueryCache:
+    """Caller-owned cache for full-data query results during repeated method evaluation."""
+
+    points_token: tuple[int, int, tuple[int, ...], str, str]
+    boundaries_key: tuple[tuple[int, int], ...]
+    queries_token: tuple[int, int, tuple[int, ...]]
+    full_traj: list[torch.Tensor] | None = None
+    full_results: dict[int, Any] = field(default_factory=dict)
+    support_masks: dict[int, torch.Tensor] = field(default_factory=dict)
+
+    @classmethod
+    def for_workload(
+        cls,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        typed_queries: list[dict],
+    ) -> EvaluationQueryCache:
+        """Build a cache scoped to exactly one points/boundaries/workload object."""
+        return cls(
+            points_token=_points_cache_token(points),
+            boundaries_key=tuple((int(start), int(end)) for start, end in boundaries),
+            queries_token=_queries_cache_token(typed_queries),
+        )
+
+    def validate(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        typed_queries: list[dict],
+    ) -> None:
+        """Fail fast if this cache is reused for a different evaluation scope."""
+        if (
+            self.points_token != _points_cache_token(points)
+            or self.boundaries_key != tuple((int(start), int(end)) for start, end in boundaries)
+            or self.queries_token != _queries_cache_token(typed_queries)
+        ):
+            raise ValueError("EvaluationQueryCache was built for different points, boundaries, or typed queries.")
+
+    def get_full_traj(self, points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
+        """Return split full-data trajectories, building them once per cache."""
+        if self.full_traj is None:
+            self.full_traj = _split_by_boundaries(points, boundaries)
+        return self.full_traj
+
+    def get_full_result(self, query_index: int, builder: Callable[[], Any]) -> Any:
+        """Return a cached full-data query answer."""
+        if query_index not in self.full_results:
+            self.full_results[query_index] = builder()
+        return self.full_results[query_index]
+
+    def get_support_mask(self, query_index: int, builder: Callable[[], torch.Tensor]) -> torch.Tensor:
+        """Return a cached full-data support mask."""
+        if query_index not in self.support_masks:
+            self.support_masks[query_index] = builder()
+        return self.support_masks[query_index]
 
 
 def _split_by_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
@@ -37,10 +109,9 @@ def _range_box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Ten
     )
 
 
-def _range_point_f1(points: torch.Tensor, retained_mask: torch.Tensor, params: dict[str, float]) -> float:
+def _range_point_f1(retained_mask: torch.Tensor, range_mask: torch.Tensor) -> float:
     """Compute range F1 over retained point instances inside the query box."""
-    range_mask = _range_box_mask(points, params)
-    return _point_subset_f1(retained_mask.to(device=points.device, dtype=torch.bool), range_mask)
+    return _point_subset_f1(retained_mask.to(device=range_mask.device, dtype=torch.bool), range_mask)
 
 
 def _trajectory_id_per_point(n_points: int, boundaries: list[tuple[int, int]], device: torch.device) -> torch.Tensor:
@@ -167,6 +238,7 @@ def score_retained_mask(
     retained_mask: torch.Tensor,
     typed_queries: list[dict],
     workload_mix: dict[str, float],
+    query_cache: EvaluationQueryCache | None = None,
 ) -> tuple[float, dict[str, float], float, dict[str, float]]:
     """Score a precomputed retained mask with the final query-F1 semantics.
 
@@ -177,6 +249,9 @@ def score_retained_mask(
     kept for diagnostic comparison; it double-penalizes a method that returns
     the right answer set via different points than ground truth's "support".
     """
+    if query_cache is not None:
+        query_cache.validate(points, boundaries, typed_queries)
+
     full_traj: list[torch.Tensor] | None = None
     simplified: torch.Tensor | None = None
     simp_boundaries: list[tuple[int, int]] | None = None
@@ -184,6 +259,8 @@ def score_retained_mask(
 
     def full_views() -> list[torch.Tensor]:
         nonlocal full_traj
+        if query_cache is not None:
+            return query_cache.get_full_traj(points, boundaries)
         if full_traj is None:
             full_traj = _split_by_boundaries(points, boundaries)
         return full_traj
@@ -201,32 +278,65 @@ def score_retained_mask(
             simp_traj = _split_by_boundaries(simplified, simp_boundaries)
         return simplified, simp_traj, simp_boundaries
 
+    def full_result(query_index: int, query: dict) -> Any:
+        def build() -> Any:
+            return execute_typed_query(points, full_views(), query, boundaries)
+
+        if query_cache is not None:
+            return query_cache.get_full_result(query_index, build)
+        return build()
+
+    def support_mask(query_index: int, builder: Callable[[], torch.Tensor]) -> torch.Tensor:
+        if query_cache is not None:
+            return query_cache.get_support_mask(query_index, builder)
+        return builder()
+
     answer_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
     combined_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
-    for query in typed_queries:
+    for query_index, query in enumerate(typed_queries):
         qtype = query["type"]
         if qtype == "range":
-            point_f1 = _range_point_f1(points, retained_mask, query["params"])
+            range_mask = support_mask(query_index, lambda query=query: _range_box_mask(points, query["params"]))
+            point_f1 = _range_point_f1(retained_mask, range_mask)
             answer_scores[qtype].append(point_f1)
             combined_scores[qtype].append(point_f1)
             continue
 
-        full_res = execute_typed_query(points, full_views(), query, boundaries)
+        full_res = full_result(query_index, query)
         simplified_now, simp_traj_now, simp_boundaries_now = simplified_views()
         simp_res = execute_typed_query(simplified_now, simp_traj_now, query, simp_boundaries_now)
         if qtype == "knn":
             ans = f1_score(set(full_res), set(simp_res))
-            support = _knn_representative_mask(points, boundaries, set(full_res), query["params"])
+            support = support_mask(
+                query_index,
+                lambda full_res=full_res, query=query: _knn_representative_mask(
+                    points,
+                    boundaries,
+                    set(full_res),
+                    query["params"],
+                ),
+            )
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "similarity":
             ans = f1_score(set(full_res), set(simp_res))
-            support = _similarity_support_mask(points, boundaries, set(full_res), query)
+            support = support_mask(
+                query_index,
+                lambda full_res=full_res, query=query: _similarity_support_mask(points, boundaries, set(full_res), query),
+            )
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "clustering":
             ans = clustering_f1(full_res, simp_res)
-            support = _clustering_support_mask(points, boundaries, list(full_res), query["params"])
+            support = support_mask(
+                query_index,
+                lambda full_res=full_res, query=query: _clustering_support_mask(
+                    points,
+                    boundaries,
+                    list(full_res),
+                    query["params"],
+                ),
+            )
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
 
@@ -278,6 +388,7 @@ def evaluate_method(
     workload_mix: dict[str, float],
     compression_ratio: float,
     return_mask: bool = False,
+    query_cache: EvaluationQueryCache | None = None,
 ) -> MethodEvaluation:
     """Evaluate one simplification method on typed queries at matched ratio. See src/evaluation/README.md for details."""
     t0 = time.time()
@@ -290,6 +401,7 @@ def evaluate_method(
         retained_mask=retained_mask,
         typed_queries=typed_queries,
         workload_mix=workload_mix,
+        query_cache=query_cache,
     )
     comp = float(retained_mask.float().mean().item())
     avg_gap, avg_norm_gap, max_gap = _retained_point_gap_stats(retained_mask, boundaries)
