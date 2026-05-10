@@ -103,7 +103,7 @@ cd QDS
   --checkpoint artifacts/benchmarks/runtime_small/benchmark_model.pt \
   --inference_csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
   --results_dir artifacts/benchmarks/inference_small \
-  --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16"
+  --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16 --inference_device auto"
 ```
 
 Benchmark artifacts are written under the selected `--results_dir`, including

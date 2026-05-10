@@ -25,21 +25,27 @@ def build_trajectory_windows(
 ) -> list[TrajectoryBatch]:
     """Build trajectory-local windows with no cross-trajectory attention. See src/training/README.md for details."""
     windows: list[TrajectoryBatch] = []
+    device = points.device
     for tid, (start, end) in enumerate(boundaries):
         traj = points[start:end]
         n = traj.shape[0]
         if n <= window_length:
             pad = window_length - n
-            p = torch.cat([traj, torch.zeros((pad, traj.shape[1]), dtype=traj.dtype)], dim=0)
-            mask = torch.zeros((window_length,), dtype=torch.bool)
+            p = torch.cat([traj, torch.zeros((pad, traj.shape[1]), dtype=traj.dtype, device=device)], dim=0)
+            mask = torch.zeros((window_length,), dtype=torch.bool, device=device)
             if pad > 0:
                 mask[n:] = True
-            idx = torch.cat([torch.arange(start, end), torch.full((pad,), -1, dtype=torch.long)])
+            idx = torch.cat(
+                [
+                    torch.arange(start, end, device=device),
+                    torch.full((pad,), -1, dtype=torch.long, device=device),
+                ]
+            )
             windows.append(
                 TrajectoryBatch(
                     points=p.unsqueeze(0),
                     padding_mask=mask.unsqueeze(0),
-                    trajectory_ids=torch.tensor([tid], dtype=torch.long),
+                    trajectory_ids=torch.tensor([tid], dtype=torch.long, device=device),
                     global_indices=idx.unsqueeze(0),
                 )
             )
@@ -50,23 +56,26 @@ def build_trajectory_windows(
             chunk = traj[w_start:w_end]
             if chunk.shape[0] < window_length:
                 pad = window_length - chunk.shape[0]
-                chunk = torch.cat([chunk, torch.zeros((pad, traj.shape[1]), dtype=traj.dtype)], dim=0)
-                mask = torch.zeros((window_length,), dtype=torch.bool)
+                chunk = torch.cat(
+                    [chunk, torch.zeros((pad, traj.shape[1]), dtype=traj.dtype, device=device)],
+                    dim=0,
+                )
+                mask = torch.zeros((window_length,), dtype=torch.bool, device=device)
                 mask[window_length - pad :] = True
                 idx = torch.cat(
                     [
-                        torch.arange(start + w_start, start + w_end),
-                        torch.full((pad,), -1, dtype=torch.long),
+                        torch.arange(start + w_start, start + w_end, device=device),
+                        torch.full((pad,), -1, dtype=torch.long, device=device),
                     ]
                 )
             else:
-                mask = torch.zeros((window_length,), dtype=torch.bool)
-                idx = torch.arange(start + w_start, start + w_end)
+                mask = torch.zeros((window_length,), dtype=torch.bool, device=device)
+                idx = torch.arange(start + w_start, start + w_end, device=device)
             windows.append(
                 TrajectoryBatch(
                     points=chunk.unsqueeze(0),
                     padding_mask=mask.unsqueeze(0),
-                    trajectory_ids=torch.tensor([tid], dtype=torch.long),
+                    trajectory_ids=torch.tensor([tid], dtype=torch.long, device=device),
                     global_indices=idx.unsqueeze(0),
                 )
             )

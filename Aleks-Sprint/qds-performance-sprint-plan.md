@@ -483,6 +483,23 @@ Acceptance check:
 - CPU and CUDA outputs should match within a small tolerance on the same
   checkpoint and workload.
 
+Completion note, 2026-05-10:
+
+- Added device-aware `windowed_predict(..., device=...)` and
+  `forward_predict(..., device=...)`.
+- `MLQDSMethod.simplify` now defaults to CUDA when available and keeps the
+  retained mask on the original points device for existing evaluation metrics.
+- Added `run_inference --inference_device {auto,cpu,cuda}` for saved-checkpoint
+  inference control.
+- Made trajectory window construction preserve tensor devices for padding,
+  masks, indices, and trajectory IDs.
+- Added CUDA regression checks comparing CPU and CUDA prediction outputs on the
+  same model/artifact within tolerance.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_scaler_persisted.py`,
+  `.venv/bin/python -m pytest QDS/tests`, and a small
+  `benchmark_runtime --mode train --profile small` smoke.
+
 ### 8. Replace Range Point-F1 Tuple Sets With Mask Math
 
 Task:

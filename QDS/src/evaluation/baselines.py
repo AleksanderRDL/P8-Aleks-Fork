@@ -17,7 +17,7 @@ from src.simplification.simplify_trajectories import (
     simplify_with_temporal_score_hybrid,
 )
 from src.training.train_model import TrainingOutputs
-from src.training.training_pipeline import windowed_predict
+from src.training.training_pipeline import default_inference_device, windowed_predict
 
 
 class Method(Protocol):
@@ -44,6 +44,7 @@ class MLQDSMethod:
     workload_mix: dict[str, float]
     temporal_fraction: float = 0.75
     diversity_bonus: float = 0.05
+    inference_device: str | torch.device | None = None
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores.
@@ -60,16 +61,22 @@ class MLQDSMethod:
 
         point_dim = self.trained.model.point_dim
         p, q = self.trained.scaler.transform(points[:, :point_dim], self.workload.query_features)
+        device = torch.device(self.inference_device) if self.inference_device is not None else default_inference_device()
         pred = windowed_predict(
             model=self.trained.model,
             norm_points=p,
             boundaries=boundaries,
             queries=q,
             query_type_ids=self.workload.type_ids,
+            device=device,
         )
 
         type_order = ["range", "knn", "similarity", "clustering"]
-        mix = torch.tensor([float(self.workload_mix.get(t, 0.0)) for t in type_order], dtype=torch.float32)
+        mix = torch.tensor(
+            [float(self.workload_mix.get(t, 0.0)) for t in type_order],
+            dtype=torch.float32,
+            device=pred.device,
+        )
         if float(mix.sum().item()) <= 0.0:
             mix = torch.ones_like(mix) / mix.numel()
         else:

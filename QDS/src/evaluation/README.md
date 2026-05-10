@@ -12,7 +12,7 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Methods
 
-- `MLQDSMethod` uses the trained model, the persisted scaler, and the eval workload to produce workload-weighted per-point scores. Query-type heads are rank-normalized within each trajectory before workload mixing so one uncalibrated head cannot dominate the score scale.
+- `MLQDSMethod` uses the trained model, the persisted scaler, and the eval workload to produce workload-weighted per-point scores. Query-type heads are rank-normalized within each trajectory before workload mixing so one uncalibrated head cannot dominate the score scale. Model inference uses CUDA by default when available, while retained masks stay on the original point tensor device for evaluation.
 - `UniformTemporalMethod` is the legacy central-window temporal baseline and is kept only for compatibility tests.
 - `NewUniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
 - `DouglasPeuckerMethod` is a true recursive Douglas-Peucker baseline that keeps endpoints and repeatedly splits the current highest-error segment until the compression budget is filled.

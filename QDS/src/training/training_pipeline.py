@@ -84,6 +84,22 @@ def save_training_summary(path: str, outputs: TrainingOutputs) -> None:
         json.dump(outputs.history, f, indent=2)
 
 
+def _model_device(model: torch.nn.Module) -> torch.device:
+    """Return the current device of a model with parameters or buffers."""
+    for tensor in model.parameters():
+        return tensor.device
+    for tensor in model.buffers():
+        return tensor.device
+    return torch.device("cpu")
+
+
+def _resolve_predict_device(model: torch.nn.Module, device: torch.device | str | None) -> torch.device:
+    """Resolve the inference device for windowed prediction."""
+    if device is not None:
+        return torch.device(device)
+    return _model_device(model)
+
+
 def windowed_predict(
     model: TrajectoryQDSModel,
     norm_points: torch.Tensor,
@@ -93,35 +109,60 @@ def windowed_predict(
     window_length: int = 512,
     window_stride: int = 256,
     batch_size: int = 16,
+    device: torch.device | str | None = None,
 ) -> torch.Tensor:
     """Run per-window inference and average overlapping predictions. See src/training/README.md for details.
 
     Using per-window inference ensures the transformer never attends across
     trajectory boundaries, matching the behaviour seen during training.
+    When ``device`` is provided, the model and batched windows are evaluated on
+    that device and predictions are moved back to ``norm_points.device``.
     """
+    output_device = norm_points.device
+    predict_device = _resolve_predict_device(model, device)
+    original_device = _model_device(model)
+    original_training = model.training
+    if original_device != predict_device:
+        model = model.to(predict_device)
+
     windows = build_trajectory_windows(norm_points, boundaries, window_length, window_stride)
     windows = batch_windows(windows, max(1, int(batch_size)))
     n = norm_points.shape[0]
-    all_pred = norm_points.new_zeros((n, NUM_QUERY_TYPES))
-    pred_count = norm_points.new_zeros((n,))
+    all_pred = torch.zeros((n, NUM_QUERY_TYPES), dtype=norm_points.dtype, device=predict_device)
+    pred_count = torch.zeros((n,), dtype=norm_points.dtype, device=predict_device)
+    queries_dev = queries.to(predict_device)
+    query_type_ids_dev = query_type_ids.to(predict_device)
 
-    model.eval()
-    with torch.no_grad():
-        for w in windows:
-            wp = model(
-                points=w.points,
-                queries=queries,
-                query_type_ids=query_type_ids,
-                padding_mask=w.padding_mask,
-            )
-            for batch_idx in range(wp.shape[0]):
-                widx = w.global_indices[batch_idx]
-                valid = widx >= 0
-                all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx][valid]
-                pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
+    try:
+        model.eval()
+        with torch.no_grad():
+            for w in windows:
+                points_dev = w.points.to(predict_device)
+                padding_dev = w.padding_mask.to(predict_device)
+                indices_dev = w.global_indices.to(predict_device)
+                wp = model(
+                    points=points_dev,
+                    queries=queries_dev,
+                    query_type_ids=query_type_ids_dev,
+                    padding_mask=padding_dev,
+                )
+                for batch_idx in range(wp.shape[0]):
+                    widx = indices_dev[batch_idx]
+                    valid = widx >= 0
+                    all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx][valid]
+                    pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
 
-    pred_count = pred_count.clamp(min=1.0)
-    return all_pred / pred_count.unsqueeze(1)
+        pred_count = pred_count.clamp(min=1.0)
+        return (all_pred / pred_count.unsqueeze(1)).to(output_device)
+    finally:
+        if original_device != predict_device:
+            model.to(original_device)
+        model.train(original_training)
+
+
+def default_inference_device() -> torch.device:
+    """Return the default device for saved-model inference."""
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def forward_predict(
@@ -132,6 +173,7 @@ def forward_predict(
     boundaries: list[tuple[int, int]] | None = None,
     window_length: int = 512,
     window_stride: int = 256,
+    device: torch.device | str | None = None,
 ) -> torch.Tensor:
     """Run deterministic predictions with persisted scaler and model. See src/training/README.md for details."""
     p, q = artifacts.scaler.transform(points[:, : artifacts.model.point_dim], queries)
@@ -145,4 +187,5 @@ def forward_predict(
         query_type_ids=query_type_ids,
         window_length=window_length,
         window_stride=window_stride,
+        device=device,
     )

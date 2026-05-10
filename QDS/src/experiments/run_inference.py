@@ -159,6 +159,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional cap on trajectories loaded (useful for quick smoke tests on a laptop).",
     )
+    p.add_argument(
+        "--inference_device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Device for MLQDS model inference. 'auto' uses CUDA when available.",
+    )
     return p
 
 
@@ -300,6 +307,7 @@ def main() -> None:
             workload_mix=eval_mix,
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
+            inference_device=None if args.inference_device == "auto" else args.inference_device,
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),

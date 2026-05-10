@@ -70,6 +70,9 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--seed`
 - `--results_dir`
 
+`run_inference.py` additionally accepts `--inference_device {auto,cpu,cuda}`;
+`auto` uses CUDA for MLQDS model inference when available.
+
 If `--train_csv_path` and `--eval_csv_path` are supplied together, the training CSV is used only for training and the evaluation CSV is used only for evaluation/simplified-output writing. If `--csv_path` is supplied instead, trajectories are split at trajectory level as before. If all CSV arguments are omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
 
 CSV loading now segments each MMSI by temporal continuity before training. The default `--max_time_gap_seconds 3600` starts a new segment when consecutive AIS rows for one MMSI are more than one hour apart. Use `--max_time_gap_seconds 0` to disable gap-based segmentation for compatibility checks. CSV runs write loader audit stats into `example_run.json` under `data_audit`.

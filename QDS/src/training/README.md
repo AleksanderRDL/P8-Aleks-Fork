@@ -41,6 +41,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - `f1_diagnostic_every` can record held-out query-F1 diagnostics while still selecting by loss. `TrainingOutputs.best_epoch`, `best_loss`, and `best_f1` record the selected checkpoint metadata.
 - The loop tracks loss, prediction spread, quantiles, Kendall tau-style diagnostics, and optional validation query F1 in `TrainingOutputs.history`. Diagnostics run every `diagnostic_every` epochs, which defaults to every epoch so each epoch can be considered for checkpoint restoration.
 - The current implementation uses trajectory-local windows with `window_length=512` and `window_stride=256` by default.
+- `windowed_predict` and `forward_predict` accept an optional inference device. When CUDA is requested, model windows and query tensors run on CUDA and predictions are moved back to the original point tensor device for downstream metrics.
 
 ## Persistence
 
