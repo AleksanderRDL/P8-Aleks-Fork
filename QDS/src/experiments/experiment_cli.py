@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 
+from src.experiments.torch_runtime import FLOAT32_MATMUL_PRECISION_CHOICES
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build experiment CLI parser. See src/experiments/README.md for details."""
@@ -230,6 +232,19 @@ def build_parser() -> argparse.ArgumentParser:
         default="temporal",
         choices=["none", "temporal"],
         help="Use labels directly, or train only on points not already kept by the temporal base.",
+    )
+    parser.add_argument(
+        "--float32_matmul_precision",
+        type=str,
+        default="highest",
+        choices=FLOAT32_MATMUL_PRECISION_CHOICES,
+        help="Torch float32 matmul precision. Use 'high' with --allow_tf32 for TF32 benchmarking.",
+    )
+    parser.add_argument(
+        "--allow_tf32",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow TF32 for CUDA float32 matmul. Defaults off for baseline comparability.",
     )
     parser.add_argument(
         "--save_model",

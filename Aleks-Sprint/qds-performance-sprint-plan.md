@@ -613,6 +613,31 @@ Acceptance check:
 
 - Benchmark FP32 default vs TF32-enabled with same seed and dataset.
 
+Completion note, 2026-05-10:
+
+- Added shared torch runtime precision helper in
+  `QDS/src/experiments/torch_runtime.py`.
+- Added config and CLI controls:
+  `--float32_matmul_precision {highest,high,medium}` and
+  `--allow_tf32` / `--no-allow_tf32`.
+- Defaults preserve the previous FP32 baseline (`highest`, TF32 off).
+- `run_ais_experiment` applies settings before training and records them in
+  `example_run.json`; saved checkpoints persist the desired settings through
+  `ModelConfig`.
+- `run_inference` can override settings or reuse checkpoint settings by
+  default, and records active runtime precision in `inference_run.json`.
+- `benchmark_runtime` applies the same settings in the wrapper, forwards them
+  to child train/inference commands, and records the effective torch runtime.
+- Added tests for runtime application and config round-tripping, including
+  legacy config defaults.
+- Verified:
+  `../.venv/bin/python -m pytest tests/test_torch_runtime_controls.py tests/test_scaler_persisted.py`.
+- Acceptance smoke:
+  `benchmark_runtime --mode train --profile small --seed 125` was run once
+  with defaults and once with `--float32_matmul_precision high --allow_tf32`.
+  Both artifacts recorded the requested settings and identical small-smoke
+  aggregate F1 values for matched methods.
+
 ### 11. Sweep Training Batch Size
 
 Task:

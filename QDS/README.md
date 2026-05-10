@@ -97,6 +97,14 @@ cd QDS
   --profile small \
   --results_dir artifacts/benchmarks/runtime_small
 
+# Same profile with TF32-enabled matmul for paired speed/F1 checks.
+../.venv/bin/python -m src.experiments.benchmark_runtime \
+  --mode train \
+  --profile small \
+  --results_dir artifacts/benchmarks/runtime_small_tf32 \
+  --float32_matmul_precision high \
+  --allow_tf32
+
 # Saved-checkpoint inference benchmark on a cleaned CSV.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode inference \
@@ -111,6 +119,11 @@ Benchmark artifacts are written under the selected `--results_dir`, including
 Torch, CUDA runtime, Triton, TF32/matmul settings, AMP intent, train batch size
 from the run config, phase timings, epoch timings, final F1 metrics, full child
 commands, seed, git commit, and dirty status.
+
+Training and inference CLIs expose the same runtime precision knobs:
+`--float32_matmul_precision {highest,high,medium}` and
+`--allow_tf32` / `--no-allow_tf32`. Defaults preserve the FP32 baseline
+(`highest`, TF32 off); use `high` plus `--allow_tf32` for RTX TF32 sweeps.
 
 While a training run is active, measure live GPU utilization from another shell:
 

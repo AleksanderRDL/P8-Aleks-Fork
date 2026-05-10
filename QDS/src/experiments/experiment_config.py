@@ -119,6 +119,8 @@ class ModelConfig:
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.05
     residual_label_mode: str = "temporal"
+    float32_matmul_precision: str = "highest"
+    allow_tf32: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -292,6 +294,8 @@ def build_experiment_config(
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
     residual_label_mode: str = "temporal",
+    float32_matmul_precision: str = "highest",
+    allow_tf32: bool = False,
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -350,6 +354,8 @@ def build_experiment_config(
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             residual_label_mode=residual_label_mode,
+            float32_matmul_precision=float32_matmul_precision,
+            allow_tf32=allow_tf32,
         ),
     )
 

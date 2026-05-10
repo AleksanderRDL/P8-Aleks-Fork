@@ -64,6 +64,8 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--mlqds_temporal_fraction`
 - `--mlqds_diversity_bonus`
 - `--residual_label_mode {none,temporal}`
+- `--float32_matmul_precision {highest,high,medium}`
+- `--allow_tf32` / `--no-allow_tf32`
 - `--save_model`
 - `--save_queries_dir`
 - `--save_simplified_dir`
@@ -71,7 +73,9 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--results_dir`
 
 `run_inference.py` additionally accepts `--inference_device {auto,cpu,cuda}`;
-`auto` uses CUDA for MLQDS model inference when available.
+`auto` uses CUDA for MLQDS model inference when available. It also accepts
+the same matmul precision and TF32 flags; by default it reuses checkpoint
+precision settings when present.
 
 If `--train_csv_path` and `--eval_csv_path` are supplied together, the training CSV is used only for training and the evaluation CSV is used only for evaluation/simplified-output writing. If `--csv_path` is supplied instead, trajectories are split at trajectory level as before. If all CSV arguments are omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
 
@@ -85,7 +89,7 @@ forces a rebuild when you want to verify the source parser path.
 
 - `DataConfig` - CSV paths, synthetic data size, and legacy train/validation split fractions.
 - `QueryConfig` - workload size, optional target point coverage, workload label, train/eval workload mixes, and `similarity_top_k`.
-- `ModelConfig` - embedding sizes, transformer depth, chunk size, dropout, compression ratio, ranking-loss hyperparameters, and checkpoint-selection diagnostics.
+- `ModelConfig` - embedding sizes, transformer depth, chunk size, dropout, compression ratio, ranking-loss hyperparameters, checkpoint-selection diagnostics, and torch precision controls.
 - `BaselineConfig` - baseline toggles such as `include_oracle`.
 - `VisualizationConfig` - current hook for optional plotting.
 - `TypedQueryWorkload` - padded query features, original typed query dicts, and query type IDs.
@@ -99,8 +103,8 @@ forces a rebuild when you want to verify the source parser path.
 3. Train the query-aware model and restore the epoch with the selected checkpoint metric. The default is training loss; `checkpoint_selection_metric=f1` uses exact held-out query F1 on a validation workload. `checkpoint_selection_metric=uniform_gap` also scores the fair `uniform` baseline on the validation workload and penalizes checkpoints that hide weak range/kNN/similarity scores behind one strong type. `checkpoint_smoothing_window` can select by a rolling mean of diagnostic scores instead of a single noisy epoch.
 4. Evaluate MLQDS and baseline methods on the test set. Phase 3 benchmark runs should keep `uniform`, Douglas-Peucker, and label Oracle in the matched results.
 5. Reuse one evaluation query cache across matched methods so full-data query answers and support masks are not recomputed for every baseline.
-6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
-6. Optionally write eval queries as GeoJSON through `--save_queries_dir`, and simplified trajectory CSVs through `--save_simplified_dir`.
+6. Write `example_run.json`, `matched_table.txt`, `shift_table.txt`, `geometric_distortion_table.txt`, `range_workload_diagnostics.json`, and `range_query_diagnostics.jsonl` under `results_dir` with aggregate/per-type F1 fields, retained-point spacing metrics such as `AvgPtGap`, length preservation, torch runtime precision settings, plus `best_epoch`, `best_loss`, and `best_f1` training metadata.
+7. Optionally write eval queries as GeoJSON through `--save_queries_dir`, and simplified trajectory CSVs through `--save_simplified_dir`.
 
 ## Runtime Benchmark Wrapper
 

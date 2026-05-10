@@ -24,6 +24,11 @@ from typing import Any
 
 import torch
 
+from src.experiments.torch_runtime import (
+    FLOAT32_MATMUL_PRECISION_CHOICES,
+    apply_torch_runtime_settings,
+)
+
 
 PHASE_DONE_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s+done in (?P<seconds>[0-9.]+)s")
 EPOCH_RE = re.compile(
@@ -277,6 +282,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
         "eval_mix": run_json.get("eval_mix"),
         "train_query_count": run_json.get("train_query_count"),
         "eval_query_count": run_json.get("eval_query_count"),
+        "torch_runtime": run_json.get("torch_runtime"),
         "methods": {},
     }
     for name, payload in matched.items():
@@ -374,6 +380,15 @@ def _split_extra_args(raw: str | None) -> list[str]:
     return shlex.split(raw) if raw else []
 
 
+def _runtime_child_args(float32_matmul_precision: str, allow_tf32: bool) -> list[str]:
+    """Return precision args forwarded to benchmark child entrypoints."""
+    return [
+        "--float32_matmul_precision",
+        str(float32_matmul_precision),
+        "--allow_tf32" if allow_tf32 else "--no-allow_tf32",
+    ]
+
+
 def _write_text(path: Path, text: str) -> None:
     """Write text, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,6 +476,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Recorded AMP intent. Autocast is not enabled by this wrapper yet.",
     )
     parser.add_argument(
+        "--float32_matmul_precision",
+        choices=FLOAT32_MATMUL_PRECISION_CHOICES,
+        default="highest",
+        help="Torch float32 matmul precision. Use 'high' with --allow_tf32 for TF32 benchmarking.",
+    )
+    parser.add_argument(
+        "--allow_tf32",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow TF32 for CUDA float32 matmul in the wrapper and child runs.",
+    )
+    parser.add_argument(
         "--artifact_name",
         type=str,
         default="benchmark_runtime.json",
@@ -481,6 +508,12 @@ def main() -> None:
     if args.mode == "inference" and not args.checkpoint:
         raise SystemExit("--checkpoint is required for --mode inference.")
 
+    runtime_settings = apply_torch_runtime_settings(
+        float32_matmul_precision=args.float32_matmul_precision,
+        allow_tf32=args.allow_tf32,
+    )
+    runtime_child_args = _runtime_child_args(args.float32_matmul_precision, bool(args.allow_tf32))
+
     wrapper_command = [sys.executable, "-m", "src.experiments.benchmark_runtime", *sys.argv[1:]]
     artifact: dict[str, Any] = {
         "schema_version": 1,
@@ -489,6 +522,7 @@ def main() -> None:
         "profile": args.profile,
         "seed": int(args.seed),
         "environment": _environment_metadata(args.amp_mode),
+        "torch_runtime": runtime_settings,
         "steps": [],
     }
 
@@ -500,6 +534,7 @@ def main() -> None:
             "-m",
             "src.experiments.run_ais_experiment",
             *_profile_train_args(args.profile, int(args.seed), train_results, checkpoint),
+            *runtime_child_args,
             *_split_extra_args(args.train_extra_args),
         ]
         step = _run_child_step("train", train_command, train_results, "example_run.json")
@@ -521,6 +556,7 @@ def main() -> None:
             str(args.seed),
             "--results_dir",
             str(inference_results),
+            *runtime_child_args,
             *_split_extra_args(args.inference_extra_args),
         ]
         step = _run_child_step("inference", inference_command, inference_results, "inference_run.json")

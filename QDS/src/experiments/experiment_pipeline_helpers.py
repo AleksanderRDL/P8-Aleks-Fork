@@ -46,6 +46,7 @@ from src.queries.workload_diagnostics import compute_range_label_diagnostics, co
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
+from src.experiments.torch_runtime import torch_runtime_snapshot
 
 
 @dataclass
@@ -611,6 +612,7 @@ def run_experiment_pipeline(
         "best_f1": trained.best_f1,
         "data_audit": data_audit,
         "workload_diagnostics": range_diagnostics_summary,
+        "torch_runtime": torch_runtime_snapshot(),
     }
 
     with _phase("write-results"):

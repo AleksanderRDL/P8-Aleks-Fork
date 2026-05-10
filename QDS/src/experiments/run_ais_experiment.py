@@ -14,6 +14,7 @@ from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.experiment_cli import build_parser
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes, run_experiment_pipeline
+from src.experiments.torch_runtime import apply_torch_runtime_settings
 
 
 def _normalized_gap_arg(value: float | None) -> float | None:
@@ -165,6 +166,12 @@ def main() -> None:
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         residual_label_mode=args.residual_label_mode,
+        float32_matmul_precision=args.float32_matmul_precision,
+        allow_tf32=args.allow_tf32,
+    )
+    runtime_settings = apply_torch_runtime_settings(
+        float32_matmul_precision=config.model.float32_matmul_precision,
+        allow_tf32=config.model.allow_tf32,
     )
 
     coverage_msg = (
@@ -197,7 +204,9 @@ def main() -> None:
         f"max_points_per_segment={args.max_points_per_segment}  "
         f"max_time_gap_seconds={_normalized_gap_arg(args.max_time_gap_seconds)}  "
         f"max_segments={args.max_segments}  cache_dir={args.cache_dir}  "
-        f"refresh_cache={args.refresh_cache}",
+        f"refresh_cache={args.refresh_cache}  "
+        f"float32_matmul_precision={runtime_settings['float32_matmul_precision']}  "
+        f"allow_tf32={runtime_settings['tf32_matmul_allowed']}",
         flush=True,
     )
 

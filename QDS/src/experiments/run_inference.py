@@ -48,6 +48,11 @@ from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import load_checkpoint
+from src.experiments.torch_runtime import (
+    FLOAT32_MATMUL_PRECISION_CHOICES,
+    apply_torch_runtime_settings,
+    torch_runtime_snapshot,
+)
 
 
 def _normalized_gap_arg(value: float | None) -> float | None:
@@ -167,6 +172,19 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["auto", "cpu", "cuda"],
         help="Device for MLQDS model inference. 'auto' uses CUDA when available.",
     )
+    p.add_argument(
+        "--float32_matmul_precision",
+        type=str,
+        default=None,
+        choices=FLOAT32_MATMUL_PRECISION_CHOICES,
+        help="Torch float32 matmul precision. Default: use checkpoint config; else highest.",
+    )
+    p.add_argument(
+        "--allow_tf32",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow TF32 for CUDA float32 matmul. Default: use checkpoint config; else off.",
+    )
     return p
 
 
@@ -201,10 +219,22 @@ def main() -> None:
     saved_cfg = artifacts.config
     saved_train_mix = artifacts.train_workload_mix
     saved_eval_mix = artifacts.eval_workload_mix
+    precision = args.float32_matmul_precision or str(getattr(saved_cfg.model, "float32_matmul_precision", "highest"))
+    allow_tf32 = (
+        bool(args.allow_tf32)
+        if args.allow_tf32 is not None
+        else bool(getattr(saved_cfg.model, "allow_tf32", False))
+    )
+    runtime_settings = apply_torch_runtime_settings(
+        float32_matmul_precision=precision,
+        allow_tf32=allow_tf32,
+    )
     print(
         f"  model_type={saved_cfg.model.model_type}  "
         f"epochs_trained={artifacts.epochs_trained}  "
-        f"train_mix={saved_train_mix}  eval_mix={saved_eval_mix}",
+        f"train_mix={saved_train_mix}  eval_mix={saved_eval_mix}  "
+        f"float32_matmul_precision={runtime_settings['float32_matmul_precision']}  "
+        f"allow_tf32={runtime_settings['tf32_matmul_allowed']}",
         flush=True,
     )
 
@@ -362,6 +392,7 @@ def main() -> None:
             **data_audit.to_dict(),
             **({"cache": cache_payload} if cache_payload is not None else {}),
         },
+        "torch_runtime": torch_runtime_snapshot(),
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,

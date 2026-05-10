@@ -43,6 +43,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - The loop tracks loss, prediction spread, quantiles, Kendall tau-style diagnostics, and optional validation query F1 in `TrainingOutputs.history`. Diagnostics run every `diagnostic_every` epochs, which defaults to every epoch so each epoch can be considered for checkpoint restoration.
 - The current implementation uses trajectory-local windows with `window_length=512` and `window_stride=256` by default.
 - `windowed_predict` and `forward_predict` accept an optional inference device. When CUDA is requested, model windows and query tensors run on CUDA and predictions are moved back to the original point tensor device for downstream metrics.
+- `ModelConfig.float32_matmul_precision` and `allow_tf32` control process-local torch matmul precision before training starts. The default is `highest` with TF32 disabled; use `high` plus TF32 for RTX throughput benchmarks and compare final retained-set F1, not only runtime.
 
 ## Persistence
 
