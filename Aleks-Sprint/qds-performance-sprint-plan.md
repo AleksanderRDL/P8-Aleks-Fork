@@ -851,6 +851,12 @@ make range-benchmark-tmux
   memory, temperature, power, clocks, visible CUDA processes, and recent kernel
   OOM/GPU/reset/thermal markers so crashes can be checked against recent
   resource or GPU-state changes.
+- Added local artifact hygiene helpers before starting repeated runs:
+  `QDS/artifacts/README.md` documents the artifact layout and cleanup rules,
+  `make benchmark-preflight` checks tmux/Python/data/GPU/artifact prerequisites,
+  `make list-runs` prints the active family `runs_index.csv`, and
+  `make clean-smoke-artifacts` dry-runs cleanup of known smoke/test outputs
+  unless `CONFIRM=1` is set.
 
 ## Phase 4: Behavior-Sensitive Training Refactors
 

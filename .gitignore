@@ -15,7 +15,9 @@ local_hadoop/
 local_java/
 spark_temp/
 artifacts/
-QDS/artifacts/
+!QDS/artifacts/
+QDS/artifacts/*
+!QDS/artifacts/README.md
 
 # ---------------------------------
 # Python: bytecode and extensions

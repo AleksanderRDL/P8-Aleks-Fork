@@ -202,6 +202,7 @@ interactive shell:
 
 ```bash
 cd QDS
+make benchmark-preflight
 make range-benchmark-tmux
 ```
 
@@ -243,6 +244,29 @@ Set `BENCHMARK_RUN_ID=<name>` when you want a stable run directory name:
 ```bash
 BENCHMARK_RUN_ID=range_medium_2day_cap3000_a make range-benchmark-tmux
 ```
+
+Use stable run IDs for comparable attempts. Include the workload, profile, data
+span, point cap, and a short iteration suffix, for example
+`range_medium_2day_cap3000_a`. Timestamped defaults are fine for exploratory
+runs.
+
+List the current benchmark family with:
+
+```bash
+make list-runs
+```
+
+Use `BENCHMARK_FAMILY=<path>` to inspect another family. Local smoke artifacts
+can be reviewed and removed with:
+
+```bash
+make clean-smoke-artifacts
+make clean-smoke-artifacts CONFIRM=1
+```
+
+The first command is a dry run. The second deletes only known smoke/test
+artifact directories. Artifact layout and cleanup conventions are documented in
+[`artifacts/README.md`](artifacts/README.md).
 
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and

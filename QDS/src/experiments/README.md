@@ -196,6 +196,7 @@ For long local runs, prefer the tmux launcher:
 
 ```bash
 cd QDS
+make benchmark-preflight
 scripts/run_range_benchmark_tmux.sh
 ```
 
@@ -205,6 +206,19 @@ It creates one pane for the matrix and one pane for
 top RSS processes, GPU utilization, GPU memory, temperature, power draw, clocks,
 visible CUDA processes, and recent kernel markers for OOM/GPU/reset/thermal
 events.
+
+Operational helpers:
+
+```bash
+make list-runs
+make clean-smoke-artifacts
+make clean-smoke-artifacts CONFIRM=1
+```
+
+`make list-runs` reads the active family `runs_index.csv`. The cleanup target
+dry-runs by default and deletes only known smoke/test artifact directories when
+`CONFIRM=1` is set. The artifact policy is tracked in
+`QDS/artifacts/README.md`.
 
 ## Workload Mixes
 

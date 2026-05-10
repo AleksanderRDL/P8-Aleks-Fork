@@ -9,8 +9,10 @@ CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
 CLEANED_CSV ?=
 BENCHMARK_SESSION ?= qds-range-benchmark
 BENCHMARK_RUN_ID ?=
+BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_matrix_min_realistic
+CONFIRM ?=
 
-.PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv range-benchmark-tmux
+.PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv benchmark-preflight list-runs clean-smoke-artifacts range-benchmark-tmux
 
 help:
 	@echo "Targets:"
@@ -21,6 +23,9 @@ help:
 	@echo "  test        Run the QDS pytest suite"
 	@echo "  smoke       Run a tiny synthetic training/evaluation experiment"
 	@echo "  smoke-csv   Run a tiny cleaned-CSV training/evaluation experiment"
+	@echo "  benchmark-preflight  Check tmux/GPU/data/artifact prerequisites"
+	@echo "  list-runs   List benchmark runs from BENCHMARK_FAMILY"
+	@echo "  clean-smoke-artifacts  Dry-run smoke artifact cleanup; set CONFIRM=1 to delete"
 	@echo "  range-benchmark-tmux  Launch the two-day range benchmark in tmux with monitoring"
 	@echo ""
 	@echo "Variables:"
@@ -29,6 +34,7 @@ help:
 	@echo "  CLEANED_CSV=$(CLEANED_CSV)"
 	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
 	@echo "  BENCHMARK_RUN_ID=$(BENCHMARK_RUN_ID)"
+	@echo "  BENCHMARK_FAMILY=$(BENCHMARK_FAMILY)"
 
 check-env:
 	$(PYTHON) -V
@@ -70,5 +76,14 @@ smoke-csv:
 		--compression_ratio 0.5 \
 		--results_dir "$(CSV_RESULTS_DIR)"
 
+benchmark-preflight:
+	SESSION="$(BENCHMARK_SESSION)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" scripts/benchmark_preflight.sh
+
+list-runs:
+	$(PYTHON) scripts/list_benchmark_runs.py --family "$(BENCHMARK_FAMILY)"
+
+clean-smoke-artifacts:
+	scripts/clean_smoke_artifacts.sh $(if $(CONFIRM),--yes,)
+
 range-benchmark-tmux:
-	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" PYTHON="$(PYTHON)" scripts/run_range_benchmark_tmux.sh
+	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" scripts/run_range_benchmark_tmux.sh
