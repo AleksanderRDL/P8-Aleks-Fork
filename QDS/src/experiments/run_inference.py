@@ -176,6 +176,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Device for MLQDS model inference. 'auto' uses CUDA when available.",
     )
     p.add_argument(
+        "--inference_batch_size",
+        type=int,
+        default=None,
+        help="Number of trajectory windows per MLQDS inference batch. Default: use checkpoint config; else 16.",
+    )
+    p.add_argument(
         "--float32_matmul_precision",
         type=str,
         default=None,
@@ -235,6 +241,14 @@ def main() -> None:
         else bool(getattr(saved_cfg.model, "allow_tf32", False))
     )
     amp_mode = normalize_amp_mode(args.amp_mode or str(getattr(saved_cfg.model, "amp_mode", "off")))
+    inference_batch_size = max(
+        1,
+        int(
+            args.inference_batch_size
+            if args.inference_batch_size is not None
+            else getattr(saved_cfg.model, "inference_batch_size", 16)
+        ),
+    )
     runtime_settings = apply_torch_runtime_settings(
         float32_matmul_precision=precision,
         allow_tf32=allow_tf32,
@@ -245,7 +259,8 @@ def main() -> None:
         f"train_mix={saved_train_mix}  eval_mix={saved_eval_mix}  "
         f"float32_matmul_precision={runtime_settings['float32_matmul_precision']}  "
         f"allow_tf32={runtime_settings['tf32_matmul_allowed']}  "
-        f"amp_mode={amp_mode}",
+        f"amp_mode={amp_mode}  "
+        f"inference_batch_size={inference_batch_size}",
         flush=True,
     )
 
@@ -350,6 +365,7 @@ def main() -> None:
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
             inference_device=None if args.inference_device == "auto" else args.inference_device,
+            inference_batch_size=inference_batch_size,
             amp_mode=amp_mode,
         ),
         NewUniformTemporalMethod(),
@@ -397,6 +413,7 @@ def main() -> None:
         "n_points": int(points.shape[0]),
         "eval_mix": eval_mix,
         "compression_ratio": compression_ratio,
+        "inference_batch_size": inference_batch_size,
         "query_coverage": workload.coverage_fraction,
         "covered_points": workload.covered_points,
         "total_points": workload.total_points,

@@ -38,6 +38,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         float32_matmul_precision="high",
         allow_tf32=True,
         train_batch_size=64,
+        inference_batch_size=32,
         amp_mode="bf16",
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
@@ -45,6 +46,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.float32_matmul_precision == "high"
     assert restored.model.allow_tf32 is True
     assert restored.model.train_batch_size == 64
+    assert restored.model.inference_batch_size == 32
     assert restored.model.amp_mode == "bf16"
 
 
@@ -52,12 +54,14 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     payload = build_experiment_config().to_dict()
     payload["model"].pop("float32_matmul_precision")
     payload["model"].pop("allow_tf32")
+    payload["model"].pop("inference_batch_size")
     payload["model"].pop("amp_mode")
 
     restored = ExperimentConfig.from_dict(payload)
 
     assert restored.model.float32_matmul_precision == "highest"
     assert restored.model.allow_tf32 is False
+    assert restored.model.inference_batch_size == 16
     assert restored.model.amp_mode == "off"
 
 

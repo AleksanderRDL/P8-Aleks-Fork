@@ -369,7 +369,8 @@ def _predict_workload_scores(
         )
         for window in windows
     ]
-    windows = batch_windows(windows, max(1, int(getattr(model_config, "train_batch_size", 1))))
+    inference_batch_size = max(1, int(getattr(model_config, "inference_batch_size", 16)))
+    windows = batch_windows(windows, inference_batch_size)
     all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
     pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))

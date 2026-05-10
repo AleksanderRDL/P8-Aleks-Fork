@@ -762,6 +762,32 @@ Acceptance check:
 - Larger inference batches should produce identical predictions within
   tolerance.
 
+Completion note, 2026-05-10:
+
+- Added `inference_batch_size` to `ModelConfig`, `build_experiment_config`,
+  the training CLI, saved-checkpoint inference, and benchmark summary metadata.
+  The default is `16`, matching the previous `windowed_predict` default.
+- `MLQDSMethod`, `windowed_predict`, and `forward_predict` now expose the
+  inference batch size through the model-evaluation path.
+- Validation query-F1 diagnostics now use `model_config.inference_batch_size`
+  instead of `train_batch_size`, so optimizer-batch and inference-batch tuning
+  are separate.
+- Matched evaluation, shifted-workload evaluation, simplified CSV fallback
+  evaluation, and saved-checkpoint inference all pass the configured inference
+  batch size into MLQDS prediction.
+- Documented `--inference_batch_size` in the QDS, experiments, and training
+  READMEs.
+- Verified:
+  `../.venv/bin/python -m py_compile src/experiments/experiment_config.py src/experiments/experiment_cli.py src/experiments/run_ais_experiment.py src/experiments/run_inference.py src/experiments/experiment_pipeline_helpers.py src/experiments/benchmark_runtime.py src/evaluation/baselines.py src/training/train_model.py src/training/training_pipeline.py`
+  and
+  `../.venv/bin/python -m pytest tests/test_scaler_persisted.py tests/test_torch_runtime_controls.py`.
+- Acceptance smoke:
+  paired tiny `run_ais_experiment` runs with `--inference_batch_size 1` and
+  `--inference_batch_size 4` produced identical `best_loss`
+  (`0.13907331228256226`), identical restored `best_epoch` (`7`), and identical
+  MLQDS aggregate F1 (`0.3333333333333333`). MLQDS eval latency dropped from
+  `25.57 ms` to `18.61 ms` in this small smoke.
+
 ## Phase 4: Behavior-Sensitive Training Refactors
 
 Goal: improve the actual training loop once the safer changes are measured.

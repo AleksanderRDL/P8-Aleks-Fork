@@ -515,6 +515,7 @@ def run_experiment_pipeline(
             workload_mix=eval_mix,
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
+            inference_batch_size=config.model.inference_batch_size,
             amp_mode=config.model.amp_mode,
         ),
         NewUniformTemporalMethod(),
@@ -584,6 +585,7 @@ def run_experiment_pipeline(
                         workload_mix=train_mix,
                         temporal_fraction=config.model.mlqds_temporal_fraction,
                         diversity_bonus=config.model.mlqds_diversity_bonus,
+                        inference_batch_size=config.model.inference_batch_size,
                         amp_mode=config.model.amp_mode,
                     ),
                     points=test_points,
@@ -665,6 +667,7 @@ def run_experiment_pipeline(
                     workload_mix=eval_mix,
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
+                    inference_batch_size=config.model.inference_batch_size,
                     amp_mode=config.model.amp_mode,
                 )
                 eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)

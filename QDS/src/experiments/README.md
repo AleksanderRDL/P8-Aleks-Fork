@@ -48,6 +48,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--pointwise_loss_weight`
 - `--gradient_clip_norm`
 - `--train_batch_size`
+- `--inference_batch_size`
 - `--compression_ratio`
 - `--model_type {baseline,turn_aware}`
 - `--workload`
@@ -125,6 +126,10 @@ Use `--train_batch_sizes 16,32,64,128` with `--mode train` to run one child
 training benchmark per batch size. Each child gets its own output directory and
 checkpoint, and the top-level JSON includes `train_batch_size_sweep` rows with
 epoch-time summaries, peak CUDA memory, `best_f1`, and MLQDS aggregate F1.
+Use `--inference_batch_size` on the training or inference CLI to tune MLQDS
+window batches independently of optimizer batches. It applies to matched/shift
+evaluation, saved-checkpoint inference, and held-out validation query-F1
+diagnostics.
 Use `--amp_mode bf16` to benchmark CUDA autocast; the wrapper forwards the mode
 to child training/inference commands and records effective AMP metadata in both
 the child run JSON and the top-level benchmark artifact.

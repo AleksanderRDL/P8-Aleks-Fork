@@ -108,6 +108,7 @@ class ModelConfig:
     dirichlet_alpha: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])
     early_stopping_patience: int = 0
     train_batch_size: int = 16
+    inference_batch_size: int = 16
     diagnostic_every: int = 1
     diagnostic_window_fraction: float = 0.2
     checkpoint_selection_metric: str = "loss"
@@ -284,6 +285,7 @@ def build_experiment_config(
     seed: int = 42,
     early_stopping_patience: int = 0,
     train_batch_size: int = 16,
+    inference_batch_size: int = 16,
     diagnostic_every: int = 1,
     diagnostic_window_fraction: float = 0.2,
     checkpoint_selection_metric: str = "loss",
@@ -347,6 +349,7 @@ def build_experiment_config(
             model_type=model_type,
             early_stopping_patience=early_stopping_patience,
             train_batch_size=train_batch_size,
+            inference_batch_size=inference_batch_size,
             diagnostic_every=diagnostic_every,
             diagnostic_window_fraction=diagnostic_window_fraction,
             checkpoint_selection_metric=checkpoint_selection_metric,

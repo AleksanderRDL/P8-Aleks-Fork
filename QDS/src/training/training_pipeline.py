@@ -180,6 +180,7 @@ def forward_predict(
     window_stride: int = 256,
     device: torch.device | str | None = None,
     amp_mode: str = "off",
+    batch_size: int = 16,
 ) -> torch.Tensor:
     """Run deterministic predictions with persisted scaler and model. See src/training/README.md for details."""
     p, q = artifacts.scaler.transform(points[:, : artifacts.model.point_dim], queries)
@@ -193,6 +194,7 @@ def forward_predict(
         query_type_ids=query_type_ids,
         window_length=window_length,
         window_stride=window_stride,
+        batch_size=batch_size,
         device=device,
         amp_mode=amp_mode,
     )

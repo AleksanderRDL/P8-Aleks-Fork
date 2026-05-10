@@ -125,7 +125,7 @@ cd QDS
   --checkpoint artifacts/benchmarks/runtime_small/benchmark_model.pt \
   --inference_csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
   --results_dir artifacts/benchmarks/inference_small \
-  --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16 --inference_device auto"
+  --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16 --inference_device auto --inference_batch_size 32"
 ```
 
 Benchmark artifacts are written under the selected `--results_dir`, including
@@ -140,9 +140,12 @@ final F1 fields per batch size.
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and
 `--allow_tf32` / `--no-allow_tf32`, plus `--amp_mode {off,bf16,fp16}`.
-Defaults preserve the FP32 baseline (`highest`, TF32 off, AMP off). Use `high`
-plus `--allow_tf32` for RTX TF32 sweeps, and `--amp_mode bf16` for CUDA
-autocast sweeps after checking for NaNs, collapse warnings, and final F1 drift.
+`--inference_batch_size` tunes MLQDS window batches separately from
+`--train_batch_size` for matched evaluation, saved-checkpoint inference, and
+validation query-F1 diagnostics. Defaults preserve the FP32 baseline
+(`highest`, TF32 off, AMP off). Use `high` plus `--allow_tf32` for RTX TF32
+sweeps, and `--amp_mode bf16` for CUDA autocast sweeps after checking for NaNs,
+collapse warnings, and final F1 drift.
 
 While a training run is active, measure live GPU utilization from another shell:
 

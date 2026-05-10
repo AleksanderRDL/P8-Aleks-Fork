@@ -153,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=16,
         help="Number of trajectory windows per training optimizer step.",
     )
+    parser.add_argument(
+        "--inference_batch_size",
+        type=int,
+        default=16,
+        help="Number of trajectory windows per MLQDS inference or validation-F1 diagnostic batch.",
+    )
     parser.add_argument("--compression_ratio", type=float, default=0.2)
     parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
     parser.add_argument("--workload", type=str, default="mixed")

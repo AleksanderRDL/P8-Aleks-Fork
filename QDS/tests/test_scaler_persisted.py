@@ -77,6 +77,46 @@ def test_windowed_predict_batching_matches_single_window_loop() -> None:
     assert torch.allclose(pred_single, pred_batched, atol=1e-6)
 
 
+def test_forward_predict_batch_size_does_not_change_predictions() -> None:
+    """Assert persisted-artifact prediction is invariant to inference batching."""
+    torch.manual_seed(111)
+    model = TrajectoryQDSModel(point_dim=7, query_dim=12, embed_dim=16, num_heads=2, num_layers=1)
+    model.eval()
+    points = torch.randn(36, 7)
+    queries = torch.randn(6, 12)
+    q_ids = torch.tensor([0, 1, 2, 3, 0, 1], dtype=torch.long)
+    boundaries = [(0, 12), (12, 24), (24, 36)]
+    scaler = FeatureScaler.fit(points, queries)
+    art = ModelArtifacts(
+        model=model,
+        scaler=scaler,
+        config=build_experiment_config(inference_batch_size=4),
+    )
+
+    pred_single = forward_predict(
+        art,
+        points,
+        queries,
+        q_ids,
+        boundaries=boundaries,
+        window_length=8,
+        window_stride=4,
+        batch_size=1,
+    )
+    pred_batched = forward_predict(
+        art,
+        points,
+        queries,
+        q_ids,
+        boundaries=boundaries,
+        window_length=8,
+        window_stride=4,
+        batch_size=4,
+    )
+
+    assert torch.allclose(pred_single, pred_batched, atol=1e-6)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
 def test_windowed_predict_cuda_matches_cpu() -> None:
     """Assert CUDA inference keeps predictions numerically aligned with CPU output."""

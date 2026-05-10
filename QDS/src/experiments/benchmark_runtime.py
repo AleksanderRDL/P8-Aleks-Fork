@@ -302,6 +302,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
     if model_config:
         summary["batch_size"] = {
             "train_batch_size": model_config.get("train_batch_size"),
+            "inference_batch_size": model_config.get("inference_batch_size"),
             "window_length": model_config.get("window_length"),
             "window_stride": model_config.get("window_stride"),
             "query_chunk_size": model_config.get("query_chunk_size"),
