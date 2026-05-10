@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p8-ais-qds"
+version = "0.1.0"
+description = "AIS cleaning and query-driven simplification research utilities."
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = [".", "QDS"]
+include = ["ais_pipeline*", "src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["QDS/tests"]
+pythonpath = [".", "QDS"]

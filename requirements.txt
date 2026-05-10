@@ -1,3 +1,5 @@
+# Base repository dependencies for AIS cleaning, database tooling, and tests.
+# QDS-specific Torch profiles live under QDS/requirements-*.txt.
 packaging==26.2
 click==8.3.3
 cloudpickle==3.1.2

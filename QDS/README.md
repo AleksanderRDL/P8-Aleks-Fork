@@ -40,6 +40,46 @@ make smoke
 make smoke-csv
 ```
 
+## Dependency Profiles
+
+The repository now keeps dependency concerns separate:
+
+- Root/base AIS pipeline and database tooling: [`../requirements.txt`](../requirements.txt).
+- QDS shared non-Torch dependencies: [`requirements-common.txt`](requirements-common.txt).
+- QDS CPU/generic Torch profile: [`requirements-cpu.txt`](requirements-cpu.txt).
+- QDS CUDA reference profile: [`requirements-cuda-cu130.txt`](requirements-cuda-cu130.txt).
+
+[`requirements.txt`](requirements.txt) remains a compatibility alias for the
+current QDS CUDA sprint profile. The reference CUDA stack observed for this
+machine is:
+
+```text
+torch 2.11.0+cu130
+CUDA runtime 13.0
+triton 3.6.0
+```
+
+Install the intended profile explicitly when changing environments:
+
+```bash
+cd QDS
+../.venv/bin/python -m pip install -r requirements-cuda-cu130.txt
+# or, for CPU/generic environments:
+../.venv/bin/python -m pip install -r requirements-cpu.txt
+```
+
+Check the active environment before benchmarking:
+
+```bash
+cd QDS
+../.venv/bin/python -m pip check
+../.venv/bin/python -c "import torch, triton; print(torch.__version__, torch.version.cuda, triton.__version__)"
+```
+
+The current `.venv` uses Python 3.14. Keep it as the local reference unless it
+blocks CUDA package availability; if that happens, create a separate Python
+3.12 environment instead of mutating this one.
+
 The cleaned-CSV smoke target uses `--max_points_per_segment` and
 `--max_segments` so it validates the real loader without turning into a full
 research run. New sprint artifacts should be written under `artifacts/` or

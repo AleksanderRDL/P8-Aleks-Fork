@@ -21,11 +21,12 @@ Observed on 2026-05-10:
   `triton 3.6.0`.
 - The observed `.venv` uses Python 3.14, which may make some CUDA package
   availability more fragile than a more common Python version.
-- `QDS/requirements.txt` pins Torch, while the repository-root
-  `requirements.txt` does not.
+- `QDS/requirements.txt` now aliases the CUDA reference profile, while
+  separate QDS common, CPU, and CUDA requirement profiles document the intended
+  stacks.
 - `../.venv/bin/python -m pytest tests` passes from inside `QDS`.
-- Running the QDS tests from the repository root fails because `src` is not
-  importable from there.
+- `.venv/bin/python -m pytest QDS/tests` now passes from the repository root
+  through the root `pyproject.toml` pytest configuration.
 - GPU access was blocked from the audit shell, so utilization and real CUDA
   timing still need to be measured on the local GPU run.
 - TF32 matmul is currently disabled in the observed environment.
@@ -47,7 +48,7 @@ The sprint should proceed in this order:
 
 ## Plan Status
 
-Status: ready to execute.
+Status: in progress. Phase 1 tasks 1 and 2 were implemented on 2026-05-10.
 
 This plan is intended to guide implementation. Individual tasks can still be
 split into smaller tickets as evidence comes in from benchmarks.
@@ -130,6 +131,14 @@ Examples of speed/reliability work:
 - TF32/BF16 controls
 - evaluation caching
 - vectorized ranking loss
+
+### Final F1 Is The Learning North Star
+
+The desired training direction is to learn from final retained-set query
+performance directly, not to stop at proxy per-point labels. Proxy labels remain
+useful diagnostics and warm-start signals, but the eventual model objective
+should be aligned with the same post-simplification workload F1 used for final
+evaluation.
 
 ### Stop Or Shelve Rules
 
@@ -225,6 +234,13 @@ Acceptance check:
 .venv/bin/python -m pytest QDS/tests
 ```
 
+Completion note, 2026-05-10:
+
+- Added a root `pyproject.toml` with package discovery and pytest
+  `pythonpath` configuration for `QDS`.
+- Verified `.venv/bin/python -m pytest QDS/tests` from the repository root:
+  `72 passed, 1 warning`.
+
 ### 2. Split And Document Requirements Profiles
 
 Task:
@@ -255,6 +271,17 @@ cd QDS
 ../.venv/bin/python -m pip check
 ../.venv/bin/python -c "import torch, triton; print(torch.__version__, torch.version.cuda, triton.__version__)"
 ```
+
+Completion note, 2026-05-10:
+
+- Added `QDS/requirements-common.txt`, `QDS/requirements-cpu.txt`, and
+  `QDS/requirements-cuda-cu130.txt`.
+- Kept `QDS/requirements.txt` as the current CUDA sprint compatibility alias.
+- Updated `QDS/Makefile` with `QDS_REQUIREMENTS`, `install-cpu`, and
+  `install-cuda`.
+- Documented the profiles and current CUDA reference stack in `QDS/README.md`.
+- Verified `pip check` and the active stack:
+  `torch 2.11.0+cu130`, CUDA runtime `13.0`, `triton 3.6.0`.
 
 ### 3. Add A Stable Benchmark Script
 
