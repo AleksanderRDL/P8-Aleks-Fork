@@ -45,6 +45,7 @@ class MLQDSMethod:
     temporal_fraction: float = 0.75
     diversity_bonus: float = 0.05
     inference_device: str | torch.device | None = None
+    amp_mode: str = "off"
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores.
@@ -69,6 +70,7 @@ class MLQDSMethod:
             queries=q,
             query_type_ids=self.workload.type_ids,
             device=device,
+            amp_mode=self.amp_mode,
         )
 
         type_order = ["range", "knn", "similarity", "clustering"]

@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from src.experiments.experiment_config import ExperimentConfig
+from src.experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import NUM_QUERY_TYPES
@@ -110,6 +111,7 @@ def windowed_predict(
     window_stride: int = 256,
     batch_size: int = 16,
     device: torch.device | str | None = None,
+    amp_mode: str = "off",
 ) -> torch.Tensor:
     """Run per-window inference and average overlapping predictions. See src/training/README.md for details.
 
@@ -120,6 +122,7 @@ def windowed_predict(
     """
     output_device = norm_points.device
     predict_device = _resolve_predict_device(model, device)
+    amp_mode = normalize_amp_mode(amp_mode)
     original_device = _model_device(model)
     original_training = model.training
     if original_device != predict_device:
@@ -140,12 +143,14 @@ def windowed_predict(
                 points_dev = w.points.to(predict_device)
                 padding_dev = w.padding_mask.to(predict_device)
                 indices_dev = w.global_indices.to(predict_device)
-                wp = model(
-                    points=points_dev,
-                    queries=queries_dev,
-                    query_type_ids=query_type_ids_dev,
-                    padding_mask=padding_dev,
-                )
+                with torch_autocast_context(predict_device, amp_mode):
+                    wp = model(
+                        points=points_dev,
+                        queries=queries_dev,
+                        query_type_ids=query_type_ids_dev,
+                        padding_mask=padding_dev,
+                    )
+                wp = wp.to(dtype=all_pred.dtype)
                 for batch_idx in range(wp.shape[0]):
                     widx = indices_dev[batch_idx]
                     valid = widx >= 0
@@ -174,6 +179,7 @@ def forward_predict(
     window_length: int = 512,
     window_stride: int = 256,
     device: torch.device | str | None = None,
+    amp_mode: str = "off",
 ) -> torch.Tensor:
     """Run deterministic predictions with persisted scaler and model. See src/training/README.md for details."""
     p, q = artifacts.scaler.transform(points[:, : artifacts.model.point_dim], queries)
@@ -188,4 +194,5 @@ def forward_predict(
         window_length=window_length,
         window_stride=window_stride,
         device=device,
+        amp_mode=amp_mode,
     )

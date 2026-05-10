@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from src.experiments.torch_runtime import FLOAT32_MATMUL_PRECISION_CHOICES
+from src.experiments.torch_runtime import AMP_MODE_CHOICES, FLOAT32_MATMUL_PRECISION_CHOICES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -251,6 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Allow TF32 for CUDA float32 matmul. Defaults off for baseline comparability.",
+    )
+    parser.add_argument(
+        "--amp_mode",
+        choices=AMP_MODE_CHOICES,
+        default="off",
+        help="Optional CUDA autocast mode for model forward passes. Losses and diagnostics stay in FP32.",
     )
     parser.add_argument(
         "--save_model",

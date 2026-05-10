@@ -710,6 +710,37 @@ Acceptance check:
 - Compare FP32/TF32 vs BF16 speed and F1 stability.
 - Watch for NaNs, collapse warnings, or severe metric drift.
 
+Completion note, 2026-05-10:
+
+- Added `amp_mode` to `ModelConfig`, `build_experiment_config`, the training
+  CLI, saved-checkpoint inference, and the benchmark wrapper. Defaults keep
+  autocast off.
+- Added shared AMP helpers in `QDS/src/experiments/torch_runtime.py` for mode
+  validation, CUDA-only autocast context creation, and runtime metadata.
+- Training and validation-F1 diagnostics now wrap model forwards in optional
+  autocast, then cast predictions back to FP32 before ranking loss, balanced
+  BCE, diagnostic statistics, and retained-set scoring. FP16 uses CUDA
+  `GradScaler`; BF16 does not.
+- `windowed_predict`, `forward_predict`, and `MLQDSMethod` accept `amp_mode`,
+  so matched evaluation and saved-checkpoint inference use the same setting.
+- `example_run.json`, `inference_run.json`, and benchmark artifacts now record
+  effective AMP metadata alongside TF32/matmul settings.
+- Documented `--amp_mode {off,bf16,fp16}` in the QDS, experiments, and
+  training READMEs.
+- Verified:
+  `../.venv/bin/python -m py_compile src/experiments/torch_runtime.py src/experiments/run_inference.py src/experiments/benchmark_runtime.py src/training/train_model.py src/training/training_pipeline.py src/evaluation/baselines.py`
+  and
+  `../.venv/bin/python -m pytest tests/test_torch_runtime_controls.py tests/test_scaler_persisted.py`.
+- Acceptance smoke:
+  paired `benchmark_runtime --mode train --profile small --seed 127` runs with
+  TF32-enabled FP32 (`--float32_matmul_precision high --allow_tf32`) and BF16
+  (`--float32_matmul_precision high --allow_tf32 --amp_mode bf16`) both
+  completed on the RTX 5060 Ti. BF16 recorded CUDA autocast enabled, no collapse
+  warnings, lower training peak allocation (`42.7 MiB` vs `58.5 MiB`), similar
+  elapsed time (`3.39s` vs `3.31s`), and a small-smoke MLQDS aggregate F1 of
+  `0.5242` vs `0.4622`. Treat this as a stability/runtime smoke only; larger
+  workloads are still needed before judging model-quality drift.
+
 ### 13. Add Inference Batch-Size Controls
 
 Task:

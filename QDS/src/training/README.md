@@ -45,6 +45,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - `train_batch_size` controls how many trajectory windows are grouped per optimizer step; benchmark sweeps should compare epoch time, peak CUDA memory, and final retained-set F1 before changing the default.
 - `windowed_predict` and `forward_predict` accept an optional inference device. When CUDA is requested, model windows and query tensors run on CUDA and predictions are moved back to the original point tensor device for downstream metrics.
 - `ModelConfig.float32_matmul_precision` and `allow_tf32` control process-local torch matmul precision before training starts. The default is `highest` with TF32 disabled; use `high` plus TF32 for RTX throughput benchmarks and compare final retained-set F1, not only runtime.
+- `ModelConfig.amp_mode` defaults to `off` and can opt CUDA training and inference forwards into `bf16` or `fp16` autocast. Model outputs are cast back to FP32 before ranking loss, BCE, diagnostics, and retained-set scoring; FP16 training uses a CUDA `GradScaler`, while BF16 does not.
 
 ## Persistence
 

@@ -67,6 +67,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--residual_label_mode {none,temporal}`
 - `--float32_matmul_precision {highest,high,medium}`
 - `--allow_tf32` / `--no-allow_tf32`
+- `--amp_mode {off,bf16,fp16}`
 - `--save_model`
 - `--save_queries_dir`
 - `--save_simplified_dir`
@@ -75,8 +76,8 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 
 `run_inference.py` additionally accepts `--inference_device {auto,cpu,cuda}`;
 `auto` uses CUDA for MLQDS model inference when available. It also accepts
-the same matmul precision and TF32 flags; by default it reuses checkpoint
-precision settings when present.
+the same matmul precision, TF32, and AMP flags; by default it reuses checkpoint
+runtime precision settings when present.
 
 If `--train_csv_path` and `--eval_csv_path` are supplied together, the training CSV is used only for training and the evaluation CSV is used only for evaluation/simplified-output writing. If `--csv_path` is supplied instead, trajectories are split at trajectory level as before. If all CSV arguments are omitted, synthetic AIS data is generated with `n_ships`, `n_points`, and `seed`.
 
@@ -124,6 +125,9 @@ Use `--train_batch_sizes 16,32,64,128` with `--mode train` to run one child
 training benchmark per batch size. Each child gets its own output directory and
 checkpoint, and the top-level JSON includes `train_batch_size_sweep` rows with
 epoch-time summaries, peak CUDA memory, `best_f1`, and MLQDS aggregate F1.
+Use `--amp_mode bf16` to benchmark CUDA autocast; the wrapper forwards the mode
+to child training/inference commands and records effective AMP metadata in both
+the child run JSON and the top-level benchmark artifact.
 
 ## Workload Mixes
 

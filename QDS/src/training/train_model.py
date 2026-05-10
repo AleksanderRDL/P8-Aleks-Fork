@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
+from src.experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES
@@ -371,16 +372,19 @@ def _predict_workload_scores(
     windows = batch_windows(windows, max(1, int(getattr(model_config, "train_batch_size", 1))))
     all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
     pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+    amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
 
     model.eval()
     with torch.no_grad():
         for window in windows:
-            pred = model(
-                points=window.points,
-                queries=norm_queries_dev,
-                query_type_ids=type_ids_dev,
-                padding_mask=window.padding_mask,
-            )
+            with torch_autocast_context(device, amp_mode):
+                pred = model(
+                    points=window.points,
+                    queries=norm_queries_dev,
+                    query_type_ids=type_ids_dev,
+                    padding_mask=window.padding_mask,
+                )
+            pred = pred.float()
             for batch_idx in range(pred.shape[0]):
                 global_idx = window.global_indices[batch_idx]
                 valid = global_idx >= 0
@@ -539,8 +543,10 @@ def train_model(
     training_targets_dev = training_targets.to(device)
     labelled_mask_dev = labelled_mask.to(device)
     base_type_weights = _workload_mix_tensor(train_mix or _query_frequency_mix(workload), device=device)
+    amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
+    grad_scaler = torch.amp.GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))
     windows_cpu = build_trajectory_windows(
         points=norm_points,
         boundaries=train_boundaries,
@@ -645,12 +651,14 @@ def train_model(
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
         for w in windows:
-            pred_batch = model(
-                points=w.points,
-                queries=norm_queries_dev,
-                query_type_ids=type_ids_dev,
-                padding_mask=w.padding_mask,
-            )
+            with torch_autocast_context(device, amp_mode):
+                pred_batch = model(
+                    points=w.points,
+                    queries=norm_queries_dev,
+                    query_type_ids=type_ids_dev,
+                    padding_mask=w.padding_mask,
+                )
+            pred_batch = pred_batch.float()
             # pred_batch: (B, L, T).  Accumulate per-window loss terms across
             # the batch and backprop once per batch — this is what makes the
             # GPU actually saturated compared to the old batch=1 loop.
@@ -692,11 +700,21 @@ def train_model(
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
                 opt.zero_grad()
-                loss.backward()
+                if not torch.isfinite(loss):
+                    raise RuntimeError(f"Non-finite training loss with amp_mode={amp_mode}: {float(loss.item())}")
                 clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)
-                if clip_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
-                opt.step()
+                if grad_scaler.is_enabled():
+                    grad_scaler.scale(loss).backward()
+                    if clip_norm > 0.0:
+                        grad_scaler.unscale_(opt)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+                    grad_scaler.step(opt)
+                    grad_scaler.update()
+                else:
+                    loss.backward()
+                    if clip_norm > 0.0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+                    opt.step()
                 epoch_loss = epoch_loss + loss.detach()
 
         # Diagnostic pass only on selected epochs (every `diag_every` epochs and
@@ -718,12 +736,14 @@ def train_model(
                 all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
                 pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 for w in sample_windows:
-                    wp = model(
-                        points=w.points,
-                        queries=norm_queries_dev,
-                        query_type_ids=type_ids_dev,
-                        padding_mask=w.padding_mask,
-                    )[0]
+                    with torch_autocast_context(device, amp_mode):
+                        wp = model(
+                            points=w.points,
+                            queries=norm_queries_dev,
+                            query_type_ids=type_ids_dev,
+                            padding_mask=w.padding_mask,
+                        )[0]
+                    wp = wp.float()
                     widx = w.global_indices[0]
                     valid = widx >= 0
                     all_pred[widx[valid]] = all_pred[widx[valid]] + wp[valid]

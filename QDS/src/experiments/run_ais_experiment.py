@@ -169,6 +169,7 @@ def main() -> None:
         residual_label_mode=args.residual_label_mode,
         float32_matmul_precision=args.float32_matmul_precision,
         allow_tf32=args.allow_tf32,
+        amp_mode=args.amp_mode,
     )
     runtime_settings = apply_torch_runtime_settings(
         float32_matmul_precision=config.model.float32_matmul_precision,
@@ -208,7 +209,8 @@ def main() -> None:
         f"max_segments={args.max_segments}  cache_dir={args.cache_dir}  "
         f"refresh_cache={args.refresh_cache}  "
         f"float32_matmul_precision={runtime_settings['float32_matmul_precision']}  "
-        f"allow_tf32={runtime_settings['tf32_matmul_allowed']}",
+        f"allow_tf32={runtime_settings['tf32_matmul_allowed']}  "
+        f"amp_mode={config.model.amp_mode}",
         flush=True,
     )
 

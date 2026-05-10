@@ -121,6 +121,7 @@ class ModelConfig:
     residual_label_mode: str = "temporal"
     float32_matmul_precision: str = "highest"
     allow_tf32: bool = False
+    amp_mode: str = "off"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -297,6 +298,7 @@ def build_experiment_config(
     residual_label_mode: str = "temporal",
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
+    amp_mode: str = "off",
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -358,6 +360,7 @@ def build_experiment_config(
             residual_label_mode=residual_label_mode,
             float32_matmul_precision=float32_matmul_precision,
             allow_tf32=allow_tf32,
+            amp_mode=amp_mode,
         ),
     )
 

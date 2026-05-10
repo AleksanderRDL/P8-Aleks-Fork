@@ -105,6 +105,13 @@ cd QDS
   --float32_matmul_precision high \
   --allow_tf32
 
+# Same profile with CUDA BF16 autocast. Losses and metrics remain FP32.
+../.venv/bin/python -m src.experiments.benchmark_runtime \
+  --mode train \
+  --profile small \
+  --results_dir artifacts/benchmarks/runtime_small_bf16 \
+  --amp_mode bf16
+
 # Training batch-size sweep. Use a larger profile/dataset for final decisions.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode train \
@@ -123,7 +130,7 @@ cd QDS
 
 Benchmark artifacts are written under the selected `--results_dir`, including
 `benchmark_runtime.json` and child command stdout logs. The JSON records Python,
-Torch, CUDA runtime, Triton, TF32/matmul settings, AMP intent, train batch size
+Torch, CUDA runtime, Triton, TF32/matmul settings, AMP mode, train batch size
 from the run config, phase timings, epoch timings, final F1 metrics, full child
 commands, seed, git commit, and dirty status.
 When `--train_batch_sizes` is provided, the artifact also includes a
@@ -132,8 +139,10 @@ final F1 fields per batch size.
 
 Training and inference CLIs expose the same runtime precision knobs:
 `--float32_matmul_precision {highest,high,medium}` and
-`--allow_tf32` / `--no-allow_tf32`. Defaults preserve the FP32 baseline
-(`highest`, TF32 off); use `high` plus `--allow_tf32` for RTX TF32 sweeps.
+`--allow_tf32` / `--no-allow_tf32`, plus `--amp_mode {off,bf16,fp16}`.
+Defaults preserve the FP32 baseline (`highest`, TF32 off, AMP off). Use `high`
+plus `--allow_tf32` for RTX TF32 sweeps, and `--amp_mode bf16` for CUDA
+autocast sweeps after checking for NaNs, collapse warnings, and final F1 drift.
 
 While a training run is active, measure live GPU utilization from another shell:
 

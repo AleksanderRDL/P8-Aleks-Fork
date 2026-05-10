@@ -49,8 +49,11 @@ from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import load_checkpoint
 from src.experiments.torch_runtime import (
+    AMP_MODE_CHOICES,
     FLOAT32_MATMUL_PRECISION_CHOICES,
+    amp_runtime_snapshot,
     apply_torch_runtime_settings,
+    normalize_amp_mode,
     torch_runtime_snapshot,
 )
 
@@ -185,6 +188,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Allow TF32 for CUDA float32 matmul. Default: use checkpoint config; else off.",
     )
+    p.add_argument(
+        "--amp_mode",
+        choices=AMP_MODE_CHOICES,
+        default=None,
+        help="Optional CUDA autocast mode. Default: use checkpoint config; else off.",
+    )
     return p
 
 
@@ -225,6 +234,7 @@ def main() -> None:
         if args.allow_tf32 is not None
         else bool(getattr(saved_cfg.model, "allow_tf32", False))
     )
+    amp_mode = normalize_amp_mode(args.amp_mode or str(getattr(saved_cfg.model, "amp_mode", "off")))
     runtime_settings = apply_torch_runtime_settings(
         float32_matmul_precision=precision,
         allow_tf32=allow_tf32,
@@ -234,7 +244,8 @@ def main() -> None:
         f"epochs_trained={artifacts.epochs_trained}  "
         f"train_mix={saved_train_mix}  eval_mix={saved_eval_mix}  "
         f"float32_matmul_precision={runtime_settings['float32_matmul_precision']}  "
-        f"allow_tf32={runtime_settings['tf32_matmul_allowed']}",
+        f"allow_tf32={runtime_settings['tf32_matmul_allowed']}  "
+        f"amp_mode={amp_mode}",
         flush=True,
     )
 
@@ -339,6 +350,7 @@ def main() -> None:
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
             inference_device=None if args.inference_device == "auto" else args.inference_device,
+            amp_mode=amp_mode,
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -392,7 +404,10 @@ def main() -> None:
             **data_audit.to_dict(),
             **({"cache": cache_payload} if cache_payload is not None else {}),
         },
-        "torch_runtime": torch_runtime_snapshot(),
+        "torch_runtime": {
+            **torch_runtime_snapshot(),
+            "amp": amp_runtime_snapshot(amp_mode),
+        },
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,

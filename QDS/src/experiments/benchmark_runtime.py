@@ -25,7 +25,9 @@ from typing import Any
 import torch
 
 from src.experiments.torch_runtime import (
+    AMP_MODE_CHOICES,
     FLOAT32_MATMUL_PRECISION_CHOICES,
+    amp_runtime_snapshot,
     apply_torch_runtime_settings,
 )
 
@@ -215,7 +217,7 @@ def _environment_metadata(amp_mode: str) -> dict[str, Any]:
             "mode": amp_mode,
             "bf16_enabled": amp_mode == "bf16",
             "fp16_enabled": amp_mode == "fp16",
-            "note": "Recorded only; current benchmark wrapper does not enable autocast.",
+            "note": "Forwarded to child train/inference entrypoints; autocast is CUDA-only.",
         },
         "git": _git_metadata(),
     }
@@ -433,12 +435,14 @@ def _batch_size_sweep_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any
     return rows
 
 
-def _runtime_child_args(float32_matmul_precision: str, allow_tf32: bool) -> list[str]:
+def _runtime_child_args(float32_matmul_precision: str, allow_tf32: bool, amp_mode: str) -> list[str]:
     """Return precision args forwarded to benchmark child entrypoints."""
     return [
         "--float32_matmul_precision",
         str(float32_matmul_precision),
         "--allow_tf32" if allow_tf32 else "--no-allow_tf32",
+        "--amp_mode",
+        str(amp_mode),
     ]
 
 
@@ -535,9 +539,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--amp_mode",
-        choices=["off", "bf16", "fp16"],
+        choices=AMP_MODE_CHOICES,
         default="off",
-        help="Recorded AMP intent. Autocast is not enabled by this wrapper yet.",
+        help="Optional CUDA autocast mode forwarded to training and saved-checkpoint inference.",
     )
     parser.add_argument(
         "--float32_matmul_precision",
@@ -582,7 +586,7 @@ def main() -> None:
         float32_matmul_precision=args.float32_matmul_precision,
         allow_tf32=args.allow_tf32,
     )
-    runtime_child_args = _runtime_child_args(args.float32_matmul_precision, bool(args.allow_tf32))
+    runtime_child_args = _runtime_child_args(args.float32_matmul_precision, bool(args.allow_tf32), args.amp_mode)
 
     wrapper_command = [sys.executable, "-m", "src.experiments.benchmark_runtime", *sys.argv[1:]]
     artifact: dict[str, Any] = {
@@ -592,7 +596,10 @@ def main() -> None:
         "profile": args.profile,
         "seed": int(args.seed),
         "environment": _environment_metadata(args.amp_mode),
-        "torch_runtime": runtime_settings,
+        "torch_runtime": {
+            **runtime_settings,
+            "amp": amp_runtime_snapshot(args.amp_mode),
+        },
         "train_batch_sizes": train_batch_sizes,
         "steps": [],
     }

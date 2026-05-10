@@ -46,7 +46,12 @@ from src.queries.workload_diagnostics import compute_range_label_diagnostics, co
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
-from src.experiments.torch_runtime import cuda_memory_snapshot, reset_cuda_peak_memory_stats, torch_runtime_snapshot
+from src.experiments.torch_runtime import (
+    amp_runtime_snapshot,
+    cuda_memory_snapshot,
+    reset_cuda_peak_memory_stats,
+    torch_runtime_snapshot,
+)
 
 
 @dataclass
@@ -510,6 +515,7 @@ def run_experiment_pipeline(
             workload_mix=eval_mix,
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
+            amp_mode=config.model.amp_mode,
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -578,6 +584,7 @@ def run_experiment_pipeline(
                         workload_mix=train_mix,
                         temporal_fraction=config.model.mlqds_temporal_fraction,
                         diversity_bonus=config.model.mlqds_diversity_bonus,
+                        amp_mode=config.model.amp_mode,
                     ),
                     points=test_points,
                     boundaries=test_boundaries,
@@ -620,7 +627,10 @@ def run_experiment_pipeline(
         "best_f1": trained.best_f1,
         "data_audit": data_audit,
         "workload_diagnostics": range_diagnostics_summary,
-        "torch_runtime": torch_runtime_snapshot(),
+        "torch_runtime": {
+            **torch_runtime_snapshot(),
+            "amp": amp_runtime_snapshot(config.model.amp_mode),
+        },
         "cuda_memory": {
             "training": training_cuda_memory,
         },
@@ -655,6 +665,7 @@ def run_experiment_pipeline(
                     workload_mix=eval_mix,
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
+                    amp_mode=config.model.amp_mode,
                 )
                 eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             write_simplified_csv(
