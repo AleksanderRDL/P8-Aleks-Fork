@@ -3,6 +3,7 @@ SHELL := /bin/bash
 REPO_ROOT := $(abspath ..)
 PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 QDS_REQUIREMENTS ?= requirements.txt
+TYPECHECK_PATHS ?= scripts/mark_benchmark_failed.py src/experiments/benchmark_matrix.py tests/test_benchmark_matrix.py
 
 RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
@@ -13,7 +14,7 @@ BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_matrix_min_realistic
 BENCHMARK_CACHE ?= artifacts/cache/range_workload_matrix_min_realistic
 CONFIRM ?=
 
-.PHONY: help check-env install install-cpu install-cuda test smoke smoke-csv benchmark-preflight list-runs clean-smoke-artifacts range-benchmark-tmux
+.PHONY: help check-env install install-cpu install-cuda test typecheck smoke smoke-csv benchmark-preflight list-runs clean-smoke-artifacts range-benchmark-tmux
 
 help:
 	@echo "Targets:"
@@ -22,6 +23,7 @@ help:
 	@echo "  install-cpu Install the CPU/generic QDS profile"
 	@echo "  install-cuda Install the CUDA cu130 QDS profile"
 	@echo "  test        Run the QDS pytest suite"
+	@echo "  typecheck   Run Pyright on TYPECHECK_PATHS"
 	@echo "  smoke       Run a tiny synthetic training/evaluation experiment"
 	@echo "  smoke-csv   Run a tiny cleaned-CSV training/evaluation experiment"
 	@echo "  benchmark-preflight  Check tmux/GPU/data/artifact prerequisites"
@@ -32,6 +34,7 @@ help:
 	@echo "Variables:"
 	@echo "  PYTHON=$(PYTHON)"
 	@echo "  QDS_REQUIREMENTS=$(QDS_REQUIREMENTS)"
+	@echo "  TYPECHECK_PATHS=$(TYPECHECK_PATHS)"
 	@echo "  CLEANED_CSV=$(CLEANED_CSV)"
 	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
 	@echo "  BENCHMARK_RUN_ID=$(BENCHMARK_RUN_ID)"
@@ -41,7 +44,7 @@ help:
 check-env:
 	$(PYTHON) -V
 	$(PYTHON) -m pip check
-	$(PYTHON) -c 'import matplotlib, numpy, pandas, pytest, torch, tqdm; print("torch", torch.__version__); print("numpy", numpy.__version__); print("pandas", pandas.__version__); print("matplotlib", matplotlib.__version__); print("pytest", pytest.__version__); print("tqdm", tqdm.__version__)'
+	$(PYTHON) -c 'import matplotlib, numpy, pandas, pyright, pytest, torch, tqdm; print("torch", torch.__version__); print("numpy", numpy.__version__); print("pandas", pandas.__version__); print("matplotlib", matplotlib.__version__); print("pytest", pytest.__version__); print("pyright", pyright.__version__); print("tqdm", tqdm.__version__)'
 
 install:
 	$(PYTHON) -m pip install -r $(QDS_REQUIREMENTS)
@@ -54,6 +57,9 @@ install-cuda:
 
 test:
 	$(PYTHON) -m pytest tests
+
+typecheck:
+	$(PYTHON) -m pyright $(TYPECHECK_PATHS)
 
 smoke:
 	$(PYTHON) -m src.experiments.run_ais_experiment \

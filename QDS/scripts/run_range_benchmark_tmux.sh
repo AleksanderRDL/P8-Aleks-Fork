@@ -154,6 +154,12 @@ trap 'touch $(q "$done_file")' EXIT
 } | tee $(q "$status_file")
 $(join_shell "${benchmark_cmd[@]}") 2>&1 | tee $(q "$console_log")
 status=\${PIPESTATUS[0]}
+if [ "\$status" -ne 0 ]; then
+  $(q "$PYTHON") scripts/mark_benchmark_failed.py \
+    --status-file $(q "$RESULTS_DIR/run_status.json") \
+    --exit-status "\$status" \
+    --message "tmux launcher observed non-zero benchmark exit status \$status"
+fi
 {
   echo "[tmux] exit_status=\$status"
   echo "[tmux] finished_at=\$(date -Is)"

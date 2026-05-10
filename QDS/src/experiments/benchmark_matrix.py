@@ -7,8 +7,10 @@ import csv
 import json
 import signal
 import shlex
+import subprocess
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,11 +18,12 @@ from typing import Any
 
 from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.benchmark_runtime import (
+    EPOCH_RE,
+    INFERENCE_STEP_RE,
+    PHASE_DONE_RE,
     _environment_metadata,
     _git_metadata,
-    _parse_timings,
     _qds_root,
-    _run_capture,
     _split_extra_args,
     _write_text,
 )
@@ -28,6 +31,7 @@ from src.experiments.benchmark_runtime import (
 PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 2
+DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,134 @@ class MatrixDataSources:
             if candidate and candidate not in values:
                 values.append(candidate)
         return tuple(values)
+
+
+@dataclass
+class MatrixChildResult:
+    """Completed child process result with retained stdout tail, timings, and elapsed time."""
+
+    returncode: int
+    stdout: str
+    stdout_truncated: bool
+    timings: dict[str, Any]
+    elapsed_seconds: float
+
+
+def _append_stdout_tail(tail_chunks: deque[str], tail_chars: int, line: str, max_chars: int) -> tuple[int, bool]:
+    """Append a line to the retained stdout tail and trim old chunks past max_chars."""
+    if max_chars <= 0:
+        return 0, True
+
+    truncated = False
+    if len(line) > max_chars:
+        tail_chunks.clear()
+        tail_chunks.append(line[-max_chars:])
+        return max_chars, True
+
+    tail_chunks.append(line)
+    tail_chars += len(line)
+    while tail_chars > max_chars and tail_chunks:
+        overflow = tail_chars - max_chars
+        first = tail_chunks[0]
+        truncated = True
+        if len(first) <= overflow:
+            tail_chars -= len(first)
+            tail_chunks.popleft()
+        else:
+            tail_chunks[0] = first[overflow:]
+            tail_chars -= overflow
+            break
+    return tail_chars, truncated
+
+
+def _append_timing_line(timings: dict[str, list[dict[str, Any]]], line: str) -> None:
+    """Parse one child stdout line into the matrix timing accumulator."""
+    phase_match = PHASE_DONE_RE.search(line)
+    if phase_match:
+        timings["phase_timings"].append(
+            {
+                "name": phase_match.group("name").strip(),
+                "seconds": float(phase_match.group("seconds")),
+            }
+        )
+
+    epoch_match = EPOCH_RE.search(line)
+    if epoch_match:
+        timings["epoch_timings"].append(
+            {
+                "epoch": int(epoch_match.group("epoch")),
+                "total_epochs": int(epoch_match.group("total")),
+                "seconds": float(epoch_match.group("seconds")),
+                "line": line.strip(),
+            }
+        )
+
+    inference_match = INFERENCE_STEP_RE.search(line)
+    if inference_match:
+        timings["inference_step_timings"].append(
+            {
+                "name": inference_match.group("name").strip(),
+                "seconds": float(inference_match.group("seconds")),
+                "line": line.strip(),
+            }
+        )
+
+
+def _run_capture_streaming(
+    command: list[str],
+    cwd: Path,
+    stdout_path: Path,
+    *,
+    max_stdout_chars: int = DEFAULT_CHILD_STDOUT_TAIL_CHARS,
+) -> MatrixChildResult:
+    """Run a child command while streaming stdout to console and a log file."""
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    tail_chunks: deque[str] = deque()
+    tail_chars = 0
+    stdout_truncated = False
+    timings: dict[str, list[dict[str, Any]]] = {
+        "phase_timings": [],
+        "epoch_timings": [],
+        "inference_step_timings": [],
+    }
+    proc = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    try:
+        with open(stdout_path, "w", encoding="utf-8") as log:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                tail_chars, line_truncated = _append_stdout_tail(tail_chunks, tail_chars, line, max_stdout_chars)
+                stdout_truncated = stdout_truncated or line_truncated
+                _append_timing_line(timings, line)
+                log.write(line)
+                log.flush()
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        returncode = int(proc.wait())
+    except BaseException:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        raise
+    elapsed = time.perf_counter() - started
+    return MatrixChildResult(
+        returncode=returncode,
+        stdout="".join(tail_chunks),
+        stdout_truncated=stdout_truncated,
+        timings=timings,
+        elapsed_seconds=float(elapsed),
+    )
 
 
 def _parse_name_list(raw: str | None, *, allowed: tuple[str, ...] | set[str], arg_name: str) -> list[str]:
@@ -882,12 +1014,11 @@ def main() -> None:
                     *_split_extra_args(args.extra_args),
                 ]
                 print(f"[matrix] {workload}/{variant.name}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
-                proc = _run_capture(command, cwd=_qds_root())
                 stdout_path = run_dir / "stdout.log"
-                _write_text(stdout_path, proc.stdout)
+                proc = _run_capture_streaming(command, cwd=_qds_root(), stdout_path=stdout_path)
                 run_json_path = run_dir / "example_run.json"
                 run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
-                timings = _parse_timings(proc.stdout)
+                timings = proc.timings
                 row = _row_from_run(
                     workload=workload,
                     variant=variant,
@@ -902,6 +1033,12 @@ def main() -> None:
                 )
                 rows.append(row)
                 failures += int(proc.returncode != 0)
+                if proc.returncode != 0:
+                    print(
+                        f"[matrix] {workload}/{variant.name} failed with returncode={proc.returncode}; "
+                        f"see {stdout_path}",
+                        flush=True,
+                    )
                 if proc.returncode != 0 and not args.continue_on_failure:
                     break
             if failures and not args.continue_on_failure:

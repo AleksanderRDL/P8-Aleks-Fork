@@ -1,0 +1,14 @@
+{
+  "include": [
+    "scripts/mark_benchmark_failed.py",
+    "src/experiments/benchmark_matrix.py",
+    "tests/test_benchmark_matrix.py"
+  ],
+  "extraPaths": [
+    "."
+  ],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "basic",
+  "venv": ".venv",
+  "venvPath": ".."
+}

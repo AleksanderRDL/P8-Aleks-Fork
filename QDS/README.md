@@ -28,7 +28,12 @@ cd QDS
 ../.venv/bin/python -m pip install -r requirements.txt
 make check-env
 make test
+make typecheck
 ```
+
+`make typecheck` currently checks the benchmark/tooling files that have a clean
+Pyright baseline. Expand it incrementally with `TYPECHECK_PATHS=...` as broader
+modules are made type-clean.
 
 Use the local Makefile for repeatable smoke runs:
 
@@ -196,6 +201,9 @@ specific output. `run_config.json` records the compact run shape, while
 The family root also contains `runs_index.csv` with the latest status for each
 run and `runs_index_events.jsonl` with the append-only status history. Caches
 remain under `artifacts/cache/...` because they are reused across runs.
+Matrix child stdout streams live into the tmux console and is also written to
+`variants/<variant>/stdout.log`. The matrix keeps only a bounded stdout tail in
+memory; the full child log remains on disk.
 
 For long matrix runs, use the tmux launcher instead of running directly in an
 interactive shell:
@@ -225,6 +233,8 @@ GPU memory, temperature, power draw, clocks, visible CUDA processes, and recent
 kernel markers for OOM/GPU/reset/thermal/power events. This keeps enough
 context to diagnose common long-run failures such as RAM exhaustion, GPU
 reset/disappearance, thermal/power throttling, or runaway Python memory growth.
+If an abnormal launcher exit leaves `run_status.json` in `running`, the launcher
+now marks it `failed` and updates the family run index.
 
 Useful tmux commands:
 

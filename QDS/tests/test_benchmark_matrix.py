@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -18,6 +22,7 @@ from src.experiments.benchmark_matrix import (
     _parse_name_list,
     _profile_args,
     _resolve_data_sources,
+    _run_capture_streaming,
     _selected_variants,
     _write_family_indexes,
     _variant_run_dir,
@@ -237,3 +242,116 @@ def test_matrix_markdown_table_is_compact() -> None:
 
     assert "| workload | variant |" in table
     assert "| range | tf32 | 0 | 12.3457 |" in table
+
+
+def test_run_capture_streaming_writes_log_and_console(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    stdout_path = tmp_path / "child" / "stdout.log"
+
+    result = _run_capture_streaming(
+        [sys.executable, "-c", "print('alpha', flush=True); print('beta', flush=True)"],
+        cwd=tmp_path,
+        stdout_path=stdout_path,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "alpha\nbeta\n"
+    assert stdout_path.read_text(encoding="utf-8") == "alpha\nbeta\n"
+    assert "alpha\nbeta\n" in capsys.readouterr().out
+
+
+def test_run_capture_streaming_retains_bounded_tail_but_keeps_timings(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stdout_path = tmp_path / "child" / "stdout.log"
+    command = (
+        "print('[train-model] done in 1.23s', flush=True)\n"
+        "for i in range(20):\n"
+        "    print(f'filler-{i:03d}-' + 'x' * 40, flush=True)\n"
+    )
+
+    result = _run_capture_streaming(
+        [sys.executable, "-c", command],
+        cwd=tmp_path,
+        stdout_path=stdout_path,
+        max_stdout_chars=64,
+    )
+
+    full_log = stdout_path.read_text(encoding="utf-8")
+    assert result.returncode == 0
+    assert result.stdout_truncated is True
+    assert len(result.stdout) <= 64
+    assert full_log.startswith("[train-model] done in 1.23s\n")
+    assert len(full_log) > len(result.stdout)
+    assert result.timings["phase_timings"] == [{"name": "train-model", "seconds": 1.23}]
+    assert "[train-model] done in 1.23s\n" in capsys.readouterr().out
+
+
+def test_mark_benchmark_failed_updates_stale_running_status_and_family_index(tmp_path) -> None:
+    family = tmp_path / "range_family"
+    results_dir = family / "runs" / "stale-run"
+    results_dir.mkdir(parents=True)
+    status_file = results_dir / "run_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "stale-run",
+                "status": "running",
+                "started_at_utc": "2026-05-10T00:00:00+00:00",
+                "finished_at_utc": None,
+                "exit_status": None,
+                "failures": None,
+                "message": "benchmark matrix started",
+                "results_dir": str(results_dir),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with open(family / "runs_index.csv", "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["run_id", "status", "finished_at_utc", "exit_status", "failures", "results_dir"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "run_id": "stale-run",
+                "status": "running",
+                "finished_at_utc": "",
+                "exit_status": "",
+                "failures": "",
+                "results_dir": str(results_dir),
+            }
+        )
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "mark_benchmark_failed.py"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--status-file",
+            str(status_file),
+            "--exit-status",
+            "-9",
+            "--message",
+            "killed",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(status_file.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["exit_status"] == -9
+    assert payload["failures"] == 1
+    assert payload["message"] == "killed"
+
+    with open(family / "runs_index.csv", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["exit_status"] == "-9"
+    assert rows[0]["failures"] == "1"
+    assert '"run_id": "stale-run"' in (family / "runs_index_events.jsonl").read_text(encoding="utf-8")

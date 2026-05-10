@@ -191,6 +191,10 @@ Use one run directory per benchmark attempt. The child experiment artifacts for
 each variant live under `variants/<variant>/`; tmux launcher logs live under
 `logs/`. The family root keeps `runs_index.csv` with the latest status per run
 and `runs_index_events.jsonl` with status history.
+Child experiment stdout is streamed live through the matrix console and written
+to `variants/<variant>/stdout.log`, so long-running variants should show phase
+progress in tmux before the variant exits. The matrix keeps only a bounded
+stdout tail in memory; the full child log remains on disk.
 
 For long local runs, prefer the tmux launcher:
 
@@ -206,6 +210,9 @@ It creates one pane for the matrix and one pane for
 top RSS processes, GPU utilization, GPU memory, temperature, power draw, clocks,
 visible CUDA processes, and recent kernel markers for OOM/GPU/reset/thermal
 events.
+If the matrix process exits abnormally before it can finalize `run_status.json`,
+the launcher marks any stale `running` status as `failed` and updates the family
+run index.
 
 Operational helpers:
 
