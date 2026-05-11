@@ -27,7 +27,7 @@ Environment overrides:
   SEEDS                        Comma-separated seeds for default plan. Default: 42,43,44.
   CHILD_EXTRA_ARGS             String passed as benchmark_matrix --extra_args for
                                every default-plan run. Example:
-                               "--ranking_pair_sampling legacy".
+                               "--ranking_top_quantile 0.70".
   PLAN_FILE                    Optional tab-separated plan file with rows:
                                run_id<TAB>seed<TAB>child_extra_args
                                Blank lines and # comments are ignored.

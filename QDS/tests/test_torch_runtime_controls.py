@@ -109,7 +109,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert cfg.model.mlqds_rank_confidence_weight == 0.30
 
 
-def test_experiment_config_loads_legacy_runtime_and_mlqds_defaults() -> None:
+def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     payload = build_experiment_config().to_dict()
     payload["model"].pop("float32_matmul_precision")
     payload["model"].pop("allow_tf32")
@@ -119,7 +119,6 @@ def test_experiment_config_loads_legacy_runtime_and_mlqds_defaults() -> None:
     payload["model"].pop("mlqds_score_mode")
     payload["model"].pop("mlqds_score_temperature")
     payload["model"].pop("mlqds_rank_confidence_weight")
-    payload["data"]["max_points_per_ship"] = 123
 
     restored = ExperimentConfig.from_dict(payload)
 
@@ -132,7 +131,6 @@ def test_experiment_config_loads_legacy_runtime_and_mlqds_defaults() -> None:
     assert restored.model.mlqds_score_temperature == 1.0
     assert restored.model.mlqds_rank_confidence_weight == 0.15
     assert restored.model.checkpoint_selection_metric == "f1"
-    assert restored.data.max_points_per_segment == 123
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:

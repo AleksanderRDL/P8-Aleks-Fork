@@ -9,7 +9,7 @@ trains MLQDS, evaluates baselines, and writes run artifacts.
 | File | Purpose |
 | --- | --- |
 | `experiment_cli.py` | Shared `argparse` parser for training/evaluation runs. |
-| `experiment_config.py` | Data, query, model, baseline, visualization, workload, and seed config dataclasses. |
+| `experiment_config.py` | Data, query, model, baseline, workload, and seed config dataclasses. |
 | `experiment_pipeline_helpers.py` | Split, workload generation, diagnostics reuse, training, evaluation, and result dumping. |
 | `benchmark_profiles.py` | Central benchmark profile constants such as `range_real_usecase`. |
 | `benchmark_matrix.py` | Range-focused benchmark matrix runner. |
@@ -136,9 +136,9 @@ ATTACH=0 BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
 Queue rows use a tab-separated plan file:
 
 ```text
-range_real_usecase_80q_cache_legacy_seed42	42	--ranking_pair_sampling legacy
-range_real_usecase_80q_vectorized_cache_seed43	43
-range_real_usecase_80q_vectorized_cache_seed44	44
+range_real_usecase_base_seed42	42
+range_real_usecase_rank_tie_seed42	42	--mlqds_score_mode rank_tie
+range_real_usecase_pairs192_seed42	42	--ranking_pairs_per_type 192
 ```
 
 Launch a sequential queue:

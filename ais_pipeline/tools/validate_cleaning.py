@@ -217,7 +217,7 @@ def main():
 
     # ── Run the outlier detector ──
     print("Running outlier detector...")
-    after_outliers = remove_outliers.remove_gps_outliers(before_outliers)
+    after_outliers = remove_outliers.outlier_detector(before_outliers)
     after_outliers.cache()
     count_after = after_outliers.count()
     total_deleted = count_before - count_after

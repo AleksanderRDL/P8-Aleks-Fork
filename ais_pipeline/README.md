@@ -22,7 +22,6 @@ Both run the same `run()` function.
   - `ship_type.py`
   - `remove_shiptypes.py`
   - `remove_outliers.py`
-  - `trim_moving.py` (currently not invoked by the default `run()` pipeline)
 - `tools/`: utility and exploratory scripts related to the AIS workflow.
 
 ## Related Docs

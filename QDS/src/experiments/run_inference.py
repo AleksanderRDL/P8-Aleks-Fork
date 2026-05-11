@@ -80,8 +80,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n_queries", type=int, default=100, help="Queries to generate for evaluation.")
     p.add_argument(
         "--query_coverage",
-        "--target_query_coverage",
-        dest="query_coverage",
         type=float,
         default=None,
         help="Bias generated queries toward this point-coverage target while keeping --n_queries fixed. Accepts 0.30 or 30 for 30%%.",
@@ -90,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max_queries",
         type=int,
         default=None,
-        help="Deprecated compatibility option for coverage-based query generation.",
+        help="Optional cap for coverage-targeted query generation when it may expand beyond --n_queries.",
     )
     p.add_argument(
         "--range_spatial_fraction",

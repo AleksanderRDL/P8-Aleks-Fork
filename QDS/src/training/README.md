@@ -37,8 +37,6 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - Windows never cross trajectory boundaries. Windows with no positive label for
   a type are skipped for that type; the pointwise BCE term samples zeros to
   avoid all-zero collapse.
-- `ranking_pair_sampling="vectorized"` is the default. Use `"legacy"` only when
-  comparing against older runs.
 - The effective epoch count is clamped to at least 8. The returned model is
   restored to the best diagnostic epoch; by default that means held-out final
   query F1.

@@ -43,10 +43,7 @@ class DataConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DataConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        cleaned = dict(data)
-        if cleaned.get("max_points_per_segment") is None and cleaned.get("max_points_per_ship") is not None:
-            cleaned["max_points_per_segment"] = cleaned["max_points_per_ship"]
-        return cls(**_known_dataclass_values(cls, cleaned))
+        return cls(**_known_dataclass_values(cls, data))
 
 
 @dataclass
@@ -106,7 +103,6 @@ class ModelConfig:
     model_type: str = "baseline"
     rank_margin: float = 0.05
     ranking_pairs_per_type: int = 96
-    ranking_pair_sampling: str = "vectorized"
     ranking_top_quantile: float = 0.80
     pointwise_loss_weight: float = 0.25
     gradient_clip_norm: float = 1.0
@@ -161,22 +157,6 @@ class BaselineConfig:
 
 
 @dataclass
-class VisualizationConfig:
-    """Visualization config. See src/visualization/README.md for details."""
-
-    enabled: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize config to a dictionary. See src/experiments/README.md for details."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "VisualizationConfig":
-        """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**data)
-
-
-@dataclass
 class TypedQueryWorkload:
     """Typed query workload container. See src/queries/README.md for details."""
 
@@ -222,7 +202,6 @@ class ExperimentConfig:
     query: QueryConfig = field(default_factory=QueryConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     baselines: BaselineConfig = field(default_factory=BaselineConfig)
-    visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -231,7 +210,6 @@ class ExperimentConfig:
             "query": self.query.to_dict(),
             "model": self.model.to_dict(),
             "baselines": self.baselines.to_dict(),
-            "visualization": self.visualization.to_dict(),
         }
 
     @classmethod
@@ -242,7 +220,6 @@ class ExperimentConfig:
             query=QueryConfig.from_dict(data["query"]),
             model=ModelConfig.from_dict(data["model"]),
             baselines=BaselineConfig.from_dict(data["baselines"]),
-            visualization=VisualizationConfig.from_dict(data["visualization"]),
         )
 
 
@@ -266,7 +243,6 @@ def build_experiment_config(
     max_trajectories: int | None = None,
     n_queries: int = 128,
     query_coverage: float | None = None,
-    target_query_coverage: float | None = None,
     max_queries: int | None = None,
     range_spatial_fraction: float = 0.08,
     range_time_fraction: float = 0.15,
@@ -282,7 +258,6 @@ def build_experiment_config(
     range_acceptance_max_attempts: int | None = None,
     epochs: int = 6,
     lr: float = 5e-4,
-    ranking_pair_sampling: str = "vectorized",
     ranking_pairs_per_type: int = 96,
     ranking_top_quantile: float = 0.80,
     pointwise_loss_weight: float = 0.25,
@@ -321,7 +296,6 @@ def build_experiment_config(
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
     amp_mode: str = "off",
-    **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
     uses_csv = bool(csv_path or train_csv_path or eval_csv_path)
@@ -343,7 +317,7 @@ def build_experiment_config(
         ),
         query=QueryConfig(
             n_queries=n_queries,
-            target_coverage=target_query_coverage if target_query_coverage is not None else query_coverage,
+            target_coverage=query_coverage,
             max_queries=max_queries,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
@@ -365,7 +339,6 @@ def build_experiment_config(
         model=ModelConfig(
             epochs=epochs,
             lr=lr,
-            ranking_pair_sampling=ranking_pair_sampling,
             ranking_pairs_per_type=ranking_pairs_per_type,
             ranking_top_quantile=ranking_top_quantile,
             pointwise_loss_weight=pointwise_loss_weight,

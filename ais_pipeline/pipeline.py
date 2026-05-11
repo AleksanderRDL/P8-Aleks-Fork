@@ -112,7 +112,7 @@ def run() -> None:
     df = ship_type.fill_ship_type(df)
     df = ship_type.remove_undefined_ship_type(df)
     df = remove_shiptypes.remove_shiptypes(df)
-    df = remove_outliers.remove_gps_outliers(df)
+    df = remove_outliers.outlier_detector(df)
     df = df.select(*remove_duplicates.OUTPUT_COLUMNS)
 
     (

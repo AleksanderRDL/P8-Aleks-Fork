@@ -55,13 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max_trajectories",
         type=int,
         default=None,
-        help="Legacy optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
+        help="Optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
     )
     parser.add_argument("--n_queries", type=int, default=128)
     parser.add_argument(
         "--query_coverage",
-        "--target_query_coverage",
-        dest="query_coverage",
         type=float,
         default=None,
         help="Bias generated queries toward this point-coverage target while keeping --n_queries fixed. Accepts 0.30 or 30 for 30%%.",
@@ -70,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max_queries",
         type=int,
         default=None,
-        help="Deprecated compatibility option for coverage-based query generation.",
+        help="Optional cap for coverage-targeted query generation when it may expand beyond --n_queries.",
     )
     parser.add_argument(
         "--range_spatial_fraction",
@@ -152,13 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument(
-        "--ranking_pair_sampling",
-        type=str,
-        default="vectorized",
-        choices=["vectorized", "legacy"],
-        help="Ranking-pair sampler for training loss. vectorized avoids CPU copies and per-pair synchronization.",
-    )
     parser.add_argument(
         "--ranking_pairs_per_type",
         type=int,

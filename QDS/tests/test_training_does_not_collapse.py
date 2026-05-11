@@ -89,7 +89,7 @@ def test_balanced_pointwise_loss_pushes_constant_scores_apart() -> None:
     assert float(pred.grad[3:].sum().item()) > 0.0
 
 
-def test_vectorized_ranking_pair_sampler_returns_finite_loss() -> None:
+def test_ranking_pair_sampler_returns_finite_loss() -> None:
     pred = torch.linspace(0.1, 0.8, steps=8)
     target = torch.tensor([1.0, 0.9, 0.7, 0.4, 0.2, 0.1, 0.0, 0.0])
     valid_mask = torch.ones((8,), dtype=torch.bool)
@@ -102,7 +102,6 @@ def test_vectorized_ranking_pair_sampler_returns_finite_loss() -> None:
         top_quantile=0.5,
         margin=0.05,
         generator=torch.Generator().manual_seed(123),
-        sampling_mode="vectorized",
     )
 
     assert 0 < pair_count <= 16
