@@ -53,6 +53,8 @@ def _profile_core_args() -> list[str]:
         "0.0",
         "--query_chunk_size",
         "2048",
+        "--max_queries",
+        "2048",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -316,7 +318,7 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
     assert "--max_trajectories" not in profile_args
 
 
-def test_validation_query_count_matches_eval_workload_shape() -> None:
+def test_validation_query_count_matches_eval_minimum_query_count() -> None:
     cfg = build_experiment_config(n_queries=80, query_coverage=0.20, max_queries=None)
 
     assert _validation_query_count(cfg) == 80

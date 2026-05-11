@@ -101,7 +101,7 @@ def main() -> int:
     parser.add_argument("--max_files", type=int, default=2, help="When csv_path is a directory, estimate this many sorted CSVs.")
     parser.add_argument("--cache_dir", default=None, help="Optional AIS cache directory.")
     parser.add_argument("--refresh_cache", action="store_true", help="Rebuild AIS cache before estimating.")
-    parser.add_argument("--query_counts", default="64,72,80,88,96,112", help="Comma-separated query counts to test.")
+    parser.add_argument("--query_counts", default="80,384,512,640,1024,2048", help="Comma-separated query counts to test.")
     parser.add_argument("--seeds", default="42", help="Comma-separated query generation seeds.")
     parser.add_argument("--sample_stride", type=int, default=20, help="Use every Nth trajectory for fast estimation.")
     parser.add_argument("--target_coverage", type=float, default=0.20, help="Target coverage fraction used by generation.")

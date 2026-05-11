@@ -77,23 +77,22 @@ Profile shape:
 | Setting | Value |
 | --- | --- |
 | Workload | pure `range` |
-| Queries | `80` |
-| Target coverage | `0.20` |
+| Query generation | Start at `80`, continue until `0.20` coverage, cap at `max_queries=2048` |
 | Range footprint | `range_spatial_km=2.2`, `range_time_hours=3.0` fixed half-windows (`range_footprint_jitter=0.0`) |
 | Compression | `0.05` retained points |
 | Epoch budget | `20` with `early_stopping_patience=5` |
 | Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=answer` |
 | MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.25`, `mlqds_score_temperature=1.0` |
-| Attention chunk | `query_chunk_size=2048` |
+| Attention chunk | `query_chunk_size=2048`; the profile uses the same value for `max_queries` |
 | Range labels | pure point-F1 labels (`range_boundary_prior_weight=0.0`) |
 | Diagnostics | `f1_diagnostic_every=1`, no smoothing (`checkpoint_smoothing_window=1`) |
 | Runtime variant | `tf32_bf16_bs32_inf32` by default |
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
 
-`query_coverage` is a target used for workload generation and diagnostics, not
-a guarantee. If the fixed query count/footprint cannot hit the target on a day,
-the run prints a warning and records the realized coverage in `example_run.json`.
+`query_coverage` is a target used for workload generation and diagnostics.
+For the real-usecase profile, `n_queries` is only the minimum workload size;
+generation continues until the target is reached or `max_queries` is hit.
 
 Direct matrix run:
 
@@ -109,13 +108,14 @@ Direct matrix run:
 ```
 
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
-Before changing range footprint or target coverage, estimate query counts first:
+Before changing range footprint or target coverage, estimate coverage/cap
+behavior first:
 
 ```bash
 ../.venv/bin/python scripts/estimate_range_coverage.py \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_real_usecase \
-  --query_counts 64,72,80,88,96,112 \
+  --query_counts 80,384,512,640,1024,2048 \
   --sample_stride 20 \
   --target_coverage 0.20 \
   --range_spatial_km 2.2 \

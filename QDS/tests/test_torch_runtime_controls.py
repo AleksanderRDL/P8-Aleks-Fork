@@ -170,6 +170,7 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
 
     assert "--n_queries" in args
     assert args[args.index("--n_queries") + 1] == "80"
+    assert args[args.index("--max_queries") + 1] == "2048"
     assert args[args.index("--compression_ratio") + 1] == "0.05"
     assert args[args.index("--query_chunk_size") + 1] == "2048"
     assert args[args.index("--query_coverage") + 1] == "0.20"

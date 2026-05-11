@@ -43,8 +43,9 @@ This module defines the typed query format, workload generator, and concrete que
 - `range_footprint_jitter` randomizes footprint size. Benchmark profiles set it
   to `0.0` for exact, reproducible footprints.
 - `target_coverage` is point-level query-signal coverage. With `max_queries`
-  unset, generation keeps `n_queries` fixed and may miss the target; with a
-  larger `max_queries`, it may continue until the target is reached.
+  unset, generation keeps `n_queries` fixed and may miss the target. With a
+  larger `max_queries`, `n_queries` is the minimum and generation continues
+  until the target is reached or the cap is hit.
 - Use `scripts/estimate_range_coverage.py` before changing query count,
   footprint, or coverage targets.
 

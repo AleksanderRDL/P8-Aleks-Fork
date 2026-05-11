@@ -185,42 +185,28 @@ def test_sampled_range_coverage_estimator_works_on_loaded_cleaned_csv(tmp_path: 
     assert all(0.0 <= row.coverage_fraction <= 1.0 for row in rows)
 
 
-def test_selection_range_coverage_calibration_reduces_target_error() -> None:
-    """Assert validation workload calibration keeps query count while improving coverage match."""
+def test_configured_workload_expands_to_max_queries_when_target_needs_more_queries() -> None:
+    """Assert coverage-targeted config treats n_queries as a minimum and max_queries as the cap."""
     trajectories = generate_synthetic_ais_data(n_ships=5, n_points_per_ship=60, seed=457)
-    target = 0.20
     cfg = build_experiment_config(
-        n_queries=32,
-        query_coverage=target,
+        n_queries=4,
+        query_coverage=1.0,
+        max_queries=12,
         workload="range",
-        range_spatial_fraction=0.20,
-        range_time_fraction=0.20,
+        range_spatial_fraction=0.01,
+        range_time_fraction=0.01,
     )
 
-    uncalibrated = _generate_typed_query_workload_for_config(
+    workload = _generate_typed_query_workload_for_config(
         trajectories=trajectories,
-        n_queries=32,
+        n_queries=4,
         workload_mix={"range": 1.0},
         seed=12,
         config=cfg,
-        calibrate_range_coverage=False,
-    )
-    calibrated = _generate_typed_query_workload_for_config(
-        trajectories=trajectories,
-        n_queries=32,
-        workload_mix={"range": 1.0},
-        seed=12,
-        config=cfg,
-        calibrate_range_coverage=True,
     )
 
-    assert len(calibrated.typed_queries) == 32
-    assert calibrated.generation_diagnostics is not None
-    calibration = calibrated.generation_diagnostics["coverage_calibration"]
-    assert calibration["enabled"] is True
-    assert abs(float(calibrated.coverage_fraction or 0.0) - target) <= abs(
-        float(uncalibrated.coverage_fraction or 0.0) - target
-    )
+    assert len(workload.typed_queries) == 12
+    assert float(workload.coverage_fraction or 0.0) < 1.0
 
 
 def test_coverage_generation_allows_overlapping_query_hits() -> None:
