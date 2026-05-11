@@ -34,8 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max_points_per_segment",
-        "--max_points_per_ship",
-        dest="max_points_per_segment",
         type=int,
         default=None,
         help="Optional AIS CSV downsampling cap per trajectory segment, useful for smoke runs.",

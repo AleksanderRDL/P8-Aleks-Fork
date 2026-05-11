@@ -19,7 +19,7 @@ env/
 
 # Trained model weights
 *.pth
-#src/models/saved_models/*.pt
+src/models/saved_models/
 
 # Generated plots
 *.png

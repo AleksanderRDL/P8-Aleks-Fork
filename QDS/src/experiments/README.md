@@ -27,7 +27,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--n_ships`
 - `--n_points`
 - `--min_points_per_segment`
-- `--max_points_per_segment` / `--max_points_per_ship`
+- `--max_points_per_segment`
 - `--max_time_gap_seconds`
 - `--max_segments`
 - `--max_trajectories`

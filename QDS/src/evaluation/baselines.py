@@ -113,22 +113,6 @@ class MLQDSMethod:
 
 
 @dataclass
-class UniformTemporalMethod:
-    """Uniform temporal sampling baseline. See src/evaluation/README.md for details."""
-
-    name: str = "UniformTemporal"
-
-    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
-        """Retain approximately every k-th point per trajectory. See src/evaluation/README.md for details."""
-        scores = torch.zeros((points.shape[0],), dtype=torch.float32)
-        for start, end in boundaries:
-            n = end - start
-            idx = torch.arange(n, dtype=torch.float32)
-            scores[start:end] = -torch.abs(idx - (n - 1) / 2.0)
-        return simplify_with_scores(scores, boundaries, compression_ratio)
-
-
-@dataclass
 class NewUniformTemporalMethod:
     """True evenly spaced temporal sampling baseline."""
 

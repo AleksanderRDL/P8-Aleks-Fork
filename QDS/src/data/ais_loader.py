@@ -162,7 +162,6 @@ LoadAISReturn = (
 @overload
 def load_ais_csv(
     csv_path: str,
-    max_points_per_ship: int | None = None,
     *,
     return_mmsis: Literal[True],
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
@@ -176,7 +175,6 @@ def load_ais_csv(
 @overload
 def load_ais_csv(
     csv_path: str,
-    max_points_per_ship: int | None = None,
     *,
     return_mmsis: Literal[True],
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
@@ -190,7 +188,6 @@ def load_ais_csv(
 @overload
 def load_ais_csv(
     csv_path: str,
-    max_points_per_ship: int | None = None,
     *,
     return_mmsis: Literal[False] = False,
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
@@ -204,7 +201,6 @@ def load_ais_csv(
 @overload
 def load_ais_csv(
     csv_path: str,
-    max_points_per_ship: int | None = None,
     *,
     return_mmsis: Literal[False] = False,
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
@@ -218,7 +214,6 @@ def load_ais_csv(
 @overload
 def load_ais_csv(
     csv_path: str,
-    max_points_per_ship: int | None = None,
     *,
     return_mmsis: bool = False,
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
@@ -231,7 +226,7 @@ def load_ais_csv(
 
 def load_ais_csv(
     csv_path: str,
-    max_points_per_ship: int | None = None,
+    *,
     return_mmsis: bool = False,
     min_points_per_segment: int = DEFAULT_MIN_POINTS_PER_SEGMENT,
     max_points_per_segment: int | None = None,
@@ -246,8 +241,6 @@ def load_ais_csv(
     If ``return_audit=True``, append an ``AISLoadAudit`` to the return tuple.
     See ``src/data/README.md`` for details.
     """
-    if max_points_per_segment is None:
-        max_points_per_segment = max_points_per_ship
     config = AISLoadConfig(
         min_points_per_segment=int(min_points_per_segment),
         max_points_per_segment=max_points_per_segment,

@@ -62,6 +62,7 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     payload["model"].pop("allow_tf32")
     payload["model"].pop("inference_batch_size")
     payload["model"].pop("amp_mode")
+    payload["data"]["max_points_per_ship"] = 123
 
     restored = ExperimentConfig.from_dict(payload)
 
@@ -70,6 +71,7 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     assert restored.model.inference_batch_size == 16
     assert restored.model.amp_mode == "off"
     assert restored.model.checkpoint_selection_metric == "f1"
+    assert restored.data.max_points_per_segment == 123
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:

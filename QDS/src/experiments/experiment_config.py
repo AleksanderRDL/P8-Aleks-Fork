@@ -26,7 +26,6 @@ class DataConfig:
     max_points_per_segment: int | None = None
     max_time_gap_seconds: float | None = 3600.0
     max_segments: int | None = None
-    max_points_per_ship: int | None = None
     max_trajectories: int | None = None
     csv_path: str | None = None
     train_csv_path: str | None = None
@@ -44,7 +43,10 @@ class DataConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DataConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**data)
+        cleaned = dict(data)
+        if cleaned.get("max_points_per_segment") is None and cleaned.get("max_points_per_ship") is not None:
+            cleaned["max_points_per_segment"] = cleaned["max_points_per_ship"]
+        return cls(**_known_dataclass_values(cls, cleaned))
 
 
 @dataclass
@@ -254,7 +256,6 @@ def build_experiment_config(
     max_points_per_segment: int | None = None,
     max_time_gap_seconds: float | None = 3600.0,
     max_segments: int | None = None,
-    max_points_per_ship: int | None = None,
     max_trajectories: int | None = None,
     n_queries: int = 128,
     query_coverage: float | None = None,
@@ -307,17 +308,15 @@ def build_experiment_config(
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
-    segment_cap = max_points_per_segment if max_points_per_segment is not None else max_points_per_ship
     uses_csv = bool(csv_path or train_csv_path or eval_csv_path)
     return ExperimentConfig(
         data=DataConfig(
             n_ships=None if uses_csv else n_ships,
             n_points_per_ship=None if uses_csv else n_points,
             min_points_per_segment=min_points_per_segment,
-            max_points_per_segment=segment_cap,
+            max_points_per_segment=max_points_per_segment,
             max_time_gap_seconds=max_time_gap_seconds,
             max_segments=max_segments,
-            max_points_per_ship=max_points_per_ship,
             max_trajectories=max_trajectories,
             csv_path=csv_path,
             train_csv_path=train_csv_path,

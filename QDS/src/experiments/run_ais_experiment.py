@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import time
 from pathlib import Path
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from src.data.trajectory_cache import load_or_build_ais_cache

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.evaluation.baselines import NewUniformTemporalMethod, UniformTemporalMethod
+from src.evaluation.baselines import NewUniformTemporalMethod
 from src.evaluation.evaluate_methods import (
     EvaluationQueryCache,
     _retained_point_gap_stats,
@@ -318,17 +318,15 @@ def test_knn_f1_penalizes_missing_representative_points() -> None:
     assert agg_combined == pytest.approx(0.4)
 
 
-def test_new_uniform_temporal_is_evenly_spaced_not_center_chunk() -> None:
+def test_uniform_temporal_is_evenly_spaced() -> None:
     points = torch.stack(
         [torch.tensor([float(i), 0.0, float(i), 1.0], dtype=torch.float32) for i in range(10)]
     )
     boundaries = [(0, 10)]
 
-    new_retained = NewUniformTemporalMethod().simplify(points, boundaries, compression_ratio=0.3)
-    old_retained = UniformTemporalMethod().simplify(points, boundaries, compression_ratio=0.3)
+    retained = NewUniformTemporalMethod().simplify(points, boundaries, compression_ratio=0.3)
 
-    assert torch.where(new_retained)[0].tolist() == [0, 4, 9]
-    assert torch.where(old_retained)[0].tolist() != [0, 4, 9]
+    assert torch.where(retained)[0].tolist() == [0, 4, 9]
 
 
 def test_temporal_score_hybrid_keeps_base_and_score_fill() -> None:

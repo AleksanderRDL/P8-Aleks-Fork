@@ -18,6 +18,7 @@ artifacts/
 !QDS/artifacts/
 QDS/artifacts/*
 !QDS/artifacts/README.md
+QDS/src/models/saved_models/
 
 
 # ---------------------------------

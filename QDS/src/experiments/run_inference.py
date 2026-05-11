@@ -4,13 +4,13 @@ Loads a .pt checkpoint produced by run_ais_experiment.py (save_checkpoint) and
 evaluates MLQDS against baselines on the supplied CSV. No gradient updates are
 performed, so this is safe for a local CPU/GPU machine.
 
-Example (PowerShell, from repo root):
+Example, from `QDS`:
 
-    python -m src.experiments.run_inference `
-        --checkpoint src/models/saved_models/model_2026-02-05_q25_range_766395.pt `
-        --csv_path ../../AISDATA/cleaned/preprocessed_2026-02-08.csv `
-        --n_queries 100 `
-        --results_dir results/inference_2026-02-08_range
+    ../.venv/bin/python -m src.experiments.run_inference \
+        --checkpoint artifacts/benchmarks/range_real_usecase/runs/<run_id>/variants/tf32_bf16_bs32_inf32/benchmark_model.pt \
+        --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
+        --n_queries 512 \
+        --results_dir artifacts/benchmarks/inference_range_real_usecase
 
 Run this from ``QDS`` so the ``src`` package resolves.
 """
@@ -19,15 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import torch
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from src.data.ais_loader import load_ais_csv
 from src.data.trajectory_dataset import TrajectoryDataset
@@ -144,8 +140,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--max_points_per_segment",
-        "--max_points_per_ship",
-        dest="max_points_per_segment",
         type=int,
         default=None,
         help="Optional AIS CSV downsampling cap per trajectory segment.",

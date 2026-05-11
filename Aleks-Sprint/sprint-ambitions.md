@@ -315,7 +315,7 @@ Useful data controls:
 - `max_segments`
 - optional per-day or per-MMSI sampling
 
-The existing `max_points_per_ship` option exists in the loader but is not exposed in the experiment config or CLI. Large trajectory control should be exposed as normal run configuration.
+The old `max_points_per_ship` alias has been replaced by `max_points_per_segment`, which is exposed through the experiment config and CLI.
 
 ### Data Work Needed
 
@@ -908,7 +908,7 @@ Current local sprint status:
 
 ### Artifact Hygiene
 
-The repository currently tracks many saved model checkpoints under `src/models/saved_models`.
+Historical saved model checkpoints have been removed from `src/models/saved_models`; new checkpoints should stay in `QDS/artifacts/` or another external run directory.
 
 This is not ideal because checkpoints are experiment artifacts, not source code. Keeping them under `src/` makes the package heavier and makes it harder to distinguish code changes from run outputs.
 
