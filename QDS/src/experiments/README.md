@@ -224,6 +224,30 @@ If the matrix process exits abnormally before it can finalize `run_status.json`,
 the launcher marks any stale `running` status as `failed` and updates the family
 run index.
 
+For multi-seed batches, use `scripts/run_benchmark_queue_tmux.sh` or
+`make range-benchmark-queue-tmux`. The queue launcher runs matrix commands
+sequentially so seeds do not compete for the same GPU/CPU/RAM, while one monitor
+pane samples the whole batch. Each queued row still writes a normal matrix run
+under `runs/<run_id>/`; queue-level logs and status events live under
+`queues/<queue_id>/`. Run `make benchmark-queue-preflight` first to check the
+queue tmux session name and benchmark prerequisites.
+
+Default queue plans are generated from `SEEDS=42,43,44`. To mix isolation runs
+with ordinary vectorized/cache runs, provide a tab-separated `PLAN_FILE`:
+
+```text
+range_real_usecase_512q_cache_legacy_seed42	42	--ranking_pair_sampling legacy
+range_real_usecase_512q_vectorized_cache_seed43	43	
+range_real_usecase_512q_vectorized_cache_seed44	44	
+```
+
+Then launch without attaching:
+
+```bash
+ATTACH=0 PLAN_FILE=artifacts/benchmarks/range_real_usecase/queues/my_plan.tsv \
+  scripts/run_benchmark_queue_tmux.sh
+```
+
 Operational helpers:
 
 ```bash

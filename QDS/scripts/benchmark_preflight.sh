@@ -10,26 +10,26 @@ Check local prerequisites before launching the range real-usecase benchmark.
 Options:
   --session NAME       tmux session name. Default: qds-range-benchmark.
   --csv-path PATH      Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
-  --cache-dir PATH     Cache directory. Default: artifacts/cache/range_workload_matrix_min_realistic.
+  --cache-dir PATH     Cache directory. Default: artifacts/cache/range_real_usecase.
   --artifact-root PATH Benchmark family root. Default:
-                       artifacts/benchmarks/range_workload_matrix_min_realistic.
+                       artifacts/benchmarks/range_real_usecase.
   --python PATH        Python executable. Default: ../.venv/bin/python.
   --min-free-gb N      Required free space on artifact filesystem. Default: 20.
   --min-ram-gb N       Warn below this available RAM threshold. Default: 32.
   --min-swap-gb N      Warn below this total swap threshold. Default: 8.
   -h, --help           Show this help.
 
-Environment variables with the same names used by run_range_benchmark_tmux.sh
-are honored: SESSION, CSV_PATH, CACHE_DIR, ARTIFACT_ROOT, PYTHON. Thresholds
-can also be set with MIN_FREE_GB, MIN_AVAILABLE_RAM_GB, and MIN_SWAP_GB.
+Environment variables with the same names used by the benchmark tmux launchers
+are honored: SESSION, CSV_PATH, CACHE_DIR, ARTIFACT_ROOT, PYTHON. Thresholds can
+also be set with MIN_FREE_GB, MIN_AVAILABLE_RAM_GB, and MIN_SWAP_GB.
 EOF
 }
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${SESSION:-qds-range-benchmark}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
-CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_matrix_min_realistic}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_matrix_min_realistic}"
+CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_real_usecase}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_real_usecase}"
 PYTHON="${PYTHON:-$QDS_ROOT/../.venv/bin/python}"
 MIN_FREE_GB="${MIN_FREE_GB:-20}"
 MIN_AVAILABLE_RAM_GB="${MIN_AVAILABLE_RAM_GB:-32}"

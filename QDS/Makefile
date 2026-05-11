@@ -9,7 +9,13 @@ RESULTS_DIR ?= artifacts/results/smoke_synthetic
 CSV_RESULTS_DIR ?= artifacts/results/smoke_cleaned_csv
 CLEANED_CSV ?=
 BENCHMARK_SESSION ?= qds-range-benchmark
+BENCHMARK_QUEUE_SESSION ?= qds-benchmark-queue
 BENCHMARK_RUN_ID ?=
+BENCHMARK_QUEUE_ID ?=
+BENCHMARK_SEEDS ?= 42,43,44
+BENCHMARK_CHILD_EXTRA_ARGS ?=
+BENCHMARK_PLAN_FILE ?=
+BENCHMARK_CONTINUE_ON_FAILURE ?= 0
 ATTACH ?=
 BENCHMARK_PROFILE ?= range_real_usecase
 BENCHMARK_VARIANTS ?= tf32_bf16_bs32_inf32
@@ -17,7 +23,7 @@ BENCHMARK_FAMILY ?= artifacts/benchmarks/range_real_usecase
 BENCHMARK_CACHE ?= artifacts/cache/range_real_usecase
 CONFIRM ?=
 
-.PHONY: help check-env install install-cpu install-cuda test typecheck smoke smoke-csv benchmark-preflight list-runs clean-smoke-artifacts range-benchmark-tmux
+.PHONY: help check-env install install-cpu install-cuda test typecheck smoke smoke-csv benchmark-preflight benchmark-queue-preflight list-runs clean-smoke-artifacts range-benchmark-tmux range-benchmark-queue-tmux
 
 help:
 	@echo "Targets:"
@@ -30,9 +36,11 @@ help:
 	@echo "  smoke       Run a tiny synthetic training/evaluation experiment"
 	@echo "  smoke-csv   Run a tiny cleaned-CSV training/evaluation experiment"
 	@echo "  benchmark-preflight  Check tmux/GPU/data/artifact prerequisites"
+	@echo "  benchmark-queue-preflight  Check prerequisites using BENCHMARK_QUEUE_SESSION"
 	@echo "  list-runs   List benchmark runs from BENCHMARK_FAMILY"
 	@echo "  clean-smoke-artifacts  Dry-run smoke artifact cleanup; set CONFIRM=1 to delete"
 	@echo "  range-benchmark-tmux  Launch the two-day range baseline benchmark in tmux with monitoring"
+	@echo "  range-benchmark-queue-tmux  Launch a sequential multi-seed range benchmark queue in tmux"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PYTHON=$(PYTHON)"
@@ -40,7 +48,13 @@ help:
 	@echo "  TYPECHECK_PATHS=$(TYPECHECK_PATHS)"
 	@echo "  CLEANED_CSV=$(CLEANED_CSV)"
 	@echo "  BENCHMARK_SESSION=$(BENCHMARK_SESSION)"
+	@echo "  BENCHMARK_QUEUE_SESSION=$(BENCHMARK_QUEUE_SESSION)"
 	@echo "  BENCHMARK_RUN_ID=$(BENCHMARK_RUN_ID)"
+	@echo "  BENCHMARK_QUEUE_ID=$(BENCHMARK_QUEUE_ID)"
+	@echo "  BENCHMARK_SEEDS=$(BENCHMARK_SEEDS)"
+	@echo "  BENCHMARK_CHILD_EXTRA_ARGS=$(BENCHMARK_CHILD_EXTRA_ARGS)"
+	@echo "  BENCHMARK_PLAN_FILE=$(BENCHMARK_PLAN_FILE)"
+	@echo "  BENCHMARK_CONTINUE_ON_FAILURE=$(BENCHMARK_CONTINUE_ON_FAILURE)"
 	@echo "  ATTACH=$(ATTACH)"
 	@echo "  BENCHMARK_PROFILE=$(BENCHMARK_PROFILE)"
 	@echo "  BENCHMARK_VARIANTS=$(BENCHMARK_VARIANTS)"
@@ -93,6 +107,9 @@ smoke-csv:
 benchmark-preflight:
 	SESSION="$(BENCHMARK_SESSION)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/benchmark_preflight.sh
 
+benchmark-queue-preflight:
+	SESSION="$(BENCHMARK_QUEUE_SESSION)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/benchmark_preflight.sh
+
 list-runs:
 	$(PYTHON) scripts/list_benchmark_runs.py --family "$(BENCHMARK_FAMILY)"
 
@@ -101,3 +118,6 @@ clean-smoke-artifacts:
 
 range-benchmark-tmux:
 	SESSION="$(BENCHMARK_SESSION)" RUN_ID="$(BENCHMARK_RUN_ID)" ATTACH="$(ATTACH)" PROFILE="$(BENCHMARK_PROFILE)" VARIANTS="$(BENCHMARK_VARIANTS)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/run_range_benchmark_tmux.sh
+
+range-benchmark-queue-tmux:
+	SESSION="$(BENCHMARK_QUEUE_SESSION)" QUEUE_ID="$(BENCHMARK_QUEUE_ID)" ATTACH="$(ATTACH)" PROFILE="$(BENCHMARK_PROFILE)" VARIANTS="$(BENCHMARK_VARIANTS)" SEEDS="$(BENCHMARK_SEEDS)" CHILD_EXTRA_ARGS="$(BENCHMARK_CHILD_EXTRA_ARGS)" PLAN_FILE="$(BENCHMARK_PLAN_FILE)" CONTINUE_ON_FAILURE="$(BENCHMARK_CONTINUE_ON_FAILURE)" PYTHON="$(PYTHON)" ARTIFACT_ROOT="$(BENCHMARK_FAMILY)" CACHE_DIR="$(BENCHMARK_CACHE)" scripts/run_benchmark_queue_tmux.sh

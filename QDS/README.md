@@ -1,6 +1,6 @@
-# AIS-QDS v2
+# AIS-QDS
 
-AIS-QDS v2 is the current shift-aware rebuild of the AIS query-driven simplification pipeline. It loads AIS trajectories, generates typed query workloads, trains a query-conditioned ranking model, and evaluates the resulting simplifier against learned and geometric baselines under matched and shifted workloads.
+AIS-QDS is the current shift-aware rebuild of the AIS query-driven simplification pipeline. It loads AIS trajectories, generates typed query workloads, trains a query-conditioned ranking model, and evaluates the resulting simplifier against learned and geometric baselines under matched and shifted workloads.
 
 ## What Is In This Folder
 
@@ -258,6 +258,55 @@ BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
 Use stable run IDs for comparable attempts. Include the workload, profile, data
 span, variant when relevant, and a short iteration suffix, for example
 `range_real_usecase_a`. Timestamped defaults are fine for exploratory runs.
+
+For sequential multi-seed or isolation batches, use the queue launcher. It runs
+one matrix command at a time in the left tmux pane, keeps one shared queue
+console and monitor log, and writes each child matrix run under the normal
+`artifacts/benchmarks/range_real_usecase/runs/<run_id>/` layout:
+
+```bash
+# Default vectorized/cache batch for seeds 42,43,44.
+make benchmark-queue-preflight
+ATTACH=0 make range-benchmark-queue-tmux
+
+# Same shape, but force a child training option for every queued run.
+BENCHMARK_CHILD_EXTRA_ARGS="--ranking_pair_sampling legacy" \
+  BENCHMARK_SEEDS=42,43,44 \
+  ATTACH=0 \
+  make range-benchmark-queue-tmux
+```
+
+For mixed queue rows, provide a tab-separated plan file with:
+`run_id<TAB>seed<TAB>child_extra_args`.
+
+```text
+range_real_usecase_512q_cache_legacy_seed42	42	--ranking_pair_sampling legacy
+range_real_usecase_512q_vectorized_cache_seed43	43	
+range_real_usecase_512q_vectorized_cache_seed44	44	
+```
+
+Launch it with:
+
+```bash
+BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_real_usecase/queues/my_plan.tsv \
+  BENCHMARK_CONTINUE_ON_FAILURE=1 \
+  ATTACH=0 \
+  make range-benchmark-queue-tmux
+```
+
+Queue-level artifacts live under
+`artifacts/benchmarks/range_real_usecase/queues/<queue_id>/`:
+
+```text
+queue_manifest.json
+queue_plan.tsv
+queue_runner.sh
+queue_status.jsonl
+queue_summary.json
+logs/
+  console.log
+  system_monitor.log
+```
 
 List the current benchmark family with:
 
