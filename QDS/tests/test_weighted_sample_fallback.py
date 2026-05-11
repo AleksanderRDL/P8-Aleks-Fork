@@ -79,7 +79,7 @@ def test_generate_typed_query_workload_small_dataset_still_works() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=8,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=42,
     )
     assert len(workload.typed_queries) == 8

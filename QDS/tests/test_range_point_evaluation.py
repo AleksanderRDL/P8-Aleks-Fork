@@ -56,7 +56,7 @@ def test_range_evaluation_scores_point_hits_not_trajectory_presence() -> None:
         points=points,
         boundaries=boundaries,
         typed_queries=[query],
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         compression_ratio=0.4,
     )
 
@@ -92,7 +92,7 @@ def test_range_evaluation_counts_duplicate_rows_as_distinct_point_hits() -> None
         points=points,
         boundaries=boundaries,
         typed_queries=[query],
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         compression_ratio=1.0 / 3.0,
     )
 

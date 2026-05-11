@@ -32,8 +32,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 ## Training Notes
 
-- Current experiment entrypoints train one pure workload per model. Mixed
-  workload helpers remain for low-level diagnostics only.
+- Current experiment entrypoints train one pure workload per model. The model
+  emits one score stream for that workload; per-type output heads are not part
+  of training or evaluation.
 - Windows never cross trajectory boundaries. Training prefilters windows with
   no positive labels for any active workload type before the model forward; any
   remaining per-type zero-positive lanes are still skipped for that type. The
@@ -46,7 +47,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   `checkpoint_smoothing_window`, and `early_stopping_patience` are explicit
   selection stabilizers.
 - Validation query-F1 uses the same canonical MLQDS score conversion as final
-  evaluation: one explicit workload head, `mlqds_score_mode`, and the
+  evaluation: one explicit workload score stream, `mlqds_score_mode`, and the
   temporal/diversity retained-mask simplifier.
 - AIS-scale stability knobs: `lr`, `pointwise_loss_weight`,
   `gradient_clip_norm`, `train_batch_size`, `inference_batch_size`,

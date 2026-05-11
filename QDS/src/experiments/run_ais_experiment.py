@@ -9,7 +9,7 @@ from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.experiment_cli import build_parser
 from src.experiments.experiment_config import build_experiment_config
-from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes, run_experiment_pipeline
+from src.experiments.experiment_pipeline_helpers import run_experiment_pipeline
 from src.experiments.torch_runtime import apply_torch_runtime_settings
 
 
@@ -96,10 +96,6 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    train_arg = args.train_workload_mix or args.workload_mix_train
-    eval_arg = args.eval_workload_mix or args.workload_mix_eval
-    train_mix, eval_mix = resolve_workload_mixes(train_arg, eval_arg, workload_keyword=args.workload)
-
     config = build_experiment_config(
         n_ships=args.n_ships,
         n_points=args.n_points,
@@ -138,8 +134,6 @@ def main() -> None:
         eval_csv_path=args.eval_csv_path,
         model_type=args.model_type,
         workload=args.workload,
-        train_workload_mix=train_mix,
-        eval_workload_mix=eval_mix,
         seed=args.seed,
         early_stopping_patience=args.early_stopping_patience,
         train_batch_size=args.train_batch_size,
@@ -290,8 +284,6 @@ def main() -> None:
     out = run_experiment_pipeline(
         config=config,
         trajectories=trajectories,
-        train_mix=train_mix,
-        eval_mix=eval_mix,
         results_dir=args.results_dir,
         save_model=args.save_model,
         save_queries_dir=args.save_queries_dir,

@@ -62,9 +62,8 @@ Parquet data keyed by source file identity and segmentation config.
 5. Evaluate MLQDS, uniform, Douglas-Peucker, and label Oracle on the eval workload.
 6. Write tables, JSON diagnostics, optional GeoJSON queries, and optional simplified CSVs.
 
-Current sprint policy is one model per pure workload. Use
-`--workload {range,knn,similarity,clustering}`. Explicit workload-mix arguments
-remain for compatibility but must contain exactly one positive query type.
+Experiment entrypoints train and evaluate one model per pure workload. Use
+`--workload {range,knn,similarity,clustering}`.
 
 ## Real-Usecase Range Profile
 
@@ -95,7 +94,7 @@ For the real-usecase profile, `n_queries` is only the minimum workload size;
 generation continues until the target is reached or `max_queries` is hit.
 When `--cache_dir` is set, generated workloads are cached under
 `<cache_dir>/workloads/` by data fingerprint, query config, seed, and workload
-mix. Use `--refresh_cache` to force regeneration.
+map. Use `--refresh_cache` to force regeneration.
 
 Direct matrix run:
 

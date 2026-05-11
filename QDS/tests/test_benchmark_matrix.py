@@ -31,7 +31,7 @@ from src.experiments.benchmark_matrix import (
     _variant_run_dir,
 )
 from src.experiments.experiment_config import build_experiment_config
-from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_mixes
+from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
 
 
 def _profile_core_args() -> list[str]:
@@ -85,13 +85,11 @@ def test_matrix_name_list_rejects_mixed_workloads() -> None:
 
 
 def test_experiment_workload_resolution_is_pure_only() -> None:
-    assert resolve_workload_mixes(None, None, workload_keyword="range") == ({"range": 1.0}, {"range": 1.0})
+    assert resolve_workload_maps("range") == ({"range": 1.0}, {"range": 1.0})
+    assert resolve_workload_maps("knn") == ({"knn": 1.0}, {"knn": 1.0})
 
     with pytest.raises(ValueError, match="no longer supported"):
-        resolve_workload_mixes(None, None, workload_keyword="mixed")
-
-    with pytest.raises(ValueError, match="exactly one query type"):
-        resolve_workload_mixes("range=0.5,knn=0.5", None, workload_keyword="range")
+        resolve_workload_maps("mixed")
 
 
 def test_selected_variants_default_to_answer_f1_baseline() -> None:

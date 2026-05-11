@@ -26,7 +26,7 @@ def chunked_cross_attention_context(
     query-conditioned context vector.  This is the correct direction for
     per-point query context: a point inside a range-query box will receive
     high attention from range-query embeddings and low attention from others,
-    giving the per-type head a clear conditioning signal.
+    giving the pure-workload score head a clear conditioning signal.
 
     Chunking splits the key/value (query) space.  Because softmax is applied
     independently inside each chunk, this is an approximation unless

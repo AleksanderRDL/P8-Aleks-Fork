@@ -205,11 +205,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pure query workload type for this model run.",
     )
 
-    parser.add_argument("--train_workload_mix", type=str, default=None)
-    parser.add_argument("--eval_workload_mix", type=str, default=None)
-    parser.add_argument("--workload_mix_train", type=str, default=None)
-    parser.add_argument("--workload_mix_eval", type=str, default=None)
-
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results_dir", type=str, default="results")
     parser.add_argument(
@@ -288,7 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="rank",
         choices=MLQDS_SCORE_MODES,
-        help="Convert the active workload head to simplification scores using per-trajectory ranks, sigmoid logits, or raw logits.",
+        help="Convert pure workload logits to simplification scores using per-trajectory ranks, sigmoid logits, or raw logits.",
     )
     parser.add_argument(
         "--mlqds_score_temperature",

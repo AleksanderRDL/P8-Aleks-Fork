@@ -125,7 +125,7 @@ def test_range_acceptance_rejects_overly_broad_queries() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=5,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=1,
         range_spatial_fraction=1.0,
         range_time_fraction=1.0,
@@ -147,7 +147,7 @@ def test_range_acceptance_keeps_requested_query_count_when_possible() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=8,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=2,
         range_spatial_fraction=0.02,
         range_time_fraction=0.04,

@@ -18,6 +18,7 @@ from src.evaluation.metrics import (
     f1_score,
 )
 from src.queries.query_executor import execute_typed_query
+from src.queries.query_types import normalize_pure_workload_map
 
 POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 POINT_AWARE_SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
@@ -285,7 +286,7 @@ def score_retained_mask(
     boundaries: list[tuple[int, int]],
     retained_mask: torch.Tensor,
     typed_queries: list[dict],
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     query_cache: EvaluationQueryCache | None = None,
 ) -> tuple[float, dict[str, float], float, dict[str, float]]:
     """Score a precomputed retained mask with the final query-F1 semantics.
@@ -392,13 +393,10 @@ def score_retained_mask(
 
     per_type_answer = {name: (sum(v) / len(v) if v else 0.0) for name, v in answer_scores.items()}
     per_type_combined = {name: (sum(v) / len(v) if v else 0.0) for name, v in combined_scores.items()}
-    weight_sum = sum(workload_mix.values()) if workload_mix else 0.0
-    if weight_sum <= 0.0:
-        normalized_mix = {name: 1.0 / 4.0 for name in per_type_answer}
-    else:
-        normalized_mix = {name: workload_mix.get(name, 0.0) / weight_sum for name in per_type_answer}
-    aggregate_answer = sum(normalized_mix[name] * per_type_answer[name] for name in per_type_answer)
-    aggregate_combined = sum(normalized_mix[name] * per_type_combined[name] for name in per_type_combined)
+    workload_weights = normalize_pure_workload_map(workload_map)
+    normalized_map = {name: workload_weights.get(name, 0.0) for name in per_type_answer}
+    aggregate_answer = sum(normalized_map[name] * per_type_answer[name] for name in per_type_answer)
+    aggregate_combined = sum(normalized_map[name] * per_type_combined[name] for name in per_type_combined)
     return float(aggregate_answer), per_type_answer, float(aggregate_combined), per_type_combined
 
 
@@ -435,7 +433,7 @@ def evaluate_method(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     typed_queries: list[dict],
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     compression_ratio: float,
     return_mask: bool = False,
     query_cache: EvaluationQueryCache | None = None,
@@ -450,7 +448,7 @@ def evaluate_method(
         boundaries=boundaries,
         retained_mask=retained_mask,
         typed_queries=typed_queries,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         query_cache=query_cache,
     )
     comp = float(retained_mask.float().mean().item())
@@ -638,7 +636,7 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
 
 
 def print_shift_table(shift_grid: dict[str, dict[str, float]]) -> str:
-    """Render train-mix to eval-mix aggregate F1 matrix table. See src/evaluation/README.md for details."""
+    """Render train-workload to eval-workload aggregate F1 matrix table."""
     eval_cols = sorted({k for row in shift_grid.values() for k in row.keys()})
     col_w = 22
     header_label = "Train\\Eval"

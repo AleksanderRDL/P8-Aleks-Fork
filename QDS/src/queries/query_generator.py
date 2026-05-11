@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from src.experiments.experiment_config import TypedQueryWorkload
-from src.queries.query_types import normalize_workload_mix, pad_query_features
+from src.queries.query_types import normalize_pure_workload_map, pad_query_features
 from src.queries.workload_diagnostics import range_query_diagnostic
 
 DENSITY_ANCHOR_PROBABILITY = 0.70
@@ -560,7 +560,7 @@ def _accept_range_query(
 def generate_typed_query_workload(
     trajectories: list[torch.Tensor],
     n_queries: int,
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     seed: int,
     target_coverage: float | None = None,
     max_queries: int | None = None,
@@ -589,12 +589,12 @@ def generate_typed_query_workload(
     b = _dataset_bounds(points)
     boundaries = _trajectory_boundaries(trajectories)
 
-    mix = normalize_workload_mix(workload_mix)
+    normalized_workload = normalize_pure_workload_map(workload_map)
     g = torch.Generator().manual_seed(int(seed))
     density_weights = _density_anchor_weights(points)
 
-    names = list(mix.keys())
-    weights = torch.tensor([mix[n] for n in names], dtype=torch.float32)
+    names = list(normalized_workload.keys())
+    weights = torch.tensor([normalized_workload[n] for n in names], dtype=torch.float32)
     coverage_target = _normalize_target_coverage(target_coverage)
     acceptance_enabled = _range_acceptance_enabled(
         range_min_point_hits,

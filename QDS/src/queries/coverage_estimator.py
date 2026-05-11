@@ -73,7 +73,7 @@ def estimate_range_coverage(
             workload = generate_typed_query_workload(
                 trajectories=sampled,
                 n_queries=q,
-                workload_mix={"range": 1.0},
+                workload_map={"range": 1.0},
                 seed=int(seed),
                 target_coverage=target_coverage,
                 range_spatial_fraction=range_spatial_fraction,

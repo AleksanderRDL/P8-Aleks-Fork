@@ -36,7 +36,7 @@ def test_query_generation_can_expand_toward_coverage_target() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=10,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=11,
         target_coverage=0.95,
         max_queries=300,
@@ -55,7 +55,7 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=25,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=3,
         target_coverage=0.01,
         max_queries=200,
@@ -73,13 +73,13 @@ def test_smaller_range_fraction_reduces_query_footprint() -> None:
     default_workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=8,
     )
     small_workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=8,
         range_spatial_fraction=0.02,
         range_time_fraction=0.04,
@@ -96,7 +96,7 @@ def test_absolute_range_controls_are_stable_workload_footprint() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=20,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=8,
         range_spatial_km=2.2,
         range_time_hours=6.0,
@@ -113,7 +113,7 @@ def test_range_footprint_jitter_can_be_disabled() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=5,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=8,
         range_spatial_km=2.2,
         range_time_hours=6.0,
@@ -200,7 +200,7 @@ def test_configured_workload_expands_to_max_queries_when_target_needs_more_queri
     workload = _generate_typed_query_workload_for_config(
         trajectories=trajectories,
         n_queries=4,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=12,
         config=cfg,
     )
@@ -224,7 +224,7 @@ def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> N
     first = _generate_typed_query_workload_for_config(
         trajectories=trajectories,
         n_queries=6,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=12,
         config=cfg,
         cache_label="train",
@@ -232,7 +232,7 @@ def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> N
     second = _generate_typed_query_workload_for_config(
         trajectories=trajectories,
         n_queries=6,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=12,
         config=cfg,
         cache_label="train",
@@ -255,7 +255,7 @@ def test_coverage_generation_allows_overlapping_query_hits() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=10,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=4,
         target_coverage=0.60,
         max_queries=200,
@@ -276,7 +276,7 @@ def test_query_generation_accepts_percent_coverage() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=10,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=22,
         target_coverage=30,
         max_queries=250,
@@ -293,7 +293,7 @@ def test_range_and_knn_generation_biases_dense_regions() -> None:
     range_workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=101,
     )
     range_dense = 0
@@ -306,7 +306,7 @@ def test_range_and_knn_generation_biases_dense_regions() -> None:
     knn_workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
-        workload_mix={"knn": 1.0},
+        workload_map={"knn": 1.0},
         seed=202,
     )
     knn_dense = sum(
@@ -324,7 +324,7 @@ def test_knn_generation_uses_configured_k() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=12,
-        workload_mix={"knn": 1.0},
+        workload_map={"knn": 1.0},
         seed=404,
         knn_k=12,
     )
@@ -339,7 +339,7 @@ def test_coverage_generation_uses_density_biased_knn_anchors() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=10,
-        workload_mix={"knn": 1.0},
+        workload_map={"knn": 1.0},
         seed=303,
         target_coverage=0.80,
         max_queries=120,

@@ -48,7 +48,7 @@ class DataConfig:
 
 @dataclass
 class QueryConfig:
-    """Query generation and workload-mix configuration. See src/queries/README.md for details."""
+    """Query generation and pure workload configuration. See src/queries/README.md for details."""
 
     n_queries: int = 128
     target_coverage: float | None = None
@@ -59,12 +59,6 @@ class QueryConfig:
     range_time_hours: float | None = None
     range_footprint_jitter: float = 0.5
     workload: str = "range"
-    train_workload_mix: dict[str, float] = field(
-        default_factory=lambda: {"range": 1.0}
-    )
-    eval_workload_mix: dict[str, float] = field(
-        default_factory=lambda: {"range": 1.0}
-    )
     similarity_top_k: int = 5
     knn_k: int = 12
     range_min_point_hits: int | None = None
@@ -82,7 +76,7 @@ class QueryConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueryConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**data)
+        return cls(**_known_dataclass_values(cls, data))
 
 
 @dataclass
@@ -107,7 +101,6 @@ class ModelConfig:
     pointwise_loss_weight: float = 0.25
     gradient_clip_norm: float = 1.0
     l2_score_weight: float = 1e-4
-    dirichlet_alpha: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])
     early_stopping_patience: int = 0
     train_batch_size: int = 16
     inference_batch_size: int = 16
@@ -270,8 +263,6 @@ def build_experiment_config(
     refresh_cache: bool = False,
     model_type: str = "baseline",
     workload: str = "range",
-    train_workload_mix: dict[str, float] | None = None,
-    eval_workload_mix: dict[str, float] | None = None,
     seed: int = 42,
     early_stopping_patience: int = 0,
     train_batch_size: int = 16,
@@ -332,8 +323,6 @@ def build_experiment_config(
             range_duplicate_iou_threshold=range_duplicate_iou_threshold,
             range_acceptance_max_attempts=range_acceptance_max_attempts,
             workload=workload,
-            train_workload_mix=train_workload_mix or {"range": 1.0},
-            eval_workload_mix=eval_workload_mix or {"range": 1.0},
             knn_k=knn_k,
         ),
         model=ModelConfig(

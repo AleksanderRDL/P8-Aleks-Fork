@@ -12,10 +12,10 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Methods
 
-- `MLQDSMethod` uses the trained model, persisted scaler, and eval workload to produce per-point scores for one explicit workload type. The default score mode rank-normalizes that workload head within each trajectory before simplification. Benchmarkable alternatives are `rank_tie`, `raw`, `sigmoid`, `temperature_sigmoid`, `zscore_sigmoid`, and `rank_confidence`. Model inference uses CUDA by default when available, while retained masks stay on the original point tensor device for evaluation.
+- `MLQDSMethod` uses the trained model, persisted scaler, and eval workload to produce per-point scores for one explicit workload type. The default score mode rank-normalizes that score stream within each trajectory before simplification. Benchmarkable alternatives are `rank_tie`, `raw`, `sigmoid`, `temperature_sigmoid`, `zscore_sigmoid`, and `rank_confidence`. Model inference uses CUDA by default when available, while retained masks stay on the original point tensor device for evaluation.
 - `UniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
 - `DouglasPeuckerMethod` is a true recursive Douglas-Peucker baseline that keeps endpoints and repeatedly splits the current highest-error segment until the compression budget is filled.
-- `OracleMethod` is an additive-label greedy diagnostic. It uses oracle labels for the explicit workload head, but it is not an exact combinatorial optimizer for final retained-set F1.
+- `OracleMethod` is an additive-label greedy diagnostic. It uses oracle labels for the explicit workload, but it is not an exact combinatorial optimizer for final retained-set F1.
 
 ## Metrics
 

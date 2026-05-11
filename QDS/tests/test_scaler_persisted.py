@@ -28,8 +28,7 @@ def test_scaler_persisted(tmp_path: Path) -> None:
         scaler=scaler,
         config=cfg,
         epochs_trained=3,
-        train_workload_mix={"range": 1.0},
-        eval_workload_mix={"knn": 1.0},
+        workload_type="range",
     )
 
     ckpt = tmp_path / "model.pt"
@@ -40,8 +39,7 @@ def test_scaler_persisted(tmp_path: Path) -> None:
     p2 = forward_predict(loaded, points, queries, q_ids)
     assert torch.allclose(p1, p2, atol=1e-7)
     assert loaded.epochs_trained == 3
-    assert loaded.train_workload_mix == {"range": 1.0}
-    assert loaded.eval_workload_mix == {"knn": 1.0}
+    assert loaded.workload_type == "range"
 
 
 def test_windowed_predict_batching_matches_single_window_loop() -> None:
@@ -50,7 +48,7 @@ def test_windowed_predict_batching_matches_single_window_loop() -> None:
     model.eval()
     points = torch.randn(30, 7)
     queries = torch.randn(4, 12)
-    q_ids = torch.tensor([0, 1, 2, 3], dtype=torch.long)
+    q_ids = torch.zeros((4,), dtype=torch.long)
     boundaries = [(0, 10), (10, 20), (20, 30)]
 
     pred_single = windowed_predict(
@@ -84,7 +82,7 @@ def test_forward_predict_batch_size_does_not_change_predictions() -> None:
     model.eval()
     points = torch.randn(36, 7)
     queries = torch.randn(6, 12)
-    q_ids = torch.tensor([0, 1, 2, 3, 0, 1], dtype=torch.long)
+    q_ids = torch.zeros((6,), dtype=torch.long)
     boundaries = [(0, 12), (12, 24), (24, 36)]
     scaler = FeatureScaler.fit(points, queries)
     art = ModelArtifacts(
@@ -125,7 +123,7 @@ def test_windowed_predict_cuda_matches_cpu() -> None:
     model.eval()
     points = torch.randn(30, 7)
     queries = torch.randn(4, 12)
-    q_ids = torch.tensor([0, 1, 2, 3], dtype=torch.long)
+    q_ids = torch.zeros((4,), dtype=torch.long)
     boundaries = [(0, 10), (10, 20), (20, 30)]
 
     pred_cpu = windowed_predict(
@@ -177,7 +175,7 @@ def test_forward_predict_cuda_matches_cpu() -> None:
     model.eval()
     points = torch.randn(24, 7)
     queries = torch.randn(5, 12)
-    q_ids = torch.tensor([0, 1, 2, 3, 0], dtype=torch.long)
+    q_ids = torch.zeros((5,), dtype=torch.long)
     boundaries = [(0, 12), (12, 24)]
     scaler = FeatureScaler.fit(points, queries)
     art = ModelArtifacts(

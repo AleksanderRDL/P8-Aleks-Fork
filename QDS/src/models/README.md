@@ -16,12 +16,14 @@ This module contains the query-conditioned trajectory encoder used by AIS-QDS.
 points[L,Fp] -> point encoder -> + sinusoidal positional encoding -> local Transformer -> H[L,D]
 queries[M,Fq] + query_type_ids[M] -> type embedding -> query encoder -> Q[M,D]
 H and Q -> chunked cross-attention -> context C[L,D]
-H + C -> four per-type heads -> logits[L,4]
+H + C -> single pure-workload score head -> logits[L]
 ```
 
 ## Key Behavior
 
-- `TrajectoryQDSModel` expects `query_type_ids` during training and falls back to zero IDs only in eval mode.
+- `TrajectoryQDSModel` expects `query_type_ids` for every forward call. Current
+  experiment paths train one pure workload per model and return one score per
+  point, not four per-type output heads.
 - `chunked_cross_attention_context` accumulates query-chunk outputs and divides by the chunk count, so context scale stays stable as workloads grow. The result is exact when `query_chunk_size >= n_queries`; otherwise it is a bounded approximation because each chunk has its own attention softmax.
 - Cross-attention disables attention-weight materialization because the weights are not consumed by the pipeline.
 - Sinusoidal positional encodings are cached in a non-persistent buffer keyed by effective length/device/dtype behavior, so repeated fixed-window training and inference forwards avoid rebuilding them.
@@ -32,6 +34,6 @@ H + C -> four per-type heads -> logits[L,4]
 
 - Point features: 7 columns for the baseline model, 8 for the turn-aware model.
 - Query features: 12 padded features from `src.queries.query_types.pad_query_features`.
-- Output: one logit per query type for each point.
+- Output: one pure-workload logit for each point.
 - Default query chunk size: 2048. Current real-usecase range benchmarks keep the
   workload below that so cross-attention runs as one exact query chunk.

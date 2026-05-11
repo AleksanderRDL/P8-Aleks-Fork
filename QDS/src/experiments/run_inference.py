@@ -41,7 +41,6 @@ from src.evaluation.evaluate_methods import (
 )
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import NUM_QUERY_TYPES, single_workload_type
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import load_checkpoint
 from src.experiments.torch_runtime import (
@@ -122,11 +121,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--knn_k", type=int, default=12, help="Number of nearest trajectories in generated kNN queries.")
     p.add_argument(
-        "--workload_mix",
+        "--workload",
         type=str,
         default=None,
-        help="Override eval workload mix, e.g. 'range=1.0' or 'range=0.5,knn=0.5'. "
-             "Default: use mix saved in checkpoint; else fall back to 100%% range.",
+        choices=["range", "knn", "similarity", "clustering"],
+        help="Pure eval workload type. Default: use pure workload saved in checkpoint; else range.",
     )
     p.add_argument(
         "--compression_ratio",
@@ -213,27 +212,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _parse_mix(text: str) -> dict[str, float]:
-    mix: dict[str, float] = {}
-    for item in text.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if "=" not in item:
-            raise ValueError(f"Invalid workload mix token '{item}'. Expected 'type=weight'.")
-        k, v = item.split("=", 1)
-        mix[k.strip().lower()] = float(v.strip())
-    if not mix:
-        raise ValueError("Empty workload mix.")
-    return mix
-
-
-def _resolve_eval_mix(cli_mix: str | None, checkpoint_mix: dict[str, float] | None) -> dict[str, float]:
-    if cli_mix:
-        return _parse_mix(cli_mix)
-    if checkpoint_mix:
-        return dict(checkpoint_mix)
-    return {"range": 1.0}
+def _resolve_eval_workload(workload: str | None, checkpoint_workload: str | None) -> str:
+    if workload:
+        return workload
+    if checkpoint_workload:
+        return checkpoint_workload
+    return "range"
 
 
 def main() -> None:
@@ -242,8 +226,7 @@ def main() -> None:
     print(f"[load-checkpoint] {args.checkpoint}", flush=True)
     artifacts = load_checkpoint(args.checkpoint)
     saved_cfg = artifacts.config
-    saved_train_mix = artifacts.train_workload_mix
-    saved_eval_mix = artifacts.eval_workload_mix
+    saved_workload = artifacts.workload_type or saved_cfg.query.workload
     precision = args.float32_matmul_precision or str(getattr(saved_cfg.model, "float32_matmul_precision", "highest"))
     allow_tf32 = (
         bool(args.allow_tf32)
@@ -266,7 +249,7 @@ def main() -> None:
     print(
         f"  model_type={saved_cfg.model.model_type}  "
         f"epochs_trained={artifacts.epochs_trained}  "
-        f"train_mix={saved_train_mix}  eval_mix={saved_eval_mix}  "
+        f"workload={saved_workload}  "
         f"float32_matmul_precision={runtime_settings['float32_matmul_precision']}  "
         f"allow_tf32={runtime_settings['tf32_matmul_allowed']}  "
         f"amp_mode={amp_mode}  "
@@ -274,11 +257,12 @@ def main() -> None:
         flush=True,
     )
 
-    eval_mix = _resolve_eval_mix(args.workload_mix, saved_eval_mix or saved_train_mix)
+    eval_workload_type = _resolve_eval_workload(args.workload, saved_workload)
+    eval_workload_map = {eval_workload_type: 1.0}
     compression_ratio = (
         float(args.compression_ratio) if args.compression_ratio is not None else float(saved_cfg.model.compression_ratio)
     )
-    print(f"[eval-config] eval_mix={eval_mix}  compression_ratio={compression_ratio}", flush=True)
+    print(f"[eval-config] workload={eval_workload_type}  compression_ratio={compression_ratio}", flush=True)
 
     t0 = time.perf_counter()
     print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
@@ -332,7 +316,7 @@ def main() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=int(args.n_queries),
-        workload_mix=eval_mix,
+        workload_map=eval_workload_map,
         seed=int(args.seed),
         target_coverage=args.query_coverage,
         max_queries=args.max_queries,
@@ -363,8 +347,8 @@ def main() -> None:
     trained = TrainingOutputs(
         model=artifacts.model,
         scaler=artifacts.scaler,
-        labels=torch.zeros((1, NUM_QUERY_TYPES), dtype=torch.float32),
-        labelled_mask=torch.zeros((1,), dtype=torch.bool),
+        labels=torch.zeros((1, 4), dtype=torch.float32),
+        labelled_mask=torch.zeros((1, 4), dtype=torch.bool),
         history=[],
         epochs_trained=int(artifacts.epochs_trained),
     )
@@ -374,7 +358,7 @@ def main() -> None:
             name="MLQDS",
             trained=trained,
             workload=workload,
-            workload_type=single_workload_type(eval_mix),
+            workload_type=eval_workload_type,
             score_mode=str(getattr(saved_cfg.model, "mlqds_score_mode", "rank")),
             score_temperature=float(getattr(saved_cfg.model, "mlqds_score_temperature", 1.0)),
             rank_confidence_weight=float(getattr(saved_cfg.model, "mlqds_rank_confidence_weight", 0.15)),
@@ -399,7 +383,7 @@ def main() -> None:
             points=points,
             boundaries=boundaries,
             typed_queries=workload.typed_queries,
-            workload_mix=eval_mix,
+            workload_map=eval_workload_map,
             compression_ratio=compression_ratio,
             return_mask=method.name == "MLQDS" or save_masks,
             query_cache=query_cache,
@@ -427,7 +411,7 @@ def main() -> None:
         "csv_path": str(args.csv_path),
         "n_trajectories": len(trajectories),
         "n_points": int(points.shape[0]),
-        "eval_mix": eval_mix,
+        "workload": eval_workload_type,
         "compression_ratio": compression_ratio,
         "inference_batch_size": inference_batch_size,
         "query_coverage": workload.coverage_fraction,

@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 
 from src.models.attention_utils import chunked_cross_attention_context
-from src.queries.query_types import NUM_QUERY_TYPES
 
 
 class TrajectoryQDSModel(nn.Module):
@@ -49,7 +48,10 @@ class TrajectoryQDSModel(nn.Module):
         )
         self.local_transformer = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
 
-        self.type_embedding = nn.Embedding(NUM_QUERY_TYPES, type_embed_dim)
+        # The project trains one pure workload per model. Query type still
+        # conditions the query embedding, but prediction uses one shared score
+        # head instead of per-type output heads.
+        self.type_embedding = nn.Embedding(4, type_embed_dim)
         self.query_encoder = nn.Sequential(
             nn.Linear(query_dim + type_embed_dim, embed_dim),
             nn.ReLU(),
@@ -64,17 +66,12 @@ class TrajectoryQDSModel(nn.Module):
             batch_first=True,
         )
 
-        # Four independent output heads — one per query type — so each type's
-        # gradient flows through its own weights and doesn't compete with the others.
-        self.type_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(embed_dim, embed_dim // 2),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(embed_dim // 2, 1),
-            )
-            for _ in range(NUM_QUERY_TYPES)
-        ])
+        self.score_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim // 2, 1),
+        )
 
     def _build_positional_encoding(
         self,
@@ -119,11 +116,9 @@ class TrajectoryQDSModel(nn.Module):
         query_type_ids: torch.Tensor | None,
         padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Predict per-point, per-type scores. See src/models/README.md for details."""
+        """Predict one per-point score stream for a pure workload."""
         if query_type_ids is None:
-            if self.training:
-                raise RuntimeError("query_type_ids must be provided in training mode.")
-            query_type_ids = torch.zeros((queries.shape[0],), dtype=torch.long, device=queries.device)
+            raise RuntimeError("query_type_ids must be provided for pure-workload prediction.")
 
         h = self.point_encoder(points)
         h = h + self._positional_encoding(h.shape[1], h.device, h.dtype).unsqueeze(0)
@@ -141,10 +136,7 @@ class TrajectoryQDSModel(nn.Module):
             point_padding_mask=padding_mask,
         )
 
-        logits = torch.cat(
-            [head(h + context) for head in self.type_heads], dim=-1
-        )
-        return logits
+        return self.score_head(h + context).squeeze(-1)
 
 
 def normalize_points_and_queries(

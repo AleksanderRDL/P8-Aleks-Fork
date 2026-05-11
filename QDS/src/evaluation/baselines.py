@@ -209,7 +209,7 @@ class OracleMethod:
     oracle_kind: str = "additive_label_greedy"
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
-        """Simplify using oracle label gains for one explicit workload head."""
+        """Simplify using oracle label gains for one explicit workload."""
         _name, type_idx = workload_type_head(self.workload_type)
         if self.labels.ndim != 2 or type_idx >= self.labels.shape[1]:
             raise ValueError("Oracle labels must have shape [n_points, NUM_QUERY_TYPES].")

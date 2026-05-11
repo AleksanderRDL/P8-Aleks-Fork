@@ -118,7 +118,7 @@ def test_evaluate_method_scores_noop_above_degenerate_baseline() -> None:
         points=points,
         boundaries=boundaries,
         typed_queries=typed_queries,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         compression_ratio=1.0,
     )
     drop_all = evaluate_method(
@@ -126,7 +126,7 @@ def test_evaluate_method_scores_noop_above_degenerate_baseline() -> None:
         points=points,
         boundaries=boundaries,
         typed_queries=typed_queries,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         compression_ratio=0.0,
     )
 
@@ -162,14 +162,14 @@ def test_score_retained_mask_matches_evaluate_method() -> None:
         boundaries=boundaries,
         retained_mask=retained,
         typed_queries=queries,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
     )
     evaluated = evaluate_method(
         method=FixedMaskMethod(retained),
         points=points,
         boundaries=boundaries,
         typed_queries=queries,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         compression_ratio=0.75,
     )
 
@@ -229,7 +229,7 @@ def test_score_retained_mask_cache_reuses_full_query_results(monkeypatch) -> Non
             boundaries=boundaries,
             retained_mask=retained,
             typed_queries=queries,
-            workload_mix={"knn": 1.0},
+            workload_map={"knn": 1.0},
             query_cache=query_cache,
         )
 
@@ -273,7 +273,7 @@ def test_score_retained_mask_cache_rejects_different_workload() -> None:
             boundaries=boundaries,
             retained_mask=torch.tensor([True, False]),
             typed_queries=other_queries,
-            workload_mix={"range": 1.0},
+            workload_map={"range": 1.0},
             query_cache=query_cache,
         )
 
@@ -309,7 +309,7 @@ def test_knn_f1_penalizes_missing_representative_points() -> None:
         boundaries=boundaries,
         retained_mask=retained,
         typed_queries=queries,
-        workload_mix={"knn": 1.0},
+        workload_map={"knn": 1.0},
     )
 
     # Pure answer F1: trajectory 0 still found via point 0 (closest to anchor).
@@ -358,15 +358,7 @@ def test_temporal_score_hybrid_zero_temporal_fraction_is_pure_score() -> None:
 
 
 def test_pure_workload_scores_rank_mode_is_canonical_per_trajectory() -> None:
-    predictions = torch.tensor(
-        [
-            [0.1, 0.0, 0.0, 0.0],
-            [0.9, 0.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0, 0.0],
-            [0.2, 0.0, 0.0, 0.0],
-        ],
-        dtype=torch.float32,
-    )
+    predictions = torch.tensor([0.1, 0.9, 0.5, 0.2], dtype=torch.float32)
 
     scores = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="rank")
 
@@ -374,33 +366,17 @@ def test_pure_workload_scores_rank_mode_is_canonical_per_trajectory() -> None:
 
 
 def test_pure_workload_scores_support_raw_and_sigmoid_modes() -> None:
-    predictions = torch.tensor(
-        [
-            [0.1, 0.0, 0.0, 0.0],
-            [0.9, 0.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0, 0.0],
-            [0.2, 0.0, 0.0, 0.0],
-        ],
-        dtype=torch.float32,
-    )
+    predictions = torch.tensor([0.1, 0.9, 0.5, 0.2], dtype=torch.float32)
 
     raw = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="raw")
     sigmoid = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="sigmoid")
 
     assert raw.tolist() == pytest.approx([0.1, 0.9, 0.5, 0.2])
-    assert sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions[:, 0]).tolist())
+    assert sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions).tolist())
 
 
 def test_pure_workload_scores_support_tie_aware_rank() -> None:
-    predictions = torch.tensor(
-        [
-            [0.1, 0.0, 0.0, 0.0],
-            [0.9, 0.0, 0.0, 0.0],
-            [0.9, 0.0, 0.0, 0.0],
-            [0.2, 0.0, 0.0, 0.0],
-        ],
-        dtype=torch.float32,
-    )
+    predictions = torch.tensor([0.1, 0.9, 0.9, 0.2], dtype=torch.float32)
 
     scores = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="rank_tie")
 
@@ -408,15 +384,7 @@ def test_pure_workload_scores_support_tie_aware_rank() -> None:
 
 
 def test_pure_workload_scores_support_calibrated_modes() -> None:
-    predictions = torch.tensor(
-        [
-            [0.1, 0.0, 0.0, 0.0],
-            [0.9, 0.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0, 0.0],
-            [0.2, 0.0, 0.0, 0.0],
-        ],
-        dtype=torch.float32,
-    )
+    predictions = torch.tensor([0.1, 0.9, 0.5, 0.2], dtype=torch.float32)
 
     zscore = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="zscore_sigmoid")
     blend = pure_workload_scores(
@@ -436,11 +404,11 @@ def test_pure_workload_scores_support_calibrated_modes() -> None:
 
     assert torch.all((zscore >= 0.0) & (zscore <= 1.0))
     assert torch.all((blend >= 0.0) & (blend <= 1.0))
-    assert temp_sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions[:, 0] / 2.0).tolist())
+    assert temp_sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions / 2.0).tolist())
 
 
 def test_pure_workload_scores_zscore_mode_handles_flat_logits() -> None:
-    predictions = torch.ones((4, 4), dtype=torch.float32)
+    predictions = torch.ones((4,), dtype=torch.float32)
 
     scores = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="zscore_sigmoid")
 
@@ -448,7 +416,7 @@ def test_pure_workload_scores_zscore_mode_handles_flat_logits() -> None:
 
 
 def test_pure_workload_scores_reject_unknown_mode() -> None:
-    predictions = torch.zeros((4, 4), dtype=torch.float32)
+    predictions = torch.zeros((4,), dtype=torch.float32)
 
     with pytest.raises(ValueError, match="score_mode"):
         pure_workload_scores(predictions, [(0, 4)], "range", score_mode="not-a-mode")

@@ -13,7 +13,6 @@ from src.experiments.experiment_config import ExperimentConfig
 from src.experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
-from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.scaler import FeatureScaler
 from src.training.train_model import TrainingOutputs
 from src.training.trajectory_batching import batch_windows, build_trajectory_windows
@@ -27,8 +26,7 @@ class ModelArtifacts:
     scaler: FeatureScaler
     config: ExperimentConfig
     epochs_trained: int = 0
-    train_workload_mix: dict[str, float] | None = None
-    eval_workload_mix: dict[str, float] | None = None
+    workload_type: str | None = None
 
 
 def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
@@ -43,8 +41,7 @@ def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
         "scaler": artifacts.scaler.to_dict(),
         "config": artifacts.config.to_dict(),
         "epochs_trained": int(artifacts.epochs_trained),
-        "train_workload_mix": artifacts.train_workload_mix,
-        "eval_workload_mix": artifacts.eval_workload_mix,
+        "workload_type": artifacts.workload_type or artifacts.config.query.workload,
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
@@ -73,8 +70,7 @@ def load_checkpoint(path: str) -> ModelArtifacts:
         scaler=scaler,
         config=cfg,
         epochs_trained=int(payload.get("epochs_trained", 0)),
-        train_workload_mix=payload.get("train_workload_mix"),
-        eval_workload_mix=payload.get("eval_workload_mix"),
+        workload_type=str(payload.get("workload_type") or cfg.query.workload),
     )
 
 
@@ -101,6 +97,14 @@ def _resolve_predict_device(model: torch.nn.Module, device: torch.device | str |
     return _model_device(model)
 
 
+def _pure_query_type_id(query_type_ids: torch.Tensor) -> int:
+    """Return the only query type in a pure workload, rejecting mixed IDs."""
+    ids = torch.unique(query_type_ids.detach().cpu())
+    if int(ids.numel()) != 1:
+        raise ValueError("Pure-workload prediction requires exactly one query type id.")
+    return int(ids[0].item())
+
+
 def windowed_predict(
     model: TrajectoryQDSModel,
     norm_points: torch.Tensor,
@@ -113,7 +117,7 @@ def windowed_predict(
     device: torch.device | str | None = None,
     amp_mode: str = "off",
 ) -> torch.Tensor:
-    """Run per-window inference and average overlapping predictions. See src/training/README.md for details.
+    """Run per-window pure-workload inference and average overlapping predictions. See src/training/README.md for details.
 
     Using per-window inference ensures the transformer never attends across
     trajectory boundaries, matching the behaviour seen during training.
@@ -127,11 +131,12 @@ def windowed_predict(
     original_training = model.training
     if original_device != predict_device:
         model = model.to(predict_device)
+    _pure_query_type_id(query_type_ids)
 
     windows = build_trajectory_windows(norm_points, boundaries, window_length, window_stride)
     windows = batch_windows(windows, max(1, int(batch_size)))
     n = norm_points.shape[0]
-    all_pred = torch.zeros((n, NUM_QUERY_TYPES), dtype=norm_points.dtype, device=predict_device)
+    all_pred = torch.zeros((n,), dtype=norm_points.dtype, device=predict_device)
     pred_count = torch.zeros((n,), dtype=norm_points.dtype, device=predict_device)
     queries_dev = queries.to(predict_device)
     query_type_ids_dev = query_type_ids.to(predict_device)
@@ -154,11 +159,11 @@ def windowed_predict(
                 for batch_idx in range(wp.shape[0]):
                     widx = indices_dev[batch_idx]
                     valid = widx >= 0
-                    all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx][valid]
+                    all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx, valid]
                     pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
 
         pred_count = pred_count.clamp(min=1.0)
-        return (all_pred / pred_count.unsqueeze(1)).to(output_device)
+        return (all_pred / pred_count).to(output_device)
     finally:
         if original_device != predict_device:
             model.to(original_device)

@@ -18,11 +18,11 @@ from src.training.train_model import (
     TrainingOutputs,
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
-    _combine_epoch_type_weights,
     _filter_supervised_windows,
     _f1_selection_score,
     _ranking_loss_for_type,
     _selection_score,
+    _single_active_type_id,
     _uniform_gap_selection_score,
     _validation_query_f1,
     train_model,
@@ -48,14 +48,14 @@ def test_f1_selection_score_penalizes_collapsed_predictions() -> None:
 
 
 def test_uniform_gap_selection_penalizes_active_type_deficit() -> None:
-    workload_mix = {"range": 1.0}
+    workload_map = {"range": 1.0}
     uniform_per_type = {"range": 0.50}
     range_deficit = _uniform_gap_selection_score(
         query_f1=0.55,
         per_type_f1={"range": 0.45},
         uniform_f1=0.50,
         uniform_per_type=uniform_per_type,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         pred_std=0.1,
     )
     balanced = _uniform_gap_selection_score(
@@ -63,7 +63,7 @@ def test_uniform_gap_selection_penalizes_active_type_deficit() -> None:
         per_type_f1={"range": 0.54},
         uniform_f1=0.50,
         uniform_per_type=uniform_per_type,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         pred_std=0.1,
     )
 
@@ -143,14 +143,11 @@ def test_temporal_residual_labels_keep_all_labels_when_base_disabled() -> None:
     assert float(residual_labels.sum().item()) == pytest.approx(float(labels.sum().item()))
 
 
-def test_epoch_type_weights_respect_train_mix() -> None:
-    base_weights = torch.tensor([0.2, 0.4, 0.2, 0.2])
-    epoch_mix = torch.ones(4) / 4.0
+def test_single_active_type_rejects_mixed_training_weights() -> None:
+    assert _single_active_type_id(torch.tensor([1.0, 0.0, 0.0, 0.0])) == 0
 
-    weights = _combine_epoch_type_weights(base_weights, epoch_mix)
-
-    assert weights.tolist() == pytest.approx([0.2, 0.4, 0.2, 0.2])
-    assert float(weights.sum().item()) == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="Pure-workload"):
+        _single_active_type_id(torch.tensor([0.5, 0.5, 0.0, 0.0]))
 
 
 def test_filter_supervised_windows_removes_zero_positive_training_windows() -> None:
@@ -162,9 +159,9 @@ def test_filter_supervised_windows_removes_zero_positive_training_windows() -> N
 
     kept, filtered = _filter_supervised_windows(
         windows=windows,
-        training_targets=targets,
-        labelled_mask=labelled_mask,
-        active_type_ids=[0],
+        training_target=targets[:, 0],
+        labelled_mask=labelled_mask[:, 0],
+        active_type_id=0,
     )
 
     assert len(windows) == 3
@@ -202,13 +199,13 @@ def test_training_records_validation_query_f1() -> None:
     train_workload = generate_typed_query_workload(
         trajectories=train_trajectories,
         n_queries=4,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=101,
     )
     validation_workload = generate_typed_query_workload(
         trajectories=validation_trajectories,
         n_queries=4,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=202,
     )
 
@@ -221,7 +218,7 @@ def test_training_records_validation_query_f1() -> None:
         validation_trajectories=validation_trajectories,
         validation_boundaries=validation_boundaries,
         validation_workload=validation_workload,
-        validation_mix={"range": 1.0},
+        validation_workload_map={"range": 1.0},
     )
 
     f1_rows = [row for row in out.history if "val_query_f1" in row]
@@ -244,7 +241,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=6,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=516,
         range_spatial_fraction=0.40,
         range_time_fraction=0.40,
@@ -258,9 +255,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         mlqds_score_temperature=0.75,
         mlqds_rank_confidence_weight=0.35,
     )
-    predictions = torch.zeros((points.shape[0], 4), dtype=torch.float32)
-    predictions[:, 0] = torch.linspace(-1.0, 1.0, steps=points.shape[0])
-    predictions[:, 1] = torch.linspace(1.0, -1.0, steps=points.shape[0])
+    predictions = torch.linspace(-1.0, 1.0, steps=points.shape[0])
 
     model = TrajectoryQDSModel(
         point_dim=7,
@@ -274,8 +269,8 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
     trained = TrainingOutputs(
         model=model,
         scaler=scaler,
-        labels=torch.zeros_like(predictions),
-        labelled_mask=torch.ones_like(predictions, dtype=torch.bool),
+        labels=torch.zeros((points.shape[0], 4), dtype=torch.float32),
+        labelled_mask=torch.ones((points.shape[0], 4), dtype=torch.bool),
         history=[],
     )
 
@@ -294,7 +289,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         trajectories=trajectories,
         boundaries=boundaries,
         workload=workload,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         model_config=cfg.model,
         device=torch.device("cpu"),
         validation_points=points,
@@ -317,7 +312,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         boundaries=boundaries,
         retained_mask=retained,
         typed_queries=workload.typed_queries,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
     )
 
     assert validation_f1 == pytest.approx(final_f1)
@@ -331,7 +326,7 @@ def test_training_accepts_precomputed_importance_labels() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=4,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=819,
     )
     labels, labelled_mask = compute_typed_importance_labels(
@@ -379,7 +374,7 @@ def test_range_training_does_not_collapse(synthetic_dataset) -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         seed=77,
     )
     out = train_model(
@@ -417,7 +412,7 @@ def test_range_coverage_training_keeps_score_spread(synthetic_dataset) -> None:
         n_queries=60,
         target_coverage=0.30,
         max_queries=160,
-        workload_mix={"range": 1.0},
+        workload_map={"range": 1.0},
         range_spatial_fraction=0.02,
         range_time_fraction=0.04,
         seed=91,

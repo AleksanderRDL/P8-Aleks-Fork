@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from src.queries.query_types import NUM_QUERY_TYPES, QUERY_NAME_TO_ID
+from src.queries.query_types import QUERY_NAME_TO_ID
 from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
 
 MLQDS_SCORE_MODES = (
@@ -77,16 +77,19 @@ def pure_workload_scores(
     score_temperature: float = 1.0,
     rank_confidence_weight: float = 0.15,
 ) -> torch.Tensor:
-    """Convert one explicit workload head into final MLQDS simplification scores."""
-    if predictions.ndim != 2 or predictions.shape[1] < NUM_QUERY_TYPES:
-        raise ValueError("predictions must have shape [n_points, NUM_QUERY_TYPES].")
+    """Convert pure workload logits into final MLQDS simplification scores."""
+    if predictions.ndim == 1:
+        head = predictions.float()
+    elif predictions.ndim == 2 and predictions.shape[1] == 1:
+        head = predictions[:, 0].float()
+    else:
+        raise ValueError("predictions must be pure single-workload scores with shape [n_points] or [n_points, 1].")
 
     mode = score_mode.lower()
     if mode not in MLQDS_SCORE_MODES:
         raise ValueError(f"score_mode must be one of {MLQDS_SCORE_MODES}; got {score_mode}.")
 
-    _name, type_idx = workload_type_head(workload_type)
-    head = predictions[:, type_idx].float()
+    workload_type_head(workload_type)
     if mode == "raw":
         return head.to(predictions.dtype)
     if mode == "sigmoid":
@@ -95,7 +98,7 @@ def pure_workload_scores(
         temperature = max(float(score_temperature), 1e-6)
         return torch.sigmoid(head / temperature).to(predictions.dtype)
 
-    score = predictions.new_zeros((predictions.shape[0],))
+    score = head.new_zeros((head.shape[0],))
     temperature = max(float(score_temperature), 1e-6)
     confidence_weight = max(0.0, min(1.0, float(rank_confidence_weight)))
     for start, end in boundaries:

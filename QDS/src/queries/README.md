@@ -6,7 +6,7 @@ This module defines the typed query format, workload generator, and concrete que
 
 | File | Purpose |
 | --- | --- |
-| `query_types.py` | Query type IDs, workload-mix parsing, and padded query feature conversion. |
+| `query_types.py` | Query type IDs, pure workload validation, and padded query feature conversion. |
 | `query_generator.py` | Deterministic typed workload generation from a trajectory set. |
 | `query_executor.py` | Concrete range, kNN, similarity, and clustering query execution. |
 
@@ -21,8 +21,8 @@ This module defines the typed query format, workload generator, and concrete que
 
 ## Workload Format
 
-- `normalize_workload_mix` lowercases the keys, drops non-positive weights, validates query names, and normalizes the mix to sum to 1.
-- `parse_workload_mix` accepts CLI strings like `range=1.0`. Low-level query generation can still build multi-type diagnostic workloads, but experiment entrypoints now require one positive query type per model run.
+- `normalize_pure_workload_map` lowercases the keys, drops non-positive weights,
+  validates query names, and requires exactly one active query type.
 - `pad_query_features` converts heterogeneous typed query dicts into a `[M, 12]` tensor plus a `[M]` tensor of type IDs.
 - Feature layout:
     - range: `lat_min`, `lat_max`, `lon_min`, `lon_max`, `t_start`, `t_end`
@@ -33,8 +33,8 @@ This module defines the typed query format, workload generator, and concrete que
 ## Workload Generation
 
 - `generate_typed_query_workload` returns the `TypedQueryWorkload` container
-  used by training and evaluation. Current experiment entrypoints use pure
-  mixes such as `{"range": 1.0}` so one model targets one query type.
+  used by training and evaluation. Workloads are pure, e.g. `{"range": 1.0}`,
+  so one model targets one query type.
 - Range and kNN anchors use a 70/30 sampler: 70% density-weighted lat/lon cells,
   30% uniform points. Similarity and clustering use uniform anchors.
 - Range footprint can be dataset-relative (`range_spatial_fraction`,

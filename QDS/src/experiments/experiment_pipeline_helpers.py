@@ -42,7 +42,7 @@ from src.evaluation.evaluate_methods import (
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import parse_workload_mix, single_workload_type
+from src.queries.query_types import single_workload_type
 from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
@@ -102,9 +102,9 @@ def split_trajectories(
     return train, val, test
 
 
-def _mix_name(mix: dict[str, float]) -> str:
-    """Build compact string name for workload mix maps. See src/experiments/README.md for details."""
-    return ",".join(f"{k}={v:.1f}" for k, v in sorted(mix.items()))
+def _workload_name(workload_map: dict[str, float]) -> str:
+    """Build compact string name for a pure workload map."""
+    return ",".join(f"{k}={v:.1f}" for k, v in sorted(workload_map.items()))
 
 
 def _coverage_name(workload: TypedQueryWorkload) -> str:
@@ -162,7 +162,7 @@ def _workload_cache_payload(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     n_queries: int,
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     seed: int,
     front_load_knn: int,
     config: ExperimentConfig,
@@ -178,7 +178,7 @@ def _workload_cache_payload(
         "n_queries": int(n_queries),
         "seed": int(seed),
         "front_load_knn": int(front_load_knn),
-        "workload_mix": {key: float(workload_mix[key]) for key in sorted(workload_mix)},
+        "workload_map": {key: float(workload_map[key]) for key in sorted(workload_map)},
         "target_coverage": query_config.target_coverage,
         "max_queries": query_config.max_queries,
         "range_spatial_fraction": query_config.range_spatial_fraction,
@@ -225,7 +225,7 @@ def _generate_typed_query_workload_for_config(
     *,
     trajectories: list[torch.Tensor],
     n_queries: int,
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     seed: int,
     config: ExperimentConfig,
     front_load_knn: int = 0,
@@ -245,7 +245,7 @@ def _generate_typed_query_workload_for_config(
             points=points_for_cache,
             boundaries=boundaries_for_cache,
             n_queries=n_queries,
-            workload_mix=workload_mix,
+            workload_map=workload_map,
             seed=seed,
             front_load_knn=front_load_knn,
             config=config,
@@ -265,7 +265,7 @@ def _generate_typed_query_workload_for_config(
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=n_queries,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         seed=seed,
         target_coverage=query_config.target_coverage,
         max_queries=query_config.max_queries,
@@ -324,7 +324,7 @@ def _range_signal_diagnostics(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     range_queries: list[dict[str, Any]],
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     compression_ratio: float,
     seed: int,
     range_boundary_prior_weight: float = 0.0,
@@ -387,7 +387,7 @@ def _range_signal_diagnostics(
             boundaries=boundaries,
             retained_mask=retained_mask,
             typed_queries=scored_queries,
-            workload_mix={"range": 1.0},
+            workload_map={"range": 1.0},
             query_cache=query_cache,
         )
         method_scores[method.name] = {
@@ -399,8 +399,8 @@ def _range_signal_diagnostics(
     best_baseline = max(baseline_names, key=lambda name: method_scores.get(name, {}).get("range_f1", 0.0))
     best_baseline_range_f1 = float(method_scores[best_baseline]["range_f1"])
     oracle_range_f1 = float(method_scores.get("Oracle", {}).get("range_f1", 0.0))
-    normalized_mix = sum(float(v) for v in workload_mix.values())
-    range_weight = float(workload_mix.get("range", 0.0)) / normalized_mix if normalized_mix > 0.0 else 0.0
+    normalized_map = sum(float(v) for v in workload_map.values())
+    range_weight = float(workload_map.get("range", 0.0)) / normalized_map if normalized_map > 0.0 else 0.0
     return {
         "range_query_count": int(len(range_queries)),
         "range_workload_weight": float(range_weight),
@@ -423,7 +423,7 @@ def _range_workload_diagnostics(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     workload: TypedQueryWorkload,
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     config: ExperimentConfig,
     seed: int,
     runtime_cache: RangeRuntimeCache | None = None,
@@ -445,7 +445,7 @@ def _range_workload_diagnostics(
         points=points,
         boundaries=boundaries,
         range_queries=range_queries,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         compression_ratio=config.model.compression_ratio,
         seed=seed,
         range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
@@ -464,8 +464,6 @@ def _range_workload_diagnostics(
 def run_experiment_pipeline(
     config: ExperimentConfig,
     trajectories: list[torch.Tensor],
-    train_mix: dict[str, float],
-    eval_mix: dict[str, float],
     results_dir: str,
     save_model: str | None = None,
     save_queries_dir: str | None = None,
@@ -477,16 +475,16 @@ def run_experiment_pipeline(
 ) -> ExperimentOutputs:
     """Run training, matched evaluation, and shifted evaluation tables. See src/experiments/README.md for details."""
     pipeline_t0 = time.perf_counter()
+    train_workload_map, eval_workload_map = resolve_workload_maps(config.query.workload)
     if eval_trajectories is None:
         print(
-            f"[pipeline] {len(trajectories)} trajectories, train_mix={_mix_name(train_mix)}, "
-            f"eval_mix={_mix_name(eval_mix)}",
+            f"[pipeline] {len(trajectories)} trajectories, workload={_workload_name(eval_workload_map)}",
             flush=True,
         )
     else:
         print(
             f"[pipeline] train={len(trajectories)} trajectories, eval={len(eval_trajectories)} trajectories, "
-            f"train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)}",
+            f"workload={_workload_name(eval_workload_map)}",
             flush=True,
         )
 
@@ -553,11 +551,11 @@ def run_experiment_pipeline(
     with _phase("generate-workloads"):
         # Front-load all kNN queries before proportional scheduling for training
         # so kNN always gets its full quota even if n_queries is small.
-        knn_front_load = int(train_mix.get("knn", 0.0) * config.query.n_queries)
+        knn_front_load = int(train_workload_map.get("knn", 0.0) * config.query.n_queries)
         train_workload = _generate_typed_query_workload_for_config(
             trajectories=train_traj,
             n_queries=config.query.n_queries,
-            workload_mix=train_mix,
+            workload_map=train_workload_map,
             seed=seeds.train_query_seed,
             front_load_knn=knn_front_load,
             config=config,
@@ -568,7 +566,7 @@ def run_experiment_pipeline(
         eval_workload = _generate_typed_query_workload_for_config(
             trajectories=test_traj,
             n_queries=config.query.n_queries,
-            workload_mix=eval_mix,
+            workload_map=eval_workload_map,
             seed=seeds.eval_query_seed,
             config=config,
             points=test_points,
@@ -580,7 +578,7 @@ def run_experiment_pipeline(
             selection_workload = _generate_typed_query_workload_for_config(
                 trajectories=selection_traj,
                 n_queries=_validation_query_count(config),
-                workload_mix=eval_mix,
+                workload_map=eval_workload_map,
                 seed=seeds.eval_query_seed + 17,
                 config=config,
                 points=selection_points,
@@ -636,7 +634,7 @@ def run_experiment_pipeline(
             train_points,
             train_boundaries,
             train_workload,
-            train_mix,
+            train_workload_map,
             config,
             seeds.train_query_seed,
             range_runtime_caches["train"],
@@ -646,7 +644,7 @@ def run_experiment_pipeline(
             test_points,
             test_boundaries,
             eval_workload,
-            eval_mix,
+            eval_workload_map,
             config,
             seeds.eval_query_seed,
             range_runtime_caches["eval"],
@@ -661,7 +659,7 @@ def run_experiment_pipeline(
                 selection_points,
                 selection_boundaries,
                 selection_workload,
-                eval_mix,
+                eval_workload_map,
                 config,
                 seeds.eval_query_seed + 17,
                 range_runtime_caches["selection"],
@@ -708,11 +706,11 @@ def run_experiment_pipeline(
             workload=train_workload,
             model_config=config.model,
             seed=seeds.torch_seed,
-            train_mix=train_mix,
+            train_workload_map=train_workload_map,
             validation_trajectories=selection_traj,
             validation_boundaries=selection_boundaries,
             validation_workload=selection_workload,
-            validation_mix=eval_mix if selection_workload is not None else None,
+            validation_workload_map=eval_workload_map if selection_workload is not None else None,
             precomputed_labels=train_labels,
             validation_points=selection_points,
             precomputed_validation_query_cache=selection_query_cache,
@@ -732,15 +730,14 @@ def run_experiment_pipeline(
                 scaler=trained.scaler,
                 config=config,
                 epochs_trained=trained.epochs_trained,
-                train_workload_mix=train_mix,
-                eval_workload_mix=eval_mix,
+                workload_type=single_workload_type(eval_workload_map),
             )
             save_checkpoint(save_model, artifacts)
             print(
                 f"  saved checkpoint to {save_model}  "
                 f"(epochs_trained={trained.epochs_trained}, "
                 f"best_epoch={trained.best_epoch}, best_loss={trained.best_loss:.8f}, "
-                f"train_mix={_mix_name(train_mix)}, eval_mix={_mix_name(eval_mix)})",
+                f"workload={_workload_name(eval_workload_map)})",
                 flush=True,
             )
     methods = [
@@ -748,7 +745,7 @@ def run_experiment_pipeline(
             name="MLQDS",
             trained=trained,
             workload=eval_workload,
-            workload_type=single_workload_type(eval_mix),
+            workload_type=single_workload_type(eval_workload_map),
             score_mode=config.model.mlqds_score_mode,
             score_temperature=config.model.mlqds_score_temperature,
             rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
@@ -784,7 +781,7 @@ def run_experiment_pipeline(
                     points=test_points,
                     boundaries=test_boundaries,
                     typed_queries=eval_workload.typed_queries,
-                    workload_mix=eval_mix,
+                    workload_map=eval_workload_map,
                     compression_ratio=config.model.compression_ratio,
                     return_mask=method.name == "MLQDS" or save_masks,
                     query_cache=eval_query_cache,
@@ -798,14 +795,14 @@ def run_experiment_pipeline(
                 seed=seeds.eval_query_seed,
                 range_boundary_prior_weight=0.0,
             )
-            oracle = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_mix))
+            oracle = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_workload_map))
             with _phase(f"  eval {oracle.name}"):
                 matched[oracle.name] = evaluate_method(
                     method=oracle,
                     points=test_points,
                     boundaries=test_boundaries,
                     typed_queries=eval_workload.typed_queries,
-                    workload_mix=eval_mix,
+                    workload_map=eval_workload_map,
                     compression_ratio=config.model.compression_ratio,
                     query_cache=eval_query_cache,
                 )
@@ -814,8 +811,8 @@ def run_experiment_pipeline(
     geometric_table = print_geometric_distortion_table(matched)
 
     with _phase("evaluate-shift"):
-        train_name = _mix_name(train_mix)
-        eval_name = _mix_name(eval_mix)
+        train_name = _workload_name(train_workload_map)
+        eval_name = _workload_name(eval_workload_map)
         shift_pairs = {train_name: {eval_name: float(matched["MLQDS"].aggregate_f1)}}
         if train_name == eval_name:
             shift_pairs[train_name][train_name] = float(matched["MLQDS"].aggregate_f1)
@@ -831,7 +828,7 @@ def run_experiment_pipeline(
                         name="MLQDS",
                         trained=trained,
                         workload=train_workload,
-                        workload_type=single_workload_type(train_mix),
+                        workload_type=single_workload_type(train_workload_map),
                         score_mode=config.model.mlqds_score_mode,
                         score_temperature=config.model.mlqds_score_temperature,
                         rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
@@ -843,7 +840,7 @@ def run_experiment_pipeline(
                     points=test_points,
                     boundaries=test_boundaries,
                     typed_queries=train_workload.typed_queries,
-                    workload_mix=train_mix,
+                    workload_map=train_workload_map,
                     compression_ratio=config.model.compression_ratio,
                     query_cache=train_query_cache,
                 ).aggregate_f1
@@ -852,8 +849,7 @@ def run_experiment_pipeline(
 
     dump = {
         "config": config.to_dict(),
-        "train_mix": train_mix,
-        "eval_mix": eval_mix,
+        "workload": single_workload_type(eval_workload_map),
         "train_query_count": len(train_workload.typed_queries),
         "eval_query_count": len(eval_workload.typed_queries),
         "selection_query_count": len(selection_workload.typed_queries) if selection_workload is not None else None,
@@ -937,7 +933,7 @@ def run_experiment_pipeline(
                     name="MLQDS",
                     trained=trained,
                     workload=eval_workload,
-                    workload_type=single_workload_type(eval_mix),
+                    workload_type=single_workload_type(eval_workload_map),
                     score_mode=config.model.mlqds_score_mode,
                     score_temperature=config.model.mlqds_score_temperature,
                     rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
@@ -979,8 +975,8 @@ def run_experiment_pipeline(
     )
 
 
-def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:
-    """Translate a --workload keyword to a concrete mix, or return None.
+def _workload_keyword_to_map(keyword: str | None) -> dict[str, float] | None:
+    """Translate a --workload keyword to a concrete pure workload map, or return None.
 
     - "range"/"knn"/"similarity"/"clustering" -> 100% that type.
     - anything else -> None (fall back to caller default).
@@ -998,30 +994,8 @@ def _workload_keyword_to_mix(keyword: str | None) -> dict[str, float] | None:
     return None
 
 
-def resolve_workload_mixes(
-    train_workload_mix_arg: str | None,
-    eval_workload_mix_arg: str | None,
-    workload_keyword: str | None = None,
-) -> tuple[dict[str, float], dict[str, float]]:
-    """Parse and normalize train/eval workload mix strings. See src/experiments/README.md for details.
-
-    Priority: explicit --train_workload_mix / --eval_workload_mix strings win.
-    Otherwise, if --workload is a recognised keyword, both mixes follow it.
-    Otherwise, fall back to the pure range default.
-    """
-    keyword_mix = _workload_keyword_to_mix(workload_keyword)
-    if keyword_mix is not None:
-        default_train = keyword_mix
-        default_eval = keyword_mix
-    else:
-        default_train = {"range": 1.0}
-        default_eval = {"range": 1.0}
-    train_mix = parse_workload_mix(train_workload_mix_arg, default=default_train)
-    eval_mix = parse_workload_mix(eval_workload_mix_arg, default=default_eval)
-    for name, mix in (("train", train_mix), ("eval", eval_mix)):
-        active = [query_type for query_type, weight in mix.items() if float(weight) > 0.0]
-        if len(active) != 1:
-            raise ValueError(
-                f"{name} workload mix must contain exactly one query type for model runs; got {mix}."
-            )
-    return train_mix, eval_mix
+def resolve_workload_maps(workload_keyword: str | None = None) -> tuple[dict[str, float], dict[str, float]]:
+    """Return identical pure train/eval workload maps for one model run."""
+    keyword_map = _workload_keyword_to_map(workload_keyword)
+    workload_map = keyword_map if keyword_map is not None else {"range": 1.0}
+    return workload_map, workload_map

@@ -14,7 +14,12 @@ from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
-from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES, single_workload_type
+from src.queries.query_types import (
+    ID_TO_QUERY_NAME,
+    NUM_QUERY_TYPES,
+    normalize_pure_workload_map,
+    single_workload_type,
+)
 from src.simplification.mlqds_scoring import simplify_mlqds_predictions
 from src.simplification.simplify_trajectories import evenly_spaced_indices
 from src.training.importance_labels import compute_typed_importance_labels
@@ -45,16 +50,18 @@ def _safe_quantile(t: torch.Tensor, q: float | torch.Tensor) -> torch.Tensor:
     return torch.quantile(flat[perm], q)
 
 
-def _scaled_training_targets(labels: torch.Tensor, labelled_mask: torch.Tensor) -> torch.Tensor:
-    """Rescale sparse F1 labels per type for optimization while preserving rank order."""
-    targets = labels.clone()
-    for type_idx in range(NUM_QUERY_TYPES):
-        positive = labelled_mask[:, type_idx] & (labels[:, type_idx] > 0)
-        if not bool(positive.any().item()):
-            continue
-        scale = _safe_quantile(labels[positive, type_idx].detach(), 0.95).clamp(min=1e-6)
-        targets[:, type_idx] = torch.clamp(labels[:, type_idx] / scale, 0.0, 1.0)
-    return targets
+def _scaled_training_target_for_type(
+    labels: torch.Tensor,
+    labelled_mask: torch.Tensor,
+    type_idx: int,
+) -> torch.Tensor:
+    """Rescale one pure-workload F1 label stream while preserving rank order."""
+    target = labels[:, type_idx].clone()
+    positive = labelled_mask[:, type_idx] & (labels[:, type_idx] > 0)
+    if not bool(positive.any().item()):
+        return target.zero_()
+    scale = _safe_quantile(labels[positive, type_idx].detach(), 0.95).clamp(min=1e-6)
+    return torch.clamp(target / scale, 0.0, 1.0)
 
 
 def _apply_temporal_residual_labels(
@@ -151,21 +158,6 @@ class TrainingOutputs:
     best_f1: float = 0.0
 
 
-def _sample_epoch_mix(alpha: list[float], generator: torch.Generator) -> torch.Tensor:
-    """Sample epoch workload weights from a lightweight Dirichlet approximation. See src/training/README.md for details.
-
-    A uniform floor of 0.5 * (1/K) is mixed in so no type ever receives
-    near-zero training signal in a single epoch.  This keeps the per-type
-    ranking heads from diverging due to gradient starvation.
-    """
-    a = torch.tensor(alpha, dtype=torch.float32)
-    u = torch.rand((len(alpha),), generator=generator)
-    raw = torch.pow(torch.clamp(u, min=1e-6), 1.0 / torch.clamp(a, min=1e-3))
-    dirichlet = raw / raw.sum()
-    uniform = torch.ones_like(dirichlet) / len(alpha)
-    return 0.5 * dirichlet + 0.5 * uniform
-
-
 def _kendall_tau(x: torch.Tensor, y: torch.Tensor) -> float:
     """Compute Kendall tau for small vectors without external deps. See src/training/README.md for details."""
     n = int(x.numel())
@@ -242,23 +234,20 @@ def _f1_selection_score(query_f1: float, pred_std: float) -> float:
     return float(query_f1 - collapse_penalty)
 
 
-def _normalized_mix_dict(workload_mix: dict[str, float]) -> dict[str, float]:
-    """Normalize workload weights by query type name."""
+def _normalized_workload_map(workload_map: dict[str, float]) -> dict[str, float]:
+    """Normalize a pure workload map into the fixed query-type key set."""
     names = ["range", "knn", "similarity", "clustering"]
-    raw = {name: max(0.0, float(workload_mix.get(name, 0.0))) for name in names}
-    total = sum(raw.values())
-    if total <= 0.0:
-        return {name: 1.0 / float(len(names)) for name in names}
-    return {name: value / total for name, value in raw.items()}
+    normalized = normalize_pure_workload_map(workload_map)
+    return {name: float(normalized.get(name, 0.0)) for name in names}
 
 
 def _uniform_type_deficit(
     per_type_f1: dict[str, float],
     uniform_per_type: dict[str, float],
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
 ) -> float:
     """Weighted amount by which a checkpoint loses to fair uniform per type."""
-    type_weights = _normalized_mix_dict(workload_mix)
+    type_weights = _normalized_workload_map(workload_map)
     return float(
         sum(
             type_weights[name] * max(0.0, float(uniform_per_type.get(name, 0.0)) - float(per_type_f1.get(name, 0.0)))
@@ -272,7 +261,7 @@ def _uniform_gap_selection_score(
     per_type_f1: dict[str, float],
     uniform_f1: float,
     uniform_per_type: dict[str, float],
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     pred_std: float,
     aggregate_gap_weight: float = 0.5,
     type_penalty_weight: float = 1.0,
@@ -280,7 +269,7 @@ def _uniform_gap_selection_score(
     """Score checkpoints by held-out F1 while penalizing losses to fair uniform."""
     collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
     aggregate_gap = float(query_f1) - float(uniform_f1)
-    type_deficit = _uniform_type_deficit(per_type_f1, uniform_per_type, workload_mix)
+    type_deficit = _uniform_type_deficit(per_type_f1, uniform_per_type, workload_map)
     return float(
         float(query_f1)
         + float(aggregate_gap_weight) * aggregate_gap
@@ -289,26 +278,24 @@ def _uniform_gap_selection_score(
     )
 
 
-def _workload_mix_tensor(workload_mix: dict[str, float], device: torch.device) -> torch.Tensor:
-    """Return normalized type weights in model-head order."""
+def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -> torch.Tensor:
+    """Return normalized pure-workload weights in query-type ID order."""
+    normalized = normalize_pure_workload_map(workload_map)
     values = torch.tensor(
         [
-            float(workload_mix.get("range", 0.0)),
-            float(workload_mix.get("knn", 0.0)),
-            float(workload_mix.get("similarity", 0.0)),
-            float(workload_mix.get("clustering", 0.0)),
+            float(normalized.get("range", 0.0)),
+            float(normalized.get("knn", 0.0)),
+            float(normalized.get("similarity", 0.0)),
+            float(normalized.get("clustering", 0.0)),
         ],
         dtype=torch.float32,
         device=device,
     )
-    total = float(values.sum().item())
-    if total <= 0.0:
-        return torch.ones_like(values) / values.numel()
-    return values / total
+    return values
 
 
-def _query_frequency_mix(workload: TypedQueryWorkload) -> dict[str, float]:
-    """Infer type weights from a workload when no explicit training mix is provided."""
+def _query_frequency_workload_map(workload: TypedQueryWorkload) -> dict[str, float]:
+    """Infer type weights from a workload when no explicit training workload map is provided."""
     counts = torch.bincount(workload.type_ids.detach().cpu(), minlength=NUM_QUERY_TYPES).float()
     return {
         "range": float(counts[0].item()),
@@ -318,53 +305,53 @@ def _query_frequency_mix(workload: TypedQueryWorkload) -> dict[str, float]:
     }
 
 
-def _combine_epoch_type_weights(base_weights: torch.Tensor, epoch_mix: torch.Tensor) -> torch.Tensor:
-    """Blend configured workload weights with stochastic epoch weights."""
-    combined = base_weights * epoch_mix.to(base_weights.device)
-    total = combined.sum()
-    if float(total.item()) <= 0.0:
-        return base_weights
-    return combined / total
+def _single_active_type_id(type_weights: torch.Tensor) -> int:
+    """Return the one active query type for pure-workload training."""
+    active = torch.where(type_weights.detach().cpu() > 0.0)[0]
+    if int(active.numel()) != 1:
+        raise ValueError("Pure-workload training requires exactly one active query type.")
+    return int(active[0].item())
 
 
-def _window_positive_type_mask(
+def _pure_query_type_id(type_ids: torch.Tensor) -> int:
+    """Return the only query type id in a pure workload."""
+    unique_ids = torch.unique(type_ids.detach().cpu())
+    if int(unique_ids.numel()) != 1:
+        raise ValueError("Pure-workload training/evaluation requires exactly one query type id.")
+    return int(unique_ids[0].item())
+
+
+def _window_has_positive_supervision(
     window: TrajectoryBatch,
-    training_targets: torch.Tensor,
+    training_target: torch.Tensor,
     labelled_mask: torch.Tensor,
-) -> torch.Tensor:
-    """Return query types with at least one positive supervised point in a window."""
+) -> bool:
+    """Return whether a pure-workload window has positive supervision."""
     global_idx = window.global_indices.reshape(-1)
     valid = global_idx >= 0
-    positive_types = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.bool)
     if not bool(valid.any().item()):
-        return positive_types
-    idx = global_idx[valid].to(device=training_targets.device, dtype=torch.long)
-    positives = labelled_mask[idx] & (training_targets[idx] > 0)
-    if positives.numel() == 0:
-        return positive_types
-    return positives.any(dim=0).detach().cpu()
+        return False
+    idx = global_idx[valid].to(device=training_target.device, dtype=torch.long)
+    return bool((labelled_mask[idx] & (training_target[idx] > 0)).any().item())
 
 
 def _filter_supervised_windows(
     windows: list[TrajectoryBatch],
-    training_targets: torch.Tensor,
+    training_target: torch.Tensor,
     labelled_mask: torch.Tensor,
-    active_type_ids: list[int],
+    active_type_id: int,
 ) -> tuple[list[TrajectoryBatch], torch.Tensor]:
-    """Drop windows that cannot contribute loss for any active training type."""
-    if not windows or not active_type_ids:
+    """Drop windows that cannot contribute loss for the active pure workload."""
+    if not windows:
         return windows, torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
     kept: list[TrajectoryBatch] = []
     filtered_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
     for window in windows:
-        positive_types = _window_positive_type_mask(window, training_targets, labelled_mask)
-        has_active_positive = any(bool(positive_types[type_idx].item()) for type_idx in active_type_ids)
-        if has_active_positive:
+        if _window_has_positive_supervision(window, training_target, labelled_mask):
             kept.append(window)
             continue
-        for type_idx in active_type_ids:
-            filtered_zero_windows[type_idx] += 1
+        filtered_zero_windows[active_type_id] += 1
 
     if not kept:
         return windows, torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
@@ -380,12 +367,13 @@ def _predict_workload_logits(
     model_config: ModelConfig,
     device: torch.device,
 ) -> torch.Tensor:
-    """Predict per-point typed logits for exact query-F1 diagnostics."""
+    """Predict per-point pure-workload scores for exact query-F1 diagnostics."""
     point_dim = model.point_dim
     norm_points, norm_queries = scaler.transform(points[:, :point_dim].float(), workload.query_features)
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
+    _pure_query_type_id(workload.type_ids)
     windows = build_trajectory_windows(
         points=norm_points,
         boundaries=boundaries,
@@ -403,7 +391,7 @@ def _predict_workload_logits(
     ]
     inference_batch_size = max(1, int(getattr(model_config, "inference_batch_size", 16)))
     windows = batch_windows(windows, inference_batch_size)
-    all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
+    all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
     pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
 
@@ -421,11 +409,11 @@ def _predict_workload_logits(
             for batch_idx in range(pred.shape[0]):
                 global_idx = window.global_indices[batch_idx]
                 valid = global_idx >= 0
-                all_pred[global_idx[valid]] = all_pred[global_idx[valid]] + pred[batch_idx][valid]
+                all_pred[global_idx[valid]] = all_pred[global_idx[valid]] + pred[batch_idx, valid]
                 pred_count[global_idx[valid]] = pred_count[global_idx[valid]] + 1.0
 
     pred_count = pred_count.clamp(min=1.0)
-    return (all_pred / pred_count.unsqueeze(1)).detach().cpu()
+    return (all_pred / pred_count).detach().cpu()
 
 
 def _validation_query_f1(
@@ -434,7 +422,7 @@ def _validation_query_f1(
     trajectories: list[torch.Tensor],
     boundaries: list[tuple[int, int]],
     workload: TypedQueryWorkload,
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     model_config: ModelConfig,
     device: torch.device,
     validation_points: torch.Tensor | None = None,
@@ -456,7 +444,7 @@ def _validation_query_f1(
     retained_mask = simplify_mlqds_predictions(
         predictions,
         boundaries,
-        single_workload_type(workload_mix),
+        single_workload_type(workload_map),
         model_config.compression_ratio,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
@@ -469,7 +457,7 @@ def _validation_query_f1(
         boundaries=boundaries,
         retained_mask=retained_mask,
         typed_queries=workload.typed_queries,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         query_cache=query_cache,
     )
     variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
@@ -482,7 +470,7 @@ def _validation_uniform_f1(
     trajectories: list[torch.Tensor],
     boundaries: list[tuple[int, int]],
     workload: TypedQueryWorkload,
-    workload_mix: dict[str, float],
+    workload_map: dict[str, float],
     model_config: ModelConfig,
     validation_points: torch.Tensor | None = None,
     query_cache: Any | None = None,
@@ -502,7 +490,7 @@ def _validation_uniform_f1(
         boundaries=boundaries,
         retained_mask=retained_mask,
         typed_queries=workload.typed_queries,
-        workload_mix=workload_mix,
+        workload_map=workload_map,
         query_cache=query_cache,
     )
     variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
@@ -517,16 +505,16 @@ def train_model(
     workload: TypedQueryWorkload,
     model_config: ModelConfig,
     seed: int,
-    train_mix: dict[str, float] | None = None,
+    train_workload_map: dict[str, float] | None = None,
     validation_trajectories: list[torch.Tensor] | None = None,
     validation_boundaries: list[tuple[int, int]] | None = None,
     validation_workload: TypedQueryWorkload | None = None,
-    validation_mix: dict[str, float] | None = None,
+    validation_workload_map: dict[str, float] | None = None,
     precomputed_labels: tuple[torch.Tensor, torch.Tensor] | None = None,
     validation_points: torch.Tensor | None = None,
     precomputed_validation_query_cache: Any | None = None,
 ) -> TrainingOutputs:
-    """Train typed-head model with trajectory-window ranking losses. See src/training/README.md for details."""
+    """Train one pure-workload model with trajectory-window ranking losses."""
     torch.manual_seed(int(seed))
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(int(seed))
@@ -554,6 +542,7 @@ def train_model(
     residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
     if residual_label_mode not in {"none", "temporal"}:
         raise ValueError("residual_label_mode must be 'none' or 'temporal'.")
+    workload_type_id = _pure_query_type_id(workload.type_ids)
     if residual_label_mode == "temporal":
         labels, labelled_mask = _apply_temporal_residual_labels(
             labels=labels,
@@ -562,10 +551,8 @@ def train_model(
             compression_ratio=model_config.compression_ratio,
             temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         )
-    training_targets = _scaled_training_targets(labels, labelled_mask)
-    active_type_ids = [t for t in range(NUM_QUERY_TYPES) if bool(labelled_mask[:, t].any().item())]
-    if not active_type_ids:
-        active_type_ids = list(range(NUM_QUERY_TYPES))
+    training_target = _scaled_training_target_for_type(labels, labelled_mask, workload_type_id)
+    training_labelled_mask = labelled_mask[:, workload_type_id]
 
     scaler = FeatureScaler.fit(points, workload.query_features)
     norm_points, norm_queries = scaler.transform(points, workload.query_features)
@@ -587,12 +574,13 @@ def train_model(
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
-    training_targets_dev = training_targets.to(device)
-    labelled_mask_dev = labelled_mask.to(device)
-    base_type_weights = _workload_mix_tensor(train_mix or _query_frequency_mix(workload), device=device)
-    active_train_type_ids = [
-        type_idx for type_idx in active_type_ids if float(base_type_weights[type_idx].detach().cpu().item()) > 0.0
-    ] or active_type_ids
+    training_target_dev = training_target.to(device)
+    labelled_mask_dev = training_labelled_mask.to(device)
+    base_type_weights = _workload_map_tensor(train_workload_map or _query_frequency_workload_map(workload), device=device)
+    active_type_id = _single_active_type_id(base_type_weights)
+    if active_type_id != workload_type_id:
+        raise ValueError("Training workload map and workload query type must refer to the same pure workload.")
+    active_type_ids = [active_type_id]
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
     run_tag = "main"
 
@@ -607,13 +595,13 @@ def train_model(
     raw_window_count = len(windows_cpu)
     windows_cpu, prefiltered_zero_windows = _filter_supervised_windows(
         windows=windows_cpu,
-        training_targets=training_targets,
-        labelled_mask=labelled_mask,
-        active_type_ids=active_train_type_ids,
+        training_target=training_target,
+        labelled_mask=training_labelled_mask,
+        active_type_id=active_type_id,
     )
     if int(prefiltered_zero_windows.sum().item()) > 0:
         filtered_parts = []
-        for type_idx in active_train_type_ids:
+        for type_idx in active_type_ids:
             type_name = ID_TO_QUERY_NAME.get(type_idx, f"t{type_idx}")
             filtered_parts.append(f"{type_name}={int(prefiltered_zero_windows[type_idx].item())}")
         print(
@@ -647,7 +635,7 @@ def train_model(
         validation_trajectories is not None
         and validation_boundaries is not None
         and validation_workload is not None
-        and validation_mix is not None
+        and validation_workload_map is not None
     )
     if selection_metric in {"f1", "uniform_gap"} and not has_validation_f1:
         print(
@@ -693,7 +681,7 @@ def train_model(
             trajectories=validation_trajectories,
             boundaries=validation_boundaries,
             workload=validation_workload,
-            workload_mix=validation_mix or {},
+            workload_map=validation_workload_map or {},
             model_config=model_config,
             validation_points=validation_points_for_f1,
             query_cache=validation_query_cache,
@@ -736,8 +724,6 @@ def train_model(
             "f1_s": 0.0,
         }
         model.train()
-        epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g).to(device)
-        epoch_type_weights = _combine_epoch_type_weights(base_type_weights, epoch_mix)
         epoch_loss = torch.tensor(0.0, device=device)
         positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
         skipped_zero_windows = prefiltered_zero_windows.clone()
@@ -755,7 +741,7 @@ def train_model(
             epoch_timing["forward_s"] += time.perf_counter() - forward_t0
             loss_t0 = time.perf_counter()
             pred_batch = pred_batch.float()
-            # pred_batch: (B, L, T).  Accumulate per-window loss terms across
+            # pred_batch: (B, L).  Accumulate per-window loss terms across
             # the batch and backprop once per batch — this is what makes the
             # GPU actually saturated compared to the old batch=1 loop.
             loss_terms: list[torch.Tensor] = []
@@ -766,29 +752,24 @@ def train_model(
                 global_idx = idx[valid_window]
                 pred_valid = pred_batch[b][valid_window]
 
-                for t in range(NUM_QUERY_TYPES):
-                    type_weight = epoch_type_weights[t]
-                    if float(type_weight.item()) <= 0.0:
-                        continue
-                    t_labels = training_targets_dev[global_idx, t]
-                    t_mask = labelled_mask_dev[global_idx, t]
-                    if not bool((t_mask & (t_labels > 0)).any().item()):
-                        skipped_zero_windows[t] += 1
-                        continue
-                    t_pred = pred_valid[:, t]
-                    positive_windows[t] += 1
-                    rank_loss, pair_count = _ranking_loss_for_type(
-                        pred=t_pred,
-                        target=t_labels,
-                        valid_mask=t_mask,
-                        pairs_per_type=model_config.ranking_pairs_per_type,
-                        top_quantile=model_config.ranking_top_quantile,
-                        margin=model_config.rank_margin,
-                        generator=g,
-                    )
-                    ranking_pair_counts[t] += int(pair_count)
-                    pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
-                    loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
+                t_labels = training_target_dev[global_idx]
+                t_mask = labelled_mask_dev[global_idx]
+                if not bool((t_mask & (t_labels > 0)).any().item()):
+                    skipped_zero_windows[active_type_id] += 1
+                    continue
+                positive_windows[active_type_id] += 1
+                rank_loss, pair_count = _ranking_loss_for_type(
+                    pred=pred_valid,
+                    target=t_labels,
+                    valid_mask=t_mask,
+                    pairs_per_type=model_config.ranking_pairs_per_type,
+                    top_quantile=model_config.ranking_top_quantile,
+                    margin=model_config.rank_margin,
+                    generator=g,
+                )
+                ranking_pair_counts[active_type_id] += int(pair_count)
+                pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, t_mask, generator=g)
+                loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_term)
             epoch_timing["loss_s"] += time.perf_counter() - loss_t0
 
             if loss_terms:
@@ -833,7 +814,7 @@ def train_model(
 
             model.eval()
             with torch.no_grad():
-                all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0], NUM_QUERY_TYPES))
+                all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 for w in sample_windows:
                     with torch_autocast_context(device, amp_mode):
@@ -850,13 +831,13 @@ def train_model(
                     pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
                 covered_mask = pred_count > 0
                 pred_count = pred_count.clamp(min=1.0)
-                full_pred = all_pred / pred_count.unsqueeze(1)
+                full_pred = all_pred / pred_count
 
             stats: dict[str, float] = {
                 "epoch": float(epoch),
                 "loss": float(epoch_loss.item() / max(1, len(windows))),
                 "pred_std": (
-                    float(full_pred[covered_mask][:, active_type_ids].std().item())
+                    float(full_pred[covered_mask].std().item())
                     if bool(covered_mask.any().item())
                     else 0.0
                 ),
@@ -865,27 +846,35 @@ def train_model(
                 stats[f"positive_windows_t{type_idx}"] = float(positive_windows[type_idx].item())
                 stats[f"skipped_zero_windows_t{type_idx}"] = float(skipped_zero_windows[type_idx].item())
                 stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
+                stats[f"pred_p50_t{type_idx}"] = 0.0
+                stats[f"pred_p90_t{type_idx}"] = 0.0
+                stats[f"pred_p99_t{type_idx}"] = 0.0
+                stats[f"positive_fraction_t{type_idx}"] = 0.0
+                stats[f"label_p95_t{type_idx}"] = 0.0
+                stats[f"kendall_tau_t{type_idx}"] = 0.0
             for t in range(NUM_QUERY_TYPES):
-                pt = full_pred[:, t]
+                if t != active_type_id:
+                    continue
+                pt = full_pred
                 stats[f"pred_p50_t{t}"] = float(_safe_quantile(pt, 0.50).item())
                 stats[f"pred_p90_t{t}"] = float(_safe_quantile(pt, 0.90).item())
                 stats[f"pred_p99_t{t}"] = float(_safe_quantile(pt, 0.99).item())
-                labelled_type = labelled_mask_dev[:, t]
-                positive_type = labelled_type & (training_targets_dev[:, t] > 0)
+                labelled_type = labelled_mask_dev
+                positive_type = labelled_type & (training_target_dev > 0)
                 labelled_count = max(1, int(labelled_type.sum().item()))
                 stats[f"positive_fraction_t{t}"] = float(positive_type.sum().item() / labelled_count)
                 if bool(positive_type.any().item()):
-                    stats[f"label_p95_t{t}"] = float(_safe_quantile(training_targets_dev[positive_type, t], 0.95).item())
+                    stats[f"label_p95_t{t}"] = float(_safe_quantile(training_target_dev[positive_type], 0.95).item())
                 else:
                     stats[f"label_p95_t{t}"] = 0.0
-                eval_mask = labelled_mask_dev[:, t] & covered_mask
+                eval_mask = labelled_mask_dev & covered_mask
                 if bool(eval_mask.any().item()):
                     # Reset eval_g to the same state each epoch so the diagnostic
                     # subsample is identical across epochs, giving stable tau trends.
                     eval_g.manual_seed(int(seed) + 777)
                     p_sample, y_sample = _discriminative_sample(
                         pt[eval_mask].detach().cpu(),
-                        training_targets_dev[eval_mask, t].detach().cpu(),
+                        training_target_dev[eval_mask].detach().cpu(),
                         n_each=100,
                         generator=eval_g,
                     )
@@ -912,7 +901,7 @@ def train_model(
                     trajectories=validation_trajectories,
                     boundaries=validation_boundaries,
                     workload=validation_workload,
-                    workload_mix=validation_mix or {},
+                    workload_map=validation_workload_map or {},
                     model_config=model_config,
                     device=device,
                     validation_points=validation_points_for_f1,
@@ -929,7 +918,7 @@ def train_model(
                     stats["val_query_type_deficit"] = _uniform_type_deficit(
                         per_type_f1,
                         uniform_per_type,
-                        validation_mix or {},
+                        validation_workload_map or {},
                     )
                     for type_name, value in uniform_per_type.items():
                         stats[f"val_uniform_f1_{type_name}"] = float(value)
@@ -978,7 +967,7 @@ def train_model(
                     per_type_f1=per_type_f1,
                     uniform_f1=uniform_f1,
                     uniform_per_type=uniform_per_type,
-                    workload_mix=validation_mix or {},
+                    workload_map=validation_workload_map or {},
                     pred_std=stats["pred_std"],
                     aggregate_gap_weight=float(getattr(model_config, "checkpoint_uniform_gap_weight", 0.5)),
                     type_penalty_weight=float(getattr(model_config, "checkpoint_type_penalty_weight", 1.0)),
