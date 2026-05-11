@@ -15,7 +15,7 @@ Use these top-level folders:
 The recommended range benchmark family is:
 
 ```text
-artifacts/benchmarks/range_workload_matrix_min_realistic/
+artifacts/benchmarks/range_real_usecase/
   latest_run.txt
   runs_index.csv
   runs_index_events.jsonl
@@ -42,7 +42,7 @@ later. Include the workload, profile, data span, point cap, and an iteration
 suffix when useful:
 
 ```bash
-BENCHMARK_RUN_ID=range_medium_2day_cap3000_a make range-benchmark-tmux
+BENCHMARK_RUN_ID=range_real_usecase_512q_a make range-benchmark-tmux
 ```
 
 Timestamped default IDs are fine for exploratory runs. Avoid reusing a run ID
@@ -90,5 +90,5 @@ It is safe to delete:
   and `artifacts/benchmarks/task*_small`
 - cache directories created only for smoke runs
 
-Keep benchmark family roots that contain serious runs until their comparison
+Keep benchmark family roots that contain real-usecase runs until their comparison
 tables and run notes have been reviewed.

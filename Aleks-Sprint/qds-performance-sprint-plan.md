@@ -334,8 +334,10 @@ Completion note, 2026-05-10:
   child commands, seed, parsed phase timings, parsed epoch timings, and final
   matched-workload F1 metrics.
 - Verified `../.venv/bin/python -m src.experiments.benchmark_runtime --help`.
-- Verified a small synthetic train benchmark:
-  `../.venv/bin/python -m src.experiments.benchmark_runtime --mode train --profile small --results_dir artifacts/benchmarks/smoke_runtime --seed 123`.
+- Historical smoke verification used the old synthetic `small` runtime profile,
+  which has since been removed. Current smoke checks should use `make smoke`;
+  current benchmark-quality checks should use `--profile range_real_usecase`
+  with real CSV data.
 
 ### 4. Add GPU Utilization Guidance
 
@@ -493,8 +495,8 @@ Completion note, 2026-05-10:
   same model/artifact within tolerance.
 - Verified:
   `../.venv/bin/python -m pytest tests/test_scaler_persisted.py`,
-  `.venv/bin/python -m pytest QDS/tests`, and a small
-  `benchmark_runtime --mode train --profile small` smoke.
+  `.venv/bin/python -m pytest QDS/tests`, and a historical small-profile
+  `benchmark_runtime` smoke before the synthetic runtime profiles were removed.
 
 ### 8. Replace Range Point-F1 Tuple Sets With Mask Math
 
@@ -628,9 +630,10 @@ Completion note, 2026-05-10:
   legacy config defaults.
 - Verified:
   `../.venv/bin/python -m pytest tests/test_torch_runtime_controls.py tests/test_scaler_persisted.py`.
-- Acceptance smoke:
-  `benchmark_runtime --mode train --profile small --seed 125` was run once
-  with defaults and once with `--float32_matmul_precision high --allow_tf32`.
+- Historical acceptance smoke:
+  one old synthetic runtime-profile run was executed with defaults and one with
+  `--float32_matmul_precision high --allow_tf32` before those synthetic profiles
+  were removed.
   Both artifacts recorded the requested settings and identical small-smoke
   aggregate F1 values for matched methods.
 
@@ -677,10 +680,9 @@ Completion note, 2026-05-10:
   extraction.
 - Verified:
   `../.venv/bin/python -m pytest tests/test_torch_runtime_controls.py`.
-- Acceptance smoke:
-  `benchmark_runtime --mode train --profile small --seed 126 --train_batch_sizes 4,8`
-  produced two sweep rows with epoch time, peak CUDA memory, and identical
-  small-smoke MLQDS aggregate F1.
+- Historical acceptance smoke:
+  one old synthetic runtime-profile batch sweep produced two rows before those
+  synthetic profiles were removed.
 
 ### 12. Add Optional BF16 Autocast
 
@@ -727,8 +729,8 @@ Completion note, 2026-05-10:
   `../.venv/bin/python -m py_compile src/experiments/torch_runtime.py src/experiments/run_inference.py src/experiments/benchmark_runtime.py src/training/train_model.py src/training/training_pipeline.py src/evaluation/baselines.py`
   and
   `../.venv/bin/python -m pytest tests/test_torch_runtime_controls.py tests/test_scaler_persisted.py`.
-- Acceptance smoke:
-  paired `benchmark_runtime --mode train --profile small --seed 127` runs with
+- Historical acceptance smoke:
+  paired old synthetic runtime-profile runs with
   TF32-enabled FP32 (`--float32_matmul_precision high --allow_tf32`) and BF16
   (`--float32_matmul_precision high --allow_tf32 --amp_mode bf16`) both
   completed on the RTX 5060 Ti. BF16 recorded CUDA autocast enabled, no collapse
@@ -831,8 +833,9 @@ cd QDS
   This profile uses 512 range queries, 30% target query coverage,
   `range_spatial_fraction=0.0165`, `range_time_fraction=0.033`, 5%
   retained-point compression, `query_chunk_size=512`, 20 epochs, normal
-  answer-set F1 checkpointing, no checkpoint smoothing,
-  `mlqds_temporal_fraction=0.10`, and F1 diagnostics every epoch.
+  answer-set F1 checkpointing, `checkpoint_smoothing_window=1` (no rolling
+  smoothing), vectorized ranking-pair sampling, `mlqds_temporal_fraction=0.10`,
+  and F1 diagnostics every epoch.
 
 - Removed the old synthetic `small`/`medium`/`serious` runtime benchmark
   profiles from `benchmark_runtime.py`. The runtime wrapper now exposes only

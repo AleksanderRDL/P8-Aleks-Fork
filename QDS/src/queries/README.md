@@ -38,7 +38,14 @@ Range and kNN anchors use a 70/30 density sampler. The generator builds a lat/lo
 
 Range query footprint is configurable. `range_spatial_fraction` controls the latitude/longitude half-width and `range_time_fraction` controls the time half-window as fractions of the dataset spans. Smaller values are useful when increasing `n_queries`, because the default range boxes can cover most of a dense AIS dataset after enough queries.
 
-When `target_coverage` is provided, the generator still emits exactly `n_queries` queries. While the measured union coverage is below the target, anchors are biased toward points not yet covered; once the target is reached, generation returns to the regular sampler. Coverage is measured as point-level query signal coverage: range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal radius regions.
+When `target_coverage` is provided, `n_queries` is the minimum query count. If
+`max_queries` is higher than `n_queries`, generation can continue until both the
+minimum query count and target coverage are met, or until the cap is reached.
+While measured union coverage is below the target, anchors are biased toward
+points not yet covered; once the target is reached, generation returns to the
+regular sampler. Coverage is measured as point-level query signal coverage:
+range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal
+radius regions.
 
 ## Execution Semantics
 

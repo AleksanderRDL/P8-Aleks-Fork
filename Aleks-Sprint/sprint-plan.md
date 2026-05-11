@@ -291,9 +291,9 @@ Entry state:
   pure answer-set metric or `checkpoint_f1_variant=combined` for the legacy
   answer/support product. Phase 3 should default to `answer` unless the run is
   explicitly testing support-preservation selection.
-- MLQDS matched evaluation now mixes query-type heads by within-trajectory
-  ranks before applying workload weights. This prevents one uncalibrated head
-  from dominating mixed-workload scores.
+- MLQDS matched evaluation can still mix query-type heads by within-trajectory
+  ranks for compatibility experiments, but current benchmark runs train one
+  specialist model per pure query workload.
 
 Tasks:
 

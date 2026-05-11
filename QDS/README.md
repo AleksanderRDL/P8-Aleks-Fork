@@ -7,14 +7,15 @@ AIS-QDS v2 is the current shift-aware rebuild of the AIS query-driven simplifica
 - `requirements.txt` - Python dependencies for the v2 stack.
 - `src/` - package code for loading data, building queries, training models, and running experiments.
 - `tests/` - regression tests that guard the rebuild.
-- `results/` - retained reference outputs and benchmark artifacts.
+- `artifacts/` - local generated caches, benchmark runs, smoke outputs, logs, and checkpoints.
+- `results/` - retained historical/reference outputs from earlier local runs.
 
 ## Quick Start
 
 ```bash
 cd QDS
-pip install -r requirements.txt
-python -m src.experiments.run_ais_experiment --n_queries 128 --epochs 6 --workload range
+../.venv/bin/python -m pip install -r requirements.txt
+../.venv/bin/python -m src.experiments.run_ais_experiment --n_queries 128 --epochs 6 --workload range
 ```
 
 ## Environment And Smoke Checks
@@ -31,9 +32,9 @@ make test
 make typecheck
 ```
 
-`make typecheck` currently checks the benchmark/tooling files that have a clean
-Pyright baseline. Expand it incrementally with `TYPECHECK_PATHS=...` as broader
-modules are made type-clean.
+`make typecheck` runs Pyright in standard mode over `src`, `scripts`, and
+`tests`. Use `TYPECHECK_PATHS=...` only when you intentionally want to narrow or
+expand that scope for a local check.
 
 Use the local Makefile for repeatable smoke runs:
 
@@ -321,7 +322,7 @@ another external run directory, not under `src/models/saved_models`.
 To run on a CSV instead of synthetic data, point the CSV path at a cleaned AIS file under `../AISDATA/cleaned/`:
 
 ```bash
-python -m src.experiments.run_ais_experiment \
+../.venv/bin/python -m src.experiments.run_ais_experiment \
   --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
   --max_points_per_segment 500 \
   --max_time_gap_seconds 3600 \
@@ -335,24 +336,33 @@ python -m src.experiments.run_ais_experiment \
 To train on one cleaned CSV and evaluate/clean a different cleaned CSV without trajectory splitting:
 
 ```bash
-python -m src.experiments.run_ais_experiment \
+../.venv/bin/python -m src.experiments.run_ais_experiment \
   --train_csv_path ../AISDATA/cleaned/train.csv \
   --eval_csv_path ../AISDATA/cleaned/eval.csv \
+  --n_queries 512 \
   --query_coverage 0.30 \
-  --max_queries 1000 \
   --range_spatial_fraction 0.0165 \
   --range_time_fraction 0.033 \
   --query_chunk_size 512 \
   --epochs 20 \
+  --f1_diagnostic_every 1 \
   --lr 0.0005 \
   --pointwise_loss_weight 0.25 \
   --gradient_clip_norm 1.0 \
   --workload range \
-  --compression_ratio 0.20 \
+  --compression_ratio 0.05 \
+  --mlqds_temporal_fraction 0.10 \
   --model_type baseline
 ```
 
-`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. Coverage mode still emits exactly `--n_queries`; the target coverage is used to bias later query anchors toward points that have not yet been covered. `--max_queries` is accepted only as a positive legacy safety parameter. When `--eval_csv_path` is used and `--save_simplified_dir` is not set, the experiment writes eval-set simplified CSVs under `<results_dir>/simplified_eval`.
+`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. With
+coverage mode enabled, `--n_queries` is the minimum query count. If
+`--max_queries` is set higher than `--n_queries`, generation may continue until
+the target coverage is reached or the cap is hit; otherwise it emits
+`--n_queries`. While measured union coverage is below target, anchors are biased
+toward points that have not yet been covered. When `--eval_csv_path` is used and
+`--save_simplified_dir` is not set, the experiment writes eval-set simplified
+CSVs under `<results_dir>/simplified_eval`.
 
 For local smoke runs on large cleaned AIS files, `--max_points_per_segment`
 downsamples each loaded trajectory segment, `--max_segments` caps the loader
@@ -366,11 +376,14 @@ Add `--cache_dir artifacts/cache/<run-name>` to CSV runs to reuse segmented
 Parquet caches across experiments. Use `--refresh_cache` when changing loader
 code or when you want to force a rebuild of a matching source/config entry.
 
-Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler: 70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all points. The same sampler is used by coverage-targeted generation, so coverage still controls when generation stops while density controls where range/kNN queries are anchored.
+Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler:
+70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all
+points. Coverage-targeted generation still uses this sampler, but biases anchors
+toward uncovered points until the target coverage is reached.
 
 For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, the real-usecase profile uses `0.0165` spatial and `0.033` time to keep 512 range queries aimed near the 30% target coverage instead of blanketing the dataset. `--query_chunk_size` controls how many workload queries are attended in one cross-attention chunk; set it at least as high as `--n_queries` when memory allows so the attention softmax is exact rather than chunk-approximated.
 
-Phase 2 range diagnostics can be enabled without changing the default generator.
+Range diagnostics can be enabled without changing the default generator.
 Use optional acceptance filters such as `--range_min_point_hits`,
 `--range_max_point_hit_fraction`, `--range_max_trajectory_hit_fraction`,
 `--range_max_box_volume_fraction`, `--range_duplicate_iou_threshold`, and
@@ -415,7 +428,7 @@ directory passed with `--results_dir`:
 - `matched_table.txt` - fixed-width comparison table for the evaluation workload.
 - `shift_table.txt` - shift table comparing the train workload against the eval workload.
 - `geometric_distortion_table.txt` - SED/PED, length preservation, and combined geometric/F1 reporting.
-- `range_workload_diagnostics.json` - Phase 2 range workload, label, Oracle, and baseline diagnostics for train/eval/selection workloads.
+- `range_workload_diagnostics.json` - range workload, label, Oracle, and baseline diagnostics for train/eval/selection workloads.
 - `range_query_diagnostics.jsonl` - one JSON record per generated range query with hit counts, footprint, broad-query flag, and duplicate-query flag.
 
 ## Validation

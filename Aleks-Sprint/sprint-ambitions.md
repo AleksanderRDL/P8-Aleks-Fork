@@ -714,7 +714,7 @@ The temporal-hybrid simplifier is useful because it prevents badly broken trajec
 
 ### Specialist Model Configuration
 
-The current architecture already has four output heads, one per query type. That is useful for mixed-workload experiments.
+The current architecture already has four output heads, one per query type. That remains useful for compatibility experiments, but current benchmark runs should train one specialist model per pure query workload.
 
 However, the sprint objective is four specialized models, not one universal model.
 
