@@ -327,6 +327,50 @@ def _combine_epoch_type_weights(base_weights: torch.Tensor, epoch_mix: torch.Ten
     return combined / total
 
 
+def _window_positive_type_mask(
+    window: TrajectoryBatch,
+    training_targets: torch.Tensor,
+    labelled_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Return query types with at least one positive supervised point in a window."""
+    global_idx = window.global_indices.reshape(-1)
+    valid = global_idx >= 0
+    positive_types = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.bool)
+    if not bool(valid.any().item()):
+        return positive_types
+    idx = global_idx[valid].to(device=training_targets.device, dtype=torch.long)
+    positives = labelled_mask[idx] & (training_targets[idx] > 0)
+    if positives.numel() == 0:
+        return positive_types
+    return positives.any(dim=0).detach().cpu()
+
+
+def _filter_supervised_windows(
+    windows: list[TrajectoryBatch],
+    training_targets: torch.Tensor,
+    labelled_mask: torch.Tensor,
+    active_type_ids: list[int],
+) -> tuple[list[TrajectoryBatch], torch.Tensor]:
+    """Drop windows that cannot contribute loss for any active training type."""
+    if not windows or not active_type_ids:
+        return windows, torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
+
+    kept: list[TrajectoryBatch] = []
+    filtered_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
+    for window in windows:
+        positive_types = _window_positive_type_mask(window, training_targets, labelled_mask)
+        has_active_positive = any(bool(positive_types[type_idx].item()) for type_idx in active_type_ids)
+        if has_active_positive:
+            kept.append(window)
+            continue
+        for type_idx in active_type_ids:
+            filtered_zero_windows[type_idx] += 1
+
+    if not kept:
+        return windows, torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
+    return kept, filtered_zero_windows
+
+
 def _predict_workload_logits(
     model: TrajectoryQDSModel,
     scaler: FeatureScaler,
@@ -546,7 +590,11 @@ def train_model(
     training_targets_dev = training_targets.to(device)
     labelled_mask_dev = labelled_mask.to(device)
     base_type_weights = _workload_mix_tensor(train_mix or _query_frequency_mix(workload), device=device)
+    active_train_type_ids = [
+        type_idx for type_idx in active_type_ids if float(base_type_weights[type_idx].detach().cpu().item()) > 0.0
+    ] or active_type_ids
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
+    run_tag = "main"
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
     grad_scaler = torch.amp.GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))
@@ -556,6 +604,23 @@ def train_model(
         window_length=model_config.window_length,
         stride=model_config.window_stride,
     )
+    raw_window_count = len(windows_cpu)
+    windows_cpu, prefiltered_zero_windows = _filter_supervised_windows(
+        windows=windows_cpu,
+        training_targets=training_targets,
+        labelled_mask=labelled_mask,
+        active_type_ids=active_train_type_ids,
+    )
+    if int(prefiltered_zero_windows.sum().item()) > 0:
+        filtered_parts = []
+        for type_idx in active_train_type_ids:
+            type_name = ID_TO_QUERY_NAME.get(type_idx, f"t{type_idx}")
+            filtered_parts.append(f"{type_name}={int(prefiltered_zero_windows[type_idx].item())}")
+        print(
+            f"  [{run_tag}] filtered {raw_window_count - len(windows_cpu)}/{raw_window_count} "
+            f"zero-positive training windows before forward ({', '.join(filtered_parts)})",
+            flush=True,
+        )
     single_windows = [
         TrajectoryBatch(
             points=w.points.to(device),
@@ -567,13 +632,13 @@ def train_model(
     ]
     train_batch_size = max(1, int(getattr(model_config, "train_batch_size", 1)))
     windows = batch_windows(single_windows, train_batch_size)
+    trained_window_count = len(single_windows)
     # Diagnostic pass operates on single windows so we can cheaply subsample a
     # fraction of them (batched diagnostics would waste the remaining lanes).
     diag_windows = single_windows
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
-    run_tag = "main"
     selection_metric = str(getattr(model_config, "checkpoint_selection_metric", "f1")).lower()
     if selection_metric not in {"loss", "f1", "uniform_gap"}:
         raise ValueError("checkpoint_selection_metric must be 'loss', 'f1', or 'uniform_gap'.")
@@ -663,15 +728,23 @@ def train_model(
     epochs_trained = 0
     for epoch in range(effective_epochs):
         epoch_t0 = time.perf_counter()
+        epoch_timing = {
+            "forward_s": 0.0,
+            "loss_s": 0.0,
+            "backward_s": 0.0,
+            "diagnostic_s": 0.0,
+            "f1_s": 0.0,
+        }
         model.train()
         epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g).to(device)
         epoch_type_weights = _combine_epoch_type_weights(base_type_weights, epoch_mix)
         epoch_loss = torch.tensor(0.0, device=device)
         positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
-        skipped_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
+        skipped_zero_windows = prefiltered_zero_windows.clone()
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
         for w in windows:
+            forward_t0 = time.perf_counter()
             with torch_autocast_context(device, amp_mode):
                 pred_batch = model(
                     points=w.points,
@@ -679,6 +752,8 @@ def train_model(
                     query_type_ids=type_ids_dev,
                     padding_mask=w.padding_mask,
                 )
+            epoch_timing["forward_s"] += time.perf_counter() - forward_t0
+            loss_t0 = time.perf_counter()
             pred_batch = pred_batch.float()
             # pred_batch: (B, L, T).  Accumulate per-window loss terms across
             # the batch and backprop once per batch — this is what makes the
@@ -714,8 +789,10 @@ def train_model(
                     ranking_pair_counts[t] += int(pair_count)
                     pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
                     loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
+            epoch_timing["loss_s"] += time.perf_counter() - loss_t0
 
             if loss_terms:
+                backward_t0 = time.perf_counter()
                 loss = (
                     torch.stack(loss_terms).sum() / float(B)
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
@@ -737,6 +814,7 @@ def train_model(
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
                     opt.step()
                 epoch_loss = epoch_loss + loss.detach()
+                epoch_timing["backward_s"] += time.perf_counter() - backward_t0
 
         # Diagnostic pass only on selected epochs (every `diag_every` epochs and
         # the final epoch).  Subsample windows by `diag_fraction` to further cut
@@ -745,6 +823,7 @@ def train_model(
         is_last_epoch = (epoch + 1) == effective_epochs
         is_diag_epoch = ((epoch + 1) % diag_every == 0) or is_last_epoch or epoch == 0
         if is_diag_epoch:
+            diagnostic_t0 = time.perf_counter()
             if diag_fraction < 1.0 and len(diag_windows) > 8:
                 k = max(8, int(len(diag_windows) * diag_fraction))
                 perm = torch.randperm(len(diag_windows), generator=eval_g)[:k].tolist()
@@ -816,12 +895,14 @@ def train_model(
 
             if stats["pred_std"] < 1e-3:
                 stats["collapse_warning"] = 1.0
+            epoch_timing["diagnostic_s"] += time.perf_counter() - diagnostic_t0
 
             f1_due = f1_diag_every <= 0 or ((epoch + 1) % f1_diag_every == 0 or is_last_epoch or epoch == 0)
             should_run_f1 = has_validation_f1 and f1_due and (
                 selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
             )
             if should_run_f1:
+                f1_t0 = time.perf_counter()
                 assert validation_trajectories is not None
                 assert validation_boundaries is not None
                 assert validation_workload is not None
@@ -837,6 +918,7 @@ def train_model(
                     validation_points=validation_points_for_f1,
                     query_cache=validation_query_cache,
                 )
+                epoch_timing["f1_s"] += time.perf_counter() - f1_t0
                 stats["val_query_f1"] = float(query_f1)
                 for type_name, value in per_type_f1.items():
                     stats[f"val_query_f1_{type_name}"] = float(value)
@@ -864,9 +946,20 @@ def train_model(
                 stats[f"skipped_zero_windows_t{type_idx}"] = float(skipped_zero_windows[type_idx].item())
                 stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
 
+        epoch_dt = time.perf_counter() - epoch_t0
+        stats["epoch_seconds"] = float(epoch_dt)
+        stats["epoch_forward_seconds"] = float(epoch_timing["forward_s"])
+        stats["epoch_loss_seconds"] = float(epoch_timing["loss_s"])
+        stats["epoch_backward_seconds"] = float(epoch_timing["backward_s"])
+        stats["epoch_diagnostic_seconds"] = float(epoch_timing["diagnostic_s"])
+        stats["epoch_f1_seconds"] = float(epoch_timing["f1_s"])
+        stats["raw_training_window_count"] = float(raw_window_count)
+        stats["trained_training_window_count"] = float(trained_window_count)
+        stats["filtered_zero_window_count"] = float(raw_window_count - trained_window_count)
+        for type_idx in range(NUM_QUERY_TYPES):
+            stats[f"filtered_zero_windows_t{type_idx}"] = float(prefiltered_zero_windows[type_idx].item())
         history.append(stats)
 
-        epoch_dt = time.perf_counter() - epoch_t0
         epochs_trained = epoch + 1
 
         if is_diag_epoch:
@@ -955,10 +1048,21 @@ def train_model(
                     f"{type_name}:pos={stats[f'positive_fraction_t{type_idx}']:.4f},"
                     f"p95={stats[f'label_p95_t{type_idx}']:.3f},"
                     f"pairs={int(stats[f'ranking_pairs_t{type_idx}'])},"
-                    f"skip={int(stats[f'skipped_zero_windows_t{type_idx}'])}"
+                    f"skip={int(stats[f'skipped_zero_windows_t{type_idx}'])},"
+                    f"filtered={int(stats[f'filtered_zero_windows_t{type_idx}'])}"
                 )
             if diag_parts:
                 print(f"    [{run_tag}] label_diag  " + "  ".join(diag_parts), flush=True)
+            print(
+                f"    [{run_tag}] epoch_timing  "
+                f"forward={stats['epoch_forward_seconds']:.2f}s  "
+                f"loss={stats['epoch_loss_seconds']:.2f}s  "
+                f"backward={stats['epoch_backward_seconds']:.2f}s  "
+                f"diagnostic={stats['epoch_diagnostic_seconds']:.2f}s  "
+                f"f1={stats['epoch_f1_seconds']:.2f}s  "
+                f"filtered_zero_windows={int(stats['filtered_zero_window_count'])}",
+                flush=True,
+            )
 
             if is_new_best_model:
                 best_selection = float(stats["selection_score_smoothed"])
@@ -985,6 +1089,14 @@ def train_model(
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
                 f"loss={stats['loss']:.8f}  (no-diag)  ({epoch_dt:.2f}s)",
+                flush=True,
+            )
+            print(
+                f"    [{run_tag}] epoch_timing  "
+                f"forward={stats['epoch_forward_seconds']:.2f}s  "
+                f"loss={stats['epoch_loss_seconds']:.2f}s  "
+                f"backward={stats['epoch_backward_seconds']:.2f}s  "
+                f"filtered_zero_windows={int(stats['filtered_zero_window_count'])}",
                 flush=True,
             )
 

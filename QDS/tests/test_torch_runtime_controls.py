@@ -175,7 +175,7 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     assert args[args.index("--query_chunk_size") + 1] == "2048"
     assert args[args.index("--query_coverage") + 1] == "0.20"
     assert args[args.index("--range_spatial_km") + 1] == "2.2"
-    assert args[args.index("--range_time_hours") + 1] == "3.0"
+    assert args[args.index("--range_time_hours") + 1] == "5.0"
     assert args[args.index("--range_footprint_jitter") + 1] == "0.0"
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"

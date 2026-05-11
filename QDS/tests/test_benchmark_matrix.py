@@ -48,7 +48,7 @@ def _profile_core_args() -> list[str]:
         "--range_spatial_km",
         "2.2",
         "--range_time_hours",
-        "3.0",
+        "5.0",
         "--range_footprint_jitter",
         "0.0",
         "--query_chunk_size",

@@ -209,6 +209,44 @@ def test_configured_workload_expands_to_max_queries_when_target_needs_more_queri
     assert float(workload.coverage_fraction or 0.0) < 1.0
 
 
+def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=24, seed=462)
+    cfg = build_experiment_config(
+        n_queries=6,
+        query_coverage=0.10,
+        max_queries=20,
+        workload="range",
+        cache_dir=str(tmp_path / "cache"),
+        range_spatial_fraction=0.05,
+        range_time_fraction=0.05,
+    )
+
+    first = _generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_mix={"range": 1.0},
+        seed=12,
+        config=cfg,
+        cache_label="train",
+    )
+    second = _generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_mix={"range": 1.0},
+        seed=12,
+        config=cfg,
+        cache_label="train",
+    )
+
+    first_cache = (first.generation_diagnostics or {})["workload_cache"]
+    second_cache = (second.generation_diagnostics or {})["workload_cache"]
+    assert first_cache["hit"] is False
+    assert second_cache["hit"] is True
+    assert Path(second_cache["path"]).exists()
+    assert first.typed_queries == second.typed_queries
+    assert torch.equal(first.query_features, second.query_features)
+
+
 def test_coverage_generation_allows_overlapping_query_hits() -> None:
     """Assert coverage-targeted generation can cover the same point more than once."""
     trajectories = generate_synthetic_ais_data(n_ships=5, n_points_per_ship=50, seed=777)

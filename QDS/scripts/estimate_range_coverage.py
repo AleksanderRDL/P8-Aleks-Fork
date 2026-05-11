@@ -108,7 +108,7 @@ def main() -> int:
     parser.add_argument("--range_spatial_fraction", type=float, default=0.08)
     parser.add_argument("--range_time_fraction", type=float, default=0.15)
     parser.add_argument("--range_spatial_km", type=float, default=2.2)
-    parser.add_argument("--range_time_hours", type=float, default=3.0)
+    parser.add_argument("--range_time_hours", type=float, default=5.0)
     parser.add_argument("--range_footprint_jitter", type=float, default=0.0)
     parser.add_argument("--min_points_per_segment", type=int, default=4)
     parser.add_argument("--max_points_per_segment", type=int, default=None)

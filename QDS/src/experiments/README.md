@@ -78,7 +78,7 @@ Profile shape:
 | --- | --- |
 | Workload | pure `range` |
 | Query generation | Start at `80`, continue until `0.20` coverage, cap at `max_queries=2048` |
-| Range footprint | `range_spatial_km=2.2`, `range_time_hours=3.0` fixed half-windows (`range_footprint_jitter=0.0`) |
+| Range footprint | `range_spatial_km=2.2`, `range_time_hours=5.0` fixed half-windows (`range_footprint_jitter=0.0`) |
 | Compression | `0.05` retained points |
 | Epoch budget | `20` with `early_stopping_patience=5` |
 | Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=answer` |
@@ -93,6 +93,9 @@ Profile shape:
 `query_coverage` is a target used for workload generation and diagnostics.
 For the real-usecase profile, `n_queries` is only the minimum workload size;
 generation continues until the target is reached or `max_queries` is hit.
+When `--cache_dir` is set, generated workloads are cached under
+`<cache_dir>/workloads/` by data fingerprint, query config, seed, and workload
+mix. Use `--refresh_cache` to force regeneration.
 
 Direct matrix run:
 
@@ -119,7 +122,7 @@ behavior first:
   --sample_stride 20 \
   --target_coverage 0.20 \
   --range_spatial_km 2.2 \
-  --range_time_hours 3.0 \
+  --range_time_hours 5.0 \
   --range_footprint_jitter 0.0
 ```
 

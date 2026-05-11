@@ -19,6 +19,7 @@ from src.training.train_model import (
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
     _combine_epoch_type_weights,
+    _filter_supervised_windows,
     _f1_selection_score,
     _ranking_loss_for_type,
     _selection_score,
@@ -26,6 +27,7 @@ from src.training.train_model import (
     _validation_query_f1,
     train_model,
 )
+from src.training.trajectory_batching import build_trajectory_windows
 
 
 def test_selection_score_penalizes_collapsed_predictions() -> None:
@@ -149,6 +151,25 @@ def test_epoch_type_weights_respect_train_mix() -> None:
 
     assert weights.tolist() == pytest.approx([0.2, 0.4, 0.2, 0.2])
     assert float(weights.sum().item()) == pytest.approx(1.0)
+
+
+def test_filter_supervised_windows_removes_zero_positive_training_windows() -> None:
+    points = torch.arange(24, dtype=torch.float32).reshape(12, 2)
+    windows = build_trajectory_windows(points, boundaries=[(0, 4), (4, 12)], window_length=4, stride=4)
+    targets = torch.zeros((12, 4), dtype=torch.float32)
+    labelled_mask = torch.ones((12, 4), dtype=torch.bool)
+    targets[5, 0] = 1.0
+
+    kept, filtered = _filter_supervised_windows(
+        windows=windows,
+        training_targets=targets,
+        labelled_mask=labelled_mask,
+        active_type_ids=[0],
+    )
+
+    assert len(windows) == 3
+    assert len(kept) == 1
+    assert int(filtered[0].item()) == 2
 
 
 def test_training_records_validation_query_f1() -> None:

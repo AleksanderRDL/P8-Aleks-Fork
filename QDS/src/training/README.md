@@ -34,9 +34,10 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 - Current experiment entrypoints train one pure workload per model. Mixed
   workload helpers remain for low-level diagnostics only.
-- Windows never cross trajectory boundaries. Windows with no positive label for
-  a type are skipped for that type; the pointwise BCE term samples zeros to
-  avoid all-zero collapse.
+- Windows never cross trajectory boundaries. Training prefilters windows with
+  no positive labels for any active workload type before the model forward; any
+  remaining per-type zero-positive lanes are still skipped for that type. The
+  pointwise BCE term samples zeros to avoid all-zero collapse.
 - The effective epoch count is clamped to at least 8. The returned model is
   restored to the best diagnostic epoch; by default that means held-out final
   query F1.
@@ -51,6 +52,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   `gradient_clip_norm`, `train_batch_size`, `inference_batch_size`,
   `query_chunk_size`, `float32_matmul_precision`, `allow_tf32`, and `amp_mode`.
   Benchmark changes by retained-set F1, epoch time, and peak memory together.
+- Epoch diagnostics record `epoch_forward_seconds`, `epoch_loss_seconds`,
+  `epoch_backward_seconds`, `epoch_diagnostic_seconds`,
+  `epoch_f1_seconds`, and filtered-window counts for bottleneck analysis.
 - Defaults: `window_length=512`, `window_stride=256`,
   `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
   `allow_tf32=False`, and `amp_mode="off"`. The real-usecase benchmark profile
