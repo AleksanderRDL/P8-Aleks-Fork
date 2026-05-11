@@ -11,10 +11,10 @@ import numpy as np
 import torch
 
 from src.experiments.experiment_config import TypedQueryWorkload
+from src.simplification.mlqds_scoring import simplify_mlqds_predictions, workload_type_head
 from src.simplification.simplify_trajectories import (
     evenly_spaced_indices,
     simplify_with_scores,
-    simplify_with_temporal_score_hybrid,
 )
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import default_inference_device, windowed_predict
@@ -42,7 +42,10 @@ class MLQDSMethod:
     name: str
     trained: TrainingOutputs
     workload: TypedQueryWorkload
-    workload_mix: dict[str, float]
+    workload_type: str
+    score_mode: str = "rank"
+    score_temperature: float = 1.0
+    rank_confidence_weight: float = 0.15
     temporal_fraction: float = 0.75
     diversity_bonus: float = 0.05
     inference_device: str | torch.device | None = None
@@ -50,11 +53,11 @@ class MLQDSMethod:
     inference_batch_size: int = 16
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
-        """Simplify using workload-weighted typed scores.
+        """Simplify using one explicit typed workload score.
 
         If the workload contains no queries, keep every point because there is
-        no query F1 objective to optimize. Otherwise, use the learned workload-
-        weighted score with a temporal-coverage base, then fill the remaining
+        no query F1 objective to optimize. Otherwise, use the learned pure
+        workload score with a temporal-coverage base, then fill the remaining
         budget with learned query-aware scores.
 
         See ``src/evaluation/README.md`` for details.
@@ -76,39 +79,16 @@ class MLQDSMethod:
             amp_mode=self.amp_mode,
         )
 
-        type_order = ["range", "knn", "similarity", "clustering"]
-        mix = torch.tensor(
-            [float(self.workload_mix.get(t, 0.0)) for t in type_order],
-            dtype=torch.float32,
-            device=pred.device,
-        )
-        if float(mix.sum().item()) <= 0.0:
-            mix = torch.ones_like(mix) / mix.numel()
-        else:
-            mix = mix / mix.sum()
-        # Rank-normalize per head within each trajectory before mixing so
-        # head magnitudes (e.g. range head saturating high while sim head stays
-        # low) don't dominate the workload-weighted sum.
-        score = pred.new_zeros((pred.shape[0],))
-        n_types = pred.shape[1]
-        for s, e in boundaries:
-            length = e - s
-            if length <= 0:
-                continue
-            denom = float(max(1, length - 1))
-            for t_idx in range(n_types):
-                w = float(mix[t_idx].item())
-                if w <= 0.0:
-                    continue
-                head = pred[s:e, t_idx]
-                ranks = head.argsort().argsort().to(torch.float32) / denom
-                score[s:e] = score[s:e] + w * ranks
-        return simplify_with_temporal_score_hybrid(
-            score,
+        return simplify_mlqds_predictions(
+            pred,
             boundaries,
+            self.workload_type,
             compression_ratio,
             temporal_fraction=self.temporal_fraction,
             diversity_bonus=self.diversity_bonus,
+            score_mode=self.score_mode,
+            score_temperature=self.score_temperature,
+            rank_confidence_weight=self.rank_confidence_weight,
         )
 
 
@@ -221,23 +201,17 @@ class DouglasPeuckerMethod:
 
 @dataclass
 class OracleMethod:
-    """Diagnostic upper-bound method using oracle labels directly. See src/evaluation/README.md for details."""
+    """Diagnostic additive-label Oracle, not an exact retained-set F1 optimizer."""
 
     labels: torch.Tensor
-    workload_mix: dict[str, float]
+    workload_type: str
     name: str = "Oracle"
+    oracle_kind: str = "additive_label_greedy"
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
-        """Simplify using weighted oracle labels. See src/evaluation/README.md for details."""
-        mix = torch.tensor(
-            [
-                self.workload_mix.get("range", 0.0),
-                self.workload_mix.get("knn", 0.0),
-                self.workload_mix.get("similarity", 0.0),
-                self.workload_mix.get("clustering", 0.0),
-            ],
-            dtype=torch.float32,
-        )
-        mix = mix / max(float(mix.sum().item()), 1e-6)
-        score = (self.labels * mix.unsqueeze(0)).sum(dim=1)
+        """Simplify using oracle label gains for one explicit workload head."""
+        _name, type_idx = workload_type_head(self.workload_type)
+        if self.labels.ndim != 2 or type_idx >= self.labels.shape[1]:
+            raise ValueError("Oracle labels must have shape [n_points, NUM_QUERY_TYPES].")
+        score = self.labels[:, type_idx].float()
         return simplify_with_scores(score, boundaries, compression_ratio)

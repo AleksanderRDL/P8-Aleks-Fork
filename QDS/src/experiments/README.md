@@ -77,12 +77,15 @@ Profile shape:
 | Setting | Value |
 | --- | --- |
 | Workload | pure `range` |
-| Queries | `512` |
-| Target coverage | `0.30` |
-| Range footprint | `range_spatial_fraction=0.0165`, `range_time_fraction=0.033` |
+| Queries | `80` |
+| Target coverage | `0.20` |
+| Range footprint | `range_spatial_km=2.2`, `range_time_hours=3.0` fixed half-windows (`range_footprint_jitter=0.0`) |
 | Compression | `0.05` retained points |
-| Epoch budget | `20` with `early_stopping_patience=8` |
+| Epoch budget | `20` with `early_stopping_patience=5` |
 | Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=answer` |
+| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.25`, `mlqds_score_temperature=1.0` |
+| Attention chunk | `query_chunk_size=2048` |
+| Range labels | pure point-F1 labels (`range_boundary_prior_weight=0.0`) |
 | Diagnostics | `f1_diagnostic_every=1`, no smoothing (`checkpoint_smoothing_window=1`) |
 | Runtime variant | `tf32_bf16_bs32_inf32` by default |
 | Ranking sampler | `vectorized` by default |
@@ -103,6 +106,21 @@ Direct matrix run:
 
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
 
+Calibrate range query counts with the sampled estimator before changing the
+range footprint or target coverage:
+
+```bash
+../.venv/bin/python scripts/estimate_range_coverage.py \
+  --csv_path ../AISDATA/cleaned \
+  --cache_dir artifacts/cache/range_real_usecase \
+  --query_counts 64,72,80,88,96,112 \
+  --sample_stride 20 \
+  --target_coverage 0.20 \
+  --range_spatial_km 2.2 \
+  --range_time_hours 3.0 \
+  --range_footprint_jitter 0.0
+```
+
 ## Tmux Launchers
 
 Use tmux launchers for long local runs so training survives the IDE/session and
@@ -122,12 +140,12 @@ make benchmark-queue-preflight
 ATTACH=0 BENCHMARK_SEEDS=42,43,44 make range-benchmark-queue-tmux
 ```
 
-Mixed queue rows use a tab-separated plan file:
+Queue rows use a tab-separated plan file:
 
 ```text
-range_real_usecase_512q_cache_legacy_seed42	42	--ranking_pair_sampling legacy
-range_real_usecase_512q_vectorized_cache_seed43	43	
-range_real_usecase_512q_vectorized_cache_seed44	44	
+range_real_usecase_80q_cache_legacy_seed42	42	--ranking_pair_sampling legacy
+range_real_usecase_80q_vectorized_cache_seed43	43
+range_real_usecase_80q_vectorized_cache_seed44	44
 ```
 
 Launch a plan file:
@@ -138,6 +156,10 @@ ATTACH=0 \
   BENCHMARK_CONTINUE_ON_FAILURE=1 \
   make range-benchmark-queue-tmux
 ```
+
+The queue launcher validates each row's child args against
+`run_ais_experiment` before tmux starts, so unsupported benchmark knobs fail
+fast.
 
 The monitor pane writes RAM/swap, disk, top RSS processes, GPU utilization,
 GPU memory, temperature, power draw, clocks, CUDA processes, and relevant

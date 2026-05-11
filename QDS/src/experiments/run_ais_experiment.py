@@ -115,6 +115,9 @@ def main() -> None:
         max_queries=args.max_queries,
         range_spatial_fraction=args.range_spatial_fraction,
         range_time_fraction=args.range_time_fraction,
+        range_spatial_km=args.range_spatial_km,
+        range_time_hours=args.range_time_hours,
+        range_footprint_jitter=args.range_footprint_jitter,
         range_min_point_hits=args.range_min_point_hits,
         range_max_point_hit_fraction=args.range_max_point_hit_fraction,
         range_min_trajectory_hits=args.range_min_trajectory_hits,
@@ -126,6 +129,8 @@ def main() -> None:
         epochs=args.epochs,
         lr=args.lr,
         ranking_pair_sampling=args.ranking_pair_sampling,
+        ranking_pairs_per_type=args.ranking_pairs_per_type,
+        ranking_top_quantile=args.ranking_top_quantile,
         pointwise_loss_weight=args.pointwise_loss_weight,
         gradient_clip_norm=args.gradient_clip_norm,
         compression_ratio=args.compression_ratio,
@@ -151,7 +156,11 @@ def main() -> None:
         checkpoint_f1_variant=args.checkpoint_f1_variant,
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
+        mlqds_score_mode=args.mlqds_score_mode,
+        mlqds_score_temperature=args.mlqds_score_temperature,
+        mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
         residual_label_mode=args.residual_label_mode,
+        range_boundary_prior_weight=args.range_boundary_prior_weight,
         float32_matmul_precision=args.float32_matmul_precision,
         allow_tf32=args.allow_tf32,
         amp_mode=args.amp_mode,
@@ -169,6 +178,8 @@ def main() -> None:
         f"[config] model={args.model_type}  workload={args.workload}  epochs={args.epochs}  "
         f"n_queries={args.n_queries}{coverage_msg}  compression_ratio={args.compression_ratio}  "
         f"lr={args.lr}  ranking_pair_sampling={args.ranking_pair_sampling}  "
+        f"ranking_pairs_per_type={args.ranking_pairs_per_type}  "
+        f"ranking_top_quantile={args.ranking_top_quantile}  "
         f"pointwise_loss_weight={args.pointwise_loss_weight}  "
         f"gradient_clip_norm={args.gradient_clip_norm}  "
         f"train_batch_size={args.train_batch_size}  "
@@ -182,6 +193,8 @@ def main() -> None:
         f"smoothing_window={args.checkpoint_smoothing_window}  "
         f"f1_variant={args.checkpoint_f1_variant}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
+        f"range_spatial_km={args.range_spatial_km}  range_time_hours={args.range_time_hours}  "
+        f"range_footprint_jitter={args.range_footprint_jitter}  "
         f"range_min_point_hits={args.range_min_point_hits}  "
         f"range_max_point_hit_fraction={args.range_max_point_hit_fraction}  "
         f"range_min_trajectory_hits={args.range_min_trajectory_hits}  "
@@ -190,7 +203,11 @@ def main() -> None:
         f"range_duplicate_iou_threshold={args.range_duplicate_iou_threshold}  "
         f"range_acceptance_max_attempts={args.range_acceptance_max_attempts}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
+        f"mlqds_score_mode={args.mlqds_score_mode}  "
+        f"mlqds_score_temperature={args.mlqds_score_temperature}  "
+        f"mlqds_rank_confidence_weight={args.mlqds_rank_confidence_weight}  "
         f"residual_label_mode={args.residual_label_mode}  "
+        f"range_boundary_prior_weight={args.range_boundary_prior_weight}  "
         f"min_points_per_segment={args.min_points_per_segment}  "
         f"max_points_per_segment={args.max_points_per_segment}  "
         f"max_time_gap_seconds={_normalized_gap_arg(args.max_time_gap_seconds)}  "

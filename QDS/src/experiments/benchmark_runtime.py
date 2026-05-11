@@ -303,6 +303,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             "compression_ratio": payload.get("compression_ratio"),
             "avg_length_preserved": payload.get("avg_length_preserved"),
             "combined_query_shape_score": payload.get("combined_query_shape_score"),
+            "range_boundary_f1": payload.get("range_boundary_f1"),
         }
     config = run_json.get("config", {})
     model_config = config.get("model", {}) if isinstance(config, dict) else {}

@@ -7,6 +7,7 @@ import torch
 from src.data.ais_loader import generate_synthetic_ais_data
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import _generate_typed_query_workload_for_config
+from src.queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
 from src.queries.query_generator import generate_typed_query_workload, point_coverage_mask_for_query
 
 
@@ -85,6 +86,72 @@ def test_smaller_range_fraction_reduces_query_footprint() -> None:
     assert small_workload.coverage_fraction is not None
     assert default_workload.coverage_fraction is not None
     assert small_workload.coverage_fraction < default_workload.coverage_fraction
+
+
+def test_absolute_range_controls_are_stable_workload_footprint() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=6, n_points_per_ship=80, seed=456)
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=20,
+        workload_mix={"range": 1.0},
+        seed=8,
+        range_spatial_km=2.2,
+        range_time_hours=6.0,
+    )
+
+    assert len(workload.typed_queries) == 20
+    assert workload.coverage_fraction is not None
+    assert 0.0 <= workload.coverage_fraction <= 1.0
+
+
+def test_range_footprint_jitter_can_be_disabled() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=4, n_points_per_ship=40, seed=456)
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=5,
+        workload_mix={"range": 1.0},
+        seed=8,
+        range_spatial_km=2.2,
+        range_time_hours=6.0,
+        range_footprint_jitter=0.0,
+    )
+
+    for query in workload.typed_queries:
+        params = query["params"]
+        assert params["t_end"] - params["t_start"] <= 12.0 * 3600.0
+
+
+def test_sampled_range_coverage_estimator_returns_reproducible_rows() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=6, n_points_per_ship=30, seed=456)
+
+    sampled = sample_trajectories_by_stride(trajectories, 2)
+    rows_a = estimate_range_coverage(
+        trajectories=trajectories,
+        query_counts=[4, 8],
+        seeds=[5],
+        sample_stride=2,
+        target_coverage=0.20,
+        range_spatial_km=2.2,
+        range_time_hours=6.0,
+        range_footprint_jitter=0.0,
+    )
+    rows_b = estimate_range_coverage(
+        trajectories=trajectories,
+        query_counts=[4, 8],
+        seeds=[5],
+        sample_stride=2,
+        target_coverage=0.20,
+        range_spatial_km=2.2,
+        range_time_hours=6.0,
+        range_footprint_jitter=0.0,
+    )
+
+    assert len(sampled) == 3
+    assert [row.to_dict() for row in rows_a] == [row.to_dict() for row in rows_b]
+    assert {row.query_count for row in rows_a} == {4, 8}
+    assert best_query_count(rows_a, 0.20).query_count in {4, 8}
 
 
 def test_selection_range_coverage_calibration_reduces_target_error() -> None:

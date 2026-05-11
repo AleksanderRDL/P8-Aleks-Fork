@@ -41,7 +41,7 @@ from src.evaluation.evaluate_methods import (
 )
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import NUM_QUERY_TYPES
+from src.queries.query_types import NUM_QUERY_TYPES, single_workload_type
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import load_checkpoint
 from src.experiments.torch_runtime import (
@@ -96,13 +96,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "--range_spatial_fraction",
         type=float,
         default=0.08,
-        help="Range query half-width as a fraction of dataset lat/lon span.",
+        help="Range query half-width as a fraction of dataset lat/lon span. Ignored when --range_spatial_km is set.",
     )
     p.add_argument(
         "--range_time_fraction",
         type=float,
         default=0.15,
-        help="Range query half-window as a fraction of dataset time span.",
+        help="Range query half-window as a fraction of dataset time span. Ignored when --range_time_hours is set.",
+    )
+    p.add_argument(
+        "--range_spatial_km",
+        type=float,
+        default=None,
+        help="Nominal range query spatial half-width in kilometers.",
+    )
+    p.add_argument(
+        "--range_time_hours",
+        type=float,
+        default=None,
+        help="Nominal range query temporal half-window in hours.",
+    )
+    p.add_argument(
+        "--range_footprint_jitter",
+        type=float,
+        default=0.5,
+        help="Random +/- fraction applied to range query spatial and temporal half-windows. 0.0 makes footprints fixed.",
     )
     p.add_argument("--knn_k", type=int, default=12, help="Number of nearest trajectories in generated kNN queries.")
     p.add_argument(
@@ -322,6 +340,9 @@ def main() -> None:
         max_queries=args.max_queries,
         range_spatial_fraction=args.range_spatial_fraction,
         range_time_fraction=args.range_time_fraction,
+        range_spatial_km=args.range_spatial_km,
+        range_time_hours=args.range_time_hours,
+        range_footprint_jitter=args.range_footprint_jitter,
         knn_k=args.knn_k,
     )
     coverage_msg = ""
@@ -355,7 +376,10 @@ def main() -> None:
             name="MLQDS",
             trained=trained,
             workload=workload,
-            workload_mix=eval_mix,
+            workload_type=single_workload_type(eval_mix),
+            score_mode=str(getattr(saved_cfg.model, "mlqds_score_mode", "rank")),
+            score_temperature=float(getattr(saved_cfg.model, "mlqds_score_temperature", 1.0)),
+            rank_confidence_weight=float(getattr(saved_cfg.model, "mlqds_rank_confidence_weight", 0.15)),
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
             inference_device=None if args.inference_device == "auto" else args.inference_device,
@@ -432,6 +456,8 @@ def main() -> None:
                 "avg_length_preserved": m.avg_length_preserved,
                 "avg_length_loss": m.avg_length_loss,
                 "combined_query_shape_score": m.combined_query_shape_score,
+                "pure_range_f1": m.per_type_f1.get("range", 0.0),
+                "range_boundary_f1": m.range_boundary_f1,
             }
             for name, m in results.items()
         },

@@ -84,9 +84,10 @@ make clean-smoke-artifacts CONFIRM=1
 ```
 
 The active benchmark profile is `range_real_usecase`: two cleaned CSV days,
-range-only workload, 512 queries, 30% target coverage, 5% retained points, 20
-epochs with early stopping, answer-set F1 checkpoint selection, TF32/BF16
-baseline variant, and no trajectory/segment/point caps. See
+range-only workload, 80 queries, 20% target coverage, fixed 2.2 km / 3 hour
+range half-windows, 5% retained points, 20 epochs with early stopping,
+answer-set F1 checkpoint selection, TF32/BF16 baseline variant, and no
+trajectory/segment/point caps. See
 [`src/experiments/README.md`](src/experiments/README.md) for exact profile
 settings, queue plan files, and artifact paths.
 

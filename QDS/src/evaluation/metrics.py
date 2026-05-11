@@ -80,6 +80,7 @@ class MethodEvaluation:
     geometric_distortion: dict[str, float] = field(default_factory=dict)
     avg_length_preserved: float = 1.0
     combined_query_shape_score: float = 0.0
+    range_boundary_f1: float = 0.0
     retained_mask: torch.Tensor | None = None
 
     @property

@@ -64,14 +64,15 @@ def test_selected_variants_default_to_answer_f1_baseline() -> None:
 def test_selected_variants_can_run_explicit_sweeps() -> None:
     variants = _selected_variants(
         "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_combined,"
-        "tf32_bf16_bs32_inf32_temporal025"
+        "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_score_rank_confidence"
     )
 
     assert [variant.name for variant in variants] == [
         "fp32",
         "tf32_bf16_bs32_inf32",
         "tf32_bf16_bs32_inf32_combined",
-        "tf32_bf16_bs32_inf32_temporal025",
+        "tf32_bf16_bs32_inf32_temporal000",
+        "tf32_bf16_bs32_inf32_score_rank_confidence",
     ]
     assert variants[0].checkpoint_f1_variant == "answer"
     assert variants[1].amp_mode == "bf16"
@@ -79,7 +80,13 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert variants[2].amp_mode == "bf16"
     assert variants[2].checkpoint_f1_variant == "combined"
     assert variants[3].checkpoint_f1_variant == "answer"
-    assert variants[3].extra_args == ("--mlqds_temporal_fraction", "0.25")
+    assert variants[3].extra_args == ("--mlqds_temporal_fraction", "0.00")
+    assert variants[4].extra_args == (
+        "--mlqds_score_mode",
+        "rank_confidence",
+        "--mlqds_rank_confidence_weight",
+        "0.15",
+    )
 
 
 def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
@@ -103,7 +110,14 @@ def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
 def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     variant = MatrixVariant(name="tf32_bf16", float32_matmul_precision="high", allow_tf32=True, amp_mode="bf16")
     run_json = {
-        "config": {"model": {"mlqds_temporal_fraction": 0.25}},
+        "config": {
+            "model": {
+                "mlqds_temporal_fraction": 0.25,
+                "mlqds_score_mode": "rank",
+                "mlqds_score_temperature": 1.0,
+                "mlqds_rank_confidence_weight": 0.15,
+            }
+        },
         "matched": {
             "MLQDS": {"aggregate_f1": 0.40},
             "uniform": {"aggregate_f1": 0.35},
@@ -138,6 +152,9 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["child_amp_enabled"] is True
     assert row["child_amp_dtype"] == "bfloat16"
     assert row["mlqds_temporal_fraction"] == 0.25
+    assert row["mlqds_score_mode"] == "rank"
+    assert row["mlqds_score_temperature"] == 1.0
+    assert row["mlqds_rank_confidence_weight"] == 0.15
     assert row["mlqds_vs_uniform_f1"] == pytest.approx(0.05)
     assert row["mlqds_vs_douglas_peucker_f1"] == pytest.approx(0.04)
 
@@ -161,15 +178,21 @@ def test_profile_args_use_csv_when_provided() -> None:
         "--csv_path",
         "../AISDATA/cleaned/day.csv",
         "--n_queries",
-        "512",
+        "80",
         "--query_coverage",
-        "0.30",
+        "0.20",
         "--range_spatial_fraction",
         "0.0165",
         "--range_time_fraction",
         "0.033",
+        "--range_spatial_km",
+        "2.2",
+        "--range_time_hours",
+        "3.0",
+        "--range_footprint_jitter",
+        "0.0",
         "--query_chunk_size",
-        "512",
+        "2048",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -179,7 +202,15 @@ def test_profile_args_use_csv_when_provided() -> None:
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
-        "0.10",
+        "0.25",
+        "--mlqds_score_mode",
+        "rank",
+        "--mlqds_score_temperature",
+        "1.00",
+        "--mlqds_rank_confidence_weight",
+        "0.15",
+        "--range_boundary_prior_weight",
+        "0.0",
         "--min_points_per_segment",
         "4",
         "--max_time_gap_seconds",
@@ -220,15 +251,21 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "--eval_csv_path",
         "../AISDATA/cleaned/day2.csv",
         "--n_queries",
-        "512",
+        "80",
         "--query_coverage",
-        "0.30",
+        "0.20",
         "--range_spatial_fraction",
         "0.0165",
         "--range_time_fraction",
         "0.033",
+        "--range_spatial_km",
+        "2.2",
+        "--range_time_hours",
+        "3.0",
+        "--range_footprint_jitter",
+        "0.0",
         "--query_chunk_size",
-        "512",
+        "2048",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -238,7 +275,15 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
-        "0.10",
+        "0.25",
+        "--mlqds_score_mode",
+        "rank",
+        "--mlqds_score_temperature",
+        "1.00",
+        "--mlqds_rank_confidence_weight",
+        "0.15",
+        "--range_boundary_prior_weight",
+        "0.0",
         "--min_points_per_segment",
         "4",
         "--max_time_gap_seconds",
@@ -268,17 +313,23 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
 
     profile_args = _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False)
 
-    assert profile_args[4:24] == [
+    assert profile_args[4:38] == [
         "--n_queries",
-        "512",
+        "80",
         "--query_coverage",
-        "0.30",
+        "0.20",
         "--range_spatial_fraction",
         "0.0165",
         "--range_time_fraction",
         "0.033",
+        "--range_spatial_km",
+        "2.2",
+        "--range_time_hours",
+        "3.0",
+        "--range_footprint_jitter",
+        "0.0",
         "--query_chunk_size",
-        "512",
+        "2048",
         "--compression_ratio",
         "0.05",
         "--epochs",
@@ -288,7 +339,15 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
-        "0.10",
+        "0.25",
+        "--mlqds_score_mode",
+        "rank",
+        "--mlqds_score_temperature",
+        "1.00",
+        "--mlqds_rank_confidence_weight",
+        "0.15",
+        "--range_boundary_prior_weight",
+        "0.0",
     ]
     assert "--max_points_per_segment" not in profile_args
     assert "--max_segments" not in profile_args
@@ -296,9 +355,9 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
 
 
 def test_validation_query_count_matches_eval_workload_shape() -> None:
-    cfg = build_experiment_config(n_queries=512, query_coverage=0.30, max_queries=None)
+    cfg = build_experiment_config(n_queries=384, query_coverage=0.20, max_queries=None)
 
-    assert _validation_query_count(cfg) == 512
+    assert _validation_query_count(cfg) == 384
 
 
 def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:

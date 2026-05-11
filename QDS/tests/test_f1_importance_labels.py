@@ -83,8 +83,8 @@ def test_range_labels_reward_each_in_box_point() -> None:
     assert labels[2, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.0)
 
 
-def test_large_range_labels_skip_quadratic_proximity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Assert broad range labels do not allocate an all-pairs distance matrix."""
+def test_large_range_labels_do_not_use_quadratic_proximity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Assert range labels do not allocate an all-pairs distance matrix."""
     n_per_trajectory = 2500
     time = torch.arange(n_per_trajectory * 2, dtype=torch.float32)
     lat = torch.cat(
@@ -130,6 +130,50 @@ def test_large_range_labels_skip_quadratic_proximity(monkeypatch: pytest.MonkeyP
     assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
     assert float(labels[:, QUERY_TYPE_ID_RANGE].sum().item()) > 0.0
     assert torch.isfinite(labels).all()
+
+
+def test_range_boundary_prior_is_optional_and_mass_preserving() -> None:
+    """Assert boundary weighting is opt-in and preserves total query label mass."""
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+            [4.0, 9.0, 9.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 5)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 3.5,
+            },
+        }
+    ]
+
+    pure, _ = compute_typed_importance_labels(points, boundaries, queries, seed=1)
+    boundary, _ = compute_typed_importance_labels(
+        points,
+        boundaries,
+        queries,
+        seed=1,
+        range_boundary_prior_weight=1.0,
+    )
+
+    pure_values = pure[:4, QUERY_TYPE_ID_RANGE]
+    boundary_values = boundary[:4, QUERY_TYPE_ID_RANGE]
+    assert pure_values.tolist() == pytest.approx([0.4, 0.4, 0.4, 0.4])
+    assert boundary_values[0].item() > boundary_values[1].item()
+    assert boundary_values[3].item() > boundary_values[2].item()
+    assert float(boundary_values.sum().item()) == pytest.approx(float(pure_values.sum().item()))
 
 
 def test_knn_labels_follow_f1_trajectory_hits_not_speed() -> None:

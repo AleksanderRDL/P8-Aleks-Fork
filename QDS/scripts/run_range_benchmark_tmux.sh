@@ -51,7 +51,8 @@ display_path() {
 }
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-$QDS_ROOT/../.venv/bin/python}"
+DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
+PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
 PROFILE="${PROFILE:-range_real_usecase}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_real_usecase}"

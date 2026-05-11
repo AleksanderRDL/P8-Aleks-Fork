@@ -14,8 +14,9 @@ from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
-from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES
-from src.simplification.simplify_trajectories import evenly_spaced_indices, simplify_with_temporal_score_hybrid
+from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES, single_workload_type
+from src.simplification.mlqds_scoring import simplify_mlqds_predictions
+from src.simplification.simplify_trajectories import evenly_spaced_indices
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
@@ -358,17 +359,16 @@ def _combine_epoch_type_weights(base_weights: torch.Tensor, epoch_mix: torch.Ten
     return combined / total
 
 
-def _predict_workload_scores(
+def _predict_workload_logits(
     model: TrajectoryQDSModel,
     scaler: FeatureScaler,
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     workload: TypedQueryWorkload,
-    workload_mix: dict[str, float],
     model_config: ModelConfig,
     device: torch.device,
 ) -> torch.Tensor:
-    """Predict workload-weighted simplification scores for exact query-F1 diagnostics."""
+    """Predict per-point typed logits for exact query-F1 diagnostics."""
     point_dim = model.point_dim
     norm_points, norm_queries = scaler.transform(points[:, :point_dim].float(), workload.query_features)
     norm_points_dev = norm_points.to(device)
@@ -412,10 +412,8 @@ def _predict_workload_scores(
                 all_pred[global_idx[valid]] = all_pred[global_idx[valid]] + pred[batch_idx][valid]
                 pred_count[global_idx[valid]] = pred_count[global_idx[valid]] + 1.0
 
-    mix = _workload_mix_tensor(workload_mix, device=device)
     pred_count = pred_count.clamp(min=1.0)
-    typed_pred = torch.sigmoid(all_pred / pred_count.unsqueeze(1))
-    return (typed_pred * mix.unsqueeze(0)).sum(dim=1).detach().cpu()
+    return (all_pred / pred_count.unsqueeze(1)).detach().cpu()
 
 
 def _validation_query_f1(
@@ -434,22 +432,25 @@ def _validation_query_f1(
     from src.evaluation.evaluate_methods import score_retained_mask
 
     points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
-    scores = _predict_workload_scores(
+    predictions = _predict_workload_logits(
         model=model,
         scaler=scaler,
         points=points,
         boundaries=boundaries,
         workload=workload,
-        workload_mix=workload_mix,
         model_config=model_config,
         device=device,
     )
-    retained_mask = simplify_with_temporal_score_hybrid(
-        scores,
+    retained_mask = simplify_mlqds_predictions(
+        predictions,
         boundaries,
+        single_workload_type(workload_mix),
         model_config.compression_ratio,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
+        score_mode=str(getattr(model_config, "mlqds_score_mode", "rank")),
+        score_temperature=float(getattr(model_config, "mlqds_score_temperature", 1.0)),
+        rank_confidence_weight=float(getattr(model_config, "mlqds_rank_confidence_weight", 0.15)),
     )
     answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
@@ -528,6 +529,7 @@ def train_model(
             boundaries=train_boundaries,
             typed_queries=workload.typed_queries,
             seed=seed,
+            range_boundary_prior_weight=float(getattr(model_config, "range_boundary_prior_weight", 0.0)),
         )
     else:
         labels, labelled_mask = precomputed_labels

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -14,6 +15,7 @@ DENSITY_ANCHOR_PROBABILITY = 0.70
 DENSITY_GRID_BINS = 64
 DEFAULT_RANGE_SPATIAL_FRACTION = 0.08
 DEFAULT_RANGE_TIME_FRACTION = 0.15
+DEFAULT_RANGE_FOOTPRINT_JITTER = 0.5
 DEFAULT_SIMILARITY_RADIUS_FRACTION = 0.04
 DEFAULT_SIMILARITY_TIME_FRACTION = 0.04
 DEFAULT_KNN_K = 12
@@ -131,6 +133,17 @@ def _pick_point(
     return points[idx]
 
 
+def _jitter_scale(generator: torch.Generator, jitter: float) -> float:
+    """Return a random multiplicative scale in [1-jitter, 1+jitter]."""
+    amount = float(jitter)
+    if amount < 0.0:
+        raise ValueError("range_footprint_jitter must be non-negative.")
+    if amount <= 0.0:
+        return 1.0
+    scale = 1.0 + amount * (2.0 * float(torch.rand(1, generator=generator).item()) - 1.0)
+    return max(1e-6, scale)
+
+
 def _make_range_query(
     points: torch.Tensor,
     b: dict[str, float],
@@ -139,16 +152,36 @@ def _make_range_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
+    range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
 ) -> dict[str, Any]:
     """Generate one range query. See src/queries/README.md for details."""
     spatial_fraction = float(range_spatial_fraction)
     time_fraction = float(range_time_fraction)
-    if spatial_fraction <= 0.0 or time_fraction <= 0.0:
+    spatial_km = None if range_spatial_km is None else float(range_spatial_km)
+    time_hours = None if range_time_hours is None else float(range_time_hours)
+    if (spatial_km is None and spatial_fraction <= 0.0) or (time_hours is None and time_fraction <= 0.0):
         raise ValueError("range_spatial_fraction and range_time_fraction must be positive.")
+    if spatial_km is not None and spatial_km <= 0.0:
+        raise ValueError("range_spatial_km must be positive when provided.")
+    if time_hours is not None and time_hours <= 0.0:
+        raise ValueError("range_time_hours must be positive when provided.")
     p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
-    lat_w = spatial_fraction * (b["lat_max"] - b["lat_min"]) * (0.5 + torch.rand(1, generator=generator).item())
-    lon_w = spatial_fraction * (b["lon_max"] - b["lon_min"]) * (0.5 + torch.rand(1, generator=generator).item())
-    t_w = time_fraction * (b["t_max"] - b["t_min"]) * (0.5 + torch.rand(1, generator=generator).item())
+    lat_jitter = _jitter_scale(generator, range_footprint_jitter)
+    lon_jitter = _jitter_scale(generator, range_footprint_jitter)
+    time_jitter = _jitter_scale(generator, range_footprint_jitter)
+    if spatial_km is None:
+        lat_w = spatial_fraction * (b["lat_max"] - b["lat_min"]) * lat_jitter
+        lon_w = spatial_fraction * (b["lon_max"] - b["lon_min"]) * lon_jitter
+    else:
+        lat_w = (spatial_km / 111.32) * lat_jitter
+        cos_lat = max(0.10, abs(math.cos(math.radians(float(p[1].item())))))
+        lon_w = (spatial_km / (111.32 * cos_lat)) * lon_jitter
+    if time_hours is None:
+        t_w = time_fraction * (b["t_max"] - b["t_min"]) * time_jitter
+    else:
+        t_w = time_hours * 3600.0 * time_jitter
     return {
         "type": "range",
         "params": {
@@ -224,6 +257,9 @@ def _make_clustering_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
+    range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
 ) -> dict[str, Any]:
     """Generate one clustering query. See src/queries/README.md for details."""
     rq = _make_range_query(
@@ -234,6 +270,9 @@ def _make_clustering_query(
         density_weights=density_weights,
         range_spatial_fraction=range_spatial_fraction,
         range_time_fraction=range_time_fraction,
+        range_spatial_km=range_spatial_km,
+        range_time_hours=range_time_hours,
+        range_footprint_jitter=range_footprint_jitter,
     )
     params = dict(rq["params"])
     params.update(
@@ -364,6 +403,9 @@ def _make_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
+    range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
     knn_k: int | None = DEFAULT_KNN_K,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
@@ -376,6 +418,9 @@ def _make_query(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            range_spatial_km=range_spatial_km,
+            range_time_hours=range_time_hours,
+            range_footprint_jitter=range_footprint_jitter,
         )
     if name == "knn":
         return _make_knn_query(
@@ -397,6 +442,9 @@ def _make_query(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            range_spatial_km=range_spatial_km,
+            range_time_hours=range_time_hours,
+            range_footprint_jitter=range_footprint_jitter,
         )
     raise ValueError(f"Unsupported query type: {name}")
 
@@ -518,6 +566,9 @@ def generate_typed_query_workload(
     max_queries: int | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
+    range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
     knn_k: int | None = DEFAULT_KNN_K,
     front_load_knn: int = 0,
     range_min_point_hits: int | None = None,
@@ -582,6 +633,9 @@ def generate_typed_query_workload(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            range_spatial_km=range_spatial_km,
+            range_time_hours=range_time_hours,
+            range_footprint_jitter=range_footprint_jitter,
             knn_k=knn_k,
         )
         if name != "range" or not acceptance_enabled:

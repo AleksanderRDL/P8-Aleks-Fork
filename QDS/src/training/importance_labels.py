@@ -12,7 +12,6 @@ from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
-RANGE_PROXIMITY_FULL_CDIST_LIMIT = 4096
 
 
 def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
@@ -141,36 +140,28 @@ def _within_box_centroid_weights(
     return weights
 
 
-def _range_boundary_and_proximity_weights(
+def _range_boundary_weights(
     points: torch.Tensor,
     box_mask: torch.Tensor,
-    point_trajectory_ids: torch.Tensor,
     boundaries: list[tuple[int, int]],
+    boundary_prior_weight: float,
 ) -> torch.Tensor:
-    """Per-point weights for range: combines two priors that match the query's intent.
+    """Optional boundary-crossing prior for range labels.
 
-    1. Boundary crossings: in-box points whose immediate temporal neighbor (predecessor
-       or successor in the trajectory) is OUT of the box. These mark where a vessel
-       enters or leaves the query region — semantically critical for range queries.
-       Boost: 2x.
-    2. Cross-trajectory proximity: in-box points close to in-box points of *other*
-       trajectories. Encodes "ship is near another ship" — useful inductive bias for
-       multi-vessel queries. Weight ~ 1/(distance + eps), normalized.
-
-    The two factors combine multiplicatively then are mean=1-normalized within each
-    trajectory's in-box subset so total per-query label mass is preserved.
+    ``boundary_prior_weight=0`` keeps pure point-F1 labels. Positive values
+    boost in-box points whose previous or next trajectory neighbour is outside
+    the query box, then mean-normalize over the in-box support so total query
+    label mass remains the same.
     """
     weights = torch.zeros(points.shape[0], dtype=torch.float32, device=points.device)
     in_box_idx = torch.where(box_mask)[0]
-    n_box = in_box_idx.numel()
-    if n_box == 0:
+    if in_box_idx.numel() == 0:
         return weights
-    if n_box == 1:
+    boost = max(0.0, float(boundary_prior_weight))
+    if boost <= 0.0:
         weights[in_box_idx] = 1.0
         return weights
 
-    # 1. Boundary detection: walk the FULL points tensor per trajectory, mark in-box
-    # points whose neighbor is out-of-box (or that are at trajectory edges while in-box).
     boundary_full = torch.zeros(points.shape[0], dtype=torch.bool, device=points.device)
     for start, end in boundaries:
         if end <= start:
@@ -187,55 +178,9 @@ def _range_boundary_and_proximity_weights(
         boundary_full[start:end] = prev_out | next_out
 
     boundary_in_box = boundary_full[in_box_idx].float()
-    BOUNDARY_BOOST = 1.0  # additive on top of base 1.0 -> boundary points get 2x raw
-
-    if n_box > RANGE_PROXIMITY_FULL_CDIST_LIMIT:
-        weights[in_box_idx] = 1.0 + BOUNDARY_BOOST * boundary_in_box
-        for start, end in boundaries:
-            if end <= start:
-                continue
-            local_mask = box_mask[start:end]
-            if not bool(local_mask.any().item()):
-                continue
-            local_weights = weights[start:end]
-            mean_raw = float(local_weights[local_mask].mean().item())
-            if mean_raw > 1e-12:
-                local_weights[local_mask] = local_weights[local_mask] / mean_raw
-        return weights
-
-    # 2. Cross-trajectory proximity within the in-box subset.
-    # Dense cdist is quadratic in the number of in-box points; broad realistic
-    # AIS range boxes can contain hundreds of thousands of points. Keep the
-    # exact proximity prior for small boxes and fall back to boundary-only
-    # weighting when the all-pairs matrix would dominate host RAM.
-    coords = points[in_box_idx, 1:3]
-    box_traj_ids = point_trajectory_ids[in_box_idx]
-    dists = torch.cdist(coords, coords)
-    same_traj = box_traj_ids.unsqueeze(0) == box_traj_ids.unsqueeze(1)
-    dists = dists.masked_fill(same_traj, float("inf"))
-    nearest_other = dists.min(dim=1).values
-    finite = torch.isfinite(nearest_other)
-
-    PROX_EPS = 1e-4
-
-    for tid in torch.unique(box_traj_ids).tolist():
-        local = torch.where(box_traj_ids == tid)[0]
-        if local.numel() == 0:
-            continue
-        b = 1.0 + BOUNDARY_BOOST * boundary_in_box[local]
-        d = nearest_other[local]
-        f = finite[local]
-        if bool(f.any().item()):
-            d_safe = torch.where(f, d, torch.full_like(d, float(d[f].max().item()) + 1.0))
-            prox = 1.0 / (d_safe + PROX_EPS)
-        else:
-            prox = torch.ones_like(d)
-        raw = b * prox
-        mean_raw = float(raw.mean().item())
-        if mean_raw > 1e-12:
-            weights[in_box_idx[local]] = raw / mean_raw
-        else:
-            weights[in_box_idx[local]] = 1.0
+    raw = 1.0 + boost * boundary_in_box
+    mean_raw = float(raw.mean().item())
+    weights[in_box_idx] = raw / mean_raw if mean_raw > 1e-12 else 1.0
     return weights
 
 
@@ -335,6 +280,7 @@ def compute_typed_importance_labels(
     seed: int,
     similarity_sample_rate: float = 0.70,
     clustering_sample_rate: float = 0.70,
+    range_boundary_prior_weight: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute per-point per-type labels as expected query-F1 contribution."""
     n = points.shape[0]
@@ -361,13 +307,13 @@ def compute_typed_importance_labels(
             hit_count = int(box_support.sum().item())
             if hit_count > 0:
                 base_gain = float(2.0 / (hit_count + 1.0))
-                bp_weights = _range_boundary_and_proximity_weights(
+                boundary_weights = _range_boundary_weights(
                     points,
                     box_support,
-                    point_trajectory_ids,
                     boundaries,
+                    range_boundary_prior_weight,
                 )
-                labels[box_support, t_idx] += base_gain * bp_weights[box_support]
+                labels[box_support, t_idx] += base_gain * boundary_weights[box_support]
 
         elif qtype == "knn":
             original_ids = set(execute_typed_query(points, trajectories, q, boundaries))

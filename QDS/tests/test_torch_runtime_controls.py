@@ -12,6 +12,7 @@ from src.experiments.benchmark_runtime import (
     _profile_train_args,
     _runtime_child_args,
 )
+from src.experiments.experiment_cli import build_parser
 from src.experiments.experiment_config import ExperimentConfig, build_experiment_config
 from src.experiments.torch_runtime import (
     amp_runtime_snapshot,
@@ -44,6 +45,11 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         inference_batch_size=32,
         query_chunk_size=512,
         amp_mode="bf16",
+        range_boundary_prior_weight=1.0,
+        ranking_pairs_per_type=192,
+        ranking_top_quantile=0.9,
+        range_spatial_km=2.2,
+        range_time_hours=6.0,
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
 
@@ -53,7 +59,33 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.inference_batch_size == 32
     assert restored.model.query_chunk_size == 512
     assert restored.model.amp_mode == "bf16"
+    assert restored.model.range_boundary_prior_weight == 1.0
+    assert restored.model.ranking_pairs_per_type == 192
+    assert restored.model.ranking_top_quantile == 0.9
+    assert restored.query.range_spatial_km == 2.2
+    assert restored.query.range_time_hours == 6.0
     assert restored.model.checkpoint_selection_metric == "f1"
+
+
+def test_cli_exposes_ranking_pair_tuning_controls() -> None:
+    args = build_parser().parse_args(
+        [
+            "--ranking_pairs_per_type",
+            "64",
+            "--ranking_top_quantile",
+            "0.70",
+        ]
+    )
+
+    cfg = build_experiment_config(
+        ranking_pairs_per_type=args.ranking_pairs_per_type,
+        ranking_top_quantile=args.ranking_top_quantile,
+    )
+
+    assert args.ranking_pairs_per_type == 64
+    assert args.ranking_top_quantile == 0.70
+    assert cfg.model.ranking_pairs_per_type == 64
+    assert cfg.model.ranking_top_quantile == 0.70
 
 
 def test_experiment_config_loads_legacy_precision_defaults() -> None:
@@ -62,6 +94,7 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     payload["model"].pop("allow_tf32")
     payload["model"].pop("inference_batch_size")
     payload["model"].pop("amp_mode")
+    payload["model"].pop("range_boundary_prior_weight")
     payload["data"]["max_points_per_ship"] = 123
 
     restored = ExperimentConfig.from_dict(payload)
@@ -70,6 +103,7 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     assert restored.model.allow_tf32 is False
     assert restored.model.inference_batch_size == 16
     assert restored.model.amp_mode == "off"
+    assert restored.model.range_boundary_prior_weight == 0.0
     assert restored.model.checkpoint_selection_metric == "f1"
     assert restored.data.max_points_per_segment == 123
 
@@ -110,13 +144,21 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     args = _profile_train_args(DEFAULT_PROFILE, seed=42, results_dir=tmp_path / "run", checkpoint=tmp_path / "m.pt")
 
     assert "--n_queries" in args
-    assert args[args.index("--n_queries") + 1] == "512"
+    assert args[args.index("--n_queries") + 1] == "80"
     assert args[args.index("--compression_ratio") + 1] == "0.05"
-    assert args[args.index("--query_chunk_size") + 1] == "512"
+    assert args[args.index("--query_chunk_size") + 1] == "2048"
+    assert args[args.index("--query_coverage") + 1] == "0.20"
+    assert args[args.index("--range_spatial_km") + 1] == "2.2"
+    assert args[args.index("--range_time_hours") + 1] == "3.0"
+    assert args[args.index("--range_footprint_jitter") + 1] == "0.0"
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
-    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.10"
+    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.25"
+    assert args[args.index("--mlqds_score_mode") + 1] == "rank"
+    assert args[args.index("--mlqds_score_temperature") + 1] == "1.00"
+    assert args[args.index("--mlqds_rank_confidence_weight") + 1] == "0.15"
+    assert args[args.index("--range_boundary_prior_weight") + 1] == "0.0"
     assert "--n_ships" not in args
     assert "--n_points" not in args
 

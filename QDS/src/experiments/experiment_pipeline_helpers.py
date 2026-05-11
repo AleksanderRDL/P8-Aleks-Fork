@@ -41,7 +41,7 @@ from src.evaluation.evaluate_methods import (
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import parse_workload_mix
+from src.queries.query_types import parse_workload_mix, single_workload_type
 from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
@@ -157,6 +157,18 @@ def _generate_typed_query_workload_for_config(
     query_config = config.query
 
     def build(spatial_fraction: float, time_fraction: float) -> TypedQueryWorkload:
+        spatial_scale = spatial_fraction / base_spatial if base_spatial > 0.0 else 1.0
+        time_scale = time_fraction / base_time if base_time > 0.0 else spatial_scale
+        spatial_km = (
+            None
+            if query_config.range_spatial_km is None
+            else float(query_config.range_spatial_km) * spatial_scale
+        )
+        time_hours = (
+            None
+            if query_config.range_time_hours is None
+            else float(query_config.range_time_hours) * time_scale
+        )
         return generate_typed_query_workload(
             trajectories=trajectories,
             n_queries=n_queries,
@@ -166,6 +178,9 @@ def _generate_typed_query_workload_for_config(
             max_queries=query_config.max_queries,
             range_spatial_fraction=spatial_fraction,
             range_time_fraction=time_fraction,
+            range_spatial_km=spatial_km,
+            range_time_hours=time_hours,
+            range_footprint_jitter=query_config.range_footprint_jitter,
             knn_k=query_config.knn_k,
             front_load_knn=front_load_knn,
             range_min_point_hits=query_config.range_min_point_hits,
@@ -198,6 +213,9 @@ def _generate_typed_query_workload_for_config(
                 "selected_coverage": base_coverage,
                 "selected_range_spatial_fraction": base_spatial,
                 "selected_range_time_fraction": base_time,
+                "selected_range_spatial_km": query_config.range_spatial_km,
+                "selected_range_time_hours": query_config.range_time_hours,
+                "range_footprint_jitter": query_config.range_footprint_jitter,
                 "candidates": [{"scale": 1.0, "coverage": base_coverage}],
             },
         )
@@ -254,6 +272,17 @@ def _generate_typed_query_workload_for_config(
             "selected_coverage": float(best_workload.coverage_fraction or 0.0),
             "selected_range_spatial_fraction": base_spatial * best_scale,
             "selected_range_time_fraction": base_time * best_scale,
+            "selected_range_spatial_km": (
+                None
+                if query_config.range_spatial_km is None
+                else float(query_config.range_spatial_km) * best_scale
+            ),
+            "selected_range_time_hours": (
+                None
+                if query_config.range_time_hours is None
+                else float(query_config.range_time_hours) * best_scale
+            ),
+            "range_footprint_jitter": query_config.range_footprint_jitter,
             "candidates": candidates,
         },
     )
@@ -277,6 +306,7 @@ def _range_signal_diagnostics(
     workload_mix: dict[str, float],
     compression_ratio: float,
     seed: int,
+    range_boundary_prior_weight: float = 0.0,
     runtime_cache: RangeRuntimeCache | None = None,
     cache_typed_queries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -300,15 +330,25 @@ def _range_signal_diagnostics(
         boundaries=boundaries,
         typed_queries=range_queries,
         seed=seed,
+        range_boundary_prior_weight=range_boundary_prior_weight,
     )
     if runtime_cache is not None:
         runtime_cache.labels = labels
         runtime_cache.labelled_mask = labelled_mask
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
+    oracle_labels = labels
+    if float(range_boundary_prior_weight) > 0.0:
+        oracle_labels, _ = compute_typed_importance_labels(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_boundary_prior_weight=0.0,
+        )
     methods = [
         UniformTemporalMethod(),
         DouglasPeuckerMethod(),
-        OracleMethod(labels=labels, workload_mix={"range": 1.0}),
+        OracleMethod(labels=oracle_labels, workload_type="range"),
     ]
     method_scores: dict[str, dict[str, float]] = {}
     scored_queries = cache_typed_queries if cache_typed_queries is not None else range_queries
@@ -343,6 +383,11 @@ def _range_signal_diagnostics(
     return {
         "range_query_count": int(len(range_queries)),
         "range_workload_weight": float(range_weight),
+        "range_boundary_prior_weight": float(range_boundary_prior_weight),
+        "range_boundary_prior_enabled": bool(float(range_boundary_prior_weight) > 0.0),
+        "oracle_label_mode": "pure_range_point_f1",
+        "oracle_kind": "additive_label_greedy",
+        "oracle_exact_optimum": False,
         "labels": label_diagnostics,
         "methods": method_scores,
         "best_baseline": best_baseline,
@@ -382,6 +427,7 @@ def _range_workload_diagnostics(
         workload_mix=workload_mix,
         compression_ratio=config.model.compression_ratio,
         seed=seed,
+        range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
         runtime_cache=runtime_cache,
         cache_typed_queries=workload.typed_queries if is_pure_range_workload else None,
     )
@@ -682,7 +728,10 @@ def run_experiment_pipeline(
             name="MLQDS",
             trained=trained,
             workload=eval_workload,
-            workload_mix=eval_mix,
+            workload_type=single_workload_type(eval_mix),
+            score_mode=config.model.mlqds_score_mode,
+            score_temperature=config.model.mlqds_score_temperature,
+            rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
             inference_batch_size=config.model.inference_batch_size,
@@ -727,8 +776,9 @@ def run_experiment_pipeline(
                 boundaries=test_boundaries,
                 typed_queries=eval_workload.typed_queries,
                 seed=seeds.eval_query_seed,
+                range_boundary_prior_weight=0.0,
             )
-            oracle = OracleMethod(labels=eval_labels, workload_mix=eval_mix)
+            oracle = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_mix))
             with _phase(f"  eval {oracle.name}"):
                 matched[oracle.name] = evaluate_method(
                     method=oracle,
@@ -761,7 +811,10 @@ def run_experiment_pipeline(
                         name="MLQDS",
                         trained=trained,
                         workload=train_workload,
-                        workload_mix=train_mix,
+                        workload_type=single_workload_type(train_mix),
+                        score_mode=config.model.mlqds_score_mode,
+                        score_temperature=config.model.mlqds_score_temperature,
+                        rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
                         temporal_fraction=config.model.mlqds_temporal_fraction,
                         diversity_bonus=config.model.mlqds_diversity_bonus,
                         inference_batch_size=config.model.inference_batch_size,
@@ -805,6 +858,8 @@ def run_experiment_pipeline(
                 "avg_length_preserved": m.avg_length_preserved,
                 "avg_length_loss": m.avg_length_loss,
                 "combined_query_shape_score": m.combined_query_shape_score,
+                "pure_range_f1": m.per_type_f1.get("range", 0.0),
+                "range_boundary_f1": m.range_boundary_f1,
             }
             for name, m in matched.items()
         },
@@ -816,6 +871,15 @@ def run_experiment_pipeline(
         "checkpoint_selection_metric": config.model.checkpoint_selection_metric,
         "checkpoint_f1_variant": config.model.checkpoint_f1_variant,
         "checkpoint_smoothing_window": config.model.checkpoint_smoothing_window,
+        "mlqds_score_mode": config.model.mlqds_score_mode,
+        "mlqds_score_temperature": config.model.mlqds_score_temperature,
+        "mlqds_rank_confidence_weight": config.model.mlqds_rank_confidence_weight,
+        "oracle_diagnostic": {
+            "kind": "additive_label_greedy",
+            "exact_optimum": False,
+        },
+        "range_boundary_prior_weight": config.model.range_boundary_prior_weight,
+        "range_boundary_prior_enabled": config.model.range_boundary_prior_weight > 0.0,
         "data_audit": data_audit,
         "workload_diagnostics": range_diagnostics_summary,
         "torch_runtime": {
@@ -853,7 +917,10 @@ def run_experiment_pipeline(
                     name="MLQDS",
                     trained=trained,
                     workload=eval_workload,
-                    workload_mix=eval_mix,
+                    workload_type=single_workload_type(eval_mix),
+                    score_mode=config.model.mlqds_score_mode,
+                    score_temperature=config.model.mlqds_score_temperature,
+                    rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
                     inference_batch_size=config.model.inference_batch_size,

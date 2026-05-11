@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from src.experiments.torch_runtime import AMP_MODE_CHOICES, FLOAT32_MATMUL_PRECISION_CHOICES
+from src.simplification.mlqds_scoring import MLQDS_SCORE_MODES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,13 +76,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--range_spatial_fraction",
         type=float,
         default=0.08,
-        help="Range query half-width as a fraction of dataset lat/lon span. Lower values allow more queries without blanketing the dataset.",
+        help="Range query half-width as a fraction of dataset lat/lon span. Ignored when --range_spatial_km is set.",
     )
     parser.add_argument(
         "--range_time_fraction",
         type=float,
         default=0.15,
-        help="Range query half-window as a fraction of dataset time span. Lower values allow more queries without blanketing the dataset.",
+        help="Range query half-window as a fraction of dataset time span. Ignored when --range_time_hours is set.",
+    )
+    parser.add_argument(
+        "--range_spatial_km",
+        type=float,
+        default=None,
+        help="Nominal range query spatial half-width in kilometers. Keeps workload scale stable across datasets.",
+    )
+    parser.add_argument(
+        "--range_time_hours",
+        type=float,
+        default=None,
+        help="Nominal range query temporal half-window in hours. Keeps workload scale stable across datasets.",
+    )
+    parser.add_argument(
+        "--range_footprint_jitter",
+        type=float,
+        default=0.5,
+        help="Random +/- fraction applied to range query spatial and temporal half-windows. 0.0 makes footprints fixed.",
     )
     parser.add_argument(
         "--range_min_point_hits",
@@ -141,6 +160,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ranking-pair sampler for training loss. vectorized avoids CPU copies and per-pair synchronization.",
     )
     parser.add_argument(
+        "--ranking_pairs_per_type",
+        type=int,
+        default=96,
+        help="Number of positive/negative ranking pairs sampled per query type and training window.",
+    )
+    parser.add_argument(
+        "--ranking_top_quantile",
+        type=float,
+        default=0.80,
+        help="Label quantile used to define top-ranked positive candidates for ranking-pair sampling.",
+    )
+    parser.add_argument(
         "--pointwise_loss_weight",
         type=float,
         default=0.25,
@@ -167,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--query_chunk_size",
         type=int,
-        default=128,
+        default=2048,
         help=(
             "Number of workload queries attended per cross-attention chunk. "
             "Set at least --n_queries to use one exact attention softmax for the full workload."
@@ -247,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="answer",
         choices=["answer", "combined"],
-        help="Which F1 to use for validation/checkpoint selection. 'answer' = pure trajectory-set F1 (default). 'combined' = legacy answer_f1 * point_subset_f1 product (rewards keeping the eval-pipeline's support points; aligned with importance labels).",
+        help="Which F1 to use for validation/checkpoint selection. 'answer' = final pure query F1 (default). 'combined' = legacy answer_f1 * point_subset_f1 diagnostic.",
     )
     parser.add_argument(
         "--mlqds_temporal_fraction",
@@ -262,11 +293,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Small spacing bonus for MLQDS fill candidates away from temporal base points.",
     )
     parser.add_argument(
+        "--mlqds_score_mode",
+        type=str,
+        default="rank",
+        choices=MLQDS_SCORE_MODES,
+        help="Convert the active workload head to simplification scores using per-trajectory ranks, sigmoid logits, or raw logits.",
+    )
+    parser.add_argument(
+        "--mlqds_score_temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for temperature_sigmoid, zscore_sigmoid, and rank_confidence score modes.",
+    )
+    parser.add_argument(
+        "--mlqds_rank_confidence_weight",
+        type=float,
+        default=0.15,
+        help="Blend weight for rank_confidence score mode. 0.0=pure rank, 1.0=pure zscore sigmoid.",
+    )
+    parser.add_argument(
         "--residual_label_mode",
         type=str,
         default="temporal",
         choices=["none", "temporal"],
         help="Use labels directly, or train only on points not already kept by the temporal base.",
+    )
+    parser.add_argument(
+        "--range_boundary_prior_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional range-label boundary prior. 0.0 keeps pure point-F1 labels; "
+            "1.0 gives in-box boundary-crossing points 2x raw weight before normalization."
+        ),
     )
     parser.add_argument(
         "--float32_matmul_precision",

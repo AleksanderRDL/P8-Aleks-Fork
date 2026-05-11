@@ -88,14 +88,14 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         inference_batch_size=32,
         checkpoint_f1_variant="combined",
     ),
-    "tf32_bf16_bs32_inf32_temporal025": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_temporal025",
+    "tf32_bf16_bs32_inf32_temporal000": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_temporal000",
         float32_matmul_precision="high",
         allow_tf32=True,
         amp_mode="bf16",
         train_batch_size=32,
         inference_batch_size=32,
-        extra_args=("--mlqds_temporal_fraction", "0.25"),
+        extra_args=("--mlqds_temporal_fraction", "0.00"),
     ),
     "tf32_bf16_bs32_inf32_temporal050": MatrixVariant(
         name="tf32_bf16_bs32_inf32_temporal050",
@@ -105,6 +105,42 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         train_batch_size=32,
         inference_batch_size=32,
         extra_args=("--mlqds_temporal_fraction", "0.50"),
+    ),
+    "tf32_bf16_bs32_inf32_score_rank_tie": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_score_rank_tie",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_score_mode", "rank_tie"),
+    ),
+    "tf32_bf16_bs32_inf32_score_zscore": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_score_zscore",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_score_mode", "zscore_sigmoid"),
+    ),
+    "tf32_bf16_bs32_inf32_score_rank_confidence": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_score_rank_confidence",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_score_mode", "rank_confidence", "--mlqds_rank_confidence_weight", "0.15"),
+    ),
+    "tf32_bf16_bs32_inf32_score_temp_sigmoid": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_score_temp_sigmoid",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_score_mode", "temperature_sigmoid", "--mlqds_score_temperature", "1.00"),
     ),
 }
 DEFAULT_VARIANTS = ("tf32_bf16_bs32_inf32",)
@@ -399,7 +435,7 @@ def _profile_args(
     return profile_args
 
 
-def _profile_settings(profile: str) -> dict[str, int | float | str]:
+def _profile_settings(profile: str) -> dict[str, int | float | str | None]:
     """Return compact profile settings recorded in run_config.json."""
     return benchmark_profile_settings(profile)
 
@@ -538,6 +574,7 @@ def _row_from_run(
         "best_f1": (run_json or {}).get("best_f1"),
         "mlqds_f1": mlqds_f1,
         "mlqds_type_f1": (mlqds.get("per_type_f1") or {}).get(workload),
+        "mlqds_range_boundary_f1": mlqds.get("range_boundary_f1"),
         "uniform_f1": uniform_f1,
         "douglas_peucker_f1": dp_f1,
         "mlqds_vs_uniform_f1": (
@@ -556,6 +593,11 @@ def _row_from_run(
         "collapse_warning": _has_collapse_warning(run_json),
         "checkpoint_f1_variant": variant.checkpoint_f1_variant,
         "mlqds_temporal_fraction": model_config.get("mlqds_temporal_fraction"),
+        "mlqds_score_mode": model_config.get("mlqds_score_mode"),
+        "mlqds_score_temperature": model_config.get("mlqds_score_temperature"),
+        "mlqds_rank_confidence_weight": model_config.get("mlqds_rank_confidence_weight"),
+        "range_boundary_prior_weight": model_config.get("range_boundary_prior_weight"),
+        "range_boundary_prior_enabled": bool(float(model_config.get("range_boundary_prior_weight") or 0.0) > 0.0),
         "float32_matmul_precision": variant.float32_matmul_precision,
         "allow_tf32": variant.allow_tf32,
         "amp_mode": variant.amp_mode,
@@ -595,6 +637,7 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
         "peak_allocated_mb",
         "best_f1",
         "mlqds_f1",
+        "mlqds_range_boundary_f1",
         "uniform_f1",
         "douglas_peucker_f1",
         "mlqds_vs_uniform_f1",

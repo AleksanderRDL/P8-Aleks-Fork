@@ -33,6 +33,14 @@ def normalize_workload_mix(workload_mix: dict[str, float]) -> dict[str, float]:
     return {k: v / total for k, v in filtered.items()}
 
 
+def single_workload_type(workload_mix: dict[str, float]) -> str:
+    """Return the one active workload type, rejecting mixed workloads."""
+    normalized = normalize_workload_mix(workload_mix)
+    if len(normalized) != 1:
+        raise ValueError(f"Expected exactly one active workload type; got {workload_mix}.")
+    return next(iter(normalized))
+
+
 def parse_workload_mix(value: str | None, default: dict[str, float]) -> dict[str, float]:
     """Parse CLI workload mix strings like 'range=0.8,knn=0.2'. See src/queries/README.md for details."""
     if value is None or value.strip() == "":

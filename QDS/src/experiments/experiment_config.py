@@ -58,6 +58,9 @@ class QueryConfig:
     max_queries: int | None = None
     range_spatial_fraction: float = 0.08
     range_time_fraction: float = 0.15
+    range_spatial_km: float | None = None
+    range_time_hours: float | None = None
+    range_footprint_jitter: float = 0.5
     workload: str = "range"
     train_workload_mix: dict[str, float] = field(
         default_factory=lambda: {"range": 1.0}
@@ -93,7 +96,7 @@ class ModelConfig:
     num_heads: int = 4
     num_layers: int = 3
     type_embed_dim: int = 16
-    query_chunk_size: int = 128
+    query_chunk_size: int = 2048
     dropout: float = 0.1
     window_length: int = 512
     window_stride: int = 256
@@ -122,7 +125,11 @@ class ModelConfig:
     checkpoint_f1_variant: str = "answer"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.05
+    mlqds_score_mode: str = "rank"
+    mlqds_score_temperature: float = 1.0
+    mlqds_rank_confidence_weight: float = 0.15
     residual_label_mode: str = "temporal"
+    range_boundary_prior_weight: float = 0.0
     float32_matmul_precision: str = "highest"
     allow_tf32: bool = False
     amp_mode: str = "off"
@@ -263,6 +270,9 @@ def build_experiment_config(
     max_queries: int | None = None,
     range_spatial_fraction: float = 0.08,
     range_time_fraction: float = 0.15,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
+    range_footprint_jitter: float = 0.5,
     range_min_point_hits: int | None = None,
     range_max_point_hit_fraction: float | None = None,
     range_min_trajectory_hits: int | None = None,
@@ -273,6 +283,8 @@ def build_experiment_config(
     epochs: int = 6,
     lr: float = 5e-4,
     ranking_pair_sampling: str = "vectorized",
+    ranking_pairs_per_type: int = 96,
+    ranking_top_quantile: float = 0.80,
     pointwise_loss_weight: float = 0.25,
     gradient_clip_norm: float = 1.0,
     compression_ratio: float = 0.2,
@@ -289,7 +301,7 @@ def build_experiment_config(
     early_stopping_patience: int = 0,
     train_batch_size: int = 16,
     inference_batch_size: int = 16,
-    query_chunk_size: int = 128,
+    query_chunk_size: int = 2048,
     diagnostic_every: int = 1,
     diagnostic_window_fraction: float = 0.2,
     checkpoint_selection_metric: str = "f1",
@@ -301,7 +313,11 @@ def build_experiment_config(
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
+    mlqds_score_mode: str = "rank",
+    mlqds_score_temperature: float = 1.0,
+    mlqds_rank_confidence_weight: float = 0.15,
     residual_label_mode: str = "temporal",
+    range_boundary_prior_weight: float = 0.0,
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
     amp_mode: str = "off",
@@ -331,6 +347,9 @@ def build_experiment_config(
             max_queries=max_queries,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            range_spatial_km=range_spatial_km,
+            range_time_hours=range_time_hours,
+            range_footprint_jitter=range_footprint_jitter,
             range_min_point_hits=range_min_point_hits,
             range_max_point_hit_fraction=range_max_point_hit_fraction,
             range_min_trajectory_hits=range_min_trajectory_hits,
@@ -347,6 +366,8 @@ def build_experiment_config(
             epochs=epochs,
             lr=lr,
             ranking_pair_sampling=ranking_pair_sampling,
+            ranking_pairs_per_type=ranking_pairs_per_type,
+            ranking_top_quantile=ranking_top_quantile,
             pointwise_loss_weight=pointwise_loss_weight,
             gradient_clip_norm=gradient_clip_norm,
             compression_ratio=compression_ratio,
@@ -365,7 +386,11 @@ def build_experiment_config(
             checkpoint_f1_variant=checkpoint_f1_variant,
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
+            mlqds_score_mode=mlqds_score_mode,
+            mlqds_score_temperature=mlqds_score_temperature,
+            mlqds_rank_confidence_weight=mlqds_rank_confidence_weight,
             residual_label_mode=residual_label_mode,
+            range_boundary_prior_weight=range_boundary_prior_weight,
             float32_matmul_precision=float32_matmul_precision,
             allow_tf32=allow_tf32,
             amp_mode=amp_mode,

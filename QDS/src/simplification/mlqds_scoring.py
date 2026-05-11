@@ -1,0 +1,147 @@
+"""Shared MLQDS scoring helpers used by validation and final evaluation."""
+
+from __future__ import annotations
+
+import torch
+
+from src.queries.query_types import NUM_QUERY_TYPES, QUERY_NAME_TO_ID
+from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
+
+MLQDS_SCORE_MODES = (
+    "rank",
+    "rank_tie",
+    "sigmoid",
+    "raw",
+    "zscore_sigmoid",
+    "rank_confidence",
+    "temperature_sigmoid",
+)
+
+
+def workload_type_head(workload_type: str) -> tuple[str, int]:
+    """Return the model head index for one explicit workload type."""
+    name = workload_type.lower()
+    try:
+        return name, QUERY_NAME_TO_ID[name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown MLQDS workload type: {workload_type}") from exc
+
+
+def _ordinal_rank_0_1(values: torch.Tensor) -> torch.Tensor:
+    """Return 0..1 ordinal ranks for one trajectory."""
+    length = int(values.numel())
+    if length <= 0:
+        return values.new_empty((0,), dtype=torch.float32)
+    denom = float(max(1, length - 1))
+    return values.argsort().argsort().to(torch.float32) / denom
+
+
+def _tie_aware_rank_0_1(values: torch.Tensor) -> torch.Tensor:
+    """Return 0..1 average ranks, assigning exact ties the same score."""
+    length = int(values.numel())
+    if length <= 0:
+        return values.new_empty((0,), dtype=torch.float32)
+    if length == 1:
+        return values.new_zeros((1,), dtype=torch.float32)
+
+    sorted_values, order = torch.sort(values)
+    starts = torch.ones((length,), dtype=torch.bool, device=values.device)
+    starts[1:] = sorted_values[1:] != sorted_values[:-1]
+    start_idx = torch.where(starts)[0]
+    end_idx = torch.cat([start_idx[1:], torch.tensor([length], dtype=torch.long, device=values.device)])
+
+    ranks = values.new_empty((length,), dtype=torch.float32)
+    denom = float(length - 1)
+    for start, end in zip(start_idx.tolist(), end_idx.tolist()):
+        average_rank = 0.5 * float(start + end - 1)
+        ranks[order[start:end]] = average_rank / denom
+    return ranks
+
+
+def _trajectory_zscore(values: torch.Tensor) -> torch.Tensor:
+    """Return per-trajectory z-scores, falling back to zeros for flat logits."""
+    if values.numel() <= 1:
+        return values.new_zeros(values.shape, dtype=torch.float32)
+    centered = values.float() - values.float().mean()
+    std = values.float().std(unbiased=False)
+    if float(std.item()) <= 1e-6:
+        return values.new_zeros(values.shape, dtype=torch.float32)
+    return centered / std
+
+
+def pure_workload_scores(
+    predictions: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload_type: str,
+    score_mode: str = "rank",
+    score_temperature: float = 1.0,
+    rank_confidence_weight: float = 0.15,
+) -> torch.Tensor:
+    """Convert one explicit workload head into final MLQDS simplification scores."""
+    if predictions.ndim != 2 or predictions.shape[1] < NUM_QUERY_TYPES:
+        raise ValueError("predictions must have shape [n_points, NUM_QUERY_TYPES].")
+
+    mode = score_mode.lower()
+    if mode not in MLQDS_SCORE_MODES:
+        raise ValueError(f"score_mode must be one of {MLQDS_SCORE_MODES}; got {score_mode}.")
+
+    _name, type_idx = workload_type_head(workload_type)
+    head = predictions[:, type_idx].float()
+    if mode == "raw":
+        return head.to(predictions.dtype)
+    if mode == "sigmoid":
+        return torch.sigmoid(head).to(predictions.dtype)
+    if mode == "temperature_sigmoid":
+        temperature = max(float(score_temperature), 1e-6)
+        return torch.sigmoid(head / temperature).to(predictions.dtype)
+
+    score = predictions.new_zeros((predictions.shape[0],))
+    temperature = max(float(score_temperature), 1e-6)
+    confidence_weight = max(0.0, min(1.0, float(rank_confidence_weight)))
+    for start, end in boundaries:
+        length = int(end - start)
+        if length <= 0:
+            continue
+        local_head = head[start:end]
+        if mode == "rank":
+            local_score = _ordinal_rank_0_1(local_head)
+        elif mode == "rank_tie":
+            local_score = _tie_aware_rank_0_1(local_head)
+        else:
+            zscore_confidence = torch.sigmoid(_trajectory_zscore(local_head) / temperature)
+            if mode == "zscore_sigmoid":
+                local_score = zscore_confidence
+            else:
+                rank = _ordinal_rank_0_1(local_head)
+                local_score = (1.0 - confidence_weight) * rank + confidence_weight * zscore_confidence
+        score[start:end] = local_score.to(score.dtype)
+    return score
+
+
+def simplify_mlqds_predictions(
+    predictions: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload_type: str,
+    compression_ratio: float,
+    temporal_fraction: float,
+    diversity_bonus: float,
+    score_mode: str = "rank",
+    score_temperature: float = 1.0,
+    rank_confidence_weight: float = 0.15,
+) -> torch.Tensor:
+    """Simplify using canonical MLQDS score conversion and retained-mask logic."""
+    scores = pure_workload_scores(
+        predictions,
+        boundaries,
+        workload_type,
+        score_mode=score_mode,
+        score_temperature=score_temperature,
+        rank_confidence_weight=rank_confidence_weight,
+    )
+    return simplify_with_temporal_score_hybrid(
+        scores,
+        boundaries,
+        compression_ratio,
+        temporal_fraction=temporal_fraction,
+        diversity_bonus=diversity_bonus,
+    )

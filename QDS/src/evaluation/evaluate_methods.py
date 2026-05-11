@@ -114,6 +114,54 @@ def _range_point_f1(retained_mask: torch.Tensor, range_mask: torch.Tensor) -> fl
     return _point_subset_f1(retained_mask.to(device=range_mask.device, dtype=torch.bool), range_mask)
 
 
+def _range_boundary_mask(range_mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> torch.Tensor:
+    """Return in-box points where a trajectory enters/leaves the range box."""
+    boundary = torch.zeros_like(range_mask, dtype=torch.bool)
+    for start, end in boundaries:
+        if end <= start:
+            continue
+        traj_in = range_mask[start:end]
+        if not bool(traj_in.any().item()):
+            continue
+        prev_out = torch.zeros_like(traj_in)
+        prev_out[1:] = traj_in[1:] & ~traj_in[:-1]
+        prev_out[0] = traj_in[0]
+        next_out = torch.zeros_like(traj_in)
+        next_out[:-1] = traj_in[:-1] & ~traj_in[1:]
+        next_out[-1] = traj_in[-1]
+        boundary[start:end] = prev_out | next_out
+    return boundary
+
+
+def score_range_boundary_preservation(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    typed_queries: list[dict],
+    query_cache: EvaluationQueryCache | None = None,
+) -> float:
+    """Score retained range-boundary points separately from pure range F1."""
+    if query_cache is not None:
+        query_cache.validate(points, boundaries, typed_queries)
+
+    scores: list[float] = []
+    for query_index, query in enumerate(typed_queries):
+        if str(query.get("type", "")).lower() != "range":
+            continue
+        if query_cache is not None:
+            range_mask = query_cache.get_support_mask(
+                query_index,
+                lambda query=query: _range_box_mask(points, query["params"]),
+            )
+        else:
+            range_mask = _range_box_mask(points, query["params"])
+        boundary_mask = _range_boundary_mask(range_mask, boundaries)
+        if int(boundary_mask.sum().item()) <= 0:
+            continue
+        scores.append(_point_subset_f1(retained_mask.to(device=boundary_mask.device, dtype=torch.bool), boundary_mask))
+    return float(sum(scores) / len(scores)) if scores else 0.0
+
+
 def _trajectory_id_per_point(n_points: int, boundaries: list[tuple[int, int]], device: torch.device) -> torch.Tensor:
     trajectory_ids = torch.full((n_points,), -1, dtype=torch.long, device=device)
     for trajectory_id, (start, end) in enumerate(boundaries):
@@ -410,6 +458,13 @@ def evaluate_method(
     geometric = compute_geometric_distortion(points, boundaries, retained_mask)
     avg_length_preserved = compute_length_preservation(points, boundaries, retained_mask)
     combined = float(aggregate) * max(0.0, min(1.0, avg_length_preserved))
+    boundary_f1 = score_range_boundary_preservation(
+        points=points,
+        boundaries=boundaries,
+        retained_mask=retained_mask,
+        typed_queries=typed_queries,
+        query_cache=query_cache,
+    )
 
     return MethodEvaluation(
         aggregate_f1=float(aggregate),
@@ -424,6 +479,7 @@ def evaluate_method(
         geometric_distortion=geometric,
         avg_length_preserved=avg_length_preserved,
         combined_query_shape_score=combined,
+        range_boundary_f1=boundary_f1,
         retained_mask=retained_mask if return_mask else None,
     )
 
@@ -444,6 +500,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
         f"{'Compression':>{col4}}"
         f"{'AvgPtGap':>{col5}}"
         f"{'Latency(ms)':>{col6}}"
+        f"{'BoundaryF1':>{col7}}"
         f"{'Type':>{col7}}"
     )
     lines.append(header)
@@ -457,6 +514,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
             f"{metrics.compression_ratio:>{col4}.4f}"
             f"{metrics.avg_retained_point_gap:>{col5}.2f}"
             f"{metrics.latency_ms:>{col6}.2f}"
+            f"{metrics.range_boundary_f1:>{col7}.6f}"
             f"{'all':>{col7}}"
         )
         for t_name in ("range", "knn", "similarity", "clustering"):
@@ -467,6 +525,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                 f"{'':>{col4}}"
                 f"{'':>{col5}}"
                 f"{'':>{col6}}"
+                f"{'':>{col7}}"
                 f"{t_name:>{col7}}"
             )
 
@@ -499,6 +558,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                 f"{'':>{col4}}"
                 f"{'':>{col5}}"
                 f"{'':>{col6}}"
+                f"{'':>{col7}}"
                 f"{'all':>{col7}}"
             )
             lines.append(
@@ -508,6 +568,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                 f"{'':>{col4}}"
                 f"{'':>{col5}}"
                 f"{'':>{col6}}"
+                f"{'':>{col7}}"
                 f"{'all':>{col7}}"
             )
             for t_name in ("range", "knn", "similarity", "clustering"):
@@ -524,6 +585,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                     f"{'':>{col4}}"
                     f"{'':>{col5}}"
                     f"{'':>{col6}}"
+                    f"{'':>{col7}}"
                     f"{t_name:>{col7}}"
                 )
                 lines.append(
@@ -533,6 +595,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                     f"{'':>{col4}}"
                     f"{'':>{col5}}"
                     f"{'':>{col6}}"
+                    f"{'':>{col7}}"
                     f"{t_name:>{col7}}"
                 )
     return "\n".join(lines)

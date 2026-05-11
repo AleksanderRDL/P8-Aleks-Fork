@@ -36,7 +36,21 @@ This module defines the typed query format, workload generator, and concrete que
 
 Range and kNN anchors use a 70/30 density sampler. The generator builds a lat/lon density map for the whole dataset; 70% of range/kNN anchors are sampled with probability proportional to the density of the point's grid cell, and 30% are sampled uniformly from all points. Similarity and clustering keep the existing uniform anchor behavior.
 
-Range query footprint is configurable. `range_spatial_fraction` controls the latitude/longitude half-width and `range_time_fraction` controls the time half-window as fractions of the dataset spans. Smaller values are useful when increasing `n_queries`, because the default range boxes can cover most of a dense AIS dataset after enough queries.
+Range query footprint is configurable either as dataset-relative fractions or
+absolute real-world half-windows. `range_spatial_fraction` controls the
+latitude/longitude half-width and `range_time_fraction` controls the time
+half-window as fractions of the dataset spans. `range_spatial_km` and
+`range_time_hours` override those fraction controls and are preferred for
+real-usecase benchmarks because they keep query scale stable across days.
+Smaller spatial footprints or shorter time windows usually require more queries
+to reach the same point-coverage target.
+`range_footprint_jitter` applies a random +/- multiplier to each range
+half-window. The legacy default is `0.5` (0.5x to 1.5x); benchmark profiles set
+it to `0.0` so nominal footprint settings are exact and reproducible.
+
+Use `scripts/estimate_range_coverage.py` to calibrate query counts quickly on a
+deterministic trajectory sample instead of running full training loops just to
+measure query coverage.
 
 When `target_coverage` is provided, `n_queries` is the minimum query count. If
 `max_queries` is higher than `n_queries`, generation can continue until both the

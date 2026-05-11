@@ -5,15 +5,17 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.evaluation.baselines import UniformTemporalMethod
+from src.evaluation.baselines import OracleMethod, UniformTemporalMethod
 from src.evaluation.evaluate_methods import (
     EvaluationQueryCache,
     _retained_point_gap_stats,
     evaluate_method,
     print_method_comparison_table,
+    score_range_boundary_preservation,
     score_retained_mask,
 )
 from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
+from src.simplification.mlqds_scoring import pure_workload_scores
 from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
 
 
@@ -355,6 +357,153 @@ def test_temporal_score_hybrid_zero_temporal_fraction_is_pure_score() -> None:
     assert torch.where(retained)[0].tolist() == [4, 5, 6]
 
 
+def test_pure_workload_scores_rank_mode_is_canonical_per_trajectory() -> None:
+    predictions = torch.tensor(
+        [
+            [0.1, 0.0, 0.0, 0.0],
+            [0.9, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    scores = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="rank")
+
+    assert scores.tolist() == pytest.approx([0.0, 1.0, 2.0 / 3.0, 1.0 / 3.0])
+
+
+def test_pure_workload_scores_support_raw_and_sigmoid_modes() -> None:
+    predictions = torch.tensor(
+        [
+            [0.1, 0.0, 0.0, 0.0],
+            [0.9, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    raw = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="raw")
+    sigmoid = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="sigmoid")
+
+    assert raw.tolist() == pytest.approx([0.1, 0.9, 0.5, 0.2])
+    assert sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions[:, 0]).tolist())
+
+
+def test_pure_workload_scores_support_tie_aware_rank() -> None:
+    predictions = torch.tensor(
+        [
+            [0.1, 0.0, 0.0, 0.0],
+            [0.9, 0.0, 0.0, 0.0],
+            [0.9, 0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    scores = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="rank_tie")
+
+    assert scores.tolist() == pytest.approx([0.0, 5.0 / 6.0, 5.0 / 6.0, 1.0 / 3.0])
+
+
+def test_pure_workload_scores_support_calibrated_modes() -> None:
+    predictions = torch.tensor(
+        [
+            [0.1, 0.0, 0.0, 0.0],
+            [0.9, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    zscore = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="zscore_sigmoid")
+    blend = pure_workload_scores(
+        predictions,
+        [(0, 4)],
+        "range",
+        score_mode="rank_confidence",
+        rank_confidence_weight=0.50,
+    )
+    temp_sigmoid = pure_workload_scores(
+        predictions,
+        [(0, 4)],
+        "range",
+        score_mode="temperature_sigmoid",
+        score_temperature=2.0,
+    )
+
+    assert torch.all((zscore >= 0.0) & (zscore <= 1.0))
+    assert torch.all((blend >= 0.0) & (blend <= 1.0))
+    assert temp_sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions[:, 0] / 2.0).tolist())
+
+
+def test_pure_workload_scores_reject_unknown_mode() -> None:
+    predictions = torch.zeros((4, 4), dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="score_mode"):
+        pure_workload_scores(predictions, [(0, 4)], "range", score_mode="not-a-mode")
+
+
+def test_oracle_method_uses_explicit_workload_head() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    labels = torch.zeros((4, 4), dtype=torch.float32)
+    labels[1, 0] = 1.0
+    labels[2, 1] = 1.0
+
+    retained = OracleMethod(labels=labels, workload_type="range").simplify(
+        points,
+        boundaries=[(0, 4)],
+        compression_ratio=0.25,
+    )
+
+    assert bool(retained[1].item()) is True
+
+
+def test_range_boundary_preservation_is_separate_from_range_f1() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+            [4.0, 9.0, 9.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 5)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 3.5,
+            },
+        }
+    ]
+    retained = torch.tensor([True, False, False, True, True])
+
+    aggregate, per_type, _, _ = score_retained_mask(points, boundaries, retained, queries, {"range": 1.0})
+    boundary_f1 = score_range_boundary_preservation(points, boundaries, retained, queries)
+
+    assert aggregate == pytest.approx(2.0 / 3.0)
+    assert per_type["range"] == pytest.approx(2.0 / 3.0)
+    assert boundary_f1 == pytest.approx(1.0)
+
+
 def test_retained_point_gap_stats_measure_original_spacing() -> None:
     retained = torch.tensor([True, False, False, True, False, True, True, False, True])
 
@@ -380,6 +529,7 @@ def test_method_comparison_table_labels_f1() -> None:
     assert "AnswerF1" in table
     assert "CombinedF1" in table
     assert "AvgPtGap" in table
+    assert "BoundaryF1" in table
     assert "AggregateErr" not in table
 
 

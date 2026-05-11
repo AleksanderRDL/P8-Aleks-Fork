@@ -75,7 +75,8 @@ trim() {
 }
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-$QDS_ROOT/../.venv/bin/python}"
+DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
+PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
 PROFILE="${PROFILE:-range_real_usecase}"
 WORKLOADS="${WORKLOADS:-range}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
@@ -164,6 +165,8 @@ if ! awk -F '\t' 'NF && $1 !~ /^#/ { found=1 } END { exit(found ? 0 : 1) }' "$pl
   echo "Queue plan has no runnable rows: $plan_abs" >&2
   exit 2
 fi
+
+"$PYTHON" "$QDS_ROOT/scripts/validate_benchmark_queue_plan.py" "$plan_abs"
 
 console_log="$QUEUE_DIR/logs/console.log"
 monitor_log="$QUEUE_DIR/logs/system_monitor.log"
