@@ -8,7 +8,7 @@ import csv
 from pathlib import Path
 
 
-DEFAULT_FAMILY = Path("artifacts/benchmarks/range_workload_matrix_min_realistic")
+DEFAULT_FAMILY = Path("artifacts/benchmarks/range_real_usecase")
 
 
 def _short(value: str | None, width: int) -> str:
