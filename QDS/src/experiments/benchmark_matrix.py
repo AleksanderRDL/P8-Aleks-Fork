@@ -52,6 +52,7 @@ class MatrixVariant:
     train_batch_size: int = 16
     inference_batch_size: int = 16
     checkpoint_f1_variant: str = "answer"
+    extra_args: tuple[str, ...] = ()
 
 
 MATRIX_VARIANTS: dict[str, MatrixVariant] = {
@@ -86,6 +87,24 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         train_batch_size=32,
         inference_batch_size=32,
         checkpoint_f1_variant="combined",
+    ),
+    "tf32_bf16_bs32_inf32_temporal025": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_temporal025",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_temporal_fraction", "0.25"),
+    ),
+    "tf32_bf16_bs32_inf32_temporal050": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_temporal050",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_temporal_fraction", "0.50"),
     ),
 }
 DEFAULT_VARIANTS = ("tf32_bf16_bs32_inf32",)
@@ -279,6 +298,7 @@ def _runner_environment_metadata(variants: list[MatrixVariant]) -> dict[str, Any
             "float32_matmul_precision": variant.float32_matmul_precision,
             "allow_tf32": variant.allow_tf32,
             "amp_mode": variant.amp_mode,
+            "extra_args": list(variant.extra_args),
         }
         for variant in variants
     ]
@@ -407,6 +427,7 @@ def _variant_args(variant: MatrixVariant) -> list[str]:
         "f1",
         "--checkpoint_f1_variant",
         variant.checkpoint_f1_variant,
+        *variant.extra_args,
     ]
 
 
@@ -499,6 +520,10 @@ def _row_from_run(
     cuda_memory = (run_json or {}).get("cuda_memory", {}).get("training", {})
     child_torch_runtime = (run_json or {}).get("torch_runtime") or {}
     child_amp = child_torch_runtime.get("amp") or {}
+    model_config = (run_json or {}).get("config", {}).get("model", {})
+    mlqds_f1 = mlqds.get("aggregate_f1")
+    uniform_f1 = uniform.get("aggregate_f1")
+    dp_f1 = dp.get("aggregate_f1")
     return {
         "workload": workload,
         "variant": variant.name,
@@ -511,18 +536,30 @@ def _row_from_run(
         "best_epoch": (run_json or {}).get("best_epoch"),
         "best_loss": (run_json or {}).get("best_loss"),
         "best_f1": (run_json or {}).get("best_f1"),
-        "mlqds_f1": mlqds.get("aggregate_f1"),
+        "mlqds_f1": mlqds_f1,
         "mlqds_type_f1": (mlqds.get("per_type_f1") or {}).get(workload),
-        "uniform_f1": uniform.get("aggregate_f1"),
-        "douglas_peucker_f1": dp.get("aggregate_f1"),
+        "uniform_f1": uniform_f1,
+        "douglas_peucker_f1": dp_f1,
+        "mlqds_vs_uniform_f1": (
+            float(mlqds_f1) - float(uniform_f1)
+            if mlqds_f1 is not None and uniform_f1 is not None
+            else None
+        ),
+        "mlqds_vs_douglas_peucker_f1": (
+            float(mlqds_f1) - float(dp_f1)
+            if mlqds_f1 is not None and dp_f1 is not None
+            else None
+        ),
         "mlqds_latency_ms": mlqds.get("latency_ms"),
         "avg_length_preserved": mlqds.get("avg_length_preserved"),
         "combined_query_shape_score": mlqds.get("combined_query_shape_score"),
         "collapse_warning": _has_collapse_warning(run_json),
         "checkpoint_f1_variant": variant.checkpoint_f1_variant,
+        "mlqds_temporal_fraction": model_config.get("mlqds_temporal_fraction"),
         "float32_matmul_precision": variant.float32_matmul_precision,
         "allow_tf32": variant.allow_tf32,
         "amp_mode": variant.amp_mode,
+        "variant_extra_args": " ".join(variant.extra_args),
         "child_float32_matmul_precision": child_torch_runtime.get("float32_matmul_precision"),
         "child_tf32_matmul_allowed": child_torch_runtime.get("tf32_matmul_allowed"),
         "child_tf32_cudnn_allowed": child_torch_runtime.get("tf32_cudnn_allowed"),
@@ -560,6 +597,8 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
         "mlqds_f1",
         "uniform_f1",
         "douglas_peucker_f1",
+        "mlqds_vs_uniform_f1",
+        "mlqds_vs_douglas_peucker_f1",
         "mlqds_latency_ms",
         "collapse_warning",
     ]
@@ -660,6 +699,7 @@ def _run_config(
                 "train_batch_size": variant.train_batch_size,
                 "inference_batch_size": variant.inference_batch_size,
                 "checkpoint_f1_variant": variant.checkpoint_f1_variant,
+                "extra_args": list(variant.extra_args),
             }
             for variant in variants
         ],

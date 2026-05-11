@@ -125,6 +125,140 @@ def _validation_query_count(config: ExperimentConfig) -> int:
     return max(1, int(config.query.n_queries))
 
 
+def _is_pure_range_mix(workload_mix: dict[str, float]) -> bool:
+    """Return whether a workload mix contains only active range queries."""
+    active = [name for name, weight in workload_mix.items() if float(weight) > 0.0]
+    return active == ["range"]
+
+
+def _attach_generation_diagnostic(
+    workload: TypedQueryWorkload,
+    key: str,
+    payload: dict[str, Any],
+) -> TypedQueryWorkload:
+    """Attach generation diagnostics without dropping query-generator counters."""
+    diagnostics = dict(workload.generation_diagnostics or {})
+    diagnostics[key] = payload
+    workload.generation_diagnostics = diagnostics
+    return workload
+
+
+def _generate_typed_query_workload_for_config(
+    *,
+    trajectories: list[torch.Tensor],
+    n_queries: int,
+    workload_mix: dict[str, float],
+    seed: int,
+    config: ExperimentConfig,
+    front_load_knn: int = 0,
+    calibrate_range_coverage: bool = False,
+) -> TypedQueryWorkload:
+    """Generate a typed workload, optionally calibrating range footprint to the coverage target."""
+    query_config = config.query
+
+    def build(spatial_fraction: float, time_fraction: float) -> TypedQueryWorkload:
+        return generate_typed_query_workload(
+            trajectories=trajectories,
+            n_queries=n_queries,
+            workload_mix=workload_mix,
+            seed=seed,
+            target_coverage=query_config.target_coverage,
+            max_queries=query_config.max_queries,
+            range_spatial_fraction=spatial_fraction,
+            range_time_fraction=time_fraction,
+            knn_k=query_config.knn_k,
+            front_load_knn=front_load_knn,
+            range_min_point_hits=query_config.range_min_point_hits,
+            range_max_point_hit_fraction=query_config.range_max_point_hit_fraction,
+            range_min_trajectory_hits=query_config.range_min_trajectory_hits,
+            range_max_trajectory_hit_fraction=query_config.range_max_trajectory_hit_fraction,
+            range_max_box_volume_fraction=query_config.range_max_box_volume_fraction,
+            range_duplicate_iou_threshold=query_config.range_duplicate_iou_threshold,
+            range_acceptance_max_attempts=query_config.range_acceptance_max_attempts,
+        )
+
+    base_spatial = float(query_config.range_spatial_fraction)
+    base_time = float(query_config.range_time_fraction)
+    workload = build(base_spatial, base_time)
+    target = _normalized_coverage_target(query_config.target_coverage)
+    if not calibrate_range_coverage or target is None or not _is_pure_range_mix(workload_mix):
+        return workload
+
+    base_coverage = float(workload.coverage_fraction or 0.0)
+    target_tolerance = 0.03
+    if abs(base_coverage - target) <= target_tolerance:
+        return _attach_generation_diagnostic(
+            workload,
+            "coverage_calibration",
+            {
+                "enabled": True,
+                "target_coverage": target,
+                "selected_scale": 1.0,
+                "base_coverage": base_coverage,
+                "selected_coverage": base_coverage,
+                "selected_range_spatial_fraction": base_spatial,
+                "selected_range_time_fraction": base_time,
+                "candidates": [{"scale": 1.0, "coverage": base_coverage}],
+            },
+        )
+
+    # Range point coverage is roughly proportional to query box volume. Scaling
+    # spatial and temporal fractions together gives a stable first estimate,
+    # then nearby candidates choose the closest realized coverage.
+    if base_coverage > 0.0:
+        estimated_scale = (target / base_coverage) ** (1.0 / 3.0)
+    else:
+        estimated_scale = 1.5
+    estimated_scale = max(0.10, min(3.00, float(estimated_scale)))
+    candidate_scales = [
+        1.0,
+        estimated_scale * 0.75,
+        estimated_scale,
+        estimated_scale * 1.25,
+    ]
+    if base_coverage > target:
+        candidate_scales.extend([0.50, 0.35])
+    else:
+        candidate_scales.extend([1.50, 2.00])
+
+    unique_scales: list[float] = []
+    for scale in candidate_scales:
+        scale = max(0.05, min(4.00, float(scale)))
+        if not any(abs(scale - existing) < 1e-6 for existing in unique_scales):
+            unique_scales.append(scale)
+
+    best_workload = workload
+    best_scale = 1.0
+    best_error = abs(base_coverage - target)
+    candidates = [{"scale": 1.0, "coverage": base_coverage}]
+    for scale in unique_scales:
+        if abs(scale - 1.0) < 1e-6:
+            continue
+        candidate = build(base_spatial * scale, base_time * scale)
+        coverage = float(candidate.coverage_fraction or 0.0)
+        candidates.append({"scale": scale, "coverage": coverage})
+        error = abs(coverage - target)
+        if error < best_error:
+            best_workload = candidate
+            best_scale = scale
+            best_error = error
+
+    return _attach_generation_diagnostic(
+        best_workload,
+        "coverage_calibration",
+        {
+            "enabled": True,
+            "target_coverage": target,
+            "selected_scale": best_scale,
+            "base_coverage": base_coverage,
+            "selected_coverage": float(best_workload.coverage_fraction or 0.0),
+            "selected_range_spatial_fraction": base_spatial * best_scale,
+            "selected_range_time_fraction": base_time * best_scale,
+            "candidates": candidates,
+        },
+    )
+
+
 def _range_diagnostic_duplicate_threshold(config: ExperimentConfig) -> float | None:
     """Use explicit duplicate threshold for diagnostics, or a diagnostic-only default."""
     threshold = config.query.range_duplicate_iou_threshold
@@ -353,62 +487,30 @@ def run_experiment_pipeline(
         # Front-load all kNN queries before proportional scheduling for training
         # so kNN always gets its full quota even if n_queries is small.
         knn_front_load = int(train_mix.get("knn", 0.0) * config.query.n_queries)
-        train_workload = generate_typed_query_workload(
+        train_workload = _generate_typed_query_workload_for_config(
             trajectories=train_traj,
             n_queries=config.query.n_queries,
             workload_mix=train_mix,
             seed=seeds.train_query_seed,
-            target_coverage=config.query.target_coverage,
-            max_queries=config.query.max_queries,
-            range_spatial_fraction=config.query.range_spatial_fraction,
-            range_time_fraction=config.query.range_time_fraction,
-            knn_k=config.query.knn_k,
             front_load_knn=knn_front_load,
-            range_min_point_hits=config.query.range_min_point_hits,
-            range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-            range_min_trajectory_hits=config.query.range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-            range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
-            range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
+            config=config,
         )
-        eval_workload = generate_typed_query_workload(
+        eval_workload = _generate_typed_query_workload_for_config(
             trajectories=test_traj,
             n_queries=config.query.n_queries,
             workload_mix=eval_mix,
             seed=seeds.eval_query_seed,
-            target_coverage=config.query.target_coverage,
-            max_queries=config.query.max_queries,
-            range_spatial_fraction=config.query.range_spatial_fraction,
-            range_time_fraction=config.query.range_time_fraction,
-            knn_k=config.query.knn_k,
-            range_min_point_hits=config.query.range_min_point_hits,
-            range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-            range_min_trajectory_hits=config.query.range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-            range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
-            range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
+            config=config,
         )
         selection_workload = None
         if selection_traj:
-            selection_workload = generate_typed_query_workload(
+            selection_workload = _generate_typed_query_workload_for_config(
                 trajectories=selection_traj,
                 n_queries=_validation_query_count(config),
                 workload_mix=eval_mix,
                 seed=seeds.eval_query_seed + 17,
-                target_coverage=config.query.target_coverage,
-                max_queries=config.query.max_queries,
-                range_spatial_fraction=config.query.range_spatial_fraction,
-                range_time_fraction=config.query.range_time_fraction,
-                knn_k=config.query.knn_k,
-                range_min_point_hits=config.query.range_min_point_hits,
-                range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-                range_min_trajectory_hits=config.query.range_min_trajectory_hits,
-                range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-                range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-                range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
-                range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
+                config=config,
+                calibrate_range_coverage=True,
             )
         print(
             f"  train_workload={len(train_workload.typed_queries)} queries  "
@@ -426,14 +528,32 @@ def run_experiment_pipeline(
                 f"coverage={_coverage_name(selection_workload)}",
                 flush=True,
             )
+            calibration = (selection_workload.generation_diagnostics or {}).get("coverage_calibration")
+            if calibration:
+                print(
+                    "  selection_coverage_calibration="
+                    f"scale={calibration['selected_scale']:.3f}  "
+                    f"base={calibration['base_coverage']:.2%}  "
+                    f"selected={calibration['selected_coverage']:.2%}",
+                    flush=True,
+                )
         target = _normalized_coverage_target(config.query.target_coverage)
         if target is not None:
-            for label, workload in (("train", train_workload), ("eval", eval_workload)):
+            workloads_to_check = [("train", train_workload), ("eval", eval_workload)]
+            if selection_workload is not None:
+                workloads_to_check.append(("selection", selection_workload))
+            for label, workload in workloads_to_check:
                 coverage = float(workload.coverage_fraction or 0.0)
                 if coverage + 1e-9 < target:
                     print(
                         f"  WARNING: {label} workload stopped below requested coverage "
                         f"({coverage:.2%} < {target:.2%}); raise --n_queries or query footprint to cover more points.",
+                        flush=True,
+                    )
+                elif label == "selection" and coverage > target + 0.05:
+                    print(
+                        f"  WARNING: {label} workload remains above requested coverage "
+                        f"({coverage:.2%} > {target:.2%}) after calibration; lower query count or footprint.",
                         flush=True,
                     )
 
@@ -667,6 +787,11 @@ def run_experiment_pipeline(
         "train_query_coverage": train_workload.coverage_fraction,
         "eval_query_coverage": eval_workload.coverage_fraction,
         "selection_query_coverage": selection_workload.coverage_fraction if selection_workload is not None else None,
+        "query_generation_diagnostics": {
+            "train": train_workload.generation_diagnostics,
+            "eval": eval_workload.generation_diagnostics,
+            "selection": selection_workload.generation_diagnostics if selection_workload is not None else None,
+        },
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,

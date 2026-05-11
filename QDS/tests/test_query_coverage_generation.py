@@ -5,6 +5,8 @@ from __future__ import annotations
 import torch
 
 from src.data.ais_loader import generate_synthetic_ais_data
+from src.experiments.experiment_config import build_experiment_config
+from src.experiments.experiment_pipeline_helpers import _generate_typed_query_workload_for_config
 from src.queries.query_generator import generate_typed_query_workload, point_coverage_mask_for_query
 
 
@@ -83,6 +85,44 @@ def test_smaller_range_fraction_reduces_query_footprint() -> None:
     assert small_workload.coverage_fraction is not None
     assert default_workload.coverage_fraction is not None
     assert small_workload.coverage_fraction < default_workload.coverage_fraction
+
+
+def test_selection_range_coverage_calibration_reduces_target_error() -> None:
+    """Assert validation workload calibration keeps query count while improving coverage match."""
+    trajectories = generate_synthetic_ais_data(n_ships=5, n_points_per_ship=60, seed=457)
+    target = 0.20
+    cfg = build_experiment_config(
+        n_queries=32,
+        query_coverage=target,
+        workload="range",
+        range_spatial_fraction=0.20,
+        range_time_fraction=0.20,
+    )
+
+    uncalibrated = _generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=32,
+        workload_mix={"range": 1.0},
+        seed=12,
+        config=cfg,
+        calibrate_range_coverage=False,
+    )
+    calibrated = _generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=32,
+        workload_mix={"range": 1.0},
+        seed=12,
+        config=cfg,
+        calibrate_range_coverage=True,
+    )
+
+    assert len(calibrated.typed_queries) == 32
+    assert calibrated.generation_diagnostics is not None
+    calibration = calibrated.generation_diagnostics["coverage_calibration"]
+    assert calibration["enabled"] is True
+    assert abs(float(calibrated.coverage_fraction or 0.0) - target) <= abs(
+        float(uncalibrated.coverage_fraction or 0.0) - target
+    )
 
 
 def test_coverage_generation_allows_overlapping_query_hits() -> None:

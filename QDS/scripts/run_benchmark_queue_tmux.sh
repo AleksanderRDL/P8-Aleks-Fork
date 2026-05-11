@@ -218,7 +218,11 @@ PY
   printf 'MAX_SEGMENTS=%q\n' "$MAX_SEGMENTS"
   printf 'MAX_TRAJECTORIES=%q\n' "$MAX_TRAJECTORIES"
   printf 'CONTINUE_ON_FAILURE=%q\n' "$CONTINUE_ON_FAILURE"
-  printf 'EXTRA_MATRIX_ARGS=(%s)\n' "$(join_shell "${extra_matrix_args[@]}")"
+  if [[ "${#extra_matrix_args[@]}" -gt 0 ]]; then
+    printf 'EXTRA_MATRIX_ARGS=(%s)\n' "$(join_shell "${extra_matrix_args[@]}")"
+  else
+    printf 'EXTRA_MATRIX_ARGS=()\n'
+  fi
   cat <<'RUNNER'
 cd "$QDS_ROOT"
 mkdir -p "$(dirname "$CONSOLE_LOG")"

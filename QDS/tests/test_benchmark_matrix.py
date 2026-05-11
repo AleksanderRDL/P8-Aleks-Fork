@@ -62,18 +62,24 @@ def test_selected_variants_default_to_answer_f1_baseline() -> None:
 
 
 def test_selected_variants_can_run_explicit_sweeps() -> None:
-    variants = _selected_variants("fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_combined")
+    variants = _selected_variants(
+        "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_combined,"
+        "tf32_bf16_bs32_inf32_temporal025"
+    )
 
     assert [variant.name for variant in variants] == [
         "fp32",
         "tf32_bf16_bs32_inf32",
         "tf32_bf16_bs32_inf32_combined",
+        "tf32_bf16_bs32_inf32_temporal025",
     ]
     assert variants[0].checkpoint_f1_variant == "answer"
     assert variants[1].amp_mode == "bf16"
     assert variants[1].checkpoint_f1_variant == "answer"
     assert variants[2].amp_mode == "bf16"
     assert variants[2].checkpoint_f1_variant == "combined"
+    assert variants[3].checkpoint_f1_variant == "answer"
+    assert variants[3].extra_args == ("--mlqds_temporal_fraction", "0.25")
 
 
 def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
@@ -89,6 +95,7 @@ def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
             "float32_matmul_precision": "high",
             "allow_tf32": True,
             "amp_mode": "bf16",
+            "extra_args": [],
         }
     ]
 
@@ -96,6 +103,12 @@ def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
 def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     variant = MatrixVariant(name="tf32_bf16", float32_matmul_precision="high", allow_tf32=True, amp_mode="bf16")
     run_json = {
+        "config": {"model": {"mlqds_temporal_fraction": 0.25}},
+        "matched": {
+            "MLQDS": {"aggregate_f1": 0.40},
+            "uniform": {"aggregate_f1": 0.35},
+            "DouglasPeucker": {"aggregate_f1": 0.36},
+        },
         "torch_runtime": {
             "float32_matmul_precision": "high",
             "tf32_matmul_allowed": True,
@@ -124,6 +137,9 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["child_tf32_matmul_allowed"] is True
     assert row["child_amp_enabled"] is True
     assert row["child_amp_dtype"] == "bfloat16"
+    assert row["mlqds_temporal_fraction"] == 0.25
+    assert row["mlqds_vs_uniform_f1"] == pytest.approx(0.05)
+    assert row["mlqds_vs_douglas_peucker_f1"] == pytest.approx(0.04)
 
 
 def test_profile_args_use_csv_when_provided() -> None:
@@ -159,7 +175,7 @@ def test_profile_args_use_csv_when_provided() -> None:
         "--epochs",
         "20",
         "--early_stopping_patience",
-        "8",
+        "5",
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
@@ -218,7 +234,7 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "--epochs",
         "20",
         "--early_stopping_patience",
-        "8",
+        "5",
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
@@ -268,7 +284,7 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
         "--epochs",
         "20",
         "--early_stopping_patience",
-        "8",
+        "5",
         "--checkpoint_smoothing_window",
         "1",
         "--mlqds_temporal_fraction",
@@ -404,6 +420,8 @@ def test_matrix_markdown_table_is_compact() -> None:
                 "mlqds_f1": 0.4,
                 "uniform_f1": 0.3,
                 "douglas_peucker_f1": 0.2,
+                "mlqds_vs_uniform_f1": 0.1,
+                "mlqds_vs_douglas_peucker_f1": 0.2,
                 "mlqds_latency_ms": 10.0,
                 "collapse_warning": False,
             }
