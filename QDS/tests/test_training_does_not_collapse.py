@@ -9,11 +9,13 @@ from src.data.ais_loader import generate_synthetic_ais_data
 from src.data.trajectory_dataset import TrajectoryDataset
 from src.experiments.experiment_config import build_experiment_config
 from src.queries.query_generator import generate_typed_query_workload
+from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import (
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
     _combine_epoch_type_weights,
     _f1_selection_score,
+    _ranking_loss_for_type,
     _selection_score,
     _uniform_gap_selection_score,
     train_model,
@@ -79,6 +81,26 @@ def test_balanced_pointwise_loss_pushes_constant_scores_apart() -> None:
     assert pred.grad is not None
     assert float(pred.grad[:3].sum().item()) < 0.0
     assert float(pred.grad[3:].sum().item()) > 0.0
+
+
+def test_vectorized_ranking_pair_sampler_returns_finite_loss() -> None:
+    pred = torch.linspace(0.1, 0.8, steps=8)
+    target = torch.tensor([1.0, 0.9, 0.7, 0.4, 0.2, 0.1, 0.0, 0.0])
+    valid_mask = torch.ones((8,), dtype=torch.bool)
+
+    loss, pair_count = _ranking_loss_for_type(
+        pred=pred,
+        target=target,
+        valid_mask=valid_mask,
+        pairs_per_type=16,
+        top_quantile=0.5,
+        margin=0.05,
+        generator=torch.Generator().manual_seed(123),
+        sampling_mode="vectorized",
+    )
+
+    assert 0 < pair_count <= 16
+    assert bool(torch.isfinite(loss).item())
 
 
 def test_temporal_residual_labels_drop_base_points() -> None:
@@ -182,6 +204,51 @@ def test_training_records_validation_query_f1() -> None:
     assert all(0.0 <= row["val_query_f1"] <= 1.0 for row in f1_rows)
     assert all("selection_score" not in row for row in out.history if "val_query_f1" not in row)
     assert out.best_f1 == pytest.approx(max(row["val_query_f1"] for row in f1_rows))
+
+
+def test_training_accepts_precomputed_importance_labels() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=12, seed=818)
+    ds = TrajectoryDataset(trajectories)
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_mix={"range": 1.0},
+        seed=819,
+    )
+    labels, labelled_mask = compute_typed_importance_labels(
+        points=ds.get_all_points(),
+        boundaries=boundaries,
+        typed_queries=workload.typed_queries,
+        seed=820,
+    )
+
+    cfg = build_experiment_config(
+        epochs=1,
+        n_queries=4,
+        workload="range",
+        compression_ratio=0.5,
+    )
+    cfg.model.embed_dim = 16
+    cfg.model.num_heads = 2
+    cfg.model.num_layers = 1
+    cfg.model.query_chunk_size = 8
+    cfg.model.window_length = 8
+    cfg.model.window_stride = 4
+    cfg.model.ranking_pairs_per_type = 4
+    cfg.model.train_batch_size = 2
+    cfg.model.diagnostic_window_fraction = 1.0
+
+    out = train_model(
+        train_trajectories=trajectories,
+        train_boundaries=boundaries,
+        workload=workload,
+        model_config=cfg.model,
+        seed=821,
+        precomputed_labels=(labels, labelled_mask),
+    )
+
+    assert out.history
 
 
 def test_training_does_not_collapse(synthetic_dataset) -> None:

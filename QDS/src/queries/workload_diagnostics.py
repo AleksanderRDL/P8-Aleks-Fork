@@ -53,6 +53,26 @@ def _trajectory_hits(mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> i
     return hits
 
 
+def _trajectory_ids_for_boundaries(
+    n_points: int,
+    boundaries: list[tuple[int, int]],
+    device: torch.device,
+) -> torch.Tensor:
+    """Return per-point trajectory ids for vectorized hit counting."""
+    trajectory_ids = torch.full((n_points,), -1, dtype=torch.long, device=device)
+    for trajectory_id, (start, end) in enumerate(boundaries):
+        if end > start:
+            trajectory_ids[start:end] = int(trajectory_id)
+    return trajectory_ids
+
+
+def _trajectory_hits_from_ids(mask: torch.Tensor, trajectory_ids: torch.Tensor) -> int:
+    """Count masked trajectories using a precomputed per-point trajectory id tensor."""
+    hit_ids = trajectory_ids[mask]
+    hit_ids = hit_ids[hit_ids >= 0]
+    return int(torch.unique(hit_ids).numel()) if hit_ids.numel() > 0 else 0
+
+
 def _safe_span(max_value: float, min_value: float) -> float:
     """Return a nonzero span denominator for fraction metrics."""
     return max(float(max_value) - float(min_value), 1e-9)
@@ -117,13 +137,19 @@ def range_query_diagnostic(
     max_trajectory_hit_fraction: float | None = None,
     max_box_volume_fraction: float | None = None,
     duplicate_iou_threshold: float | None = 0.85,
+    mask: torch.Tensor | None = None,
+    trajectory_ids: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Return JSON-safe diagnostics for one range query."""
     params = query["params"]
     bounds = bounds or _dataset_bounds(points)
-    mask = range_box_mask(points, params)
+    mask = range_box_mask(points, params) if mask is None else mask
     point_hits = int(mask.sum().item())
-    trajectory_hits = _trajectory_hits(mask, boundaries)
+    trajectory_hits = (
+        _trajectory_hits_from_ids(mask, trajectory_ids)
+        if trajectory_ids is not None
+        else _trajectory_hits(mask, boundaries)
+    )
     total_points = int(points.shape[0])
     total_trajectories = int(len(boundaries))
     point_hit_fraction = float(point_hits / total_points) if total_points > 0 else 0.0
@@ -217,15 +243,22 @@ def compute_range_workload_diagnostics(
     max_trajectory_hit_fraction: float | None = None,
     max_box_volume_fraction: float | None = None,
     duplicate_iou_threshold: float | None = 0.85,
+    coverage_fraction: float | None = None,
 ) -> dict[str, Any]:
     """Compute range-query workload quality diagnostics."""
     bounds = _dataset_bounds(points)
+    trajectory_ids = _trajectory_ids_for_boundaries(points.shape[0], boundaries, points.device)
     previous: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
-    covered = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    covered = (
+        torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+        if coverage_fraction is None
+        else None
+    )
     for query_index, query in enumerate(typed_queries):
         if str(query.get("type", "")).lower() != "range":
             continue
+        mask = range_box_mask(points, query["params"])
         row = range_query_diagnostic(
             points,
             boundaries,
@@ -237,12 +270,16 @@ def compute_range_workload_diagnostics(
             max_trajectory_hit_fraction=max_trajectory_hit_fraction,
             max_box_volume_fraction=max_box_volume_fraction,
             duplicate_iou_threshold=duplicate_iou_threshold,
+            mask=mask,
+            trajectory_ids=trajectory_ids,
         )
         rows.append(row)
         previous.append({"params": query["params"], "query_index": query_index})
-        covered |= range_box_mask(points, query["params"])
+        if covered is not None:
+            covered |= mask
 
-    coverage_fraction = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
+    if coverage_fraction is None:
+        coverage_fraction = float(covered.float().mean().item()) if points.shape[0] > 0 and covered is not None else 0.0
     return {
         "summary": _summary_from_query_diagnostics(rows, coverage_fraction),
         "queries": rows,

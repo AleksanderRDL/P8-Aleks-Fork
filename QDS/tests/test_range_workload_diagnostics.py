@@ -62,6 +62,27 @@ def test_range_workload_diagnostics_reports_hit_distributions() -> None:
     assert diagnostics["summary"]["coverage_fraction"] == pytest.approx(1.0)
 
 
+def test_range_workload_diagnostics_can_reuse_known_coverage_fraction() -> None:
+    points, boundaries = _points_and_boundaries()
+    queries = [
+        _range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 2.5),
+        _range_query(4.9, 5.2, 4.9, 5.2, 2.5, 4.5),
+    ]
+
+    diagnostics = compute_range_workload_diagnostics(
+        points,
+        boundaries,
+        queries,
+        coverage_fraction=0.42,
+    )
+
+    assert diagnostics["summary"]["coverage_fraction"] == pytest.approx(0.42)
+    assert diagnostics["queries"][0]["point_hits"] == 3
+    assert diagnostics["queries"][0]["trajectory_hits"] == 1
+    assert diagnostics["queries"][1]["point_hits"] == 2
+    assert diagnostics["queries"][1]["trajectory_hits"] == 1
+
+
 def test_range_diagnostics_marks_broad_queries() -> None:
     points, boundaries = _points_and_boundaries()
     queries = [_range_query(-1.0, 6.0, -1.0, 6.0, -1.0, 10.0)]

@@ -194,6 +194,7 @@ def _ranking_loss_for_type(
     top_quantile: float,
     margin: float,
     generator: torch.Generator,
+    sampling_mode: str = "vectorized",
 ) -> tuple[torch.Tensor, int]:
     """Compute top-boundary-focused pairwise ranking loss for one type. See src/training/README.md for details."""
     valid_idx = torch.where(valid_mask)[0]
@@ -209,34 +210,53 @@ def _ranking_loss_for_type(
     if top_idx.numel() == 0:
         top_idx = valid_idx
 
-    # Sample pairs one at a time to preserve the interleaved RNG consumption
-    # of the original implementation (bit-exact on CPU).  The loss is then
-    # computed in a single batched call instead of per-pair, which avoids
-    # autograd-graph blowup and lets the backward pass fuse efficiently.
-    target_cpu = target.detach().cpu() if target.is_cuda else target
-    top_idx_cpu = top_idx.cpu() if top_idx.is_cuda else top_idx
-    valid_idx_cpu = valid_idx.cpu() if valid_idx.is_cuda else valid_idx
-    a_list: list[int] = []
-    b_list: list[int] = []
-    for _ in range(pairs_per_type):
-        ai = int(torch.randint(0, top_idx_cpu.numel(), (1,), generator=generator).item())
-        bi = int(torch.randint(0, valid_idx_cpu.numel(), (1,), generator=generator).item())
-        a = int(top_idx_cpu[ai].item())
-        b = int(valid_idx_cpu[bi].item())
-        if a == b:
-            continue
-        if bool(torch.isclose(target_cpu[a], target_cpu[b]).item()):
-            continue
-        a_list.append(a)
-        b_list.append(b)
+    mode = str(sampling_mode).lower()
+    if mode not in {"vectorized", "legacy"}:
+        raise ValueError("ranking_pair_sampling must be 'vectorized' or 'legacy'.")
 
-    if not a_list:
-        return pred.new_tensor(0.0), 0
+    if mode == "legacy":
+        # Kept for reproducibility comparisons. This preserves the old
+        # interleaved RNG sequence but copies indices/targets to CPU and uses
+        # per-pair .item() calls, so it should not be used for throughput runs.
+        target_cpu = target.detach().cpu() if target.is_cuda else target
+        top_idx_cpu = top_idx.cpu() if top_idx.is_cuda else top_idx
+        valid_idx_cpu = valid_idx.cpu() if valid_idx.is_cuda else valid_idx
+        a_list: list[int] = []
+        b_list: list[int] = []
+        for _ in range(pairs_per_type):
+            ai = int(torch.randint(0, top_idx_cpu.numel(), (1,), generator=generator).item())
+            bi = int(torch.randint(0, valid_idx_cpu.numel(), (1,), generator=generator).item())
+            a = int(top_idx_cpu[ai].item())
+            b = int(valid_idx_cpu[bi].item())
+            if a == b:
+                continue
+            if bool(torch.isclose(target_cpu[a], target_cpu[b]).item()):
+                continue
+            a_list.append(a)
+            b_list.append(b)
 
-    a_idx = torch.tensor(a_list, dtype=torch.long, device=pred.device)
-    b_idx = torch.tensor(b_list, dtype=torch.long, device=pred.device)
+        if not a_list:
+            return pred.new_tensor(0.0), 0
+
+        a_idx = torch.tensor(a_list, dtype=torch.long, device=pred.device)
+        b_idx = torch.tensor(b_list, dtype=torch.long, device=pred.device)
+    else:
+        sample_count = max(1, int(pairs_per_type))
+        # The run-level generator is CPU-backed. Draw small position tensors on
+        # CPU for deterministic consumption, then move only the sampled positions
+        # to the model device instead of synchronizing labels/indices back to CPU.
+        a_pos = torch.randint(0, top_idx.numel(), (sample_count,), generator=generator)
+        b_pos = torch.randint(0, valid_idx.numel(), (sample_count,), generator=generator)
+        a_idx = top_idx[a_pos.to(top_idx.device)]
+        b_idx = valid_idx[b_pos.to(valid_idx.device)]
+        keep = (a_idx != b_idx) & ~torch.isclose(target[a_idx], target[b_idx])
+        if not bool(keep.any().item()):
+            return pred.new_tensor(0.0), 0
+        a_idx = a_idx[keep]
+        b_idx = b_idx[keep]
+
     sign = torch.sign(target[a_idx] - target[b_idx])
-    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), len(a_list)
+    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), int(a_idx.numel())
 
 
 def _selection_score(avg_tau: float, pred_std: float, loss: float | None = None) -> float:
@@ -489,6 +509,9 @@ def train_model(
     validation_boundaries: list[tuple[int, int]] | None = None,
     validation_workload: TypedQueryWorkload | None = None,
     validation_mix: dict[str, float] | None = None,
+    precomputed_labels: tuple[torch.Tensor, torch.Tensor] | None = None,
+    validation_points: torch.Tensor | None = None,
+    precomputed_validation_query_cache: Any | None = None,
 ) -> TrainingOutputs:
     """Train typed-head model with trajectory-window ranking losses. See src/training/README.md for details."""
     torch.manual_seed(int(seed))
@@ -499,12 +522,21 @@ def train_model(
     point_dim = 8 if model_config.model_type == "turn_aware" else 7
     points = all_points[:, :point_dim].float()
 
-    labels, labelled_mask = compute_typed_importance_labels(
-        points=all_points,
-        boundaries=train_boundaries,
-        typed_queries=workload.typed_queries,
-        seed=seed,
-    )
+    if precomputed_labels is None:
+        labels, labelled_mask = compute_typed_importance_labels(
+            points=all_points,
+            boundaries=train_boundaries,
+            typed_queries=workload.typed_queries,
+            seed=seed,
+        )
+    else:
+        labels, labelled_mask = precomputed_labels
+        expected_shape = (all_points.shape[0], NUM_QUERY_TYPES)
+        if labels.shape != expected_shape or labelled_mask.shape != expected_shape:
+            raise ValueError(
+                "precomputed_labels must match flattened training points and query type count: "
+                f"expected {expected_shape}, got labels={tuple(labels.shape)} mask={tuple(labelled_mask.shape)}"
+            )
     residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
     if residual_label_mode not in {"none", "temporal"}:
         raise ValueError("residual_label_mode must be 'none' or 'temporal'.")
@@ -545,6 +577,9 @@ def train_model(
     labelled_mask_dev = labelled_mask.to(device)
     base_type_weights = _workload_mix_tensor(train_mix or _query_frequency_mix(workload), device=device)
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
+    ranking_pair_sampling = str(getattr(model_config, "ranking_pair_sampling", "vectorized")).lower()
+    if ranking_pair_sampling not in {"vectorized", "legacy"}:
+        raise ValueError("ranking_pair_sampling must be 'vectorized' or 'legacy'.")
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
     grad_scaler = torch.amp.GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))
@@ -599,12 +634,24 @@ def train_model(
         assert validation_trajectories is not None
         assert validation_boundaries is not None
         assert validation_workload is not None
-        validation_points_for_f1 = torch.cat(validation_trajectories, dim=0)
-        validation_query_cache = EvaluationQueryCache.for_workload(
-            validation_points_for_f1,
-            validation_boundaries,
-            validation_workload.typed_queries,
+        validation_points_for_f1 = (
+            validation_points
+            if validation_points is not None
+            else torch.cat(validation_trajectories, dim=0)
         )
+        if precomputed_validation_query_cache is None:
+            validation_query_cache = EvaluationQueryCache.for_workload(
+                validation_points_for_f1,
+                validation_boundaries,
+                validation_workload.typed_queries,
+            )
+        else:
+            precomputed_validation_query_cache.validate(
+                validation_points_for_f1,
+                validation_boundaries,
+                validation_workload.typed_queries,
+            )
+            validation_query_cache = precomputed_validation_query_cache
     validation_uniform_result: tuple[float, dict[str, float]] | None = None
     if selection_metric == "uniform_gap" and has_validation_f1:
         assert validation_trajectories is not None
@@ -696,6 +743,7 @@ def train_model(
                         top_quantile=model_config.ranking_top_quantile,
                         margin=model_config.rank_margin,
                         generator=g,
+                        sampling_mode=ranking_pair_sampling,
                     )
                     ranking_pair_counts[t] += int(pair_count)
                     pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)

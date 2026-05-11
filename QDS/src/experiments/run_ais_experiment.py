@@ -129,6 +129,7 @@ def main() -> None:
         knn_k=args.knn_k,
         epochs=args.epochs,
         lr=args.lr,
+        ranking_pair_sampling=args.ranking_pair_sampling,
         pointwise_loss_weight=args.pointwise_loss_weight,
         gradient_clip_norm=args.gradient_clip_norm,
         compression_ratio=args.compression_ratio,
@@ -171,7 +172,8 @@ def main() -> None:
     print(
         f"[config] model={args.model_type}  workload={args.workload}  epochs={args.epochs}  "
         f"n_queries={args.n_queries}{coverage_msg}  compression_ratio={args.compression_ratio}  "
-        f"lr={args.lr}  pointwise_loss_weight={args.pointwise_loss_weight}  "
+        f"lr={args.lr}  ranking_pair_sampling={args.ranking_pair_sampling}  "
+        f"pointwise_loss_weight={args.pointwise_loss_weight}  "
         f"gradient_clip_norm={args.gradient_clip_norm}  "
         f"train_batch_size={args.train_batch_size}  "
         f"inference_batch_size={args.inference_batch_size}  "

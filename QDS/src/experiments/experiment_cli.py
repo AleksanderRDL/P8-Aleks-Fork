@@ -136,6 +136,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument(
+        "--ranking_pair_sampling",
+        type=str,
+        default="vectorized",
+        choices=["vectorized", "legacy"],
+        help="Ranking-pair sampler for training loss. vectorized avoids CPU copies and per-pair synchronization.",
+    )
+    parser.add_argument(
         "--pointwise_loss_weight",
         type=float,
         default=0.25,

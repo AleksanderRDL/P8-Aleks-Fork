@@ -46,6 +46,7 @@ This module is the orchestration layer for the v2 rebuild. It turns flat CLI arg
 - `--knn_k`
 - `--epochs`
 - `--lr`
+- `--ranking_pair_sampling {vectorized,legacy}`
 - `--pointwise_loss_weight`
 - `--gradient_clip_norm`
 - `--train_batch_size`
@@ -167,8 +168,9 @@ segmented Parquet caches before measured runs, and then runs the variants
 against cache hits. The profile uses 512 range queries, a 30% target query
 coverage, `range_spatial_fraction=0.0165`, `range_time_fraction=0.033`, 5%
 retained-point compression, `query_chunk_size=512`, 20 epochs, answer-set F1
-checkpointing, no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1
-diagnostics every epoch. It enables `early_stopping_patience=8` so non-improving
+checkpointing, no checkpoint smoothing, vectorized ranking-pair sampling,
+`mlqds_temporal_fraction=0.10`, and F1 diagnostics every epoch. It enables
+`early_stopping_patience=8` so non-improving
 F1 runs can stop before all 20 epochs. Leave `--max_points_per_segment`,
 `--max_segments`, and `--max_trajectories` unset for this profile so all valid
 segments and points from both days are used.

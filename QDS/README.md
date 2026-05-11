@@ -161,8 +161,9 @@ Use `--profile range_real_usecase` for baseline model-quality runs. It uses 512
 range queries, 30% target query coverage, narrower range boxes
 (`range_spatial_fraction=0.0165`, `range_time_fraction=0.033`), 5%
 retained-point compression, `query_chunk_size=512`, 20 epochs, answer-set F1
-checkpoint selection, no checkpoint smoothing, `mlqds_temporal_fraction=0.10`,
-and F1 diagnostics every epoch. It also enables `early_stopping_patience=8`, so
+checkpoint selection, no checkpoint smoothing, vectorized ranking-pair sampling,
+`mlqds_temporal_fraction=0.10`, and F1 diagnostics every epoch. It also enables
+`early_stopping_patience=8`, so
 clearly non-improving F1 runs stop before consuming all 20 epochs.
 
 Benchmark matrix runs are organized as one directory per run. The tmux launcher

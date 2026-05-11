@@ -64,6 +64,15 @@ class ExperimentOutputs:
     geometric_table: str = ""
 
 
+@dataclass
+class RangeRuntimeCache:
+    """Non-serialized tensors/caches reused across range diagnostics, training, and evaluation."""
+
+    labels: torch.Tensor | None = None
+    labelled_mask: torch.Tensor | None = None
+    query_cache: EvaluationQueryCache | None = None
+
+
 def split_trajectories(
     trajectories: list[torch.Tensor],
     train_fraction: float,
@@ -134,6 +143,8 @@ def _range_signal_diagnostics(
     workload_mix: dict[str, float],
     compression_ratio: float,
     seed: int,
+    runtime_cache: RangeRuntimeCache | None = None,
+    cache_typed_queries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compute label, Oracle, and baseline diagnostics for range workloads."""
     if not range_queries:
@@ -156,6 +167,9 @@ def _range_signal_diagnostics(
         typed_queries=range_queries,
         seed=seed,
     )
+    if runtime_cache is not None:
+        runtime_cache.labels = labels
+        runtime_cache.labelled_mask = labelled_mask
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
     methods = [
         NewUniformTemporalMethod(),
@@ -163,14 +177,21 @@ def _range_signal_diagnostics(
         OracleMethod(labels=labels, workload_mix={"range": 1.0}),
     ]
     method_scores: dict[str, dict[str, float]] = {}
-    query_cache = EvaluationQueryCache.for_workload(points, boundaries, range_queries)
+    scored_queries = cache_typed_queries if cache_typed_queries is not None else range_queries
+    query_cache = EvaluationQueryCache.for_workload(
+        points,
+        boundaries,
+        scored_queries,
+    )
+    if runtime_cache is not None:
+        runtime_cache.query_cache = query_cache
     for method in methods:
         retained_mask = method.simplify(points, boundaries, compression_ratio)
         aggregate, per_type, _, _ = score_retained_mask(
             points=points,
             boundaries=boundaries,
             retained_mask=retained_mask,
-            typed_queries=range_queries,
+            typed_queries=scored_queries,
             workload_mix={"range": 1.0},
             query_cache=query_cache,
         )
@@ -205,6 +226,7 @@ def _range_workload_diagnostics(
     workload_mix: dict[str, float],
     config: ExperimentConfig,
     seed: int,
+    runtime_cache: RangeRuntimeCache | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Build summary and JSONL rows for one workload."""
     workload_diagnostics = compute_range_workload_diagnostics(
@@ -215,8 +237,10 @@ def _range_workload_diagnostics(
         max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
         max_box_volume_fraction=config.query.range_max_box_volume_fraction,
         duplicate_iou_threshold=_range_diagnostic_duplicate_threshold(config),
+        coverage_fraction=workload.coverage_fraction,
     )
     range_queries = _range_only_queries(workload.typed_queries)
+    is_pure_range_workload = len(range_queries) == len(workload.typed_queries)
     signal = _range_signal_diagnostics(
         points=points,
         boundaries=boundaries,
@@ -224,6 +248,8 @@ def _range_workload_diagnostics(
         workload_mix=workload_mix,
         compression_ratio=config.model.compression_ratio,
         seed=seed,
+        runtime_cache=runtime_cache,
+        cache_typed_queries=workload.typed_queries if is_pure_range_workload else None,
     )
     summary = {
         "range": workload_diagnostics["summary"],
@@ -413,6 +439,11 @@ def run_experiment_pipeline(
 
     range_diagnostics_summary: dict[str, Any] = {}
     range_diagnostics_rows: list[dict[str, Any]] = []
+    range_runtime_caches = {
+        "train": RangeRuntimeCache(),
+        "eval": RangeRuntimeCache(),
+        "selection": RangeRuntimeCache(),
+    }
     with _phase("range-diagnostics"):
         train_summary, train_rows = _range_workload_diagnostics(
             "train",
@@ -422,6 +453,7 @@ def run_experiment_pipeline(
             train_mix,
             config,
             seeds.train_query_seed,
+            range_runtime_caches["train"],
         )
         eval_summary, eval_rows = _range_workload_diagnostics(
             "eval",
@@ -431,6 +463,7 @@ def run_experiment_pipeline(
             eval_mix,
             config,
             seeds.eval_query_seed,
+            range_runtime_caches["eval"],
         )
         range_diagnostics_summary["train"] = train_summary
         range_diagnostics_summary["eval"] = eval_summary
@@ -445,6 +478,7 @@ def run_experiment_pipeline(
                 eval_mix,
                 config,
                 seeds.eval_query_seed + 17,
+                range_runtime_caches["selection"],
             )
             range_diagnostics_summary["selection"] = selection_summary
             range_diagnostics_rows.extend(selection_rows)
@@ -465,6 +499,22 @@ def run_experiment_pipeline(
             write_queries_geojson(save_queries_dir, eval_workload.typed_queries)
 
     reset_cuda_peak_memory_stats()
+    train_cache = range_runtime_caches["train"]
+    train_labels: tuple[torch.Tensor, torch.Tensor] | None = None
+    if (
+        train_cache.labels is not None
+        and train_cache.labelled_mask is not None
+        and len(_range_only_queries(train_workload.typed_queries)) == len(train_workload.typed_queries)
+    ):
+        train_labels = (train_cache.labels, train_cache.labelled_mask)
+    selection_cache = range_runtime_caches["selection"]
+    selection_query_cache: EvaluationQueryCache | None = None
+    if (
+        selection_workload is not None
+        and selection_cache.query_cache is not None
+        and len(_range_only_queries(selection_workload.typed_queries)) == len(selection_workload.typed_queries)
+    ):
+        selection_query_cache = selection_cache.query_cache
     with _phase(f"train-model ({config.model.epochs} epochs)"):
         trained = train_model(
             train_trajectories=train_traj,
@@ -477,6 +527,9 @@ def run_experiment_pipeline(
             validation_boundaries=selection_boundaries,
             validation_workload=selection_workload,
             validation_mix=eval_mix if selection_workload is not None else None,
+            precomputed_labels=train_labels,
+            validation_points=selection_points,
+            precomputed_validation_query_cache=selection_query_cache,
         )
     training_cuda_memory = cuda_memory_snapshot()
     if training_cuda_memory.get("available"):
@@ -522,11 +575,19 @@ def run_experiment_pipeline(
     matched: dict[str, Any] = {}
     save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
-        eval_query_cache = EvaluationQueryCache.for_workload(
-            test_points,
-            test_boundaries,
-            eval_workload.typed_queries,
+        eval_query_cache = (
+            range_runtime_caches["eval"].query_cache
+            if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries)
+            else None
         )
+        if eval_query_cache is None:
+            eval_query_cache = EvaluationQueryCache.for_workload(
+                test_points,
+                test_boundaries,
+                eval_workload.typed_queries,
+            )
+        else:
+            eval_query_cache.validate(test_points, test_boundaries, eval_workload.typed_queries)
         for method in methods:
             with _phase(f"  eval {method.name}"):
                 matched[method.name] = evaluate_method(

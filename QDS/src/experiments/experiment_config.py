@@ -101,6 +101,7 @@ class ModelConfig:
     model_type: str = "baseline"
     rank_margin: float = 0.05
     ranking_pairs_per_type: int = 96
+    ranking_pair_sampling: str = "vectorized"
     ranking_top_quantile: float = 0.80
     pointwise_loss_weight: float = 0.25
     gradient_clip_norm: float = 1.0
@@ -270,6 +271,7 @@ def build_experiment_config(
     range_acceptance_max_attempts: int | None = None,
     epochs: int = 6,
     lr: float = 5e-4,
+    ranking_pair_sampling: str = "vectorized",
     pointwise_loss_weight: float = 0.25,
     gradient_clip_norm: float = 1.0,
     compression_ratio: float = 0.2,
@@ -345,6 +347,7 @@ def build_experiment_config(
         model=ModelConfig(
             epochs=epochs,
             lr=lr,
+            ranking_pair_sampling=ranking_pair_sampling,
             pointwise_loss_weight=pointwise_loss_weight,
             gradient_clip_norm=gradient_clip_norm,
             compression_ratio=compression_ratio,
