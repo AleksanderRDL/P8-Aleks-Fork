@@ -23,7 +23,9 @@ from src.experiments.benchmark_matrix import (
     _parse_name_list,
     _profile_args,
     _resolve_data_sources,
+    _row_from_run,
     _run_capture_streaming,
+    _runner_environment_metadata,
     _selected_variants,
     _write_family_indexes,
     _variant_run_dir,
@@ -65,6 +67,56 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert [variant.name for variant in variants] == ["fp32", "tf32_bf16_bs32_inf32"]
     assert variants[0].checkpoint_f1_variant == "answer"
     assert variants[1].amp_mode == "bf16"
+
+
+def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
+    variants = [MatrixVariant(name="tf32_bf16", float32_matmul_precision="high", allow_tf32=True, amp_mode="bf16")]
+
+    environment = _runner_environment_metadata(variants)
+
+    assert environment["scope"] == "benchmark_matrix_parent_process"
+    assert "rows[*].child_torch_runtime" in environment["note"]
+    assert environment["requested_variant_torch_settings"] == [
+        {
+            "variant": "tf32_bf16",
+            "float32_matmul_precision": "high",
+            "allow_tf32": True,
+            "amp_mode": "bf16",
+        }
+    ]
+
+
+def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
+    variant = MatrixVariant(name="tf32_bf16", float32_matmul_precision="high", allow_tf32=True, amp_mode="bf16")
+    run_json = {
+        "torch_runtime": {
+            "float32_matmul_precision": "high",
+            "tf32_matmul_allowed": True,
+            "tf32_cudnn_allowed": True,
+            "amp": {"enabled": True, "dtype": "bfloat16"},
+        }
+    }
+
+    row = _row_from_run(
+        workload="range",
+        variant=variant,
+        command=["python", "-m", "src.experiments.run_ais_experiment"],
+        returncode=0,
+        elapsed_seconds=1.0,
+        run_dir=tmp_path,
+        stdout_path=tmp_path / "stdout.log",
+        run_json_path=tmp_path / "example_run.json",
+        timings={"phase_timings": [], "epoch_timings": [], "inference_step_timings": []},
+        run_json=run_json,
+    )
+
+    assert row["float32_matmul_precision"] == "high"
+    assert row["allow_tf32"] is True
+    assert row["amp_mode"] == "bf16"
+    assert row["child_float32_matmul_precision"] == "high"
+    assert row["child_tf32_matmul_allowed"] is True
+    assert row["child_amp_enabled"] is True
+    assert row["child_amp_dtype"] == "bfloat16"
 
 
 def test_profile_args_use_csv_when_provided() -> None:

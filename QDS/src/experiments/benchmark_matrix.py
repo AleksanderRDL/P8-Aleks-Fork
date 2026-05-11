@@ -263,6 +263,28 @@ def _selected_variants(raw: str | None) -> list[MatrixVariant]:
     return [MATRIX_VARIANTS[name] for name in names]
 
 
+def _runner_environment_metadata(variants: list[MatrixVariant]) -> dict[str, Any]:
+    """Return parent-process environment metadata with explicit variant-runtime scope."""
+    environment = _environment_metadata("off")
+    environment["scope"] = "benchmark_matrix_parent_process"
+    environment["note"] = (
+        "Torch precision fields in this block describe the benchmark_matrix parent process. "
+        "Each child run applies its variant-specific TF32/AMP settings; effective child "
+        "runtime settings are recorded in rows[*].child_torch_runtime and in each "
+        "variant example_run.json."
+    )
+    environment["requested_variant_torch_settings"] = [
+        {
+            "variant": variant.name,
+            "float32_matmul_precision": variant.float32_matmul_precision,
+            "allow_tf32": variant.allow_tf32,
+            "amp_mode": variant.amp_mode,
+        }
+        for variant in variants
+    ]
+    return environment
+
+
 def _cleaned_csv_files(path: str | Path) -> list[Path]:
     """Return sorted cleaned CSV files for a file or directory input."""
     source = Path(path)
@@ -475,6 +497,8 @@ def _row_from_run(
     uniform = (run_json or {}).get("matched", {}).get("uniform", {})
     dp = (run_json or {}).get("matched", {}).get("DouglasPeucker", {})
     cuda_memory = (run_json or {}).get("cuda_memory", {}).get("training", {})
+    child_torch_runtime = (run_json or {}).get("torch_runtime") or {}
+    child_amp = child_torch_runtime.get("amp") or {}
     return {
         "workload": workload,
         "variant": variant.name,
@@ -499,6 +523,12 @@ def _row_from_run(
         "float32_matmul_precision": variant.float32_matmul_precision,
         "allow_tf32": variant.allow_tf32,
         "amp_mode": variant.amp_mode,
+        "child_float32_matmul_precision": child_torch_runtime.get("float32_matmul_precision"),
+        "child_tf32_matmul_allowed": child_torch_runtime.get("tf32_matmul_allowed"),
+        "child_tf32_cudnn_allowed": child_torch_runtime.get("tf32_cudnn_allowed"),
+        "child_amp_enabled": child_amp.get("enabled"),
+        "child_amp_dtype": child_amp.get("dtype"),
+        "child_torch_runtime": child_torch_runtime or None,
         "train_batch_size": variant.train_batch_size,
         "inference_batch_size": variant.inference_batch_size,
         "run_dir": str(run_dir),
@@ -832,6 +862,14 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         "- family `runs_index.csv` - current status summary for sibling runs",
         "- family `runs_index_events.jsonl` - append-only status history",
         "",
+        "## Environment Scope",
+        "",
+        (
+            "`benchmark_matrix.json.environment` describes the parent benchmark-matrix process. "
+            "Variant-specific effective torch precision/AMP settings are recorded in "
+            "`benchmark_matrix.json.rows[*].child_torch_runtime` and in each variant `example_run.json`."
+        ),
+        "",
         "## Variant Runs",
         "",
         "| workload | variant | returncode | run_dir |",
@@ -917,7 +955,7 @@ def main() -> None:
     family_root = _family_root(results_dir)
     started_at_utc = _utc_now()
     git = _git_metadata()
-    environment = _environment_metadata("off")
+    environment = _runner_environment_metadata(variants)
     rows: list[dict[str, Any]] = []
     failures = 0
     run_config = _run_config(
