@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.evaluation.baselines import NewUniformTemporalMethod
+from src.evaluation.baselines import UniformTemporalMethod
 from src.evaluation.evaluate_methods import (
     EvaluationQueryCache,
     _retained_point_gap_stats,
@@ -324,7 +324,7 @@ def test_uniform_temporal_is_evenly_spaced() -> None:
     )
     boundaries = [(0, 10)]
 
-    retained = NewUniformTemporalMethod().simplify(points, boundaries, compression_ratio=0.3)
+    retained = UniformTemporalMethod().simplify(points, boundaries, compression_ratio=0.3)
 
     assert torch.where(retained)[0].tolist() == [0, 4, 9]
 

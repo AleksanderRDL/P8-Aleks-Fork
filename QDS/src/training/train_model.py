@@ -475,11 +475,11 @@ def _validation_uniform_f1(
     query_cache: Any | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate fair uniform on the held-out validation workload once per run."""
-    from src.evaluation.baselines import NewUniformTemporalMethod
+    from src.evaluation.baselines import UniformTemporalMethod
     from src.evaluation.evaluate_methods import score_retained_mask
 
     points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
-    retained_mask = NewUniformTemporalMethod().simplify(
+    retained_mask = UniformTemporalMethod().simplify(
         points=points,
         boundaries=boundaries,
         compression_ratio=model_config.compression_ratio,

@@ -1,4 +1,4 @@
-"""Training orchestration and checkpoint persistence for AIS-QDS v2. See src/training/README.md for details."""
+"""Training orchestration and checkpoint persistence for AIS-QDS. See src/training/README.md for details."""
 
 from __future__ import annotations
 

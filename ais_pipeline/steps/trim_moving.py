@@ -18,7 +18,7 @@ def trim_moving(
     1. Time elapsed  >= `time_threshold_seconds`  (default 3600 s = 1 h)
     2. Haversine distance >= `avg_SOG * distance_factor` NM
        (threshold scales with the average max-SOG of the ship type)
-    3. COG drift     >= `degree_threshold` degrees  (default 30°)
+    3. COG drift     >= `degree_threshold` degrees  (default 10°)
 
     The first and last point of every MMSI are always retained.
     Stationary rows (SOG == 0) are passed through unchanged.

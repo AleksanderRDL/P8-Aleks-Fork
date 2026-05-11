@@ -27,8 +27,8 @@ from src.data.trajectory_dataset import TrajectoryDataset
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
-    NewUniformTemporalMethod,
     OracleMethod,
+    UniformTemporalMethod,
 )
 from src.evaluation.evaluate_methods import (
     EvaluationQueryCache,
@@ -172,7 +172,7 @@ def _range_signal_diagnostics(
         runtime_cache.labelled_mask = labelled_mask
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
     methods = [
-        NewUniformTemporalMethod(),
+        UniformTemporalMethod(),
         DouglasPeuckerMethod(),
         OracleMethod(labels=labels, workload_mix={"range": 1.0}),
     ]
@@ -568,7 +568,7 @@ def run_experiment_pipeline(
             inference_batch_size=config.model.inference_batch_size,
             amp_mode=config.model.amp_mode,
         ),
-        NewUniformTemporalMethod(),
+        UniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
 

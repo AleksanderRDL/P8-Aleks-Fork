@@ -1,4 +1,4 @@
-"""CLI parsing helpers for the AIS-QDS v2 experiment runner. See src/experiments/README.md for details."""
+"""CLI parsing helpers for the AIS-QDS experiment runner. See src/experiments/README.md for details."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from src.experiments.torch_runtime import AMP_MODE_CHOICES, FLOAT32_MATMUL_PRECI
 
 def build_parser() -> argparse.ArgumentParser:
     """Build experiment CLI parser. See src/experiments/README.md for details."""
-    parser = argparse.ArgumentParser(description="Run AIS-QDS v2 experiment.")
+    parser = argparse.ArgumentParser(description="Run AIS-QDS experiment.")
     parser.add_argument("--csv_path", type=str, default=None)
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
     parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)

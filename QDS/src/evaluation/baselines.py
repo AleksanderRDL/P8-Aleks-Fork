@@ -1,4 +1,4 @@
-"""Baseline simplification methods for AIS-QDS v2 evaluation. See src/evaluation/README.md for details."""
+"""Baseline simplification methods for AIS-QDS evaluation. See src/evaluation/README.md for details."""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ class MLQDSMethod:
 
 
 @dataclass
-class NewUniformTemporalMethod:
+class UniformTemporalMethod:
     """True evenly spaced temporal sampling baseline."""
 
     name: str = "uniform"

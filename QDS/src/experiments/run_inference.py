@@ -1,4 +1,4 @@
-"""Run a saved AIS-QDS v2 model on a new day's preprocessed CSV (no training).
+"""Run a saved AIS-QDS model on a new day's preprocessed CSV (no training).
 
 Loads a .pt checkpoint produced by run_ais_experiment.py (save_checkpoint) and
 evaluates MLQDS against baselines on the supplied CSV. No gradient updates are
@@ -31,7 +31,7 @@ from src.data.trajectory_cache import load_or_build_ais_cache
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
-    NewUniformTemporalMethod,
+    UniformTemporalMethod,
 )
 from src.evaluation.evaluate_methods import (
     EvaluationQueryCache,
@@ -63,7 +63,7 @@ def _normalized_gap_arg(value: float | None) -> float | None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Evaluate a saved AIS-QDS v2 model on a new CSV.")
+    p = argparse.ArgumentParser(description="Evaluate a saved AIS-QDS model on a new CSV.")
     p.add_argument("--checkpoint", required=True, help="Path to saved .pt checkpoint.")
     p.add_argument("--csv_path", required=True, help="Preprocessed AIS CSV to evaluate on.")
     p.add_argument(
@@ -362,7 +362,7 @@ def main() -> None:
             inference_batch_size=inference_batch_size,
             amp_mode=amp_mode,
         ),
-        NewUniformTemporalMethod(),
+        UniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
 

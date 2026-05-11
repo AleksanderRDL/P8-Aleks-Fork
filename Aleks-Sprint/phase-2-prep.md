@@ -161,7 +161,7 @@ The fastest implementation can reuse:
 
 - `compute_typed_importance_labels`
 - `OracleMethod`
-- `NewUniformTemporalMethod`
+- `UniformTemporalMethod`
 - `DouglasPeuckerMethod`
 - `evaluate_method`
 

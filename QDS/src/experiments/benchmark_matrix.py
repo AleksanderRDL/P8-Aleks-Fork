@@ -892,7 +892,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workloads", type=str, default=",".join(DEFAULT_WORKLOADS))
     parser.add_argument("--variants", type=str, default=",".join(DEFAULT_VARIANTS))
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--results_dir", type=str, default="artifacts/benchmarks/range_workload_matrix")
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default="artifacts/benchmarks/range_real_usecase/runs/manual_matrix",
+    )
     parser.add_argument(
         "--run_id",
         type=str,

@@ -1,4 +1,4 @@
-"""AIS-QDS v2 end-to-end experiment entrypoint. See src/experiments/README.md for details."""
+"""AIS-QDS end-to-end experiment entrypoint. See src/experiments/README.md for details."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def _default_simplified_dir(args) -> str:
 
 
 def main() -> None:
-    """Parse CLI args and run the AIS-QDS v2 experiment. See src/experiments/README.md for details."""
+    """Parse CLI args and run the AIS-QDS experiment. See src/experiments/README.md for details."""
     parser = build_parser()
     args = parser.parse_args()
 

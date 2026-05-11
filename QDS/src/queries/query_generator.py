@@ -1,4 +1,4 @@
-"""Query workload generation for the four AIS-QDS v2 query types. See src/queries/README.md for details."""
+"""Query workload generation for the AIS-QDS query types. See src/queries/README.md for details."""
 
 from __future__ import annotations
 

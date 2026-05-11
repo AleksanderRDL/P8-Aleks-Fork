@@ -1,4 +1,4 @@
-"""Experiment configuration dataclasses for AIS-QDS v2. See src/experiments/README.md for details."""
+"""Experiment configuration dataclasses for AIS-QDS. See src/experiments/README.md for details."""
 
 from __future__ import annotations
 

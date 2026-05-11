@@ -6,14 +6,14 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 | File | Purpose |
 | --- | --- |
-| `baselines.py` | Simplification methods: `MLQDSMethod`, `NewUniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
+| `baselines.py` | Simplification methods: `MLQDSMethod`, `UniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
 | `metrics.py` | F1 functions and the `MethodEvaluation` container. |
 | `evaluate_methods.py` | Runs a method on flattened points and boundaries, caches reusable query results, then formats the comparison tables. |
 
 ## Methods
 
 - `MLQDSMethod` uses the trained model, persisted scaler, and eval workload to produce per-point scores. Query-type heads are rank-normalized within each trajectory before weighting; current experiment entrypoints use one pure workload per model. Model inference uses CUDA by default when available, while retained masks stay on the original point tensor device for evaluation.
-- `NewUniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
+- `UniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
 - `DouglasPeuckerMethod` is a true recursive Douglas-Peucker baseline that keeps endpoints and repeatedly splits the current highest-error segment until the compression budget is filled.
 - `OracleMethod` is a diagnostic upper bound that uses oracle labels directly.
 
