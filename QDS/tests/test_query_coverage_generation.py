@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 
-from src.data.ais_loader import generate_synthetic_ais_data
+from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import _generate_typed_query_workload_for_config
 from src.queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
@@ -152,6 +154,35 @@ def test_sampled_range_coverage_estimator_returns_reproducible_rows() -> None:
     assert [row.to_dict() for row in rows_a] == [row.to_dict() for row in rows_b]
     assert {row.query_count for row in rows_a} == {4, 8}
     assert best_query_count(rows_a, 0.20).query_count in {4, 8}
+
+
+def test_sampled_range_coverage_estimator_works_on_loaded_cleaned_csv(tmp_path: Path) -> None:
+    csv_path = tmp_path / "cleaned.csv"
+    lines = ["MMSI,# Timestamp,Latitude,Longitude,SOG,COG"]
+    for mmsi, lat0, lon0 in ((100, 55.0, 12.0), (200, 55.4, 12.4)):
+        for idx in range(6):
+            lines.append(f"{mmsi},{idx * 600},{lat0 + idx * 0.01},{lon0 + idx * 0.01},8.0,90.0")
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    trajectories = load_ais_csv(str(csv_path), min_points_per_segment=4)
+
+    rows = estimate_range_coverage(
+        trajectories=trajectories,
+        source=str(csv_path),
+        query_counts=[2, 4],
+        seeds=[7],
+        sample_stride=1,
+        target_coverage=0.20,
+        range_spatial_km=5.0,
+        range_time_hours=1.0,
+        range_footprint_jitter=0.0,
+    )
+
+    assert len(rows) == 2
+    assert {row.source for row in rows} == {str(csv_path)}
+    assert {row.query_count for row in rows} == {2, 4}
+    assert all(row.sampled_trajectories == 2 for row in rows)
+    assert all(row.sampled_points == 12 for row in rows)
+    assert all(0.0 <= row.coverage_fraction <= 1.0 for row in rows)
 
 
 def test_selection_range_coverage_calibration_reduces_target_error() -> None:

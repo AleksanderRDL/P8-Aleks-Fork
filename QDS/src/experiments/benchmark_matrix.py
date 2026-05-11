@@ -557,6 +557,7 @@ def _row_from_run(
     child_torch_runtime = (run_json or {}).get("torch_runtime") or {}
     child_amp = child_torch_runtime.get("amp") or {}
     model_config = (run_json or {}).get("config", {}).get("model", {})
+    oracle_diagnostic = (run_json or {}).get("oracle_diagnostic") or {}
     mlqds_f1 = mlqds.get("aggregate_f1")
     uniform_f1 = uniform.get("aggregate_f1")
     dp_f1 = dp.get("aggregate_f1")
@@ -598,6 +599,8 @@ def _row_from_run(
         "mlqds_rank_confidence_weight": model_config.get("mlqds_rank_confidence_weight"),
         "range_boundary_prior_weight": model_config.get("range_boundary_prior_weight"),
         "range_boundary_prior_enabled": bool(float(model_config.get("range_boundary_prior_weight") or 0.0) > 0.0),
+        "oracle_kind": oracle_diagnostic.get("kind"),
+        "oracle_exact_optimum": oracle_diagnostic.get("exact_optimum"),
         "float32_matmul_precision": variant.float32_matmul_precision,
         "allow_tf32": variant.allow_tf32,
         "amp_mode": variant.amp_mode,

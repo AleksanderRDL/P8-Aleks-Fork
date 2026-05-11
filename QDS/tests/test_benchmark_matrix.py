@@ -169,10 +169,15 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "mlqds_score_mode": "rank",
                 "mlqds_score_temperature": 1.0,
                 "mlqds_rank_confidence_weight": 0.15,
+                "range_boundary_prior_weight": 0.0,
             }
         },
+        "oracle_diagnostic": {
+            "kind": "additive_label_greedy",
+            "exact_optimum": False,
+        },
         "matched": {
-            "MLQDS": {"aggregate_f1": 0.40},
+            "MLQDS": {"aggregate_f1": 0.40, "range_boundary_f1": 0.25},
             "uniform": {"aggregate_f1": 0.35},
             "DouglasPeucker": {"aggregate_f1": 0.36},
         },
@@ -208,6 +213,11 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_score_mode"] == "rank"
     assert row["mlqds_score_temperature"] == 1.0
     assert row["mlqds_rank_confidence_weight"] == 0.15
+    assert row["range_boundary_prior_weight"] == 0.0
+    assert row["range_boundary_prior_enabled"] is False
+    assert row["mlqds_range_boundary_f1"] == 0.25
+    assert row["oracle_kind"] == "additive_label_greedy"
+    assert row["oracle_exact_optimum"] is False
     assert row["mlqds_vs_uniform_f1"] == pytest.approx(0.05)
     assert row["mlqds_vs_douglas_peucker_f1"] == pytest.approx(0.04)
 

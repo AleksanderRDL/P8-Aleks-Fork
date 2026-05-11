@@ -7,10 +7,15 @@ import torch
 
 from src.data.ais_loader import generate_synthetic_ais_data
 from src.data.trajectory_dataset import TrajectoryDataset
+from src.evaluation.baselines import MLQDSMethod
+from src.evaluation.evaluate_methods import score_retained_mask
 from src.experiments.experiment_config import build_experiment_config
+from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.queries.query_generator import generate_typed_query_workload
 from src.training.importance_labels import compute_typed_importance_labels
+from src.training.scaler import FeatureScaler
 from src.training.train_model import (
+    TrainingOutputs,
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
     _combine_epoch_type_weights,
@@ -18,6 +23,7 @@ from src.training.train_model import (
     _ranking_loss_for_type,
     _selection_score,
     _uniform_gap_selection_score,
+    _validation_query_f1,
     train_model,
 )
 
@@ -204,6 +210,98 @@ def test_training_records_validation_query_f1() -> None:
     assert all(0.0 <= row["val_query_f1"] <= 1.0 for row in f1_rows)
     assert all("selection_score" not in row for row in out.history if "val_query_f1" not in row)
     assert out.best_f1 == pytest.approx(max(row["val_query_f1"] for row in f1_rows))
+
+
+@pytest.mark.parametrize(
+    "score_mode",
+    ["rank", "rank_tie", "raw", "sigmoid", "zscore_sigmoid", "rank_confidence", "temperature_sigmoid"],
+)
+def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=2, n_points_per_ship=12, seed=515)
+    ds = TrajectoryDataset(trajectories)
+    points = ds.get_all_points()
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_mix={"range": 1.0},
+        seed=516,
+        range_spatial_fraction=0.40,
+        range_time_fraction=0.40,
+    )
+    cfg = build_experiment_config(
+        compression_ratio=0.40,
+        workload="range",
+        mlqds_temporal_fraction=0.25,
+        mlqds_diversity_bonus=0.0,
+        mlqds_score_mode=score_mode,
+        mlqds_score_temperature=0.75,
+        mlqds_rank_confidence_weight=0.35,
+    )
+    predictions = torch.zeros((points.shape[0], 4), dtype=torch.float32)
+    predictions[:, 0] = torch.linspace(-1.0, 1.0, steps=points.shape[0])
+    predictions[:, 1] = torch.linspace(1.0, -1.0, steps=points.shape[0])
+
+    model = TrajectoryQDSModel(
+        point_dim=7,
+        query_dim=int(workload.query_features.shape[1]),
+        embed_dim=16,
+        num_heads=2,
+        num_layers=1,
+        query_chunk_size=8,
+    )
+    scaler = FeatureScaler.fit(points[:, :7], workload.query_features)
+    trained = TrainingOutputs(
+        model=model,
+        scaler=scaler,
+        labels=torch.zeros_like(predictions),
+        labelled_mask=torch.ones_like(predictions, dtype=torch.bool),
+        history=[],
+    )
+
+    monkeypatch.setattr(
+        "src.training.train_model._predict_workload_logits",
+        lambda **_kwargs: predictions.clone(),
+    )
+    monkeypatch.setattr(
+        "src.evaluation.baselines.windowed_predict",
+        lambda **_kwargs: predictions.clone(),
+    )
+
+    validation_f1, validation_per_type = _validation_query_f1(
+        model=model,
+        scaler=scaler,
+        trajectories=trajectories,
+        boundaries=boundaries,
+        workload=workload,
+        workload_mix={"range": 1.0},
+        model_config=cfg.model,
+        device=torch.device("cpu"),
+        validation_points=points,
+    )
+    retained = MLQDSMethod(
+        name="MLQDS",
+        trained=trained,
+        workload=workload,
+        workload_type="range",
+        score_mode=cfg.model.mlqds_score_mode,
+        score_temperature=cfg.model.mlqds_score_temperature,
+        rank_confidence_weight=cfg.model.mlqds_rank_confidence_weight,
+        temporal_fraction=cfg.model.mlqds_temporal_fraction,
+        diversity_bonus=cfg.model.mlqds_diversity_bonus,
+        inference_device="cpu",
+        inference_batch_size=cfg.model.inference_batch_size,
+    ).simplify(points, boundaries, cfg.model.compression_ratio)
+    final_f1, final_per_type, _combined_f1, _combined_per_type = score_retained_mask(
+        points=points,
+        boundaries=boundaries,
+        retained_mask=retained,
+        typed_queries=workload.typed_queries,
+        workload_mix={"range": 1.0},
+    )
+
+    assert validation_f1 == pytest.approx(final_f1)
+    assert validation_per_type["range"] == pytest.approx(final_per_type["range"])
 
 
 def test_training_accepts_precomputed_importance_labels() -> None:

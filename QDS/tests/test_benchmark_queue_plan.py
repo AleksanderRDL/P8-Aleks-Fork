@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from scripts.validate_benchmark_queue_plan import validate_plan
 
@@ -29,3 +30,14 @@ def test_queue_plan_validation_rejects_unknown_child_args(tmp_path: Path) -> Non
     assert len(errors) == 1
     assert "run_a" in errors[0]
     assert "--definitely_not_a_real_arg" in errors[0]
+
+
+def test_queue_launcher_script_keeps_failure_marking_and_parses() -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_benchmark_queue_tmux.sh"
+
+    subprocess.run(["bash", "-n", str(script)], check=True)
+    text = script.read_text(encoding="utf-8")
+
+    assert "status=${PIPESTATUS[0]}" in text
+    assert "scripts/mark_benchmark_failed.py" in text
+    assert "CONTINUE_ON_FAILURE" in text
