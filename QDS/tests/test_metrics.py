@@ -439,6 +439,14 @@ def test_pure_workload_scores_support_calibrated_modes() -> None:
     assert temp_sigmoid.tolist() == pytest.approx(torch.sigmoid(predictions[:, 0] / 2.0).tolist())
 
 
+def test_pure_workload_scores_zscore_mode_handles_flat_logits() -> None:
+    predictions = torch.ones((4, 4), dtype=torch.float32)
+
+    scores = pure_workload_scores(predictions, [(0, 4)], "range", score_mode="zscore_sigmoid")
+
+    assert scores.tolist() == pytest.approx([0.5, 0.5, 0.5, 0.5])
+
+
 def test_pure_workload_scores_reject_unknown_mode() -> None:
     predictions = torch.zeros((4, 4), dtype=torch.float32)
 
@@ -453,20 +461,25 @@ def test_oracle_method_uses_explicit_workload_head() -> None:
             [1.0, 0.0, 0.1, 1.0],
             [2.0, 0.0, 0.2, 1.0],
             [3.0, 0.0, 0.3, 1.0],
+            [4.0, 0.0, 0.4, 1.0],
         ],
         dtype=torch.float32,
     )
-    labels = torch.zeros((4, 4), dtype=torch.float32)
+    labels = torch.zeros((5, 4), dtype=torch.float32)
     labels[1, 0] = 1.0
+    labels[2, 0] = -1.0
+    labels[1, 1] = -1.0
     labels[2, 1] = 1.0
 
     retained = OracleMethod(labels=labels, workload_type="range").simplify(
         points,
-        boundaries=[(0, 4)],
-        compression_ratio=0.25,
+        boundaries=[(0, 5)],
+        compression_ratio=0.4,
     )
 
     assert bool(retained[1].item()) is True
+    assert bool(retained[2].item()) is False
+    assert OracleMethod(labels=labels, workload_type="range").oracle_kind == "additive_label_greedy"
 
 
 def test_range_boundary_preservation_is_separate_from_range_f1() -> None:

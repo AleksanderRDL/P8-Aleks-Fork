@@ -50,6 +50,9 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         ranking_top_quantile=0.9,
         range_spatial_km=2.2,
         range_time_hours=6.0,
+        mlqds_score_mode="rank_confidence",
+        mlqds_score_temperature=0.5,
+        mlqds_rank_confidence_weight=0.3,
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
 
@@ -64,37 +67,58 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.ranking_top_quantile == 0.9
     assert restored.query.range_spatial_km == 2.2
     assert restored.query.range_time_hours == 6.0
+    assert restored.model.mlqds_score_mode == "rank_confidence"
+    assert restored.model.mlqds_score_temperature == 0.5
+    assert restored.model.mlqds_rank_confidence_weight == 0.3
     assert restored.model.checkpoint_selection_metric == "f1"
 
 
-def test_cli_exposes_ranking_pair_tuning_controls() -> None:
+def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     args = build_parser().parse_args(
         [
             "--ranking_pairs_per_type",
             "64",
             "--ranking_top_quantile",
             "0.70",
+            "--mlqds_score_mode",
+            "rank_confidence",
+            "--mlqds_score_temperature",
+            "0.50",
+            "--mlqds_rank_confidence_weight",
+            "0.30",
         ]
     )
 
     cfg = build_experiment_config(
         ranking_pairs_per_type=args.ranking_pairs_per_type,
         ranking_top_quantile=args.ranking_top_quantile,
+        mlqds_score_mode=args.mlqds_score_mode,
+        mlqds_score_temperature=args.mlqds_score_temperature,
+        mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
     )
 
     assert args.ranking_pairs_per_type == 64
     assert args.ranking_top_quantile == 0.70
+    assert args.mlqds_score_mode == "rank_confidence"
+    assert args.mlqds_score_temperature == 0.50
+    assert args.mlqds_rank_confidence_weight == 0.30
     assert cfg.model.ranking_pairs_per_type == 64
     assert cfg.model.ranking_top_quantile == 0.70
+    assert cfg.model.mlqds_score_mode == "rank_confidence"
+    assert cfg.model.mlqds_score_temperature == 0.50
+    assert cfg.model.mlqds_rank_confidence_weight == 0.30
 
 
-def test_experiment_config_loads_legacy_precision_defaults() -> None:
+def test_experiment_config_loads_legacy_runtime_and_mlqds_defaults() -> None:
     payload = build_experiment_config().to_dict()
     payload["model"].pop("float32_matmul_precision")
     payload["model"].pop("allow_tf32")
     payload["model"].pop("inference_batch_size")
     payload["model"].pop("amp_mode")
     payload["model"].pop("range_boundary_prior_weight")
+    payload["model"].pop("mlqds_score_mode")
+    payload["model"].pop("mlqds_score_temperature")
+    payload["model"].pop("mlqds_rank_confidence_weight")
     payload["data"]["max_points_per_ship"] = 123
 
     restored = ExperimentConfig.from_dict(payload)
@@ -104,6 +128,9 @@ def test_experiment_config_loads_legacy_precision_defaults() -> None:
     assert restored.model.inference_batch_size == 16
     assert restored.model.amp_mode == "off"
     assert restored.model.range_boundary_prior_weight == 0.0
+    assert restored.model.mlqds_score_mode == "rank"
+    assert restored.model.mlqds_score_temperature == 1.0
+    assert restored.model.mlqds_rank_confidence_weight == 0.15
     assert restored.model.checkpoint_selection_metric == "f1"
     assert restored.data.max_points_per_segment == 123
 

@@ -12,7 +12,8 @@ def test_queue_plan_validation_accepts_child_training_args(tmp_path: Path) -> No
     plan.write_text(
         "# run_id\tseed\tchild_extra_args\n"
         "run_a\t42\t--ranking_pairs_per_type 64 --ranking_top_quantile 0.70\n"
-        "run_b\t43\t--pointwise_loss_weight 0.50 --mlqds_temporal_fraction 0.25\n",
+        "run_b\t43\t--pointwise_loss_weight 0.50 --mlqds_temporal_fraction 0.25\n"
+        "run_c\t44\t--mlqds_score_mode rank_confidence --mlqds_rank_confidence_weight 0.15\n",
         encoding="utf-8",
     )
 

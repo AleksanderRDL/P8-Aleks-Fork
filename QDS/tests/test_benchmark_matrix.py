@@ -34,6 +34,46 @@ from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_mixes
 
 
+def _profile_core_args() -> list[str]:
+    """Expected range_real_usecase child args without data-source/cap flags."""
+    return [
+        "--n_queries",
+        "80",
+        "--query_coverage",
+        "0.20",
+        "--range_spatial_fraction",
+        "0.0165",
+        "--range_time_fraction",
+        "0.033",
+        "--range_spatial_km",
+        "2.2",
+        "--range_time_hours",
+        "3.0",
+        "--range_footprint_jitter",
+        "0.0",
+        "--query_chunk_size",
+        "2048",
+        "--compression_ratio",
+        "0.05",
+        "--epochs",
+        "20",
+        "--early_stopping_patience",
+        "5",
+        "--checkpoint_smoothing_window",
+        "1",
+        "--mlqds_temporal_fraction",
+        "0.25",
+        "--mlqds_score_mode",
+        "rank",
+        "--mlqds_score_temperature",
+        "1.00",
+        "--mlqds_rank_confidence_weight",
+        "0.15",
+        "--range_boundary_prior_weight",
+        "0.0",
+    ]
+
+
 def test_matrix_name_list_rejects_mixed_workloads() -> None:
     assert _parse_name_list("range,knn", allowed=PURE_WORKLOADS, arg_name="--workloads") == ["range", "knn"]
     assert _parse_name_list(None, allowed=DEFAULT_WORKLOADS, arg_name="--workloads") == ["range"]
@@ -64,7 +104,9 @@ def test_selected_variants_default_to_answer_f1_baseline() -> None:
 def test_selected_variants_can_run_explicit_sweeps() -> None:
     variants = _selected_variants(
         "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_combined,"
-        "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_score_rank_confidence"
+        "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_score_rank_tie,"
+        "tf32_bf16_bs32_inf32_score_zscore,tf32_bf16_bs32_inf32_score_rank_confidence,"
+        "tf32_bf16_bs32_inf32_score_temp_sigmoid"
     )
 
     assert [variant.name for variant in variants] == [
@@ -72,7 +114,10 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
         "tf32_bf16_bs32_inf32",
         "tf32_bf16_bs32_inf32_combined",
         "tf32_bf16_bs32_inf32_temporal000",
+        "tf32_bf16_bs32_inf32_score_rank_tie",
+        "tf32_bf16_bs32_inf32_score_zscore",
         "tf32_bf16_bs32_inf32_score_rank_confidence",
+        "tf32_bf16_bs32_inf32_score_temp_sigmoid",
     ]
     assert variants[0].checkpoint_f1_variant == "answer"
     assert variants[1].amp_mode == "bf16"
@@ -81,11 +126,19 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert variants[2].checkpoint_f1_variant == "combined"
     assert variants[3].checkpoint_f1_variant == "answer"
     assert variants[3].extra_args == ("--mlqds_temporal_fraction", "0.00")
-    assert variants[4].extra_args == (
+    assert variants[4].extra_args == ("--mlqds_score_mode", "rank_tie")
+    assert variants[5].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
+    assert variants[6].extra_args == (
         "--mlqds_score_mode",
         "rank_confidence",
         "--mlqds_rank_confidence_weight",
         "0.15",
+    )
+    assert variants[7].extra_args == (
+        "--mlqds_score_mode",
+        "temperature_sigmoid",
+        "--mlqds_score_temperature",
+        "1.00",
     )
 
 
@@ -177,40 +230,7 @@ def test_profile_args_use_csv_when_provided() -> None:
     assert _profile_args(DEFAULT_PROFILE, args, data_sources) == [
         "--csv_path",
         "../AISDATA/cleaned/day.csv",
-        "--n_queries",
-        "80",
-        "--query_coverage",
-        "0.20",
-        "--range_spatial_fraction",
-        "0.0165",
-        "--range_time_fraction",
-        "0.033",
-        "--range_spatial_km",
-        "2.2",
-        "--range_time_hours",
-        "3.0",
-        "--range_footprint_jitter",
-        "0.0",
-        "--query_chunk_size",
-        "2048",
-        "--compression_ratio",
-        "0.05",
-        "--epochs",
-        "20",
-        "--early_stopping_patience",
-        "5",
-        "--checkpoint_smoothing_window",
-        "1",
-        "--mlqds_temporal_fraction",
-        "0.25",
-        "--mlqds_score_mode",
-        "rank",
-        "--mlqds_score_temperature",
-        "1.00",
-        "--mlqds_rank_confidence_weight",
-        "0.15",
-        "--range_boundary_prior_weight",
-        "0.0",
+        *_profile_core_args(),
         "--min_points_per_segment",
         "4",
         "--max_time_gap_seconds",
@@ -250,40 +270,7 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
         "../AISDATA/cleaned/day1.csv",
         "--eval_csv_path",
         "../AISDATA/cleaned/day2.csv",
-        "--n_queries",
-        "80",
-        "--query_coverage",
-        "0.20",
-        "--range_spatial_fraction",
-        "0.0165",
-        "--range_time_fraction",
-        "0.033",
-        "--range_spatial_km",
-        "2.2",
-        "--range_time_hours",
-        "3.0",
-        "--range_footprint_jitter",
-        "0.0",
-        "--query_chunk_size",
-        "2048",
-        "--compression_ratio",
-        "0.05",
-        "--epochs",
-        "20",
-        "--early_stopping_patience",
-        "5",
-        "--checkpoint_smoothing_window",
-        "1",
-        "--mlqds_temporal_fraction",
-        "0.25",
-        "--mlqds_score_mode",
-        "rank",
-        "--mlqds_score_temperature",
-        "1.00",
-        "--mlqds_rank_confidence_weight",
-        "0.15",
-        "--range_boundary_prior_weight",
-        "0.0",
+        *_profile_core_args(),
         "--min_points_per_segment",
         "4",
         "--max_time_gap_seconds",
@@ -313,51 +300,16 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
 
     profile_args = _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False)
 
-    assert profile_args[4:38] == [
-        "--n_queries",
-        "80",
-        "--query_coverage",
-        "0.20",
-        "--range_spatial_fraction",
-        "0.0165",
-        "--range_time_fraction",
-        "0.033",
-        "--range_spatial_km",
-        "2.2",
-        "--range_time_hours",
-        "3.0",
-        "--range_footprint_jitter",
-        "0.0",
-        "--query_chunk_size",
-        "2048",
-        "--compression_ratio",
-        "0.05",
-        "--epochs",
-        "20",
-        "--early_stopping_patience",
-        "5",
-        "--checkpoint_smoothing_window",
-        "1",
-        "--mlqds_temporal_fraction",
-        "0.25",
-        "--mlqds_score_mode",
-        "rank",
-        "--mlqds_score_temperature",
-        "1.00",
-        "--mlqds_rank_confidence_weight",
-        "0.15",
-        "--range_boundary_prior_weight",
-        "0.0",
-    ]
+    assert profile_args[4 : 4 + len(_profile_core_args())] == _profile_core_args()
     assert "--max_points_per_segment" not in profile_args
     assert "--max_segments" not in profile_args
     assert "--max_trajectories" not in profile_args
 
 
 def test_validation_query_count_matches_eval_workload_shape() -> None:
-    cfg = build_experiment_config(n_queries=384, query_coverage=0.20, max_queries=None)
+    cfg = build_experiment_config(n_queries=80, query_coverage=0.20, max_queries=None)
 
-    assert _validation_query_count(cfg) == 384
+    assert _validation_query_count(cfg) == 80
 
 
 def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:

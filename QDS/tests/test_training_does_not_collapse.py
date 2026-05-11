@@ -156,7 +156,7 @@ def test_training_records_validation_query_f1() -> None:
     validation_boundaries = validation_ds.get_trajectory_boundaries()
 
     cfg = build_experiment_config(
-        epochs=1,
+        epochs=8,
         n_queries=4,
         workload="range",
         checkpoint_selection_metric="f1",
