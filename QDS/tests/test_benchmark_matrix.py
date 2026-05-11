@@ -62,11 +62,18 @@ def test_selected_variants_default_to_answer_f1_baseline() -> None:
 
 
 def test_selected_variants_can_run_explicit_sweeps() -> None:
-    variants = _selected_variants("fp32,tf32_bf16_bs32_inf32")
+    variants = _selected_variants("fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_combined")
 
-    assert [variant.name for variant in variants] == ["fp32", "tf32_bf16_bs32_inf32"]
+    assert [variant.name for variant in variants] == [
+        "fp32",
+        "tf32_bf16_bs32_inf32",
+        "tf32_bf16_bs32_inf32_combined",
+    ]
     assert variants[0].checkpoint_f1_variant == "answer"
     assert variants[1].amp_mode == "bf16"
+    assert variants[1].checkpoint_f1_variant == "answer"
+    assert variants[2].amp_mode == "bf16"
+    assert variants[2].checkpoint_f1_variant == "combined"
 
 
 def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:

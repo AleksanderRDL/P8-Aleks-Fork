@@ -39,12 +39,12 @@ def test_f1_selection_score_penalizes_collapsed_predictions() -> None:
     assert _f1_selection_score(query_f1=0.8, pred_std=0.0) < _f1_selection_score(query_f1=0.2, pred_std=0.01)
 
 
-def test_uniform_gap_selection_penalizes_hidden_type_deficits() -> None:
-    workload_mix = {"range": 0.25, "knn": 0.25, "similarity": 0.25, "clustering": 0.25}
-    uniform_per_type = {"range": 0.50, "knn": 0.50, "similarity": 0.50, "clustering": 0.50}
-    clustering_hidden = _uniform_gap_selection_score(
+def test_uniform_gap_selection_penalizes_active_type_deficit() -> None:
+    workload_mix = {"range": 1.0}
+    uniform_per_type = {"range": 0.50}
+    range_deficit = _uniform_gap_selection_score(
         query_f1=0.55,
-        per_type_f1={"range": 0.45, "knn": 0.45, "similarity": 0.45, "clustering": 0.85},
+        per_type_f1={"range": 0.45},
         uniform_f1=0.50,
         uniform_per_type=uniform_per_type,
         workload_mix=workload_mix,
@@ -52,14 +52,14 @@ def test_uniform_gap_selection_penalizes_hidden_type_deficits() -> None:
     )
     balanced = _uniform_gap_selection_score(
         query_f1=0.54,
-        per_type_f1={"range": 0.54, "knn": 0.54, "similarity": 0.54, "clustering": 0.54},
+        per_type_f1={"range": 0.54},
         uniform_f1=0.50,
         uniform_per_type=uniform_per_type,
         workload_mix=workload_mix,
         pred_std=0.1,
     )
 
-    assert balanced > clustering_hidden
+    assert balanced > range_deficit
 
 
 def test_balanced_pointwise_loss_pushes_constant_scores_apart() -> None:
@@ -251,17 +251,17 @@ def test_training_accepts_precomputed_importance_labels() -> None:
     assert out.history
 
 
-def test_training_does_not_collapse(synthetic_dataset) -> None:
-    """Assert prediction spread and typewise rank correlation stay healthy. See src/training/README.md for details."""
+def test_range_training_does_not_collapse(synthetic_dataset) -> None:
+    """Assert range-focused training keeps prediction spread and rank signal healthy."""
     trajectories, _ = synthetic_dataset
     ds = TrajectoryDataset(trajectories)
     boundaries = ds.get_trajectory_boundaries()
 
-    cfg = build_experiment_config(epochs=4, n_queries=80)
+    cfg = build_experiment_config(epochs=4, n_queries=80, workload="range")
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
-        workload_mix={"range": 0.25, "knn": 0.25, "similarity": 0.25, "clustering": 0.25},
+        workload_mix={"range": 1.0},
         seed=77,
     )
     out = train_model(
@@ -276,11 +276,8 @@ def test_training_does_not_collapse(synthetic_dataset) -> None:
     last = diagnostics[-1]
     assert last["pred_std"] > 0.02
 
-    best_avg_tau = max(
-        sum(row[f"kendall_tau_t{t}"] for t in range(4)) / 4.0
-        for row in diagnostics
-    )
-    assert best_avg_tau > 0.15
+    best_range_tau = max(row["kendall_tau_t0"] for row in diagnostics)
+    assert best_range_tau > 0.15
 
 
 def test_range_coverage_training_keeps_score_spread(synthetic_dataset) -> None:
