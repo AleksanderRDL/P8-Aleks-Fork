@@ -1,6 +1,6 @@
 # src
 
-Package root for AIS-QDS v2.
+Package root for AIS-QDS.
 
 The code is organized around the full pipeline:
 data -> queries -> training -> simplification -> evaluation -> experiments.

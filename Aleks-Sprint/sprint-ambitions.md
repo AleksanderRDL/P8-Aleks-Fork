@@ -37,7 +37,7 @@ The highest leverage sequence is:
 
 ## Current Pipeline
 
-The current QDS v2 work lives in `QDS`.
+The current QDS work lives in `QDS`.
 
 The pipeline currently follows this flow:
 

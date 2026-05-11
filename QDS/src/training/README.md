@@ -32,7 +32,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 ## Training Notes
 
-- Epoch-level workload weights are sampled from a lightweight Dirichlet approximation so every type continues to receive signal.
+- Epoch-level workload weights are sampled from active query types. Current experiment entrypoints train pure workloads, so only the selected type contributes in normal benchmark runs.
 - Windows with no positive label for a type are skipped for that type; the pointwise BCE term uses all positives and a bounded random sample of zero labels to avoid all-zero collapse.
 - `ModelConfig.lr`, `pointwise_loss_weight`, and `gradient_clip_norm` are the main stability knobs for AIS-scale runs.
 - `ranking_pair_sampling="vectorized"` is the default ranking-loss sampler. It draws the sampled pair positions in batches and keeps target/index tensors on the model device, avoiding the old per-pair CPU `.item()` path. Use `"legacy"` only for reproducibility comparisons against older runs.

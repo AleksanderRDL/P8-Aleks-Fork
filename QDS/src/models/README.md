@@ -1,6 +1,6 @@
 # Models Module
 
-This module contains the query-conditioned trajectory encoder used by the v2 rebuild.
+This module contains the query-conditioned trajectory encoder used by AIS-QDS.
 
 ## Files
 

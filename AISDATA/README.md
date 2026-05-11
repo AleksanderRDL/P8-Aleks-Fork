@@ -13,7 +13,7 @@ Dataset folder for AIS data used by the root pipeline and related tools.
 
 - This folder can contain very large files.
 - The `raw/` and `cleaned/` folders are kept in git, but their data contents are ignored.
-- Keep `cleaned/` for cleaned source data only. ML-generated outputs should use a separate output folder such as `ML_processed_AIS_files/`.
+- Keep `cleaned/` for cleaned source data only. QDS experiment outputs should go under `QDS/artifacts/` or another explicit run directory, not back into source-data folders.
 - Root pipeline (`main.py`, backed by `ais_pipeline/pipeline.py`) reads and writes here unless overridden with:
   - `AIS_INPUT_FILE`
   - `AIS_OUTPUT_PATH`

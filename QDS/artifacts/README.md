@@ -17,6 +17,7 @@ The recommended range benchmark family is:
 ```text
 artifacts/benchmarks/range_real_usecase/
   latest_run.txt
+  latest_queue.txt
   runs_index.csv
   runs_index_events.jsonl
   runs/<run_id>/
@@ -29,11 +30,19 @@ artifacts/benchmarks/range_real_usecase/
     benchmark_matrix.md
     logs/
     variants/
+  queues/<queue_id>/
+    queue_manifest.json
+    queue_plan.tsv
+    queue_status.jsonl
+    queue_summary.json
+    logs/
 ```
 
 Read `runs_index.csv` first when comparing attempts. Read a run-local
 `artifact_index.json` or `README.md` first when looking for a specific child
-output, log, or diagnostic file.
+output, log, or diagnostic file. Queue directories are launch records for
+sequential batches; the comparable model-quality artifacts still live under
+`runs/<run_id>/`.
 
 ## Run IDs
 
@@ -54,6 +63,7 @@ Run preflight before starting an expensive tmux benchmark:
 
 ```bash
 make benchmark-preflight
+make benchmark-queue-preflight
 ```
 
 Preflight checks tmux availability, Python/Torch import, cleaned CSV presence,

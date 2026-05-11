@@ -1,6 +1,6 @@
 # Queries Module
 
-This module defines the typed query format used by v2, the workload generator, and the concrete query executors that produce the labels and evaluation targets.
+This module defines the typed query format, workload generator, and concrete query executors that produce labels and evaluation targets.
 
 ## Files
 

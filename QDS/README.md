@@ -1,28 +1,25 @@
 # AIS-QDS
 
-AIS-QDS is the current shift-aware rebuild of the AIS query-driven simplification pipeline. It loads AIS trajectories, generates typed query workloads, trains a query-conditioned ranking model, and evaluates the resulting simplifier against learned and geometric baselines under matched and shifted workloads.
+AIS-QDS trains query-conditioned simplification models for AIS trajectories and
+evaluates retained-point sets against pure query workloads. The current sprint
+focus is the range workload on cleaned AIS CSV days.
 
-## What Is In This Folder
+## Where To Look
 
-- `requirements.txt` - Python dependencies for the v2 stack.
-- `src/` - package code for loading data, building queries, training models, and running experiments.
-- `tests/` - regression tests that guard the rebuild.
-- `artifacts/` - local generated caches, benchmark runs, smoke outputs, logs, and checkpoints.
-- `results/` - retained historical/reference outputs from earlier local runs.
+| Need | File |
+| --- | --- |
+| Experiment CLI, benchmark profiles, tmux launchers | [`src/experiments/README.md`](src/experiments/README.md) |
+| Generated artifacts, benchmark families, cleanup policy | [`artifacts/README.md`](artifacts/README.md) |
+| Training labels, checkpoint selection, runtime knobs | [`src/training/README.md`](src/training/README.md) |
+| CSV loading, segmentation, Parquet cache | [`src/data/README.md`](src/data/README.md) |
+| Query generation and range footprint controls | [`src/queries/README.md`](src/queries/README.md) |
+| Evaluation metrics and baseline methods | [`src/evaluation/README.md`](src/evaluation/README.md) |
+| Model architecture | [`src/models/README.md`](src/models/README.md) |
 
 ## Quick Start
 
-```bash
-cd QDS
-../.venv/bin/python -m pip install -r requirements.txt
-../.venv/bin/python -m src.experiments.run_ais_experiment --n_queries 128 --epochs 6 --workload range
-```
-
-## Environment And Smoke Checks
-
-The sprint environment is the repository-level virtual environment at `../.venv`
-when commands are run from `QDS`. Requirements are pinned in
-`requirements.txt` for the local QDS checks.
+Run commands from `QDS/`. The expected local interpreter is the repository-level
+virtual environment at `../.venv`.
 
 ```bash
 cd QDS
@@ -32,32 +29,77 @@ make test
 make typecheck
 ```
 
-`make typecheck` runs Pyright in standard mode over `src`, `scripts`, and
-`tests`. Use `TYPECHECK_PATHS=...` only when you intentionally want to narrow or
-expand that scope for a local check.
-
-Use the local Makefile for repeatable smoke runs:
+Run a tiny synthetic smoke experiment:
 
 ```bash
-# Tiny synthetic train/eval run. Outputs go to artifacts/results/smoke_synthetic.
 make smoke
-
-# Tiny cleaned-CSV smoke run against AISDATA/cleaned with segmented Parquet cache.
-make smoke-csv
 ```
 
-## Dependency Profiles
+Run a cleaned-CSV smoke experiment:
 
-The repository now keeps dependency concerns separate:
+```bash
+make smoke-csv CLEANED_CSV=../AISDATA/cleaned/<cleaned-ais-file-or-dir>
+```
 
-- Root/base AIS pipeline and database tooling: [`../requirements.txt`](../requirements.txt).
-- QDS shared non-Torch dependencies: [`requirements-common.txt`](requirements-common.txt).
-- QDS CPU/generic Torch profile: [`requirements-cpu.txt`](requirements-cpu.txt).
-- QDS CUDA reference profile: [`requirements-cuda-cu130.txt`](requirements-cuda-cu130.txt).
+Run the main experiment CLI directly:
 
-[`requirements.txt`](requirements.txt) remains a compatibility alias for the
-current QDS CUDA sprint profile. The reference CUDA stack observed for this
-machine is:
+```bash
+../.venv/bin/python -m src.experiments.run_ais_experiment \
+  --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
+  --cache_dir artifacts/cache/manual_csv \
+  --workload range \
+  --n_queries 128 \
+  --epochs 6 \
+  --compression_ratio 0.10 \
+  --results_dir artifacts/results/manual_range
+```
+
+## Benchmark Commands
+
+Before expensive runs:
+
+```bash
+make benchmark-preflight
+```
+
+Launch one real-usecase range benchmark in tmux:
+
+```bash
+ATTACH=0 BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
+```
+
+Launch a sequential multi-seed queue:
+
+```bash
+make benchmark-queue-preflight
+ATTACH=0 BENCHMARK_SEEDS=42,43,44 make range-benchmark-queue-tmux
+```
+
+Inspect and clean generated artifacts:
+
+```bash
+make list-runs
+make clean-smoke-artifacts
+make clean-smoke-artifacts CONFIRM=1
+```
+
+The active benchmark profile is `range_real_usecase`: two cleaned CSV days,
+range-only workload, 512 queries, 30% target coverage, 5% retained points, 20
+epochs with early stopping, answer-set F1 checkpoint selection, TF32/BF16
+baseline variant, and no trajectory/segment/point caps. See
+[`src/experiments/README.md`](src/experiments/README.md) for exact profile
+settings, queue plan files, and artifact paths.
+
+## Dependencies
+
+Dependency profiles are split by Torch target:
+
+- [`requirements-common.txt`](requirements-common.txt) - shared non-Torch dependencies.
+- [`requirements-cpu.txt`](requirements-cpu.txt) - CPU/generic Torch profile.
+- [`requirements-cuda-cu130.txt`](requirements-cuda-cu130.txt) - CUDA reference profile.
+- [`requirements.txt`](requirements.txt) - compatibility alias for the current CUDA sprint profile.
+
+The local CUDA reference stack observed for this machine:
 
 ```text
 torch 2.11.0+cu130
@@ -65,428 +107,33 @@ CUDA runtime 13.0
 triton 3.6.0
 ```
 
-Install the intended profile explicitly when changing environments:
+Install a specific profile when changing environments:
 
 ```bash
-cd QDS
 ../.venv/bin/python -m pip install -r requirements-cuda-cu130.txt
-# or, for CPU/generic environments:
-../.venv/bin/python -m pip install -r requirements-cpu.txt
 ```
 
-Check the active environment before benchmarking:
-
-```bash
-cd QDS
-../.venv/bin/python -m pip check
-../.venv/bin/python -c "import torch, triton; print(torch.__version__, torch.version.cuda, triton.__version__)"
-```
-
-The current `.venv` uses Python 3.14. Keep it as the local reference unless it
-blocks CUDA package availability; if that happens, create a separate Python
-3.12 environment instead of mutating this one.
-
-## Runtime Benchmarks And GPU Telemetry
-
-Use the runtime benchmark wrapper before accepting optimization changes. It
-runs the existing experiment/inference CLIs, captures stdout, parses phase and
-epoch timings, records git state and dependency versions, and writes a stable
-JSON artifact.
-
-```bash
-cd QDS
-../.venv/bin/python -m src.experiments.benchmark_runtime --help
-
-# Runtime wrapper on the real-usecase training shape.
-../.venv/bin/python -m src.experiments.benchmark_runtime \
-  --mode train \
-  --profile range_real_usecase \
-  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
-  --results_dir artifacts/benchmarks/runtime_range_real_usecase \
-  --float32_matmul_precision high \
-  --allow_tf32 \
-  --amp_mode bf16
-
-# Training batch-size sweep on the same real-usecase shape.
-../.venv/bin/python -m src.experiments.benchmark_runtime \
-  --mode train \
-  --profile range_real_usecase \
-  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
-  --train_batch_sizes 16,32,64,128 \
-  --results_dir artifacts/benchmarks/batch_size_sweep
-
-# Real-usecase range baseline: two cleaned days, cache-warmed, full segment set.
-../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile range_real_usecase \
-  --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_real_usecase \
-  --variants tf32_bf16_bs32_inf32 \
-  --results_dir artifacts/benchmarks/range_real_usecase/runs/manual_range_real_usecase_a \
-  --run_id manual_range_real_usecase_a
-
-# Saved-checkpoint inference benchmark on a cleaned CSV.
-../.venv/bin/python -m src.experiments.benchmark_runtime \
-  --mode inference \
-  --checkpoint artifacts/benchmarks/runtime_range_real_usecase/benchmark_model.pt \
-  --inference_csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
-  --results_dir artifacts/benchmarks/inference_range_real_usecase \
-  --inference_extra_args "--max_segments 8 --max_points_per_segment 64 --n_queries 16 --inference_device auto --inference_batch_size 32"
-```
-
-Benchmark artifacts are written under the selected `--results_dir`, including
-`benchmark_runtime.json` and child command stdout logs. The JSON records Python,
-Torch, CUDA runtime, Triton, TF32/matmul settings, AMP mode, train batch size
-from the run config, phase timings, epoch timings, final F1 metrics, full child
-commands, seed, git commit, and dirty status.
-When `--train_batch_sizes` is provided, the artifact also includes a
-`train_batch_size_sweep` table with epoch-time summary, peak CUDA memory, and
-final F1 fields per batch size.
-
-The benchmark matrix defaults to range-only while range model quality is the
-active target. It also defaults to the current baseline variant,
-`tf32_bf16_bs32_inf32`, to avoid accidentally launching a broad matrix when one
-baseline run is needed. This variant uses TF32-enabled matmul, BF16 CUDA
-autocast, train/inference batches of 32, `checkpoint_selection_metric=f1`, and
-the normal answer-set F1 variant. Pass an explicit comma-separated `--variants`
-list when intentionally comparing runtime/checkpoint configurations.
-
-When `--csv_path` points at a cleaned-data directory, the matrix uses the first
-two sorted CSV files as train/eval days, prebuilds their segmented Parquet cache
-entries, and records cache warmup metadata in `benchmark_matrix.json`. The
-real-usecase profile leaves `--max_points_per_segment`, `--max_segments`, and
-`--max_trajectories` unset so all valid trajectory segments and points from both
-days are used. Use explicit `--train_csv_path` and `--eval_csv_path` to choose
-different days.
-
-Use `--profile range_real_usecase` for baseline model-quality runs. It uses 512
-range queries, 30% target query coverage, narrower range boxes
-(`range_spatial_fraction=0.0165`, `range_time_fraction=0.033`), 5%
-retained-point compression, `query_chunk_size=512`, 20 epochs, answer-set F1
-checkpoint selection, no checkpoint smoothing, vectorized ranking-pair sampling,
-`mlqds_temporal_fraction=0.10`, and F1 diagnostics every epoch. It also enables
-`early_stopping_patience=8`, so
-clearly non-improving F1 runs stop before consuming all 20 epochs.
-
-Benchmark matrix runs are organized as one directory per run. The tmux launcher
-uses this layout automatically:
-
-```text
-artifacts/benchmarks/range_real_usecase/
-  latest_run.txt
-  runs/<run_id>/
-    README.md
-    run_config.json
-    run_status.json
-    artifact_index.json
-    benchmark_matrix.json
-    benchmark_matrix.csv
-    benchmark_matrix.md
-    logs/
-      console.log
-      system_monitor.log
-      tmux_status.txt
-    variants/
-      tf32_bf16_bs32_inf32/
-        example_run.json
-        matched_table.txt
-        range_workload_diagnostics.json
-        simplified_eval/
-        stdout.log
-```
-
-Use `artifact_index.json` or the run-local `README.md` first when looking for a
-specific output. `run_config.json` records the compact run shape, while
-`run_status.json` marks `running`, `completed`, `failed`, or `interrupted`.
-The family root also contains `runs_index.csv` with the latest status for each
-run and `runs_index_events.jsonl` with the append-only status history. Caches
-remain under `artifacts/cache/...` because they are reused across runs.
-Matrix child stdout streams live into the tmux console and is also written to
-`variants/<variant>/stdout.log`. The matrix keeps only a bounded stdout tail in
-memory; the full child log remains on disk.
-
-For long matrix runs, use the tmux launcher instead of running directly in an
-interactive shell:
-
-```bash
-cd QDS
-make benchmark-preflight
-make range-benchmark-tmux
-```
-
-or:
-
-```bash
-cd QDS
-scripts/run_range_benchmark_tmux.sh
-```
-
-The launcher creates a `qds-range-benchmark` tmux session with two panes:
-
-- left pane: the benchmark command, with stdout/stderr copied to
-  `artifacts/benchmarks/range_real_usecase/runs/<run_id>/logs/console.log`
-- right pane: lightweight system monitoring copied to
-  `artifacts/benchmarks/range_real_usecase/runs/<run_id>/logs/system_monitor.log`
-
-The monitor samples RAM/swap, disk space, top RSS processes, GPU utilization,
-GPU memory, temperature, power draw, clocks, visible CUDA processes, and kernel
-markers for OOM/GPU/reset/thermal/power events emitted after the monitor starts.
-This keeps enough context to diagnose common long-run failures such as RAM
-exhaustion, GPU
-reset/disappearance, thermal/power throttling, or runaway Python memory growth.
-If an abnormal launcher exit leaves `run_status.json` in `running`, the launcher
-now marks it `failed` and updates the family run index.
-
-Useful tmux commands:
-
-```bash
-tmux attach -t qds-range-benchmark
-tmux ls
-```
-
-Detach with `Ctrl-b d`. Set `ATTACH=0` to launch without attaching:
-
-```bash
-ATTACH=0 make range-benchmark-tmux
-```
-
-Set `BENCHMARK_RUN_ID=<name>` when you want a stable run directory name:
-
-```bash
-BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
-```
-
-Use stable run IDs for comparable attempts. Include the workload, profile, data
-span, variant when relevant, and a short iteration suffix, for example
-`range_real_usecase_a`. Timestamped defaults are fine for exploratory runs.
-
-For sequential multi-seed or isolation batches, use the queue launcher. It runs
-one matrix command at a time in the left tmux pane, keeps one shared queue
-console and monitor log, and writes each child matrix run under the normal
-`artifacts/benchmarks/range_real_usecase/runs/<run_id>/` layout:
-
-```bash
-# Default vectorized/cache batch for seeds 42,43,44.
-make benchmark-queue-preflight
-ATTACH=0 make range-benchmark-queue-tmux
-
-# Same shape, but force a child training option for every queued run.
-BENCHMARK_CHILD_EXTRA_ARGS="--ranking_pair_sampling legacy" \
-  BENCHMARK_SEEDS=42,43,44 \
-  ATTACH=0 \
-  make range-benchmark-queue-tmux
-```
-
-For mixed queue rows, provide a tab-separated plan file with:
-`run_id<TAB>seed<TAB>child_extra_args`.
-
-```text
-range_real_usecase_512q_cache_legacy_seed42	42	--ranking_pair_sampling legacy
-range_real_usecase_512q_vectorized_cache_seed43	43	
-range_real_usecase_512q_vectorized_cache_seed44	44	
-```
-
-Launch it with:
-
-```bash
-BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_real_usecase/queues/my_plan.tsv \
-  BENCHMARK_CONTINUE_ON_FAILURE=1 \
-  ATTACH=0 \
-  make range-benchmark-queue-tmux
-```
-
-Queue-level artifacts live under
-`artifacts/benchmarks/range_real_usecase/queues/<queue_id>/`:
-
-```text
-queue_manifest.json
-queue_plan.tsv
-queue_runner.sh
-queue_status.jsonl
-queue_summary.json
-logs/
-  console.log
-  system_monitor.log
-```
-
-List the current benchmark family with:
-
-```bash
-make list-runs
-```
-
-Use `BENCHMARK_FAMILY=<path>` to inspect another family. Local smoke artifacts
-can be reviewed and removed with:
-
-```bash
-make clean-smoke-artifacts
-make clean-smoke-artifacts CONFIRM=1
-```
-
-The first command is a dry run. The second deletes only known smoke/test
-artifact directories. Artifact layout and cleanup conventions are documented in
-[`artifacts/README.md`](artifacts/README.md).
-
-`make benchmark-preflight` checks tmux, Python/Torch, cleaned CSV availability,
-artifact/cache write access, disk space, RAM/swap, GPU visibility, and git
-worktree state. Low RAM/swap and dirty-git findings are warnings rather than
-hard failures so intentional exploratory runs are still possible.
-
-Training and inference CLIs expose the same runtime precision knobs:
-`--float32_matmul_precision {highest,high,medium}` and
-`--allow_tf32` / `--no-allow_tf32`, plus `--amp_mode {off,bf16,fp16}`.
-`--inference_batch_size` tunes MLQDS window batches separately from
-`--train_batch_size` for matched evaluation, saved-checkpoint inference, and
-validation query-F1 diagnostics. Defaults preserve the FP32 baseline
-(`highest`, TF32 off, AMP off). Use `high` plus `--allow_tf32` for RTX TF32
-sweeps, and `--amp_mode bf16` for CUDA autocast sweeps after checking for NaNs,
-collapse warnings, and final F1 drift.
-
-For ad hoc runs outside the tmux launcher, measure live GPU utilization from
-another shell:
-
-```bash
-watch -n 0.5 nvidia-smi
-```
-
-For a streaming console view:
-
-```bash
-nvidia-smi dmon
-```
-
-For one-shot telemetry matching the benchmark artifact fields:
-
-```bash
-nvidia-smi --query-gpu=name,driver_version,memory.total,utilization.gpu,utilization.memory --format=csv
-```
-
-If `nvidia-smi` is unavailable or blocked, `benchmark_runtime.json` records an
-explicit `gpu_telemetry.unavailable_reason`.
-
-The cleaned-CSV smoke target uses `--max_points_per_segment` and
-`--max_segments` so it validates the real loader without turning into a full
-research run. New sprint artifacts should be written under `artifacts/` or
-another external run directory, not under `src/models/saved_models`.
-
-To run on a CSV instead of synthetic data, point the CSV path at a cleaned AIS file under `../AISDATA/cleaned/`:
-
-```bash
-../.venv/bin/python -m src.experiments.run_ais_experiment \
-  --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
-  --max_points_per_segment 500 \
-  --max_time_gap_seconds 3600 \
-  --n_queries 250 \
-  --epochs 20 \
-  --workload range \
-  --compression_ratio 0.20 \
-  --model_type baseline
-```
-
-To train on one cleaned CSV and evaluate/clean a different cleaned CSV without trajectory splitting:
-
-```bash
-../.venv/bin/python -m src.experiments.run_ais_experiment \
-  --train_csv_path ../AISDATA/cleaned/train.csv \
-  --eval_csv_path ../AISDATA/cleaned/eval.csv \
-  --n_queries 512 \
-  --query_coverage 0.30 \
-  --range_spatial_fraction 0.0165 \
-  --range_time_fraction 0.033 \
-  --query_chunk_size 512 \
-  --epochs 20 \
-  --f1_diagnostic_every 1 \
-  --lr 0.0005 \
-  --pointwise_loss_weight 0.25 \
-  --gradient_clip_norm 1.0 \
-  --workload range \
-  --compression_ratio 0.05 \
-  --mlqds_temporal_fraction 0.10 \
-  --model_type baseline
-```
-
-`--query_coverage` accepts either `0.30` or `30` for 30% point coverage. With
-coverage mode enabled, `--n_queries` is the minimum query count. If
-`--max_queries` is set higher than `--n_queries`, generation may continue until
-the target coverage is reached or the cap is hit; otherwise it emits
-`--n_queries`. While measured union coverage is below target, anchors are biased
-toward points that have not yet been covered. When `--eval_csv_path` is used and
-`--save_simplified_dir` is not set, the experiment writes eval-set simplified
-CSVs under `<results_dir>/simplified_eval`.
-
-For local smoke runs on large cleaned AIS files, `--max_points_per_segment`
-downsamples each loaded trajectory segment, `--max_segments` caps the loader
-output during segmentation, and `--max_trajectories` remains as a legacy
-post-load cap. CSV loading splits MMSI tracks by default whenever consecutive
-points are more than `--max_time_gap_seconds 3600` seconds apart; set this to
-`0` to disable gap-based segmentation for compatibility checks. Benchmark runs
-should record any caps explicitly or leave them unset.
-
-Add `--cache_dir artifacts/cache/<run-name>` to CSV runs to reuse segmented
-Parquet caches across experiments. Use `--refresh_cache` when changing loader
-code or when you want to force a rebuild of a matching source/config entry.
-
-Range and kNN workloads focus query anchors on dense areas with a 70/30 sampler:
-70% density-map weighted by lat/lon grid cell occupancy, 30% uniform from all
-points. Coverage-targeted generation still uses this sampler, but biases anchors
-toward uncovered points until the target coverage is reached.
-
-For range-heavy runs, `--range_spatial_fraction` and `--range_time_fraction` control range-box half-widths as fractions of the dataset latitude/longitude and time spans. Lower these when you want many range queries without covering most of the dataset; for example, the real-usecase profile uses `0.0165` spatial and `0.033` time to keep 512 range queries aimed near the 30% target coverage instead of blanketing the dataset. `--query_chunk_size` controls how many workload queries are attended in one cross-attention chunk; set it at least as high as `--n_queries` when memory allows so the attention softmax is exact rather than chunk-approximated.
-
-Range diagnostics can be enabled without changing the default generator.
-Use optional acceptance filters such as `--range_min_point_hits`,
-`--range_max_point_hit_fraction`, `--range_max_trajectory_hit_fraction`,
-`--range_max_box_volume_fraction`, `--range_duplicate_iou_threshold`, and
-`--range_acceptance_max_attempts` to reject broad, duplicate, or uninformative
-range boxes during generation. Each run now writes range workload diagnostics
-and range label/baseline signal diagnostics into the result directory.
-
-Use `--model_type turn_aware` to include the extra `turn_score` point feature.
-Experiment runs now train one model per pure query workload. Use
-`--workload {range,knn,similarity,clustering}` for the common path; explicit
-`--train_workload_mix` and `--eval_workload_mix` overrides must also contain a
-single positive query type.
-
-Training uses a ranking loss plus balanced pointwise BCE supervision. Exact
-final query F1 is the default checkpoint selection metric; it creates a
-held-out validation workload with the same requested query count as final eval
-and restores the epoch with the best validation query F1 among epochs where
-`--f1_diagnostic_every` runs. Use
-`--checkpoint_f1_variant combined` in matrix runs to compare the legacy
-answer/support product against the default pure answer-set F1. If diagnostics
-collapse to `pred_std=0`, prefer lowering `--lr`, keeping
-`--gradient_clip_norm` enabled, and increasing query diversity before changing
-the model architecture.
-
-## Architecture At A Glance
-
-1. `src/data/` loads AIS CSV files or generates deterministic synthetic trajectories.
-2. `src/queries/` builds typed query workloads and executes range, kNN, similarity, and clustering queries.
-3. `src/training/` computes typed F1-contribution labels, trains the model, restores the selected checkpoint epoch, and persists the scaler and checkpoint artifacts.
-4. `src/models/` contains the query-conditioned trajectory transformer and the turn-aware variant.
-5. `src/simplification/` keeps the highest-scoring points per trajectory with deterministic tie-breaking.
-6. `src/evaluation/` runs learned and baseline methods and reports aggregate and per-type F1 scores; the label Oracle is included by default as an upper-bound diagnostic.
-7. `src/experiments/` wires the full pipeline together through the CLI.
-8. `src/visualization/` is a minimal extension point for plotting hooks; current runs write JSON, CSV, GeoJSON, and fixed-width tables.
+## Architecture
+
+1. `src/data/` loads AIS CSVs or deterministic synthetic trajectories.
+2. `src/queries/` builds and executes typed range, kNN, similarity, and clustering workloads.
+3. `src/training/` builds F1-contribution labels, trains MLQDS, and restores the selected checkpoint.
+4. `src/models/` contains the query-conditioned trajectory transformer variants.
+5. `src/simplification/` retains top-scoring points per trajectory.
+6. `src/evaluation/` compares MLQDS with uniform, Douglas-Peucker, and label Oracle baselines.
+7. `src/experiments/` wires loading, workload generation, training, evaluation, and benchmark artifacts.
 
 ## Outputs
 
-The experiment runner writes the core run files into `results/` or the
-directory passed with `--results_dir`:
+Experiment and benchmark outputs should stay under `artifacts/` unless there is
+a specific reason to use another local path. Core result files include:
 
-- `example_run.json` - config, workload mixes, per-method metrics, training history, and selected-checkpoint metadata.
-- `matched_table.txt` - fixed-width comparison table for the evaluation workload.
-- `shift_table.txt` - shift table comparing the train workload against the eval workload.
-- `geometric_distortion_table.txt` - SED/PED, length preservation, and combined geometric/F1 reporting.
-- `range_workload_diagnostics.json` - range workload, label, Oracle, and baseline diagnostics for train/eval/selection workloads.
-- `range_query_diagnostics.jsonl` - one JSON record per generated range query with hit counts, footprint, broad-query flag, and duplicate-query flag.
+- `example_run.json`
+- `matched_table.txt`
+- `geometric_distortion_table.txt`
+- `range_workload_diagnostics.json`
+- `range_query_diagnostics.jsonl`
 
-## Validation
-
-The `tests/` folder focuses on the rebuild-specific regressions:
-
-- `test_beats_random_in_distribution.py` - in-distribution performance guard.
-- `test_no_cross_trajectory_attention_leakage.py` - attention leakage guard.
-- `test_query_type_ids_required.py` - query type ID contract.
-- `test_scaler_persisted.py` - scaler persistence.
-- `test_topk_no_positional_bias.py` - deterministic top-k behavior.
-- `test_training_does_not_collapse.py` - training stability.
+Benchmark matrix runs additionally write `benchmark_matrix.{json,csv,md}`,
+`run_config.json`, `run_status.json`, and `artifact_index.json`. Start with the
+run-local `README.md` or `artifact_index.json` when browsing a completed run.

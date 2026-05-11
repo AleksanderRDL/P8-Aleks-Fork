@@ -20,6 +20,7 @@ documentation.
 - [`ais_pipeline/environment/README.md`](ais_pipeline/environment/README.md): Java/Hadoop/Spark bootstrap helpers.
 - [`ais_pipeline/tools/README.md`](ais_pipeline/tools/README.md): utility scripts and experiments.
 - [`AISDATA/README.md`](AISDATA/README.md): data folder conventions for raw and cleaned AIS files.
+- [`Aleks-Sprint/README.md`](Aleks-Sprint/README.md): planning/history notes for the QDS sprint.
 
 ## Project Layout (Top-Level)
 
@@ -27,6 +28,7 @@ documentation.
 - `db/`: local PostGIS compose, SQL assets, and DB operational scripts.
 - `AISDATA/`: AIS data folders. Raw files live in `AISDATA/raw/`; cleaned files live in `AISDATA/cleaned/`.
 - `QDS/`: ML simplification research project.
+- `Aleks-Sprint/`: planning and historical notes for the current QDS sprint.
 - `frontend/`: frontend application.
 - `Makefile`: shortcuts for common local commands.
 - `.env.example`: example runtime/environment variables.
