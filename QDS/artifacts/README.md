@@ -51,7 +51,7 @@ later. Include the workload, profile, data span, point cap, and an iteration
 suffix when useful:
 
 ```bash
-BENCHMARK_RUN_ID=range_real_usecase_512q_a make range-benchmark-tmux
+BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
 ```
 
 Timestamped default IDs are fine for exploratory runs. Avoid reusing a run ID

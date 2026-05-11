@@ -14,7 +14,7 @@ This module defines the typed query format, workload generator, and concrete que
 
 | Name | ID | Input params | Return value |
 | --- | --- | --- | --- |
-| `range` | 0 | spatial-temporal box | set of matching trajectory IDs |
+| `range` | 0 | spatial-temporal box | matching trajectory IDs plus point support for range F1 |
 | `knn` | 1 | anchor point, time window, `k` | set of nearest distinct trajectory IDs |
 | `similarity` | 2 | centroid, time box, radius, reference snippet | ranked trajectory IDs, consumed as a set for F1 |
 | `clustering` | 3 | box, `eps`, `min_samples` | per-trajectory DBSCAN labels over trajectory centroids |
@@ -32,38 +32,26 @@ This module defines the typed query format, workload generator, and concrete que
 
 ## Workload Generation
 
-`generate_typed_query_workload` builds a typed workload from the full trajectory set, allocates query counts from the requested mix, shuffles the result deterministically, and returns the `TypedQueryWorkload` container used by experiments and training. Current experiment runs use pure mixes such as `{"range": 1.0}` so one trained model targets one query type.
-
-Range and kNN anchors use a 70/30 density sampler. The generator builds a lat/lon density map for the whole dataset; 70% of range/kNN anchors are sampled with probability proportional to the density of the point's grid cell, and 30% are sampled uniformly from all points. Similarity and clustering keep the existing uniform anchor behavior.
-
-Range query footprint is configurable either as dataset-relative fractions or
-absolute real-world half-windows. `range_spatial_fraction` controls the
-latitude/longitude half-width and `range_time_fraction` controls the time
-half-window as fractions of the dataset spans. `range_spatial_km` and
-`range_time_hours` override those fraction controls and are preferred for
-real-usecase benchmarks because they keep query scale stable across days.
-Smaller spatial footprints or shorter time windows usually require more queries
-to reach the same point-coverage target.
-`range_footprint_jitter` applies a random +/- multiplier to each range
-half-window. The legacy default is `0.5` (0.5x to 1.5x); benchmark profiles set
-it to `0.0` so nominal footprint settings are exact and reproducible.
-
-Use `scripts/estimate_range_coverage.py` to calibrate query counts quickly on a
-deterministic trajectory sample instead of running full training loops just to
-measure query coverage.
-
-When `target_coverage` is provided, `n_queries` is the minimum query count. If
-`max_queries` is higher than `n_queries`, generation can continue until both the
-minimum query count and target coverage are met, or until the cap is reached.
-While measured union coverage is below the target, anchors are biased toward
-points not yet covered; once the target is reached, generation returns to the
-regular sampler. Coverage is measured as point-level query signal coverage:
-range/clustering boxes, dense kNN neighbourhoods, and similarity spatiotemporal
-radius regions.
+- `generate_typed_query_workload` returns the `TypedQueryWorkload` container
+  used by training and evaluation. Current experiment entrypoints use pure
+  mixes such as `{"range": 1.0}` so one model targets one query type.
+- Range and kNN anchors use a 70/30 sampler: 70% density-weighted lat/lon cells,
+  30% uniform points. Similarity and clustering use uniform anchors.
+- Range footprint can be dataset-relative (`range_spatial_fraction`,
+  `range_time_fraction`) or absolute (`range_spatial_km`, `range_time_hours`).
+  Real-usecase profiles prefer absolute half-windows for day-to-day stability.
+- `range_footprint_jitter` randomizes footprint size. Benchmark profiles set it
+  to `0.0` for exact, reproducible footprints.
+- `target_coverage` is point-level query-signal coverage. With `max_queries`
+  unset, generation keeps `n_queries` fixed and may miss the target; with a
+  larger `max_queries`, it may continue until the target is reached.
+- Use `scripts/estimate_range_coverage.py` before changing query count,
+  footprint, or coverage targets.
 
 ## Execution Semantics
 
-- `execute_range_query` returns the set of trajectory IDs with points inside the box.
+- `execute_range_query` returns trajectory IDs with points inside the box; the
+  evaluation layer additionally scores retained point hits inside the same box.
 - `execute_knn_query` computes the nearest point per trajectory inside the time window and returns the `k` nearest distinct trajectory IDs.
 - `execute_similarity_query` filters trajectories by centroid and radius, then ranks trajectory IDs with a lightweight DTW-like distance; evaluation drops ranking and uses set F1.
 - `execute_clustering_query` clusters per-trajectory representatives inside the box and returns labels indexed by trajectory ID.

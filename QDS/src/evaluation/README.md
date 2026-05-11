@@ -29,4 +29,12 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Reporting
 
-`evaluate_method` evaluates one simplification method against a typed query workload. Pass an `EvaluationQueryCache` when several methods are evaluated on the same points, boundaries, and query list; it reuses full-data query answers and support masks while still recomputing simplified-query answers for each retained mask. `print_method_comparison_table` renders F1 values to six decimals so close methods are not hidden by rounding, includes `AvgPtGap` and range `BoundaryF1`, and appends MLQDS gaps versus `uniform` and Douglas-Peucker when those baselines are present. `print_geometric_distortion_table` reports SED/PED plus `LengthPres` and `F1xLen`, where both length columns are higher-is-better. `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline. Tables should be read as higher-is-better F1 scores, while lower `AvgPtGap` means smaller average spacing between retained points.
+- `evaluate_method` scores one method against one typed workload. Reuse an
+  `EvaluationQueryCache` when several methods share the same points,
+  boundaries, and query list.
+- `print_method_comparison_table` reports F1, `AvgPtGap`, range `BoundaryF1`,
+  and MLQDS gaps versus `uniform`/Douglas-Peucker when available.
+- `print_geometric_distortion_table` reports SED/PED, length preservation, and
+  `F1xLen`.
+- Read F1 and length-preservation columns as higher-is-better. Read `AvgPtGap`
+  as lower-is-better.

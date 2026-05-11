@@ -1,5 +1,9 @@
 # QDS Performance And Reliability Sprint Plan
 
+> Historical sprint log. Use `QDS/README.md` and `QDS/src/*/README.md` for
+> current commands, defaults, and benchmark instructions. This file keeps task
+> history and may include older observations that are no longer canonical.
+
 ## Purpose
 
 This sprint plan captures the cleanup, benchmarking, and optimization work for
@@ -49,7 +53,9 @@ The sprint should proceed in this order:
 
 ## Plan Status
 
-Status: in progress. Phase 1 tasks 1 and 2 were implemented on 2026-05-10.
+Status: historical/in progress. The canonical current profile and commands live
+under `QDS/src/experiments/README.md`; this plan records why the sprint moved in
+that direction.
 
 This plan is intended to guide implementation. Individual tasks can still be
 split into smaller tickets as evidence comes in from benchmarks.
@@ -193,12 +199,10 @@ Each benchmark artifact should include at least:
 
 ### Default Benchmark Matrix
 
-Use one explicit range real-usecase matrix profile for model-quality decisions:
-two cleaned CSV days, first day for training, second day for final evaluation,
-512 range queries, 30% target coverage, 5% retained-point compression,
-`query_chunk_size=512`, 20 epochs, no loader caps by default, answer-set F1
-checkpointing, no checkpoint smoothing, `mlqds_temporal_fraction=0.10`, and F1
-diagnostics every epoch.
+Use one explicit range real-usecase matrix profile for model-quality decisions.
+The current values are intentionally maintained in `QDS/src/experiments/README.md`
+and `QDS/src/experiments/benchmark_profiles.py` to avoid this historical plan
+drifting from runnable defaults.
 
 ## Phase 1: Reproducibility And Measurement
 
@@ -830,12 +834,14 @@ cd QDS
   --run_id manual_range_real_usecase_a
 ```
 
-  This profile uses 512 range queries, 30% target query coverage,
-  `range_spatial_fraction=0.0165`, `range_time_fraction=0.033`, 5%
-  retained-point compression, `query_chunk_size=512`, 20 epochs, normal
-  answer-set F1 checkpointing, `checkpoint_smoothing_window=1` (no rolling
-  smoothing), vectorized ranking-pair sampling, `mlqds_temporal_fraction=0.10`,
-  and F1 diagnostics every epoch.
+  Current canonical profile settings are documented in
+  `QDS/src/experiments/README.md`. As of the current range real-usecase profile:
+  80 range queries, 20% target query coverage, fixed 2.2 km / 3 hour range
+  half-windows, 5% retained-point compression, `query_chunk_size=2048`,
+  20 epochs with early stopping, answer-set F1 checkpointing,
+  `checkpoint_smoothing_window=1` (no rolling smoothing), vectorized
+  ranking-pair sampling, `mlqds_temporal_fraction=0.25`, and F1 diagnostics
+  every epoch.
 
 - Removed the old synthetic `small`/`medium`/`serious` runtime benchmark
   profiles from `benchmark_runtime.py`. The runtime wrapper now exposes only

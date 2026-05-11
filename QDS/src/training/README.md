@@ -32,25 +32,31 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 ## Training Notes
 
-- Epoch-level workload weights are sampled from active query types. Current experiment entrypoints train pure workloads, so only the selected type contributes in normal benchmark runs.
-- Windows with no positive label for a type are skipped for that type; the pointwise BCE term uses all positives and a bounded random sample of zero labels to avoid all-zero collapse.
-- `ModelConfig.lr`, `pointwise_loss_weight`, and `gradient_clip_norm` are the main stability knobs for AIS-scale runs.
-- `ranking_pair_sampling="vectorized"` is the default ranking-loss sampler. It draws the sampled pair positions in batches and keeps target/index tensors on the model device, avoiding the old per-pair CPU `.item()` path. Use `"legacy"` only for reproducibility comparisons against older runs.
-- The current loop clamps the effective epoch count to at least 8.
-- The returned model is restored to the best diagnostic epoch by selection score. By default this is held-out final query F1, aligned with the retained-set evaluation objective.
-- `checkpoint_f1_variant="answer"` selects on final pure query F1; `checkpoint_f1_variant="combined"` selects on the legacy answer/support product diagnostic. Use `checkpoint_selection_metric="uniform_gap"` when the restored checkpoint should also be judged against the fair `uniform` validation score; this subtracts weighted per-type deficits so one query type cannot hide weak performance elsewhere. `checkpoint_smoothing_window` can average the last K diagnostic selection scores before deciding which checkpoint is best, which reduces one-epoch F1 noise during larger benchmark runs. These metrics are useful for model selection, but they are intentionally not used as the training loss because final query F1 is discrete after per-trajectory top-k simplification and query execution.
-- Range-only experiment runs can reuse precomputed training labels and validation query caches from the diagnostics phase, so the fixed full-data query answers and support masks are computed once while each checkpoint still gets its own retained-mask evaluation.
-- `f1_diagnostic_every` controls how often held-out query-F1 is evaluated. With `checkpoint_selection_metric="f1"` or `"uniform_gap"`, checkpoints are selected only from epochs where this diagnostic runs; with loss selection it records query-F1 diagnostics without changing the loss-selected checkpoint. `TrainingOutputs.best_epoch`, `best_loss`, and `best_f1` record the selected checkpoint metadata.
-- `early_stopping_patience` stops after that many eligible diagnostic epochs without improving the active checkpoint selection score. For F1-selected runs, this is a direct guard against spending the full epoch budget after validation F1 has clearly stopped improving.
-- The loop tracks loss, prediction spread, quantiles, Kendall tau-style diagnostics, and optional validation query F1 in `TrainingOutputs.history`. Diagnostics run every `diagnostic_every` epochs, which defaults to every epoch so each epoch can be considered for checkpoint restoration.
-- Validation query-F1 uses the same canonical MLQDS score conversion as final evaluation: the explicit pure workload head is converted with `mlqds_score_mode` (`rank` by default) and passed through the temporal/diversity retained-mask simplifier. Score-mode sweeps can use `rank_tie`, `zscore_sigmoid`, `rank_confidence`, or `temperature_sigmoid` without changing the training labels.
-- The current implementation uses trajectory-local windows with `window_length=512` and `window_stride=256` by default.
-- `train_batch_size` controls how many trajectory windows are grouped per optimizer step; benchmark sweeps should compare epoch time, peak CUDA memory, and final retained-set F1 before changing the default.
-- `inference_batch_size` controls how many trajectory windows are grouped for MLQDS evaluation, saved-checkpoint inference, and validation query-F1 diagnostics. It should change throughput and memory, not predictions.
-- `query_chunk_size` controls how many workload queries are attended in one cross-attention chunk. The default is `2048`; smaller chunks are a scale-preserving approximation because each chunk has its own attention softmax.
-- `windowed_predict` and `forward_predict` accept an optional inference device. When CUDA is requested, model windows and query tensors run on CUDA and predictions are moved back to the original point tensor device for downstream metrics.
-- `ModelConfig.float32_matmul_precision` and `allow_tf32` control process-local torch matmul precision before training starts. The default is `highest` with TF32 disabled; use `high` plus TF32 for RTX throughput benchmarks and compare final retained-set F1, not only runtime.
-- `ModelConfig.amp_mode` defaults to `off` and can opt CUDA training and inference forwards into `bf16` or `fp16` autocast. Model outputs are cast back to FP32 before ranking loss, BCE, diagnostics, and retained-set scoring; FP16 training uses a CUDA `GradScaler`, while BF16 does not.
+- Current experiment entrypoints train one pure workload per model. Mixed
+  workload helpers remain for low-level diagnostics only.
+- Windows never cross trajectory boundaries. Windows with no positive label for
+  a type are skipped for that type; the pointwise BCE term samples zeros to
+  avoid all-zero collapse.
+- `ranking_pair_sampling="vectorized"` is the default. Use `"legacy"` only when
+  comparing against older runs.
+- The effective epoch count is clamped to at least 8. The returned model is
+  restored to the best diagnostic epoch; by default that means held-out final
+  query F1.
+- `checkpoint_f1_variant="answer"` is the default selection target. `"combined"`
+  remains a legacy answer/support diagnostic. `uniform_gap`,
+  `checkpoint_smoothing_window`, and `early_stopping_patience` are explicit
+  selection stabilizers.
+- Validation query-F1 uses the same canonical MLQDS score conversion as final
+  evaluation: one explicit workload head, `mlqds_score_mode`, and the
+  temporal/diversity retained-mask simplifier.
+- AIS-scale stability knobs: `lr`, `pointwise_loss_weight`,
+  `gradient_clip_norm`, `train_batch_size`, `inference_batch_size`,
+  `query_chunk_size`, `float32_matmul_precision`, `allow_tf32`, and `amp_mode`.
+  Benchmark changes by retained-set F1, epoch time, and peak memory together.
+- Defaults: `window_length=512`, `window_stride=256`,
+  `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
+  `allow_tf32=False`, and `amp_mode="off"`. The real-usecase benchmark profile
+  overrides runtime precision through its selected matrix variant.
 
 ## Persistence
 

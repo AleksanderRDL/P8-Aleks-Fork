@@ -91,6 +91,10 @@ Profile shape:
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
 
+`query_coverage` is a target used for workload generation and diagnostics, not
+a guarantee. If the fixed query count/footprint cannot hit the target on a day,
+the run prints a warning and records the realized coverage in `example_run.json`.
+
 Direct matrix run:
 
 ```bash
@@ -105,9 +109,7 @@ Direct matrix run:
 ```
 
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
-
-Calibrate range query counts with the sampled estimator before changing the
-range footprint or target coverage:
+Before changing range footprint or target coverage, estimate query counts first:
 
 ```bash
 ../.venv/bin/python scripts/estimate_range_coverage.py \
@@ -121,23 +123,14 @@ range footprint or target coverage:
   --range_footprint_jitter 0.0
 ```
 
-## Tmux Launchers
+## Long Runs
 
-Use tmux launchers for long local runs so training survives the IDE/session and
-system telemetry is captured beside the run.
-
-Single benchmark:
+Use tmux launchers for long local runs. They keep training alive outside the
+IDE session and capture system telemetry beside the run.
 
 ```bash
 make benchmark-preflight
 ATTACH=0 BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
-```
-
-Sequential multi-seed queue:
-
-```bash
-make benchmark-queue-preflight
-ATTACH=0 BENCHMARK_SEEDS=42,43,44 make range-benchmark-queue-tmux
 ```
 
 Queue rows use a tab-separated plan file:
@@ -148,7 +141,7 @@ range_real_usecase_80q_vectorized_cache_seed43	43
 range_real_usecase_80q_vectorized_cache_seed44	44
 ```
 
-Launch a plan file:
+Launch a sequential queue:
 
 ```bash
 ATTACH=0 \
@@ -166,18 +159,16 @@ GPU memory, temperature, power draw, clocks, CUDA processes, and relevant
 kernel markers. If a launcher observes an abnormal exit, it marks stale
 `run_status.json` files as failed.
 
-## Artifact Layout
+## Artifacts And Timing
 
-Read the run-local `README.md` or `artifact_index.json` first. For comparisons,
-start with `benchmark_matrix.md` or `benchmark_matrix.csv`; for model behavior,
-open the variant `example_run.json`, `matched_table.txt`, and
-`range_workload_diagnostics.json`. The canonical artifact layout and cleanup
-rules are in [`../../artifacts/README.md`](../../artifacts/README.md).
+For comparisons, start with `benchmark_matrix.md` or `benchmark_matrix.csv`.
+For model behavior, inspect the variant `example_run.json`,
+`matched_table.txt`, and `range_workload_diagnostics.json`. Artifact layout and
+cleanup rules live in [`../../artifacts/README.md`](../../artifacts/README.md).
 
-## Runtime Wrapper
-
-Use `benchmark_runtime.py` for targeted train/inference timing studies such as
-batch-size sweeps. Use `benchmark_matrix.py` for model-quality benchmark runs.
+Use `benchmark_runtime.py` only for targeted train/inference timing studies
+such as batch-size sweeps. Use `benchmark_matrix.py` for model-quality
+benchmark runs.
 
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_runtime \

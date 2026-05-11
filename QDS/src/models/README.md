@@ -33,4 +33,5 @@ H + C -> four per-type heads -> logits[L,4]
 - Point features: 7 columns for the baseline model, 8 for the turn-aware model.
 - Query features: 12 padded features from `src.queries.query_types.pad_query_features`.
 - Output: one logit per query type for each point.
-- Default query chunk size: 128. Real-usecase range benchmarks override this to 512 so the 512-query workload fits in one exact attention chunk.
+- Default query chunk size: 2048. Current real-usecase range benchmarks keep the
+  workload below that so cross-attention runs as one exact query chunk.

@@ -1,5 +1,9 @@
 # Sprint Plan: Query-Driven Simplification Models
 
+> Historical plan. Prefer `QDS/README.md`, `QDS/src/experiments/README.md`, and
+> current code for runnable defaults. This file is retained for planning
+> context and may mention older benchmark shapes.
+
 ## Purpose
 
 This sprint plan turns `sprint-ambitions.md` into a realistic execution sequence.

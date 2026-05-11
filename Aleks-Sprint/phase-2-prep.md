@@ -1,5 +1,8 @@
 # Phase 2 Preparation: Range Workload And Label Diagnostics
 
+> Historical preparation notes. Prefer `QDS/README.md`,
+> `QDS/src/experiments/README.md`, and current code for runnable defaults.
+
 ## Goal
 
 Prepare `QDS` for Phase 2 implementation and execution:

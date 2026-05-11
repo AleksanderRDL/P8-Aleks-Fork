@@ -1,5 +1,8 @@
 # Sprint Ambitions: Query-Driven Simplification Models
 
+> Historical research ambition document. Prefer `QDS/README.md`,
+> `QDS/src/experiments/README.md`, and current code for runnable defaults.
+
 ## Executive Summary
 
 The goal of this sprint is to move `QDS` from a promising prototype into a credible research pipeline for machine learned query-driven simplification of AIS trajectories.
