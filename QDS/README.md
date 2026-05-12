@@ -16,6 +16,9 @@ focus is the range workload on cleaned AIS CSV days.
 | Evaluation metrics and baseline methods | [`src/evaluation/README.md`](src/evaluation/README.md) |
 | Model architecture | [`src/models/README.md`](src/models/README.md) |
 
+The current research direction for range-query usefulness is summarized in
+[`../Aleks-Sprint/range-objective-redesign.md`](../Aleks-Sprint/range-objective-redesign.md).
+
 ## Quick Start
 
 Run commands from `QDS/`. The expected local interpreter is the repository-level

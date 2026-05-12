@@ -23,6 +23,10 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 ## Label Construction
 
 - Range labels default to pure point-F1 contribution: every point inside a range query box receives the same singleton retained-hit gain for that query. `range_boundary_prior_weight` can optionally boost in-box boundary-crossing points before normalization, but it defaults to `0.0` for rigorous pure-F1 benchmarks. Cross-trajectory proximity is not used for range labels.
+- These range labels are local/additive proxy labels. They are not yet a direct
+  objective for range-local retained-set usefulness across compression rates;
+  see `../../../Aleks-Sprint/range-objective-redesign.md` before changing
+  range label or loss behavior.
 - kNN and similarity labels execute the query on the original data, identify the original trajectory-ID answer set, and assign points the F1 gain of recovering one true-positive trajectory ID.
 - Similarity and clustering labels can use the optional `turn_score` feature as a small shape prior.
 - Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs. Within a clustered query box, point mass is weighted by distance from the trajectory's in-box centroid.

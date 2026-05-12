@@ -20,6 +20,11 @@ This module compares query-aware ML simplification against temporal, geometric, 
 ## Metrics
 
 - Range queries are scored over retained point hits inside the spatiotemporal box, so sparse point retention is measured by how much of the original query-hit mass it preserves rather than by one retained point recovering an entire trajectory. Exact duplicate AIS rows are counted as separate point instances.
+- This range score is a useful retained-point proxy, not the full target for
+  range-query navigational usefulness. It does not directly score per-ship
+  interpretability, entry/exit preservation, or range-local trajectory shape.
+  See `../../../Aleks-Sprint/range-objective-redesign.md` for the current
+  objective-redesign conclusion.
 - `BoundaryF1` is reported separately for range workloads. It measures retained in-box boundary-crossing points and is a shape-preservation diagnostic, not part of pure range F1.
 - kNN, similarity, and clustering queries report pure answer-set agreement as `AnswerF1`; `CombinedF1` additionally multiplies answer agreement by retained support-point quality for diagnostic comparison.
 - `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.

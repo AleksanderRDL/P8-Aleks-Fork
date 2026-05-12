@@ -15,6 +15,7 @@ module READMEs.
 | [`sprint-plan.md`](sprint-plan.md) | Earlier specialist-model execution plan. |
 | [`sprint-ambitions.md`](sprint-ambitions.md) | Broader research ambitions and diagnosis. |
 | [`phase-2-prep.md`](phase-2-prep.md) | Range workload diagnostic preparation notes. |
+| [`range-objective-redesign.md`](range-objective-redesign.md) | Current conclusion about the range-query objective, metric limitations, and next audit/redesign direction. |
 
 When a plan conflicts with the current QDS docs or code, prefer the current QDS
 docs/code and use these notes to understand why a decision was made.

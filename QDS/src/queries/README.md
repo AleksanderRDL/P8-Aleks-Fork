@@ -35,6 +35,10 @@ This module defines the typed query format, workload generator, and concrete que
 - `generate_typed_query_workload` returns the `TypedQueryWorkload` container
   used by training and evaluation. Workloads are pure, e.g. `{"range": 1.0}`,
   so one model targets one query type.
+- Range query generation defines the user-query distribution the model learns.
+  Future range workloads should represent realistic usage patterns without
+  overfitting to one narrow concept; see
+  `../../../Aleks-Sprint/range-objective-redesign.md`.
 - Range and kNN anchors use a 70/30 sampler: 70% density-weighted lat/lon cells,
   30% uniform points. Similarity and clustering use uniform anchors.
 - Range footprint can be dataset-relative (`range_spatial_fraction`,
