@@ -83,6 +83,7 @@ class MethodEvaluation:
     range_boundary_f1: float = 0.0
     range_point_f1: float = 0.0
     range_ship_f1: float = 0.0
+    range_ship_coverage: float = 0.0
     range_entry_exit_f1: float = 0.0
     range_temporal_coverage: float = 0.0
     range_gap_coverage: float = 0.0

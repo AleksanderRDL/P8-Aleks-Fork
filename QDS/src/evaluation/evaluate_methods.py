@@ -365,12 +365,25 @@ def _range_gap_coverage_for_offsets(in_offsets: torch.Tensor, retained_offsets: 
     return float(max(0.0, min(1.0, 1.0 - float(max_missing.item()) / denom)))
 
 
-def _range_temporal_gap_and_shape_scores_for_query(
+def _range_ship_coverage_for_offsets(in_offsets: torch.Tensor, retained_offsets: torch.Tensor) -> float:
+    """Return per-ship point-subset F1 for one in-query trajectory slice."""
+    full_count = int(in_offsets.numel())
+    if full_count <= 0:
+        return 1.0
+    retained_count = int(retained_offsets.numel())
+    if retained_count <= 0:
+        return 0.0
+    recall = float(retained_count / full_count)
+    return float((2.0 * recall) / (1.0 + recall))
+
+
+def _range_trajectory_detail_scores_for_query(
     points_cpu: torch.Tensor,
     retained_cpu: torch.Tensor,
     trajectory_support: tuple[RangeTrajectoryAuditSupport, ...],
-) -> tuple[float, float, float]:
-    """Return query-level temporal coverage, gap coverage, and local route fidelity."""
+) -> tuple[float, float, float, float]:
+    """Return query-level per-ship coverage, temporal coverage, gap coverage, and route fidelity."""
+    ship_coverage_scores: list[float] = []
     temporal_scores: list[float] = []
     gap_scores: list[float] = []
     shape_scores: list[float] = []
@@ -380,10 +393,13 @@ def _range_temporal_gap_and_shape_scores_for_query(
         start = int(support.start)
         retained_offsets = in_offsets[retained_cpu[start + in_offsets]]
         if retained_offsets.numel() == 0:
+            ship_coverage_scores.append(0.0)
             temporal_scores.append(0.0)
             gap_scores.append(0.0)
             shape_scores.append(0.0)
             continue
+
+        ship_coverage_scores.append(_range_ship_coverage_for_offsets(in_offsets, retained_offsets))
 
         if support.full_time_span <= 1e-9:
             temporal_score = 1.0
@@ -417,6 +433,7 @@ def _range_temporal_gap_and_shape_scores_for_query(
             shape_scores.append(float(max(0.0, min(1.0, temporal_score * fidelity))))
 
     return (
+        _mean(ship_coverage_scores, default=1.0),
         _mean(temporal_scores, default=1.0),
         _mean(gap_scores, default=1.0),
         _mean(shape_scores, default=1.0),
@@ -430,7 +447,7 @@ def score_range_usefulness(
     typed_queries: list[dict],
     query_cache: EvaluationQueryCache | None = None,
 ) -> dict[str, Any]:
-    """Audit range simplification with point, ship, entry/exit, temporal, gap, and shape components.
+    """Audit range simplification with point, ship, per-ship coverage, entry/exit, temporal, gap, and shape components.
 
     `range_point_f1` is the current retained in-box point metric. The combined
     `range_usefulness_score` is an audit score for comparing candidates; it is
@@ -446,6 +463,7 @@ def score_range_usefulness(
 
     point_scores: list[float] = []
     ship_scores: list[float] = []
+    ship_coverage_scores: list[float] = []
     entry_exit_scores: list[float] = []
     temporal_scores: list[float] = []
     gap_scores: list[float] = []
@@ -472,11 +490,12 @@ def score_range_usefulness(
 
         entry_exit_scores.append(_point_index_subset_f1(retained_bool, support.boundary_indices_cpu))
 
-        temporal_score, gap_score, shape_score = _range_temporal_gap_and_shape_scores_for_query(
+        ship_coverage, temporal_score, gap_score, shape_score = _range_trajectory_detail_scores_for_query(
             points_cpu=points_cpu,
             retained_cpu=retained_cpu,
             trajectory_support=support.trajectories,
         )
+        ship_coverage_scores.append(ship_coverage)
         temporal_scores.append(temporal_score)
         gap_scores.append(gap_score)
         shape_scores.append(shape_score)
@@ -484,6 +503,7 @@ def score_range_usefulness(
     query_count = len(point_scores)
     range_point_f1 = _mean(point_scores)
     range_ship_f1 = _mean(ship_scores)
+    range_ship_coverage = _mean(ship_coverage_scores)
     range_entry_exit_f1 = _mean(entry_exit_scores)
     range_temporal_coverage = _mean(temporal_scores)
     range_gap_coverage = _mean(gap_scores)
@@ -493,6 +513,7 @@ def score_range_usefulness(
         for name, value in (
             ("range_point_f1", range_point_f1),
             ("range_ship_f1", range_ship_f1),
+            ("range_ship_coverage", range_ship_coverage),
             ("range_entry_exit_f1", range_entry_exit_f1),
             ("range_temporal_coverage", range_temporal_coverage),
             ("range_gap_coverage", range_gap_coverage),
@@ -505,6 +526,7 @@ def score_range_usefulness(
         "range_point_f1": float(range_point_f1),
         "pure_range_f1": float(range_point_f1),
         "range_ship_f1": float(range_ship_f1),
+        "range_ship_coverage": float(range_ship_coverage),
         "range_entry_exit_f1": float(range_entry_exit_f1),
         "range_boundary_f1": float(range_entry_exit_f1),
         "range_temporal_coverage": float(range_temporal_coverage),
@@ -791,6 +813,7 @@ def evaluate_method(
         range_boundary_f1=boundary_f1,
         range_point_f1=float(range_audit.get("range_point_f1", per_type.get("range", 0.0))),
         range_ship_f1=float(range_audit.get("range_ship_f1", 0.0)),
+        range_ship_coverage=float(range_audit.get("range_ship_coverage", 0.0)),
         range_entry_exit_f1=boundary_f1,
         range_temporal_coverage=float(range_audit.get("range_temporal_coverage", 0.0)),
         range_gap_coverage=float(range_audit.get("range_gap_coverage", 0.0)),
@@ -961,16 +984,17 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
 def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
     """Render detailed range usefulness audit components."""
-    col1, col2, col3, col4, col5, col6, col7, col8 = 24, 14, 10, 13, 13, 10, 12, 13
+    col1, col2, col3, col4, col5, col6, col7, col8, col9 = 24, 14, 10, 10, 13, 13, 10, 12, 13
     header = (
         f"{'Method':<{col1}}"
         f"{'RangePointF1':>{col2}}"
         f"{'ShipF1':>{col3}}"
-        f"{'EntryExitF1':>{col4}}"
-        f"{'TemporalCov':>{col5}}"
-        f"{'GapCov':>{col6}}"
-        f"{'ShapeScore':>{col7}}"
-        f"{'RangeUseful':>{col8}}"
+        f"{'ShipCov':>{col4}}"
+        f"{'EntryExitF1':>{col5}}"
+        f"{'TemporalCov':>{col6}}"
+        f"{'GapCov':>{col7}}"
+        f"{'ShapeScore':>{col8}}"
+        f"{'RangeUseful':>{col9}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -978,11 +1002,12 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
             f"{name:<{col1}}"
             f"{_range_point_metric(metrics):>{col2}.6f}"
             f"{metrics.range_ship_f1:>{col3}.6f}"
-            f"{float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1):>{col4}.6f}"
-            f"{metrics.range_temporal_coverage:>{col5}.6f}"
-            f"{metrics.range_gap_coverage:>{col6}.6f}"
-            f"{metrics.range_shape_score:>{col7}.6f}"
-            f"{_range_usefulness_metric(metrics):>{col8}.6f}"
+            f"{metrics.range_ship_coverage:>{col4}.6f}"
+            f"{float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1):>{col5}.6f}"
+            f"{metrics.range_temporal_coverage:>{col6}.6f}"
+            f"{metrics.range_gap_coverage:>{col7}.6f}"
+            f"{metrics.range_shape_score:>{col8}.6f}"
+            f"{_range_usefulness_metric(metrics):>{col9}.6f}"
         )
     return "\n".join(lines)
 

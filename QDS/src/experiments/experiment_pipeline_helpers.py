@@ -729,6 +729,7 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "range_point_f1": metrics.range_point_f1,
         "pure_range_f1": metrics.range_point_f1,
         "range_ship_f1": metrics.range_ship_f1,
+        "range_ship_coverage": metrics.range_ship_coverage,
         "range_entry_exit_f1": metrics.range_entry_exit_f1,
         "range_boundary_f1": metrics.range_entry_exit_f1,
         "range_temporal_coverage": metrics.range_temporal_coverage,

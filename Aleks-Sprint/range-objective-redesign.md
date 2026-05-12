@@ -58,6 +58,7 @@ range usefulness audit:
 
 - `RangePointF1`: retained in-box point-hit preservation
 - `ShipF1`: whether ships/trajectories present in the query are still present
+- `ShipCov`: average per-hit-ship point coverage
 - `EntryExitF1`: whether range entry/exit points are retained
 - `TemporalCov`: how much of each in-query ship time span remains covered
 - `GapCov`: whether retained in-query points avoid one large missing interior
@@ -78,6 +79,9 @@ ground truth for the training objective:
   still represented by at least one retained in-query point. It is correct for
   ship presence, but intentionally does not measure whether each ship has
   enough retained points to interpret movement.
+- `ShipCov` averages point-subset F1 per hit ship, so a dense retained
+  trajectory cannot hide a second ship that only has one retained point. It is
+  still a point-count proxy, not a direct human interpretability metric.
 - `EntryExitF1` measures whether sampled in-box entry/exit points are retained.
   It does not interpolate true geometric boundary crossings between AIS
   samples.
@@ -92,8 +96,8 @@ ground truth for the training objective:
 - `RangeUseful` is a weighted audit score over these components. Treat it as a
   versioned comparison and checkpoint-selection diagnostic while the objective
   is being redesigned, not as the mathematically final utility target. Schema
-  v2 weights are point `0.30`, ship `0.20`, entry/exit `0.15`, temporal span
-  `0.15`, gap `0.10`, and shape `0.10`.
+  v3 weights are point `0.25`, ship presence `0.15`, ship coverage `0.15`,
+  entry/exit `0.15`, temporal span `0.12`, gap `0.10`, and shape `0.08`.
 
 Before making these metrics central to the loss, add focused unit/property
 tests for single-ship, multi-ship, no-hit, single-point-hit, duplicate-point,
@@ -269,6 +273,8 @@ they are still proxies:
 - `RangePointF1` measures retained in-box point overlap, not interpretability.
 - `ShipF1` measures whether a ship is represented, not whether its movement is
   understandable.
+- `ShipCov` now measures average per-ship point coverage, reducing cases where
+  `ShipF1=1.0` hides sparse representation for one queried ship.
 - `EntryExitF1` measures sampled entry/exit support, not exact continuous
   boundary crossings.
 - `TemporalCov` rewards retained in-query span, but can miss large interior
@@ -288,8 +294,8 @@ Potential future components or replacements:
   to the simplified in-query polyline
 - stronger gap coverage, especially time- or distance-normalized variants for
   irregular AIS sampling
-- per-ship minimum interpretability, which rewards enough retained points per
-  queried ship rather than only one retained point
+- stronger per-ship interpretability, such as a minimum useful retained-point
+  count or spacing-aware coverage inside each queried ship
 - turn/change-point preservation, especially heading, speed, or course changes
   inside the query
 - entry/exit interpolation quality, approximating where trajectories cross the
@@ -646,7 +652,7 @@ Run a focused benchmark comparison between:
 
 Keep the rest of the real-usecase profile fixed. Evaluate at `0.01,0.02,0.05,0.10`
 retained ratios and compare `RangePointF1`, `RangeUseful`, `ShipF1`,
-`EntryExitF1`, `TemporalCov`, `GapCov`, and `ShapeScore`.
+`ShipCov`, `EntryExitF1`, `TemporalCov`, `GapCov`, and `ShapeScore`.
 
 If budget-top-k improves audit quality, repeat across seeds. If it does not,
 move to query-local set/value labels or explicit retained-set marginal-gain

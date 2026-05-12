@@ -314,6 +314,7 @@ def _add_range_usefulness_labels(
         return
     ship_count = len(hit_ids)
     ship_gain = _set_query_singleton_gain(hit_ids)
+    ship_coverage_mass_per_ship = float(weights["range_ship_coverage"]) / float(ship_count)
     temporal_mass_per_ship = float(weights["range_temporal_coverage"]) / float(ship_count)
     gap_mass_per_ship = float(weights["range_gap_coverage"]) / float(ship_count)
     shape_mass = float(weights["range_shape_score"]) * float(ship_gain)
@@ -340,6 +341,11 @@ def _add_range_usefulness_labels(
             type_idx,
             float(weights["range_ship_f1"]) * float(ship_gain),
         )
+
+        support_count = int(trajectory_support.sum().item())
+        if support_count > 0:
+            ship_coverage_gain = float(2.0 / (support_count + 1.0))
+            labels[trajectory_support, type_idx] += ship_coverage_mass_per_ship * ship_coverage_gain
 
         in_offsets = torch.where(box_support[start:end])[0]
         if in_offsets.numel() == 0:

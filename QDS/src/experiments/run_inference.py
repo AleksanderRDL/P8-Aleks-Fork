@@ -446,6 +446,7 @@ def main() -> None:
                 "range_point_f1": m.range_point_f1,
                 "pure_range_f1": m.range_point_f1,
                 "range_ship_f1": m.range_ship_f1,
+                "range_ship_coverage": m.range_ship_coverage,
                 "range_entry_exit_f1": m.range_entry_exit_f1,
                 "range_boundary_f1": m.range_entry_exit_f1,
                 "range_temporal_coverage": m.range_temporal_coverage,

@@ -556,6 +556,43 @@ def test_range_usefulness_ship_f1_requires_each_hit_ship_present() -> None:
     assert audit["range_ship_f1"] == pytest.approx(2.0 / 3.0)
 
 
+def test_range_usefulness_ship_coverage_penalizes_sparse_hit_ship_representation() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+            [0.0, 0.2, 0.0, 1.0],
+            [1.0, 0.2, 0.1, 1.0],
+            [2.0, 0.2, 0.2, 1.0],
+            [3.0, 0.2, 0.3, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 4), (4, 8)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 4.0,
+            },
+        }
+    ]
+    retained = torch.tensor([True, True, True, True, True, False, False, False])
+
+    audit = score_range_usefulness(points, boundaries, retained, queries)
+
+    assert audit["range_ship_f1"] == pytest.approx(1.0)
+    assert audit["range_ship_coverage"] == pytest.approx((1.0 + 0.4) / 2.0)
+    assert audit["range_ship_coverage"] < audit["range_ship_f1"]
+
+
 def test_range_usefulness_gap_coverage_penalizes_interior_gap() -> None:
     points = torch.tensor(
         [
@@ -696,17 +733,19 @@ def test_range_usefulness_table_reports_audit_components() -> None:
                 per_type_f1={"range": 0.5},
                 range_point_f1=0.5,
                 range_ship_f1=0.7,
+                range_ship_coverage=0.65,
                 range_entry_exit_f1=0.25,
                 range_temporal_coverage=0.8,
                 range_gap_coverage=0.4,
                 range_shape_score=0.6,
-                range_usefulness_score=0.5475,
+                range_usefulness_score=0.549,
             )
         }
     )
 
     assert "RangePointF1" in table
     assert "ShipF1" in table
+    assert "ShipCov" in table
     assert "GapCov" in table
     assert "RangeUseful" in table
 

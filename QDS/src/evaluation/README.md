@@ -34,17 +34,20 @@ This module compares query-aware ML simplification against temporal, geometric, 
   See `../../../Aleks-Sprint/range-objective-redesign.md` for the current
   objective-redesign conclusion.
 - `RangeUseful` is a versioned audit score combining `RangePointF1`, ship
-  presence, entry/exit preservation, temporal span coverage, in-query gap
-  coverage, and range-local path-shape preservation. It is reported separately
-  so it can guide objective redesign without pretending to be a mathematically
-  final target. Schema v2 weights are `0.30/0.20/0.15/0.15/0.10/0.10` for
-  point, ship, entry/exit, temporal span, gap, and shape respectively.
+  presence, per-ship point coverage, entry/exit preservation, temporal span
+  coverage, in-query gap coverage, and range-local path-shape preservation. It
+  is reported separately so it can guide objective redesign without pretending
+  to be a mathematically final target. Schema v3 weights are
+  `0.25/0.15/0.15/0.15/0.12/0.10/0.08` for point, ship presence, ship
+  coverage, entry/exit, temporal span, gap, and shape respectively.
 - `EntryExitF1` is reported separately for range workloads. It measures
   retained in-box boundary-crossing points and is a shape-preservation
   diagnostic, not part of `RangePointF1`.
 - Audit component interpretation:
   - `ShipF1` is ship presence only; one retained in-query point can recover a
     ship.
+  - `ShipCov` averages point-subset F1 per hit ship, so dense ships do not hide
+    sparse representation of another queried ship.
   - `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true box
     crossings.
   - `TemporalCov` scores retained in-query time span. It intentionally does

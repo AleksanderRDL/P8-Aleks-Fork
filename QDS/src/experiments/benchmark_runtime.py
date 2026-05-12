@@ -305,6 +305,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             "combined_query_shape_score": payload.get("combined_query_shape_score"),
             "range_point_f1": payload.get("range_point_f1"),
             "range_ship_f1": payload.get("range_ship_f1"),
+            "range_ship_coverage": payload.get("range_ship_coverage"),
             "range_entry_exit_f1": payload.get("range_entry_exit_f1"),
             "range_boundary_f1": payload.get("range_boundary_f1"),
             "range_temporal_coverage": payload.get("range_temporal_coverage"),
@@ -403,6 +404,9 @@ def _batch_size_sweep_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any
                 "mlqds_aggregate_f1": mlqds.get("aggregate_f1") if isinstance(mlqds, dict) else None,
                 "mlqds_range_usefulness_score": (
                     mlqds.get("range_usefulness_score") if isinstance(mlqds, dict) else None
+                ),
+                "mlqds_range_ship_coverage": (
+                    mlqds.get("range_ship_coverage") if isinstance(mlqds, dict) else None
                 ),
                 "mlqds_range_gap_coverage": (
                     mlqds.get("range_gap_coverage") if isinstance(mlqds, dict) else None
