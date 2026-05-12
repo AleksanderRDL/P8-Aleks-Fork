@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/run_range_benchmark_tmux.sh [launcher options] [benchmark_matrix args...]
 
-Launch the range real-usecase benchmark in tmux with a second pane logging
+Launch the range testing-baseline benchmark in tmux with a second pane logging
 lightweight system/GPU telemetry.
 
 Launcher options:
@@ -15,11 +15,11 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_matrix profile. Default: range_real_usecase.
+  PROFILE                      benchmark_matrix profile. Default: range_testing_baseline.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
-                               artifacts/benchmarks/range_real_usecase.
+                               artifacts/benchmarks/range_testing_baseline.
   RUN_ID                       Run directory name. Default: timestamped slug.
   RESULTS_DIR                  Exact benchmark run directory. Overrides
                                ARTIFACT_ROOT/RUN_ID when set.
@@ -27,7 +27,7 @@ Environment overrides:
   MAX_SEGMENTS                 Optional segment cap. Default: unset.
   MAX_TRAJECTORIES             Optional post-load trajectory cap. Default: unset.
   VARIANTS                     benchmark_matrix --variants value. Default:
-                               tf32_bf16_bs32_inf32.
+                               tf32_bf16_bs64_inf32.
   MONITOR_INTERVAL             Monitor sample interval in seconds. Default: 10.
   ATTACH                       Attach to tmux after start. Default: 1.
 
@@ -53,18 +53,18 @@ display_path() {
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
 PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
-PROFILE="${PROFILE:-range_real_usecase}"
+PROFILE="${PROFILE:-range_testing_baseline}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
-CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_real_usecase}"
+CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-}"
 MAX_SEGMENTS="${MAX_SEGMENTS:-}"
 MAX_TRAJECTORIES="${MAX_TRAJECTORIES:-}"
-VARIANTS="${VARIANTS:-tf32_bf16_bs32_inf32}"
+VARIANTS="${VARIANTS:-tf32_bf16_bs64_inf32}"
 VARIANT_SLUG="$(printf '%s' "$VARIANTS" | tr -cs '[:alnum:]' '_' | sed 's/_$//')"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
 ATTACH="${ATTACH:-1}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_real_usecase}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_3day_full_${VARIANT_SLUG}}"
 RESULTS_DIR="${RESULTS_DIR:-$ARTIFACT_ROOT/runs/$RUN_ID}"
 

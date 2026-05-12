@@ -142,8 +142,8 @@ that run. It slightly beat Douglas-Peucker on `RangeUseful` at all audited
 ratios, but still trailed the uniform temporal baseline.
 
 Project consequence: `mlqds_temporal_fraction=0.75` is a useful high-scaffold
-comparison, but it is no longer the real-usecase default. The baseline profile
-uses `0.50` and `mlqds_diversity_bonus=0.0` so future runs leave more
+comparison, but it is no longer the testing-baseline default. The baseline profile
+uses `0.25` and `mlqds_diversity_bonus=0.0` so future runs leave more
 retained-point budget under learned model control and do not add a second
 spacing prior by default. A large temporal spine is currently carrying much of
 the useful range-local shape/coverage behavior, so future objective work should
@@ -251,7 +251,7 @@ concepts used by the range audit:
 - local shape/turn points
 
 The old point-hit proxy remains available as `range_label_mode=point_f1` for
-ablation runs. The real-usecase profile now defaults to
+ablation runs. The testing-baseline profile now defaults to
 `range_label_mode=usefulness`.
 
 This is not the final retained-set objective. It should be evaluated as the
@@ -265,7 +265,7 @@ default). This better matches the final score-stream use: sort points by model
 score, retain a limited budget, and measure query usefulness of that retained
 set.
 
-The real-usecase timing profile confirms this is also a runtime bottleneck:
+The testing-baseline timing profile confirms this is also a runtime bottleneck:
 loss construction can dominate epoch time even when forward/backward are much
 smaller. That loss time currently pays for quantile selection, random ranking
 pairs, and balanced pointwise sampling over local proxy labels. Optimizing this
@@ -357,7 +357,7 @@ can beat random fill under the same temporal-spine scaffold.
 
 ## Runtime Optimization Plan
 
-Current real-usecase runs do not fully utilize the GPU because the dominant
+Current testing-baseline runs do not fully utilize the GPU because the dominant
 work is not the dense transformer forward pass. Recent queue logs show a
 typical epoch spending roughly:
 
@@ -490,7 +490,7 @@ Original issue:
 Implemented first pass:
 
 - added `--range_diagnostics_mode full|cached`
-- the real-usecase profile uses `cached`; without `--cache_dir` this falls back
+- the testing-baseline profile uses `cached`; without `--cache_dir` this falls back
   to normal computation
 - range usefulness label diagnostics now include per-component positive label
   mass and mass fractions, making it easier to see whether the local/additive
@@ -533,14 +533,15 @@ Code targets:
 
 Current issue:
 
-- current real-usecase runs use about 2.6GB of a 16GB GPU
-- `train_batch_size=32` leaves substantial VRAM unused
+- earlier testing-baseline runs used about 2.6GB of a 16GB GPU
+- `train_batch_size=32` left substantial VRAM unused
 - larger batches can reduce optimizer/Python overhead and provide larger GPU
   work units, but they do not fully solve the loss bottleneck by themselves
 
 Prepared implementation direction:
 
-- after vectorizing the loss, benchmark `train_batch_size=64` and `128`
+- the default testing-baseline profile now uses `train_batch_size=64`
+- after the loss/diagnostic batching changes, benchmark `train_batch_size=128`
 - matrix variants are available:
   - `tf32_bf16_bs64_inf32`
   - `tf32_bf16_bs128_inf32`
@@ -575,7 +576,7 @@ third should tune checkpoint cadence and batch size.
 
 ## Current Benchmark Evidence
 
-The `range_objective_audit_20260512-032736` real-usecase audit showed MLQDS did
+The `range_objective_audit_20260512-032736` testing-baseline audit showed MLQDS did
 not beat simple baselines at 1%, 2%, 5%, or 10% retained points. At 5%
 retention, MLQDS was close on `RangePointF1` but much weaker on
 `RangeUseful`, mainly because `TemporalCov` and `ShapeScore` trailed uniform
@@ -659,6 +660,22 @@ Concrete generator improvements to consider:
 The generator should continue to report coverage and query diagnostics, but
 coverage alone should not define workload quality.
 
+Current assessment before the next testing runs:
+
+- The current generator is good enough for baseline testing: density-weighted
+  anchors plus coverage-targeted expansion are producing non-empty,
+  non-duplicate workloads that hit the `20%` coverage target.
+- Do not block the next model-quality runs on a larger generator redesign.
+- The cheapest realism A/B is `range_footprint_jitter=0.25` versus the current
+  fixed-footprint default. This tests whether fixed 2.2 km / 5 hour boxes are
+  too uniform.
+- The next implementation step should be stratified range-query buckets:
+  few-ship, many-ship, sparse, dense, entry/exit-heavy, and crossing-heavy.
+  That would align workload generation more directly with the RangeUseful
+  subcomponents.
+- Port, route-lane, anchorage, chokepoint, and analyst-region priors are likely
+  valuable later, but they are a separate workload-realism project.
+
 ## Benchmarking Cadence
 
 Prefer smaller iterative benchmark runs over large broad queues. The default
@@ -681,7 +698,7 @@ Run a focused benchmark comparison between:
 - `loss_objective=budget_topk`
 - `loss_objective=ranking_bce`
 
-Keep the rest of the real-usecase profile fixed. Evaluate at `0.01,0.02,0.05,0.10`
+Keep the rest of the testing-baseline profile fixed. Evaluate at `0.01,0.02,0.05,0.10`
 retained ratios and compare `RangePointF1`, `RangeUseful`, `ShipF1`,
 `ShipCov`, `EntryExitF1`, `CrossingF1`, `TemporalCov`, `GapCov`, `TurnCov`,
 and `ShapeScore`.

@@ -35,7 +35,7 @@ from src.experiments.experiment_pipeline_helpers import _validation_query_count,
 
 
 def _profile_core_args() -> list[str]:
-    """Expected range_real_usecase child args without data-source/cap flags."""
+    """Expected range_testing_baseline child args without data-source/cap flags."""
     return [
         "--n_queries",
         "80",
@@ -55,6 +55,10 @@ def _profile_core_args() -> list[str]:
         "cached",
         "--query_chunk_size",
         "2048",
+        "--train_batch_size",
+        "64",
+        "--inference_batch_size",
+        "64",
         "--max_queries",
         "2048",
         "--compression_ratio",
@@ -66,9 +70,9 @@ def _profile_core_args() -> list[str]:
         "--checkpoint_smoothing_window",
         "1",
         "--checkpoint_full_f1_every",
-        "1",
+        "2",
         "--checkpoint_candidate_pool_size",
-        "1",
+        "2",
         "--loss_objective",
         "budget_topk",
         "--budget_loss_ratios",
@@ -76,7 +80,7 @@ def _profile_core_args() -> list[str]:
         "--budget_loss_temperature",
         "0.10",
         "--mlqds_temporal_fraction",
-        "0.50",
+        "0.25",
         "--mlqds_score_mode",
         "rank",
         "--mlqds_score_temperature",
@@ -114,9 +118,10 @@ def test_selected_variants_default_to_range_usefulness_checkpointing() -> None:
     variants = _selected_variants(None)
 
     assert [variant.name for variant in variants] == list(DEFAULT_VARIANTS)
-    assert [variant.name for variant in variants] == ["tf32_bf16_bs32_inf32"]
+    assert [variant.name for variant in variants] == ["tf32_bf16_bs64_inf32"]
     assert variants[0].checkpoint_f1_variant == "range_usefulness"
     assert variants[0].amp_mode == "bf16"
+    assert variants[0].train_batch_size == 64
 
 
 def test_selected_variants_can_run_explicit_sweeps() -> None:
@@ -157,7 +162,7 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert variants[1].amp_mode == "bf16"
     assert variants[1].checkpoint_f1_variant == "range_usefulness"
     assert variants[2].train_batch_size == 64
-    assert variants[2].inference_batch_size == 32
+    assert variants[2].inference_batch_size == 64
     assert variants[3].train_batch_size == 128
     assert variants[3].inference_batch_size == 32
     assert variants[2].amp_mode == "bf16"
@@ -471,7 +476,7 @@ def test_profile_args_use_three_day_train_validation_eval_sources() -> None:
     ]
 
 
-def test_real_usecase_profile_uses_requested_training_shape() -> None:
+def test_testing_baseline_profile_uses_requested_training_shape() -> None:
     args = argparse.Namespace(
         csv_path=None,
         train_csv_path="../AISDATA/cleaned/day1.csv",

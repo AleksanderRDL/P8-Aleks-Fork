@@ -65,10 +65,10 @@ Before expensive runs:
 make benchmark-preflight
 ```
 
-Launch one real-usecase range benchmark in tmux:
+Launch one testing-baseline range benchmark in tmux:
 
 ```bash
-ATTACH=0 BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_RUN_ID=range_testing_baseline_a make range-benchmark-tmux
 ```
 
 Launch a sequential multi-seed queue:
@@ -86,7 +86,7 @@ make clean-smoke-artifacts
 make clean-smoke-artifacts CONFIRM=1
 ```
 
-The active benchmark profile is `range_real_usecase`: a range-only, three-day
+The active benchmark profile is `range_testing_baseline`: a range-only, three-day
 cleaned-CSV profile with train, checkpoint-validation, and final-eval days and
 no loader caps by default. Keep exact benchmark
 settings in one place: [`src/experiments/README.md`](src/experiments/README.md).

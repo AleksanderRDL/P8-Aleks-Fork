@@ -18,6 +18,7 @@ from src.training.train_model import (
     TrainingOutputs,
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
+    _balanced_pointwise_loss_rows,
     _effective_budget_loss_ratios,
     _budget_topk_recall_loss,
     _budget_topk_recall_loss_rows,
@@ -133,6 +134,75 @@ def test_balanced_pointwise_loss_pushes_constant_scores_apart() -> None:
     assert pred.grad is not None
     assert float(pred.grad[:3].sum().item()) < 0.0
     assert float(pred.grad[3:].sum().item()) > 0.0
+
+
+def test_balanced_pointwise_loss_rows_matches_scalar_when_all_zeros_selected() -> None:
+    pred = torch.tensor(
+        [
+            [0.0, 0.1, -0.2, 0.3],
+            [0.2, -0.1, 0.4, -0.3],
+        ],
+        dtype=torch.float32,
+    )
+    target = torch.tensor(
+        [
+            [1.0, 0.5, 0.0, 0.0],
+            [0.0, 0.7, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    valid_mask = torch.ones_like(target, dtype=torch.bool)
+    generator = torch.Generator().manual_seed(123)
+
+    row_loss, active_rows = _balanced_pointwise_loss_rows(
+        pred=pred,
+        target=target,
+        valid_mask=valid_mask,
+        generator=generator,
+        negatives_per_positive=8,
+    )
+    scalar0 = _balanced_pointwise_loss(
+        pred=pred[0],
+        target=target[0],
+        valid_mask=valid_mask[0],
+        generator=torch.Generator().manual_seed(123),
+        negatives_per_positive=8,
+    )
+    scalar1 = _balanced_pointwise_loss(
+        pred=pred[1],
+        target=target[1],
+        valid_mask=valid_mask[1],
+        generator=torch.Generator().manual_seed(123),
+        negatives_per_positive=8,
+    )
+
+    assert active_rows.tolist() == [True, True]
+    assert torch.allclose(row_loss, torch.stack([scalar0, scalar1]))
+
+
+def test_balanced_pointwise_loss_rows_has_useful_gradients() -> None:
+    pred = torch.zeros((2, 6), dtype=torch.float32, requires_grad=True)
+    target = torch.tensor(
+        [
+            [1.0, 0.8, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.7, 0.4, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    valid_mask = torch.ones_like(target, dtype=torch.bool)
+
+    row_loss, active_rows = _balanced_pointwise_loss_rows(
+        pred=pred,
+        target=target,
+        valid_mask=valid_mask,
+        generator=torch.Generator().manual_seed(123),
+        negatives_per_positive=2,
+    )
+    row_loss[active_rows].mean().backward()
+
+    assert pred.grad is not None
+    assert float(pred.grad[target > 0].sum().item()) < 0.0
+    assert float(pred.grad[target == 0].sum().item()) > 0.0
 
 
 def test_ranking_pair_sampler_returns_finite_loss() -> None:

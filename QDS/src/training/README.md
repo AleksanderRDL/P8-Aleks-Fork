@@ -33,7 +33,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   endpoints, gap coverage, and local shape/turn points. Cross-trajectory
   proximity is not used.
 - `range_boundary_prior_weight` is still available as an explicit point-hit
-  boundary prior, but the default real-usecase path keeps it at `0.0` because
+  boundary prior, but the default testing-baseline path keeps it at `0.0` because
   `usefulness` already reports entry/exit signal as a separate component.
 - These labels remain local/additive approximations. They are closer to
   range-local retained-set usefulness than pure point hits, but they are not an
@@ -108,13 +108,13 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - Epoch diagnostics record `epoch_forward_seconds`, `epoch_loss_seconds`,
   `epoch_backward_seconds`, `epoch_diagnostic_seconds`,
   `epoch_f1_seconds`, and filtered-window counts for bottleneck analysis.
-- Real-usecase profiling showed the old ranking loss could dominate epoch time
+- Testing-baseline profiling showed the old ranking loss could dominate epoch time
   while optimizing a local proxy. The budget-top-k objective is the first loss
   redesign step; judge it by retained-set `RangeUseful`/`RangePointF1` across
   compression ratios before further tuning.
 - Defaults: `window_length=512`, `window_stride=256`,
   `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
-  `allow_tf32=False`, and `amp_mode="off"`. The real-usecase benchmark profile
+  `allow_tf32=False`, and `amp_mode="off"`. The testing-baseline benchmark profile
   overrides runtime precision through its selected matrix variant.
 
 ## Persistence

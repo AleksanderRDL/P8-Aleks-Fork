@@ -35,5 +35,5 @@ H + C -> single pure-workload score head -> logits[L]
 - Point features: 7 columns for the baseline model, 8 for the turn-aware model.
 - Query features: 12 padded features from `src.queries.query_types.pad_query_features`.
 - Output: one pure-workload logit for each point.
-- Default query chunk size: 2048. Current real-usecase range benchmarks keep the
+- Default query chunk size: 2048. Current testing-baseline range benchmarks keep the
   workload below that so cross-attention runs as one exact query chunk.

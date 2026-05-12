@@ -11,7 +11,7 @@ trains MLQDS, evaluates baselines, and writes run artifacts.
 | `experiment_cli.py` | Shared `argparse` parser for training/evaluation runs. |
 | `experiment_config.py` | Data, query, model, baseline, workload, and seed config dataclasses. |
 | `experiment_pipeline_helpers.py` | Split, workload generation, diagnostics reuse, training, evaluation, and result dumping. |
-| `benchmark_profiles.py` | Central benchmark profile constants such as `range_real_usecase`. |
+| `benchmark_profiles.py` | Central benchmark profile constants such as `range_testing_baseline`. |
 | `benchmark_matrix.py` | Range-focused benchmark matrix runner. |
 | `benchmark_runtime.py` | Runtime wrapper for train/inference timing experiments. |
 | `run_ais_experiment.py` | Main train/evaluate entry point. |
@@ -68,7 +68,7 @@ Experiment entrypoints train and evaluate one model per pure workload. Use
 
 ## Real-Usecase Range Profile
 
-`benchmark_matrix.py --profile range_real_usecase` is the current benchmark
+`benchmark_matrix.py --profile range_testing_baseline` is the current benchmark
 baseline. It selects the first three sorted cleaned CSV files from `--csv_path`
 as train/checkpoint-validation/eval days unless explicit paths are provided.
 
@@ -84,12 +84,13 @@ Profile shape:
 | Epoch budget | `20` with `early_stopping_patience=5` |
 | Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=range_usefulness` by default |
 | Loss objective | `loss_objective=budget_topk`, `budget_loss_ratios=0.01,0.02,0.05,0.10`, `residual_label_mode=temporal` |
-| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.50`, `mlqds_diversity_bonus=0.0`, `mlqds_score_temperature=1.0` |
+| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.25`, `mlqds_diversity_bonus=0.0`, `mlqds_score_temperature=1.0` |
 | Attention chunk | `query_chunk_size=2048`; the profile uses the same value for `max_queries` |
+| Window batching | `train_batch_size=64`, `inference_batch_size=64` |
 | Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
 | Range diagnostics | `range_diagnostics_mode=cached` when `--cache_dir` is set |
-| Diagnostics | exact validation every eligible epoch by default: `f1_diagnostic_every=1`, `checkpoint_full_f1_every=1`, `checkpoint_candidate_pool_size=1`, no smoothing (`checkpoint_smoothing_window=1`) |
-| Runtime variant | `tf32_bf16_bs32_inf32` by default |
+| Diagnostics | F1 diagnostics are eligible every epoch; exact validation runs every second eligible epoch with `checkpoint_full_f1_every=2`, `checkpoint_candidate_pool_size=2`, no smoothing (`checkpoint_smoothing_window=1`) |
+| Runtime variant | `tf32_bf16_bs64_inf32` by default |
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
 
@@ -101,7 +102,7 @@ batched budget-top-k loss can use more available VRAM efficiently.
 Use `tf32_bf16_bs32_inf32_temporal000`,
 `tf32_bf16_bs32_inf32_temporal050`, and
 `tf32_bf16_bs32_inf32_temporal075` as temporal-spine ablations. The default is
-`0.50`; `0.75` is an explicit high-scaffold comparison rather than the
+`0.25`; `0.75` is an explicit high-scaffold comparison rather than the
 baseline.
 Use `tf32_bf16_bs32_inf32_residual_none` to test whether training on all labels
 beats temporal-residual learned-fill training.
@@ -109,14 +110,27 @@ Use `tf32_bf16_bs32_inf32_diversity005` to test the old spacing bonus against
 the no-diversity default.
 
 `query_coverage` is a target used for workload generation and diagnostics.
-For the real-usecase profile, `n_queries` is only the minimum workload size;
+For the testing-baseline profile, `n_queries` is only the minimum workload size;
 generation continues until the target is reached or `max_queries` is hit.
 `query_generation_diagnostics` records the minimum query count, max query cap,
 final generated query count, per-type query counts, final coverage, and stop
 reason for each split.
+
+Query-generation follow-up notes:
+
+- The current 70/30 density/uniform point-anchor sampler is adequate for
+  baseline testing, but it is still a proxy for real analyst behavior.
+- The lowest-cost realism improvement is a small sweep over
+  `range_footprint_jitter`, e.g. `0.0` vs `0.25`, to avoid training only on
+  fixed-size boxes.
+- The next useful generator change is stratified range workloads: few-ship,
+  many-ship, sparse, dense, entry/exit-heavy, and crossing-heavy queries.
+- Larger realism work, such as explicit port, lane, chokepoint, or anchorage
+  priors, should be handled as a separate workload-generation project.
+
 When `--cache_dir` is set, generated workloads are cached under
 `<cache_dir>/workloads/` by data fingerprint, query config, seed, and workload
-map. The real-usecase profile also enables `--range_diagnostics_mode cached`,
+map. The testing-baseline profile also enables `--range_diagnostics_mode cached`,
 which stores range workload summaries, per-query diagnostic rows, and training
 label tensors under `<cache_dir>/range_diagnostics/`. Final matched evaluation
 remains exact; stale or incomplete diagnostics cache entries are ignored and
@@ -130,13 +144,13 @@ Direct matrix run:
 
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile range_real_usecase \
+  --profile range_testing_baseline \
   --workloads range \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_real_usecase \
-  --variants tf32_bf16_bs32_inf32 \
-  --results_dir artifacts/benchmarks/range_real_usecase/runs/manual_range_real_usecase_a \
-  --run_id manual_range_real_usecase_a
+  --cache_dir artifacts/cache/range_testing_baseline \
+  --variants tf32_bf16_bs64_inf32 \
+  --results_dir artifacts/benchmarks/range_testing_baseline/runs/manual_range_testing_baseline_a \
+  --run_id manual_range_testing_baseline_a
 ```
 
 Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
@@ -146,7 +160,7 @@ behavior first:
 ```bash
 ../.venv/bin/python scripts/estimate_range_coverage.py \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_real_usecase \
+  --cache_dir artifacts/cache/range_testing_baseline \
   --query_counts 80,384,512,640,1024,2048 \
   --sample_stride 20 \
   --target_coverage 0.20 \
@@ -162,22 +176,22 @@ IDE session and capture system telemetry beside the run.
 
 ```bash
 make benchmark-preflight
-ATTACH=0 BENCHMARK_RUN_ID=range_real_usecase_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_RUN_ID=range_testing_baseline_a make range-benchmark-tmux
 ```
 
 Queue rows use a tab-separated plan file:
 
 ```text
-range_real_usecase_base_seed42	42
-range_real_usecase_rank_tie_seed42	42	--mlqds_score_mode rank_tie
-range_real_usecase_pairs192_seed42	42	--ranking_pairs_per_type 192
+range_testing_baseline_base_seed42	42
+range_testing_baseline_rank_tie_seed42	42	--mlqds_score_mode rank_tie
+range_testing_baseline_pairs192_seed42	42	--ranking_pairs_per_type 192
 ```
 
 Launch a sequential queue:
 
 ```bash
 ATTACH=0 \
-  BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_real_usecase/queues/my_plan.tsv \
+  BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_testing_baseline/queues/my_plan.tsv \
   BENCHMARK_CONTINUE_ON_FAILURE=1 \
   make range-benchmark-queue-tmux
 ```
@@ -236,8 +250,8 @@ benchmark runs.
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode train \
-  --profile range_real_usecase \
-  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
+  --profile range_testing_baseline \
+  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_testing_baseline" \
   --train_batch_sizes 16,32,64 \
-  --results_dir artifacts/benchmarks/runtime_range_real_usecase
+  --results_dir artifacts/benchmarks/runtime_range_testing_baseline
 ```

@@ -17,10 +17,10 @@ BENCHMARK_CHILD_EXTRA_ARGS ?=
 BENCHMARK_PLAN_FILE ?=
 BENCHMARK_CONTINUE_ON_FAILURE ?= 0
 ATTACH ?=
-BENCHMARK_PROFILE ?= range_real_usecase
-BENCHMARK_VARIANTS ?= tf32_bf16_bs32_inf32
-BENCHMARK_FAMILY ?= artifacts/benchmarks/range_real_usecase
-BENCHMARK_CACHE ?= artifacts/cache/range_real_usecase
+BENCHMARK_PROFILE ?= range_testing_baseline
+BENCHMARK_VARIANTS ?= tf32_bf16_bs64_inf32
+BENCHMARK_FAMILY ?= artifacts/benchmarks/range_testing_baseline
+BENCHMARK_CACHE ?= artifacts/cache/range_testing_baseline
 CONFIRM ?=
 
 .PHONY: help check-env install install-cpu install-cuda test typecheck smoke smoke-csv benchmark-preflight benchmark-queue-preflight list-runs clean-smoke-artifacts range-benchmark-tmux range-benchmark-queue-tmux

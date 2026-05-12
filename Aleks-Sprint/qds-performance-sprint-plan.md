@@ -199,7 +199,7 @@ Each benchmark artifact should include at least:
 
 ### Default Benchmark Matrix
 
-Use one explicit range real-usecase matrix profile for model-quality decisions.
+Use one explicit range testing-baseline matrix profile for model-quality decisions.
 The current values are intentionally maintained in `QDS/src/experiments/README.md`
 and `QDS/src/experiments/benchmark_profiles.py` to avoid this historical plan
 drifting from runnable defaults.
@@ -340,7 +340,7 @@ Completion note, 2026-05-10:
 - Verified `../.venv/bin/python -m src.experiments.benchmark_runtime --help`.
 - Historical smoke verification used the old synthetic `small` runtime profile,
   which has since been removed. Current smoke checks should use `make smoke`;
-  current benchmark-quality checks should use `--profile range_real_usecase`
+  current benchmark-quality checks should use `--profile range_testing_baseline`
   with real CSV data.
 
 ### 4. Add GPU Utilization Guidance
@@ -814,7 +814,7 @@ Range benchmark tightening, 2026-05-10:
 - Added cache warmup for cleaned-CSV matrix runs. When `--cache_dir` is set,
   the matrix prebuilds the segmented Parquet caches before measured variants
   and records warmup metadata in `benchmark_matrix.json`.
-- Updated the range real-usecase matrix profile to use three cleaned CSV days:
+- Updated the range testing-baseline matrix profile to use three cleaned CSV days:
   passing `--csv_path ../AISDATA/cleaned` selects the first three sorted cleaned
   files as train/checkpoint-validation/eval days. Explicit `--train_csv_path`,
   `--validation_csv_path`, and `--eval_csv_path` can be used to choose the days
@@ -822,28 +822,29 @@ Range benchmark tightening, 2026-05-10:
 - Removed loader caps from the recommended three-day profile so the benchmark
   uses all valid segments and points from those days unless a cap is explicitly
   passed.
-- Current range real-usecase benchmark shape:
+- Current range testing-baseline benchmark shape:
 
 ```bash
 cd QDS
 ../.venv/bin/python -m src.experiments.benchmark_matrix \
-  --profile range_real_usecase \
+  --profile range_testing_baseline \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_real_usecase \
+  --cache_dir artifacts/cache/range_testing_baseline \
   --variants tf32_bf16_bs32_inf32 \
-  --results_dir artifacts/benchmarks/range_real_usecase/runs/manual_range_real_usecase_a \
-  --run_id manual_range_real_usecase_a
+  --results_dir artifacts/benchmarks/range_testing_baseline/runs/manual_range_testing_baseline_a \
+  --run_id manual_range_testing_baseline_a
 ```
 
   Current canonical profile settings are documented in
-  `QDS/src/experiments/README.md`. As of the current range real-usecase profile:
+  `QDS/src/experiments/README.md`. As of the current range testing-baseline profile:
   80 range queries, 20% target query coverage, fixed 2.2 km / 5 hour range
   half-windows, 5% retained-point compression, `query_chunk_size=2048`,
   20 epochs with early stopping, range-usefulness checkpointing,
   cached range diagnostics when `--cache_dir` is set,
   `checkpoint_smoothing_window=1` (no rolling smoothing),
-  `checkpoint_full_f1_every=1`, `checkpoint_candidate_pool_size=1`,
-  vectorized ranking-pair sampling, `mlqds_temporal_fraction=0.50`,
+  `checkpoint_full_f1_every=2`, `checkpoint_candidate_pool_size=2`,
+  vectorized ranking-pair sampling, `train_batch_size=64`,
+  `mlqds_temporal_fraction=0.25`,
   `mlqds_diversity_bonus=0.0`,
   `residual_label_mode=temporal`, and F1 diagnostics every epoch. Budget-top-k
   training now applies temporal residual masking per retained-point budget
@@ -851,7 +852,7 @@ cd QDS
 
 - Removed the old synthetic `small`/`medium`/`serious` runtime benchmark
   profiles from `benchmark_runtime.py`. The runtime wrapper now exposes only
-  `range_real_usecase` and requires real CSV data in `--train_extra_args` for
+  `range_testing_baseline` and requires real CSV data in `--train_extra_args` for
   training modes.
 
 - Added a tmux-backed long-run workflow for this benchmark:
@@ -863,7 +864,7 @@ make range-benchmark-tmux
 
   The launcher creates one pane for the benchmark and one pane for lightweight
   monitoring. Each launch writes one run directory under
-  `artifacts/benchmarks/range_real_usecase/runs/<run_id>/`.
+  `artifacts/benchmarks/range_testing_baseline/runs/<run_id>/`.
   The run directory contains `README.md`, `run_config.json`,
   `run_status.json`, `artifact_index.json`, `benchmark_matrix.{json,csv,md}`,
   `logs/`, and `variants/<variant>/`. The benchmark family root also gets
@@ -938,7 +939,7 @@ Risk:
 
 - Medium.
 - Diagnostics are valuable; do not hide important warnings by default in
-  real-usecase runs.
+  testing-baseline runs.
 
 Acceptance check:
 
@@ -948,9 +949,9 @@ Acceptance check:
 
 Task:
 
-- Keep `checkpoint_selection_metric="f1"` as the default for real-usecase runs.
+- Keep `checkpoint_selection_metric="f1"` as the default for testing-baseline runs.
 - Use `checkpoint_f1_variant="range_usefulness"` as the default for
-  range-specialist real-usecase runs. Keep `"answer"` and `"combined"` only as
+  range-specialist testing-baseline runs. Keep `"answer"` and `"combined"` only as
   explicit legacy ablations.
 - Keep `uniform_gap` available as an explicit experimental variant rather than
   the default.

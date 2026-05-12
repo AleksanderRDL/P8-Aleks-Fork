@@ -16,14 +16,14 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_matrix profile. Default: range_real_usecase.
+  PROFILE                      benchmark_matrix profile. Default: range_testing_baseline.
   WORKLOADS                    benchmark_matrix --workloads value. Default: range.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
-                               artifacts/benchmarks/range_real_usecase.
+                               artifacts/benchmarks/range_testing_baseline.
   VARIANTS                     benchmark_matrix --variants value. Default:
-                               tf32_bf16_bs32_inf32.
+                               tf32_bf16_bs64_inf32.
   SEEDS                        Comma-separated seeds for default plan. Default: 42,43,44.
   CHILD_EXTRA_ARGS             String passed as benchmark_matrix --extra_args for
                                every default-plan run. Example:
@@ -77,12 +77,12 @@ trim() {
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
 PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
-PROFILE="${PROFILE:-range_real_usecase}"
+PROFILE="${PROFILE:-range_testing_baseline}"
 WORKLOADS="${WORKLOADS:-range}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
-CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_real_usecase}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_real_usecase}"
-VARIANTS="${VARIANTS:-tf32_bf16_bs32_inf32}"
+CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
+VARIANTS="${VARIANTS:-tf32_bf16_bs64_inf32}"
 SEEDS="${SEEDS:-42,43,44}"
 CHILD_EXTRA_ARGS="${CHILD_EXTRA_ARGS:-}"
 PLAN_FILE="${PLAN_FILE:-}"

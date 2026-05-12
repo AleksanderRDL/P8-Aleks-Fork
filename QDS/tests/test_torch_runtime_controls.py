@@ -249,7 +249,7 @@ def test_parse_train_batch_sizes() -> None:
     assert _parse_train_batch_sizes(None) is None
 
 
-def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
+def test_runtime_profile_uses_testing_baseline_shape(tmp_path) -> None:
     args = _profile_train_args(DEFAULT_PROFILE, seed=42, results_dir=tmp_path / "run", checkpoint=tmp_path / "m.pt")
 
     assert "--n_queries" in args
@@ -257,6 +257,8 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     assert args[args.index("--max_queries") + 1] == "2048"
     assert args[args.index("--compression_ratio") + 1] == "0.05"
     assert args[args.index("--query_chunk_size") + 1] == "2048"
+    assert args[args.index("--train_batch_size") + 1] == "64"
+    assert args[args.index("--inference_batch_size") + 1] == "64"
     assert args[args.index("--query_coverage") + 1] == "0.20"
     assert args[args.index("--range_spatial_km") + 1] == "2.2"
     assert args[args.index("--range_time_hours") + 1] == "5.0"
@@ -265,12 +267,12 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
-    assert args[args.index("--checkpoint_full_f1_every") + 1] == "1"
-    assert args[args.index("--checkpoint_candidate_pool_size") + 1] == "1"
+    assert args[args.index("--checkpoint_full_f1_every") + 1] == "2"
+    assert args[args.index("--checkpoint_candidate_pool_size") + 1] == "2"
     assert args[args.index("--loss_objective") + 1] == "budget_topk"
     assert args[args.index("--budget_loss_ratios") + 1] == "0.01,0.02,0.05,0.10"
     assert args[args.index("--budget_loss_temperature") + 1] == "0.10"
-    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.50"
+    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.25"
     assert args[args.index("--mlqds_score_mode") + 1] == "rank"
     assert args[args.index("--mlqds_score_temperature") + 1] == "1.00"
     assert args[args.index("--mlqds_rank_confidence_weight") + 1] == "0.15"

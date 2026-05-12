@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DEFAULT_PROFILE = "range_real_usecase"
+DEFAULT_PROFILE = "range_testing_baseline"
 PROFILE_CHOICES = (DEFAULT_PROFILE,)
 ProfileSetting = int | float | str | bool | list[float] | None
 
@@ -24,6 +24,8 @@ class BenchmarkProfile:
     range_footprint_jitter: float
     range_diagnostics_mode: str
     query_chunk_size: int
+    train_batch_size: int
+    inference_batch_size: int
     compression_ratio: float
     epochs: int
     early_stopping_patience: int
@@ -46,7 +48,7 @@ class BenchmarkProfile:
     range_boundary_prior_weight: float
 
 
-RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
+RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
     name=DEFAULT_PROFILE,
     n_queries=80,
     query_coverage=0.20,
@@ -57,13 +59,15 @@ RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
     range_footprint_jitter=0.0,
     range_diagnostics_mode="cached",
     query_chunk_size=2048,
+    train_batch_size=64,
+    inference_batch_size=64,
     compression_ratio=0.05,
     epochs=20,
     early_stopping_patience=5,
     checkpoint_smoothing_window=1,
-    checkpoint_full_f1_every=1,
-    checkpoint_candidate_pool_size=1,
-    mlqds_temporal_fraction=0.50,
+    checkpoint_full_f1_every=2,
+    checkpoint_candidate_pool_size=2,
+    mlqds_temporal_fraction=0.25,
     workload="range",
     checkpoint_selection_metric="f1",
     loss_objective="budget_topk",
@@ -79,7 +83,7 @@ RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
     range_boundary_prior_weight=0.0,
 )
 
-_PROFILES = {RANGE_REAL_USECASE_PROFILE.name: RANGE_REAL_USECASE_PROFILE}
+_PROFILES = {RANGE_TESTING_BASELINE_PROFILE.name: RANGE_TESTING_BASELINE_PROFILE}
 
 
 def benchmark_profile(name: str) -> BenchmarkProfile:
@@ -120,6 +124,10 @@ def benchmark_profile_args(
         profile.range_diagnostics_mode,
         "--query_chunk_size",
         str(profile.query_chunk_size),
+        "--train_batch_size",
+        str(profile.train_batch_size),
+        "--inference_batch_size",
+        str(profile.inference_batch_size),
         "--max_queries",
         str(profile.query_chunk_size),
         "--compression_ratio",
@@ -184,6 +192,8 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "range_footprint_jitter": profile.range_footprint_jitter,
         "range_diagnostics_mode": profile.range_diagnostics_mode,
         "query_chunk_size": profile.query_chunk_size,
+        "train_batch_size": profile.train_batch_size,
+        "inference_batch_size": profile.inference_batch_size,
         "compression_ratio": profile.compression_ratio,
         "epochs": profile.epochs,
         "early_stopping_patience": profile.early_stopping_patience,

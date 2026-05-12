@@ -41,7 +41,7 @@ INFERENCE_STEP_RE = re.compile(
     r"^\[(?P<name>eval|workload|load-data|trajectory-length-loss)\].*?(?:done|generated|in)\s+"
     r"(?P<seconds>[0-9.]+)s"
 )
-REAL_USECASE_PROFILE_ARGS = benchmark_profile_args(
+DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(
     DEFAULT_PROFILE,
     include_workload=True,
     include_checkpoint_selection=True,
@@ -340,7 +340,7 @@ def _profile_train_args(profile: str, seed: int, results_dir: Path, checkpoint: 
         str(checkpoint),
     ]
     if profile == DEFAULT_PROFILE:
-        return [*REAL_USECASE_PROFILE_ARGS, *common]
+        return [*DEFAULT_BASELINE_PROFILE_ARGS, *common]
     raise ValueError(f"Unknown benchmark profile: {profile}")
 
 
@@ -566,7 +566,7 @@ def main() -> None:
         raise SystemExit("--checkpoint is required for --mode inference.")
     if args.mode in {"train", "both"} and not _extra_args_include_training_data_source(args.train_extra_args):
         raise SystemExit(
-            "--mode train/both with --profile range_real_usecase requires --train_extra_args "
+            "--mode train/both with --profile range_testing_baseline requires --train_extra_args "
             "containing --csv_path or --train_csv_path/--eval_csv_path."
         )
     try:

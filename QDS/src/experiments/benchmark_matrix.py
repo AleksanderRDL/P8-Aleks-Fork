@@ -39,7 +39,7 @@ PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 3
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
-REAL_USECASE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE)
+DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE)
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         allow_tf32=True,
         amp_mode="bf16",
         train_batch_size=64,
-        inference_batch_size=32,
+        inference_batch_size=64,
     ),
     "tf32_bf16_bs128_inf32": MatrixVariant(
         name="tf32_bf16_bs128_inf32",
@@ -214,7 +214,7 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         extra_args=("--mlqds_score_mode", "temperature_sigmoid", "--mlqds_score_temperature", "1.00"),
     ),
 }
-DEFAULT_VARIANTS = ("tf32_bf16_bs32_inf32",)
+DEFAULT_VARIANTS = ("tf32_bf16_bs64_inf32",)
 
 
 @dataclass(frozen=True)
@@ -516,10 +516,10 @@ def _profile_args(
         profile_args += [
             "--eval_csv_path",
             data_sources.eval_csv_path,
-            *REAL_USECASE_PROFILE_ARGS,
+            *DEFAULT_BASELINE_PROFILE_ARGS,
         ]
     elif data_sources.csv_path:
-        profile_args = ["--csv_path", data_sources.csv_path, *REAL_USECASE_PROFILE_ARGS]
+        profile_args = ["--csv_path", data_sources.csv_path, *DEFAULT_BASELINE_PROFILE_ARGS]
     else:
         raise ValueError(
             f"{DEFAULT_PROFILE} requires --csv_path or --train_csv_path/--eval_csv_path."
@@ -1270,7 +1270,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--results_dir",
         type=str,
-        default="artifacts/benchmarks/range_real_usecase/runs/manual_matrix",
+        default="artifacts/benchmarks/range_testing_baseline/runs/manual_matrix",
     )
     parser.add_argument(
         "--run_id",
@@ -1284,7 +1284,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Cleaned AIS CSV or directory. A directory selects the first three sorted "
-            "CSV files as train/validation/eval days for the range real-usecase benchmark."
+            "CSV files as train/validation/eval days for the range testing-baseline benchmark."
         ),
     )
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)

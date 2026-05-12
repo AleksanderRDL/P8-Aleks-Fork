@@ -118,6 +118,45 @@ def _balanced_pointwise_loss(
     return F.binary_cross_entropy_with_logits(pred[pointwise_idx], target[pointwise_idx].clamp(0.0, 1.0))
 
 
+def _balanced_pointwise_loss_rows(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    generator: torch.Generator,
+    negatives_per_positive: int = 3,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return balanced pointwise BCE for each padded row in one tensor path."""
+    if pred.ndim != 2 or target.shape != pred.shape or valid_mask.shape != pred.shape:
+        raise ValueError("pred, target, and valid_mask must have matching shape [B, L].")
+
+    positive = valid_mask & (target > 0.0)
+    zero = valid_mask & (target <= 0.0)
+    positive_count = positive.sum(dim=1)
+    max_zero = positive_count * max(1, int(negatives_per_positive))
+    active_rows = positive_count > 0
+
+    if pred.device.type == "cpu":
+        random_values = torch.rand(pred.shape, dtype=pred.dtype, device=pred.device, generator=generator)
+    else:
+        random_values = torch.rand(pred.shape, dtype=pred.dtype, device=pred.device)
+    zero_order = random_values.masked_fill(~zero, float("inf")).argsort(dim=1)
+    zero_rank = torch.empty_like(zero_order)
+    rank_values = torch.arange(pred.shape[1], dtype=zero_order.dtype, device=pred.device).unsqueeze(0)
+    zero_rank.scatter_(1, zero_order, rank_values.expand_as(zero_order))
+    selected_zero = zero & (zero_rank < max_zero.unsqueeze(1))
+    selected = positive | selected_zero
+
+    per_element = F.binary_cross_entropy_with_logits(
+        pred,
+        target.clamp(0.0, 1.0),
+        reduction="none",
+    )
+    selected_float = selected.to(dtype=per_element.dtype)
+    denom = selected_float.sum(dim=1).clamp(min=1.0)
+    row_loss = (per_element * selected_float).sum(dim=1) / denom
+    return row_loss, active_rows
+
+
 def _budget_topk_recall_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -1145,8 +1184,8 @@ def train_model(
     train_batch_size = max(1, int(getattr(model_config, "train_batch_size", 1)))
     windows = batch_windows(single_windows, train_batch_size)
     trained_window_count = len(single_windows)
-    # Diagnostic pass operates on single windows so we can cheaply subsample a
-    # fraction of them (batched diagnostics would waste the remaining lanes).
+    # Keep diagnostics as sampleable single windows, then batch the selected
+    # subset before forward so sampled diagnostics still use useful GPU work.
     diag_windows = single_windows
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
@@ -1269,10 +1308,10 @@ def train_model(
             epoch_timing["forward_s"] += time.perf_counter() - forward_t0
             loss_t0 = time.perf_counter()
             pred_batch = pred_batch.float()
-            # pred_batch: (B, L).  Accumulate per-window loss terms across
-            # the batch and backprop once per batch — this is what makes the
-            # GPU actually saturated compared to the old batch=1 loop.
-            loss_terms: list[torch.Tensor] = []
+            # pred_batch: (B, L).  Build the active objective in batched tensor
+            # paths where possible so batch-size increases create larger GPU
+            # work units instead of many tiny per-window loss calls.
+            loss: torch.Tensor | None = None
             B = pred_batch.shape[0]
             batch_global_idx = w.global_indices.to(device=device)
             valid_batch = batch_global_idx >= 0
@@ -1282,6 +1321,16 @@ def train_model(
             positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
             positive_windows[active_type_id] += int(positive_row_mask.sum().item())
             skipped_zero_windows[active_type_id] += int((~positive_row_mask).sum().item())
+            pointwise_mask_batch = batch_label_mask
+            if temporal_residual_union_mask is not None:
+                base_for_batch = temporal_residual_union_mask[safe_global_idx] & valid_batch
+                pointwise_mask_batch = batch_label_mask & (~base_for_batch)
+            pointwise_loss_rows, _pointwise_active_rows = _balanced_pointwise_loss_rows(
+                pred=pred_batch,
+                target=batch_labels,
+                valid_mask=pointwise_mask_batch,
+                generator=g,
+            )
 
             if loss_objective == "budget_topk":
                 if temporal_residual_budget_masks:
@@ -1302,51 +1351,40 @@ def train_model(
                         temperature=budget_loss_temperature,
                     )
 
-                for b in torch.where(positive_row_mask.detach().cpu())[0].tolist():
-                    row = int(b)
-                    idx = batch_global_idx[row]
-                    valid_window = idx >= 0
-                    global_idx = idx[valid_window]
-                    pred_valid = pred_batch[row][valid_window]
-                    t_labels = training_target_dev[global_idx]
-                    t_mask = labelled_mask_dev[global_idx]
-                    pointwise_mask = t_mask
-                    if temporal_residual_union_mask is not None:
-                        pointwise_mask = t_mask & (~temporal_residual_union_mask[global_idx])
-                    pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, pointwise_mask, generator=g)
-                    loss_terms.append(rank_loss_rows[row] + model_config.pointwise_loss_weight * pointwise_term)
+                if bool(positive_row_mask.any().item()):
+                    row_losses = rank_loss_rows + model_config.pointwise_loss_weight * pointwise_loss_rows
+                    loss = (
+                        row_losses[positive_row_mask].sum() / float(B)
+                        + model_config.l2_score_weight * (pred_batch ** 2).mean()
+                    )
             else:
+                loss_terms: list[torch.Tensor] = []
                 for b in torch.where(positive_row_mask.detach().cpu())[0].tolist():
                     row = int(b)
                     idx = batch_global_idx[row]
                     valid_window = idx >= 0
                     global_idx = idx[valid_window]
                     pred_valid = pred_batch[row][valid_window]
-                    t_labels = training_target_dev[global_idx]
-                    t_mask = labelled_mask_dev[global_idx]
                     rank_loss, pair_count = _ranking_loss_for_type(
                         pred=pred_valid,
-                        target=t_labels,
-                        valid_mask=t_mask,
+                        target=training_target_dev[global_idx],
+                        valid_mask=labelled_mask_dev[global_idx],
                         pairs_per_type=model_config.ranking_pairs_per_type,
                         top_quantile=model_config.ranking_top_quantile,
                         margin=model_config.rank_margin,
                         generator=g,
                     )
                     ranking_pair_counts[active_type_id] += int(pair_count)
-                    pointwise_mask = t_mask
-                    if temporal_residual_union_mask is not None:
-                        pointwise_mask = t_mask & (~temporal_residual_union_mask[global_idx])
-                    pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, pointwise_mask, generator=g)
-                    loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_term)
+                    loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_loss_rows[row])
+                if loss_terms:
+                    loss = (
+                        torch.stack(loss_terms).sum() / float(B)
+                        + model_config.l2_score_weight * (pred_batch ** 2).mean()
+                    )
             epoch_timing["loss_s"] += time.perf_counter() - loss_t0
 
-            if loss_terms:
+            if loss is not None:
                 backward_t0 = time.perf_counter()
-                loss = (
-                    torch.stack(loss_terms).sum() / float(B)
-                    + model_config.l2_score_weight * (pred_batch ** 2).mean()
-                )
                 opt.zero_grad(set_to_none=True)
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite training loss with amp_mode={amp_mode}: {float(loss.item())}")
@@ -1385,19 +1423,21 @@ def train_model(
             with torch.no_grad():
                 all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
-                for w in sample_windows:
+                diagnostic_batch_size = max(1, int(getattr(model_config, "inference_batch_size", train_batch_size)))
+                for w in batch_windows(sample_windows, diagnostic_batch_size):
                     with torch_autocast_context(device, amp_mode):
                         wp = model(
                             points=w.points,
                             queries=norm_queries_dev,
                             query_type_ids=type_ids_dev,
                             padding_mask=w.padding_mask,
-                        )[0]
+                        )
                     wp = wp.float()
-                    widx = w.global_indices[0]
-                    valid = widx >= 0
-                    all_pred[widx[valid]] = all_pred[widx[valid]] + wp[valid]
-                    pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
+                    for batch_idx in range(wp.shape[0]):
+                        widx = w.global_indices[batch_idx]
+                        valid = widx >= 0
+                        all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx, valid]
+                        pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
                 covered_mask = pred_count > 0
                 pred_count = pred_count.clamp(min=1.0)
                 full_pred = all_pred / pred_count
