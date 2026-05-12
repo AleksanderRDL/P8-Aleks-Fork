@@ -23,6 +23,11 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert 0.0 <= ml <= 1.0
     assert 0.0 <= uni <= 1.0
     assert "Random" not in out.metrics_dump["matched"]
+    assert "TemporalRandomFill" not in out.metrics_dump["matched"]
+    assert "TemporalRandomFill" in out.metrics_dump["learned_fill_diagnostics"]
+    assert "TemporalOracleFill" in out.metrics_dump["learned_fill_diagnostics"]
+    assert "training_target_diagnostics" in out.metrics_dump
+    assert "workload_distribution_comparison" in out.metrics_dump
     assert "RangePointF1" in out.matched_table
     assert "RangeUseful" in out.matched_table
     assert "AggregateErr" not in out.matched_table

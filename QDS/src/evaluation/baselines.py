@@ -14,6 +14,7 @@ from src.experiments.experiment_config import TypedQueryWorkload
 from src.simplification.mlqds_scoring import simplify_mlqds_predictions, workload_type_head
 from src.simplification.simplify_trajectories import (
     evenly_spaced_indices,
+    simplify_with_temporal_score_hybrid,
     simplify_with_scores,
 )
 from src.training.train_model import TrainingOutputs
@@ -110,6 +111,32 @@ class UniformTemporalMethod:
             local_idx = evenly_spaced_indices(n, k, points.device)
             retained[start + local_idx] = True
         return retained
+
+
+@dataclass
+class ScoreHybridMethod:
+    """Temporal-base plus caller-supplied score-fill diagnostic method."""
+
+    name: str
+    scores: torch.Tensor
+    temporal_fraction: float = 0.75
+    diversity_bonus: float = 0.05
+
+    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+        """Retain temporal base points, then fill with supplied per-point scores."""
+        if int(self.scores.numel()) != int(points.shape[0]):
+            raise ValueError(
+                "ScoreHybridMethod scores must match flattened points: "
+                f"got {int(self.scores.numel())}, expected {int(points.shape[0])}."
+            )
+        scores = self.scores.to(device=points.device, dtype=torch.float32)
+        return simplify_with_temporal_score_hybrid(
+            scores,
+            boundaries,
+            compression_ratio,
+            temporal_fraction=self.temporal_fraction,
+            diversity_bonus=self.diversity_bonus,
+        )
 
 
 @dataclass

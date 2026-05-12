@@ -63,6 +63,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   trains the learned fill only on the points still controlled by the model at
   each retained-point ratio. This keeps the multi-budget objective aligned with
   `mlqds_temporal_fraction`.
+- Training artifacts include `training_target_diagnostics`, which records the
+  configured budget ratios, effective learned-fill ratios, temporal-base point
+  counts, remaining candidate counts, and residual positive-label counts.
 - `loss_objective="ranking_bce"` keeps the legacy margin-ranking objective for
   ablation. `pointwise_loss_weight` remains an auxiliary BCE term for both
   objectives.

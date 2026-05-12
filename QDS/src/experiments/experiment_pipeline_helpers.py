@@ -30,6 +30,7 @@ from src.evaluation.baselines import (
     Method,
     MLQDSMethod,
     OracleMethod,
+    ScoreHybridMethod,
     UniformTemporalMethod,
 )
 from src.evaluation.evaluate_methods import (
@@ -47,6 +48,7 @@ from src.experiments.geojson_writers import report_trajectory_length_loss, write
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import single_workload_type
 from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
+from src.simplification.mlqds_scoring import workload_type_head
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
@@ -463,6 +465,69 @@ def _range_workload_diagnostics(
     return summary, rows
 
 
+def _compact_range_workload_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Extract comparable workload-shape fields from verbose diagnostics."""
+    range_summary = summary.get("range", {}) if isinstance(summary, dict) else {}
+    range_signal = summary.get("range_signal", {}) if isinstance(summary, dict) else {}
+    fields = (
+        "range_query_count",
+        "coverage_fraction",
+        "empty_query_rate",
+        "too_broad_query_rate",
+        "near_duplicate_query_rate",
+        "point_hit_count_p50",
+        "point_hit_count_p90",
+        "trajectory_hit_count_p50",
+        "trajectory_hit_count_p90",
+        "point_hit_fraction_p50",
+        "point_hit_fraction_p90",
+        "trajectory_hit_fraction_p50",
+        "trajectory_hit_fraction_p90",
+        "box_volume_fraction_p50",
+        "box_volume_fraction_p90",
+    )
+    compact = {field: range_summary.get(field) for field in fields}
+    compact["oracle_gap_over_best_baseline"] = range_signal.get("oracle_gap_over_best_baseline")
+    compact["best_baseline"] = range_signal.get("best_baseline")
+    return compact
+
+
+def _range_workload_distribution_comparison(summaries: dict[str, Any]) -> dict[str, Any]:
+    """Compare train/selection workload shape against final eval workload shape."""
+    compact = {label: _compact_range_workload_summary(summary) for label, summary in summaries.items()}
+    eval_summary = compact.get("eval", {})
+    numeric_fields = (
+        "range_query_count",
+        "coverage_fraction",
+        "empty_query_rate",
+        "too_broad_query_rate",
+        "near_duplicate_query_rate",
+        "point_hit_count_p50",
+        "trajectory_hit_count_p50",
+        "point_hit_fraction_p50",
+        "trajectory_hit_fraction_p50",
+        "box_volume_fraction_p50",
+        "oracle_gap_over_best_baseline",
+    )
+    deltas: dict[str, dict[str, float | None]] = {}
+    for label, row in compact.items():
+        if label == "eval":
+            continue
+        label_delta: dict[str, float | None] = {}
+        for field in numeric_fields:
+            left = row.get(field)
+            right = eval_summary.get(field)
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                label_delta[f"{field}_minus_eval"] = float(left) - float(right)
+            else:
+                label_delta[f"{field}_minus_eval"] = None
+        deltas[label] = label_delta
+    return {
+        "summaries": compact,
+        "deltas_vs_eval": deltas,
+    }
+
+
 def _range_audit_ratios(config: ExperimentConfig) -> list[float]:
     """Return configured multi-budget range-audit ratios, deduped and sorted."""
     raw = getattr(config.model, "range_audit_compression_ratios", []) or []
@@ -720,6 +785,21 @@ def run_experiment_pipeline(
                 f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}",
                 flush=True,
             )
+        workload_distribution_comparison = _range_workload_distribution_comparison(range_diagnostics_summary)
+        for label, delta in workload_distribution_comparison["deltas_vs_eval"].items():
+            coverage_delta = delta.get("coverage_fraction_minus_eval")
+            point_p50_delta = delta.get("point_hit_count_p50_minus_eval")
+            traj_p50_delta = delta.get("trajectory_hit_count_p50_minus_eval")
+            coverage_text = f"{coverage_delta:+.4f}" if isinstance(coverage_delta, (int, float)) else "n/a"
+            point_text = f"{point_p50_delta:+.2f}" if isinstance(point_p50_delta, (int, float)) else "n/a"
+            traj_text = f"{traj_p50_delta:+.2f}" if isinstance(traj_p50_delta, (int, float)) else "n/a"
+            print(
+                f"  {label}_vs_eval: "
+                f"coverage_delta={coverage_text}  "
+                f"point_hit_p50_delta={point_text}  "
+                f"trajectory_hit_p50_delta={traj_text}",
+                flush=True,
+            )
 
     if save_queries_dir:
         with _phase("write-queries-geojson"):
@@ -803,6 +883,7 @@ def run_experiment_pipeline(
 
     matched: dict[str, MethodEvaluation] = {}
     oracle_method: OracleMethod | None = None
+    eval_labels: torch.Tensor | None = None
     save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
         eval_query_cache = (
@@ -832,14 +913,15 @@ def run_experiment_pipeline(
                 )
 
         if config.baselines.include_oracle:
-            eval_labels, _ = compute_typed_importance_labels(
-                points=test_points,
-                boundaries=test_boundaries,
-                typed_queries=eval_workload.typed_queries,
-                seed=seeds.eval_query_seed,
-                range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                range_boundary_prior_weight=0.0,
-            )
+            if eval_labels is None:
+                eval_labels, _ = compute_typed_importance_labels(
+                    points=test_points,
+                    boundaries=test_boundaries,
+                    typed_queries=eval_workload.typed_queries,
+                    seed=seeds.eval_query_seed,
+                    range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
+                    range_boundary_prior_weight=0.0,
+                )
             oracle_method = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_workload_map))
             with _phase(f"  eval {oracle_method.name}"):
                 matched[oracle_method.name] = evaluate_method(
@@ -852,6 +934,51 @@ def run_experiment_pipeline(
                     query_cache=eval_query_cache,
                 )
 
+    learned_fill_diagnostics: dict[str, MethodEvaluation] = {"MLQDS": matched["MLQDS"]}
+    learned_fill_table = ""
+    diagnostic_methods: list[Method] = []
+    if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
+        if eval_labels is None:
+            eval_labels, _ = compute_typed_importance_labels(
+                points=test_points,
+                boundaries=test_boundaries,
+                typed_queries=eval_workload.typed_queries,
+                seed=seeds.eval_query_seed,
+                range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
+                range_boundary_prior_weight=0.0,
+            )
+        assert eval_labels is not None
+        _, eval_type_id = workload_type_head(single_workload_type(eval_workload_map))
+        random_generator = torch.Generator().manual_seed(int(seeds.eval_query_seed) + 404)
+        random_scores = torch.rand((test_points.shape[0],), generator=random_generator)
+        diagnostic_methods = [
+            ScoreHybridMethod(
+                name="TemporalRandomFill",
+                scores=random_scores,
+                temporal_fraction=config.model.mlqds_temporal_fraction,
+                diversity_bonus=config.model.mlqds_diversity_bonus,
+            ),
+            ScoreHybridMethod(
+                name="TemporalOracleFill",
+                scores=eval_labels[:, eval_type_id].float(),
+                temporal_fraction=config.model.mlqds_temporal_fraction,
+                diversity_bonus=config.model.mlqds_diversity_bonus,
+            ),
+        ]
+        with _phase("learned-fill-diagnostics"):
+            for method in diagnostic_methods:
+                with _phase(f"  fill {method.name}"):
+                    learned_fill_diagnostics[method.name] = evaluate_method(
+                        method=method,
+                        points=test_points,
+                        boundaries=test_boundaries,
+                        typed_queries=eval_workload.typed_queries,
+                        workload_map=eval_workload_map,
+                        compression_ratio=config.model.compression_ratio,
+                        query_cache=eval_query_cache,
+                    )
+        learned_fill_table = print_range_usefulness_table(learned_fill_diagnostics)
+
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
     range_usefulness_table = print_range_usefulness_table(matched)
@@ -859,14 +986,21 @@ def run_experiment_pipeline(
     range_objective_audit_table = ""
     audit_ratios = _range_audit_ratios(config)
     if audit_ratios:
-        audit_methods = [*methods]
+        audit_methods = [*methods, *diagnostic_methods]
         if oracle_method is not None:
             audit_methods.append(oracle_method)
         audit_sections: list[str] = []
         with _phase("range-objective-audit"):
             for ratio in audit_ratios:
                 if abs(float(ratio) - float(config.model.compression_ratio)) <= 1e-9:
-                    ratio_results = matched
+                    ratio_results = {
+                        **matched,
+                        **{
+                            name: metrics
+                            for name, metrics in learned_fill_diagnostics.items()
+                            if name not in matched
+                        },
+                    }
                 else:
                     ratio_results: dict[str, MethodEvaluation] = {}
                     for method in audit_methods:
@@ -939,9 +1073,13 @@ def run_experiment_pipeline(
             "selection": selection_workload.generation_diagnostics if selection_workload is not None else None,
         },
         "matched": {name: _evaluation_metrics_payload(m) for name, m in matched.items()},
+        "learned_fill_diagnostics": {
+            name: _evaluation_metrics_payload(metrics) for name, metrics in learned_fill_diagnostics.items()
+        },
         "range_objective_audit": range_objective_audit,
         "shift": shift_pairs,
         "training_history": trained.history,
+        "training_target_diagnostics": trained.target_diagnostics,
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
         "best_f1": trained.best_f1,
@@ -960,6 +1098,7 @@ def run_experiment_pipeline(
         "range_boundary_prior_enabled": config.model.range_boundary_prior_weight > 0.0,
         "data_audit": data_audit,
         "workload_diagnostics": range_diagnostics_summary,
+        "workload_distribution_comparison": workload_distribution_comparison,
         "torch_runtime": {
             **torch_runtime_snapshot(),
             "amp": amp_runtime_snapshot(config.model.amp_mode),
@@ -976,6 +1115,19 @@ def run_experiment_pipeline(
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
         (out_dir / "range_usefulness_table.txt").write_text(range_usefulness_table + "\n", encoding="utf-8")
+        if learned_fill_table:
+            (out_dir / "learned_fill_diagnostics_table.txt").write_text(
+                learned_fill_table + "\n",
+                encoding="utf-8",
+            )
+        (out_dir / "learned_fill_diagnostics.json").write_text(
+            json.dumps(
+                {name: _evaluation_metrics_payload(metrics) for name, metrics in learned_fill_diagnostics.items()},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         if range_objective_audit:
             (out_dir / "range_objective_audit.json").write_text(
                 json.dumps(range_objective_audit, indent=2) + "\n",
@@ -987,6 +1139,10 @@ def run_experiment_pipeline(
             )
         (out_dir / "range_workload_diagnostics.json").write_text(
             json.dumps(range_diagnostics_summary, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (out_dir / "range_workload_distribution_comparison.json").write_text(
+            json.dumps(workload_distribution_comparison, indent=2) + "\n",
             encoding="utf-8",
         )
         with open(out_dir / "range_query_diagnostics.jsonl", "w", encoding="utf-8") as f:

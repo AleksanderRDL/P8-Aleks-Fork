@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
 import math
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -262,6 +262,68 @@ def _budget_topk_temporal_residual_loss(
     return torch.stack(losses).mean()
 
 
+def _training_target_diagnostics(
+    *,
+    labels: torch.Tensor,
+    labelled_mask: torch.Tensor,
+    workload_type_id: int,
+    configured_budget_ratios: tuple[float, ...],
+    effective_budget_ratios: tuple[float, ...],
+    temporal_residual_budget_masks: tuple[tuple[float, float, torch.Tensor], ...],
+    residual_label_mode: str,
+    loss_objective: str,
+    temporal_fraction: float,
+) -> dict[str, Any]:
+    """Summarize the effective supervised target after residual masking."""
+    active = labelled_mask[:, workload_type_id].bool()
+    values = labels[:, workload_type_id].float()
+    positive = active & (values > 0.0)
+    n_points = int(labels.shape[0])
+    labelled_count = int(active.sum().item())
+    positive_count = int(positive.sum().item())
+    diagnostics: dict[str, Any] = {
+        "workload_type_id": int(workload_type_id),
+        "residual_label_mode": str(residual_label_mode),
+        "loss_objective": str(loss_objective),
+        "mlqds_temporal_fraction": float(temporal_fraction),
+        "configured_budget_loss_ratios": [float(value) for value in configured_budget_ratios],
+        "effective_budget_loss_ratios": [float(value) for value in effective_budget_ratios],
+        "point_count": n_points,
+        "labelled_point_count": labelled_count,
+        "positive_label_count": positive_count,
+        "positive_label_fraction": float(positive_count / max(1, labelled_count)),
+        "budget_rows": [],
+    }
+
+    rows: list[dict[str, Any]] = []
+    for total_ratio, effective_ratio, base_mask in temporal_residual_budget_masks:
+        base = base_mask.to(device=labels.device, dtype=torch.bool)
+        candidate = ~base
+        residual_labelled = active & candidate
+        residual_positive = positive & candidate
+        base_positive = positive & base
+        base_count = int(base.sum().item())
+        candidate_count = int(candidate.sum().item())
+        residual_labelled_count = int(residual_labelled.sum().item())
+        residual_positive_count = int(residual_positive.sum().item())
+        rows.append(
+            {
+                "total_budget_ratio": float(total_ratio),
+                "effective_fill_budget_ratio": float(effective_ratio),
+                "temporal_base_point_count": base_count,
+                "temporal_base_point_fraction": float(base_count / max(1, n_points)),
+                "candidate_point_count": candidate_count,
+                "candidate_point_fraction": float(candidate_count / max(1, n_points)),
+                "base_positive_label_count": int(base_positive.sum().item()),
+                "residual_labelled_point_count": residual_labelled_count,
+                "residual_positive_label_count": residual_positive_count,
+                "residual_positive_label_fraction": float(residual_positive_count / max(1, residual_labelled_count)),
+            }
+        )
+    diagnostics["budget_rows"] = rows
+    return diagnostics
+
+
 def _discriminative_sample(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -300,6 +362,7 @@ class TrainingOutputs:
     best_epoch: int = 0
     best_loss: float = float("inf")
     best_f1: float = 0.0
+    target_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def _kendall_tau(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -769,12 +832,32 @@ def train_model(
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
     budget_loss_temperature = float(getattr(model_config, "budget_loss_temperature", 0.10))
     run_tag = "main"
+    target_diagnostics = _training_target_diagnostics(
+        labels=labels,
+        labelled_mask=labelled_mask,
+        workload_type_id=workload_type_id,
+        configured_budget_ratios=configured_budget_ratios,
+        effective_budget_ratios=budget_ratios,
+        temporal_residual_budget_masks=temporal_residual_budget_masks,
+        residual_label_mode=residual_label_mode,
+        loss_objective=loss_objective,
+        temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+    )
     if budget_ratios != configured_budget_ratios:
         print(
             f"  [{run_tag}] effective_budget_loss_ratios={list(budget_ratios)} "
             f"from configured={list(configured_budget_ratios)} "
             f"residual_label_mode={residual_label_mode} "
             f"mlqds_temporal_fraction={float(getattr(model_config, 'mlqds_temporal_fraction', 0.0)):.3f}",
+            flush=True,
+        )
+    for row in target_diagnostics.get("budget_rows", []):
+        print(
+            f"  [{run_tag}] residual_budget total={row['total_budget_ratio']:.4f} "
+            f"effective_fill={row['effective_fill_budget_ratio']:.4f} "
+            f"base_points={row['temporal_base_point_count']} "
+            f"candidates={row['candidate_point_count']} "
+            f"residual_pos={row['residual_positive_label_count']}",
             flush=True,
         )
 
@@ -1324,4 +1407,5 @@ def train_model(
         best_epoch=best_epoch,
         best_loss=best_loss,
         best_f1=best_f1,
+        target_diagnostics=target_diagnostics,
     )

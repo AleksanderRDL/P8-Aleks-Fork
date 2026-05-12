@@ -134,6 +134,15 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         inference_batch_size=32,
         extra_args=("--residual_label_mode", "none"),
     ),
+    "tf32_bf16_bs32_inf32_diversity000": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_diversity000",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_diversity_bonus", "0.0"),
+    ),
     "tf32_bf16_bs32_inf32_score_rank_tie": MatrixVariant(
         name="tf32_bf16_bs32_inf32_score_rank_tie",
         float32_matmul_precision="high",
@@ -385,6 +394,20 @@ def _cleaned_csv_files(path: str | Path) -> list[Path]:
     return files
 
 
+def _assert_distinct_csv_sources(named_paths: dict[str, str | None]) -> None:
+    """Reject duplicate train/validation/eval CSV paths to prevent split leakage."""
+    seen: dict[Path, str] = {}
+    for label, value in named_paths.items():
+        if value is None:
+            continue
+        resolved = Path(value).resolve()
+        if resolved in seen:
+            raise ValueError(
+                f"{label} CSV path must be distinct from {seen[resolved]} CSV path: {value}"
+            )
+        seen[resolved] = label
+
+
 def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
     """Resolve matrix CSV inputs, using three cleaned days for directory inputs."""
     has_explicit_sources = bool(args.train_csv_path or args.validation_csv_path or args.eval_csv_path)
@@ -401,6 +424,13 @@ def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
                 continue
             if not Path(source).is_file():
                 raise FileNotFoundError(f"CSV path does not exist or is not a file: {source}")
+        _assert_distinct_csv_sources(
+            {
+                "train": train_path,
+                "validation": validation_path,
+                "eval": eval_path,
+            }
+        )
         selected = (train_path, validation_path, eval_path) if validation_path else (train_path, eval_path)
         return MatrixDataSources(
             train_csv_path=train_path,
@@ -418,6 +448,7 @@ def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
         if len(files) < MIN_REALISTIC_CSV_DAYS:
             raise ValueError(f"Expected at least {MIN_REALISTIC_CSV_DAYS} cleaned CSV files in {args.csv_path}.")
         selected = tuple(str(path) for path in files[:MIN_REALISTIC_CSV_DAYS])
+        _assert_distinct_csv_sources({"train": selected[0], "validation": selected[1], "eval": selected[2]})
         return MatrixDataSources(
             train_csv_path=selected[0],
             validation_csv_path=selected[1],
@@ -646,6 +677,7 @@ def _row_from_run(
         "budget_loss_ratios": model_config.get("budget_loss_ratios"),
         "budget_loss_temperature": model_config.get("budget_loss_temperature"),
         "mlqds_temporal_fraction": model_config.get("mlqds_temporal_fraction"),
+        "mlqds_diversity_bonus": model_config.get("mlqds_diversity_bonus"),
         "mlqds_score_mode": model_config.get("mlqds_score_mode"),
         "mlqds_score_temperature": model_config.get("mlqds_score_temperature"),
         "mlqds_rank_confidence_weight": model_config.get("mlqds_rank_confidence_weight"),
@@ -695,6 +727,7 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
         "best_f1",
         "loss_objective",
         "residual_label_mode",
+        "mlqds_diversity_bonus",
         "mlqds_f1",
         "mlqds_range_point_f1",
         "mlqds_range_usefulness_score",
@@ -975,6 +1008,14 @@ def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict
                 if row.get("run_dir")
                 else None,
                 "range_diagnostics": str(Path(str(row.get("run_dir"))) / "range_workload_diagnostics.json")
+                if row.get("run_dir")
+                else None,
+                "workload_distribution_comparison": str(
+                    Path(str(row.get("run_dir"))) / "range_workload_distribution_comparison.json"
+                )
+                if row.get("run_dir")
+                else None,
+                "learned_fill_diagnostics": str(Path(str(row.get("run_dir"))) / "learned_fill_diagnostics.json")
                 if row.get("run_dir")
                 else None,
             }

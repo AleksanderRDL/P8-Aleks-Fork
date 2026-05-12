@@ -118,6 +118,7 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
         "tf32_bf16_bs32_inf32_combined,"
         "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_temporal050,"
         "tf32_bf16_bs32_inf32_residual_none,"
+        "tf32_bf16_bs32_inf32_diversity000,"
         "tf32_bf16_bs32_inf32_score_rank_tie,"
         "tf32_bf16_bs32_inf32_score_zscore,tf32_bf16_bs32_inf32_score_rank_confidence,"
         "tf32_bf16_bs32_inf32_score_temp_sigmoid"
@@ -132,6 +133,7 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
         "tf32_bf16_bs32_inf32_temporal000",
         "tf32_bf16_bs32_inf32_temporal050",
         "tf32_bf16_bs32_inf32_residual_none",
+        "tf32_bf16_bs32_inf32_diversity000",
         "tf32_bf16_bs32_inf32_score_rank_tie",
         "tf32_bf16_bs32_inf32_score_zscore",
         "tf32_bf16_bs32_inf32_score_rank_confidence",
@@ -153,15 +155,17 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert variants[7].checkpoint_f1_variant == "range_usefulness"
     assert variants[7].extra_args == ("--residual_label_mode", "none")
     assert variants[8].checkpoint_f1_variant == "range_usefulness"
-    assert variants[8].extra_args == ("--mlqds_score_mode", "rank_tie")
-    assert variants[9].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
-    assert variants[10].extra_args == (
+    assert variants[8].extra_args == ("--mlqds_diversity_bonus", "0.0")
+    assert variants[9].checkpoint_f1_variant == "range_usefulness"
+    assert variants[9].extra_args == ("--mlqds_score_mode", "rank_tie")
+    assert variants[10].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
+    assert variants[11].extra_args == (
         "--mlqds_score_mode",
         "rank_confidence",
         "--mlqds_rank_confidence_weight",
         "0.15",
     )
-    assert variants[11].extra_args == (
+    assert variants[12].extra_args == (
         "--mlqds_score_mode",
         "temperature_sigmoid",
         "--mlqds_score_temperature",
@@ -193,6 +197,7 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
         "config": {
             "model": {
                 "mlqds_temporal_fraction": 0.25,
+                "mlqds_diversity_bonus": 0.05,
                 "mlqds_score_mode": "rank",
                 "mlqds_score_temperature": 1.0,
                 "mlqds_rank_confidence_weight": 0.15,
@@ -248,6 +253,7 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["child_amp_enabled"] is True
     assert row["child_amp_dtype"] == "bfloat16"
     assert row["mlqds_temporal_fraction"] == 0.25
+    assert row["mlqds_diversity_bonus"] == 0.05
     assert row["mlqds_score_mode"] == "rank"
     assert row["mlqds_score_temperature"] == 1.0
     assert row["mlqds_rank_confidence_weight"] == 0.15
@@ -480,6 +486,20 @@ def test_resolve_data_sources_requires_paired_train_eval() -> None:
     args = argparse.Namespace(csv_path=None, train_csv_path="train.csv", validation_csv_path=None, eval_csv_path=None)
 
     with pytest.raises(ValueError, match="supplied together"):
+        _resolve_data_sources(args)
+
+
+def test_resolve_data_sources_rejects_duplicate_explicit_splits(tmp_path) -> None:
+    day = tmp_path / "day.csv"
+    day.write_text("x\n", encoding="utf-8")
+    args = argparse.Namespace(
+        csv_path=None,
+        train_csv_path=str(day),
+        validation_csv_path=None,
+        eval_csv_path=str(day),
+    )
+
+    with pytest.raises(ValueError, match="must be distinct"):
         _resolve_data_sources(args)
 
 

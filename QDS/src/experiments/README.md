@@ -99,6 +99,8 @@ Use `tf32_bf16_bs32_inf32_temporal000` and
 `tf32_bf16_bs32_inf32_temporal050` as temporal-spine ablations.
 Use `tf32_bf16_bs32_inf32_residual_none` to test whether training on all labels
 beats temporal-residual learned-fill training.
+Use `tf32_bf16_bs32_inf32_diversity000` to isolate the spacing bonus from the
+learned score fill.
 
 `query_coverage` is a target used for workload generation and diagnostics.
 For the real-usecase profile, `n_queries` is only the minimum workload size;
@@ -179,6 +181,12 @@ For model behavior, inspect the variant `example_run.json`,
 `matched_table.txt`, `range_usefulness_table.txt`, and
 `range_workload_diagnostics.json`. `RangePointF1` is the retained in-box point
 metric; `RangeUseful` is the current audit score for range-local usefulness.
+`learned_fill_diagnostics.json` compares MLQDS against the same temporal base
+with random fill and oracle-label fill, so failures can be separated into
+temporal-base, learned-fill, and scoring issues. `training_target_diagnostics`
+inside `example_run.json` records the effective residual-label budgets used by
+the loss, while `range_workload_distribution_comparison.json` compares
+train/selection/eval query coverage and hit distributions.
 Use `--range_audit_compression_ratios 0.01,0.02,0.05,0.10` when you want the
 same range-usefulness components rerun across multiple retained-point budgets;
 it is disabled by default because it reruns method evaluation.

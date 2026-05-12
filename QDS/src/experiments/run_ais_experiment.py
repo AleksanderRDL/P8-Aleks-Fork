@@ -40,6 +40,27 @@ def _cap_loaded_trajectories(
     return capped, capped_mmsis
 
 
+def _assert_distinct_csv_sources(
+    *,
+    train_csv_path: str,
+    validation_csv_path: str | None,
+    eval_csv_path: str,
+) -> None:
+    """Reject duplicate explicit data splits before loading."""
+    seen: dict[Path, str] = {}
+    for label, value in {
+        "train": train_csv_path,
+        "validation": validation_csv_path,
+        "eval": eval_csv_path,
+    }.items():
+        if value is None:
+            continue
+        resolved = Path(value).resolve()
+        if resolved in seen:
+            raise ValueError(f"{label} CSV path must be distinct from {seen[resolved]} CSV path: {value}")
+        seen[resolved] = label
+
+
 def _log_load_audit(label: str, audit) -> None:
     """Print a compact AIS load audit for repeatable run logs."""
     length = audit.segment_length_stats
@@ -241,6 +262,14 @@ def main() -> None:
                 "--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together; "
                 "--validation_csv_path is optional but also requires both."
             )
+        try:
+            _assert_distinct_csv_sources(
+                train_csv_path=args.train_csv_path,
+                validation_csv_path=args.validation_csv_path,
+                eval_csv_path=args.eval_csv_path,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         print(f"[load-data] reading train CSV: {args.train_csv_path}", flush=True)
         trajectories, mmsis, _train_audit, train_audit_payload = _load_csv_trajectories(
             "train",
