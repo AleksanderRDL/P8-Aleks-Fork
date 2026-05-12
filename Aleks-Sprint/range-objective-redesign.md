@@ -120,6 +120,55 @@ currently carrying most of the useful range-local shape/coverage behavior, so
 future objective work should measure whether the learned score fill adds value
 beyond the temporal baseline instead of only comparing against Douglas-Peucker.
 
+### Temporal Fraction Interpretation
+
+`mlqds_temporal_fraction` is not purely learned behavior. It reserves part of
+the retained-point budget for an algorithmic evenly-spaced temporal spine, then
+uses learned model scores to fill the remaining residual budget.
+
+For example, at 5% retained points:
+
+- `mlqds_temporal_fraction=0.75` means about 3.75% of the original points are
+  selected by the temporal-spine rule and about 1.25% are selected by learned
+  residual scores.
+- `mlqds_temporal_fraction=0.80` means about 4.0% are selected by the temporal
+  spine and about 1.0% are selected by learned residual scores.
+
+This is useful as a stabilizer and as a strong baseline, but it is also a
+warning sign. If quality improves mainly by increasing the temporal fraction,
+the system is relying more on hardcoded temporal coverage and giving the model
+less opportunity to learn query-specific retention behavior. High temporal
+fractions should therefore be treated as provisional scaffolding, not proof
+that the learned range model is solving the target task.
+
+### Residual Fill Bottleneck
+
+The corrected `rangefix_*` queue has so far reinforced the residual-fill issue.
+Across the first successful rows, MLQDS remained below uniform on
+`RangeUseful`, even when it was close to or slightly above uniform on
+`RangePointF1`. The best early rows were approximately:
+
+- `mlqds_temporal_fraction=0.80`: `RangeUseful=0.4597`, still below uniform at
+  about `0.4680`
+- `budget_loss_temperature=0.05`: `RangeUseful=0.4598`, also below uniform and
+  slower
+
+More importantly, the learned-fill diagnostics showed MLQDS below
+`TemporalRandomFill` in every first successful row. `TemporalOracleFill`
+remained far higher. This implies the temporal spine is reasonable, but the
+learned residual scores are not yet ranking the non-spine candidates better
+than random. The next objective work should therefore focus on loss/objective
+alignment for residual fill selection before spending effort optimizing the
+current loss implementation.
+
+Practical conclusion:
+
+- keep `TemporalRandomFill` and `TemporalOracleFill` in benchmark reporting
+- judge learned model progress by whether MLQDS beats `TemporalRandomFill`, not
+  only whether it beats Douglas-Peucker
+- avoid treating higher temporal fractions as a final solution unless learned
+  residual fill quality also improves
+
 ## Training Objective Redesign Start
 
 The old range labels were local/additive point-hit proxy labels:
@@ -173,6 +222,53 @@ problem. The preferred sequence is now:
 5. if budget-top-k is insufficient, move to query-local set/value labels or
    explicit retained-set marginal-gain approximations
 6. vectorize the final loss path after the target is clearer
+
+### RangeUseful Alignment Guardrails
+
+Loss/objective alignment should target the metric that represents the user
+outcome, but `RangeUseful` itself must remain under scrutiny. The current
+components are aligned with the desired range-query outcome directionally, but
+they are still proxies:
+
+- `RangePointF1` measures retained in-box point overlap, not interpretability.
+- `ShipF1` measures whether a ship is represented, not whether its movement is
+  understandable.
+- `EntryExitF1` measures sampled entry/exit support, not exact continuous
+  boundary crossings.
+- `TemporalCov` rewards retained in-query span, but can miss large interior
+  gaps.
+- `ShapeScore` currently rewards retained path-length coverage; it is not a
+  full geometric route-fidelity metric.
+
+Therefore the redesign should follow two tracks:
+
+1. improve the loss so learned residual scores optimize retained-set
+   usefulness rather than local point labels
+2. keep testing whether the usefulness score components actually match the
+   target user outcome, especially on small constructed examples where the
+   expected behavior is clear
+
+Avoid baking every navigational preference into a single hidden score too
+early. Report the sub-components alongside `RangeUseful` so it remains clear
+whether a run improved point hits, ship presence, boundary behavior, temporal
+coverage, or shape preservation.
+
+### Pretraining Position
+
+Trajectory pretraining may have merit later, but it should not be the next
+priority. Reasonable pretraining ideas include:
+
+- masked trajectory point reconstruction
+- next-point, time-delta, speed, or heading prediction
+- denoising corrupted AIS segments
+- contrastive segment/trajectory representation learning
+- query-aware pretraining that predicts range-query support or usefulness
+
+However, current diagnostics point to a more immediate blocker: learned
+residual fill is losing to `TemporalRandomFill`. Pretraining could improve
+representations, but it will not fix a loss or scoring path that rewards the
+wrong retained-set behavior. Revisit pretraining after the residual objective
+can beat random fill under the same temporal-spine scaffold.
 
 ## Runtime Optimization Plan
 
@@ -421,6 +517,24 @@ legacy ablations.
 
 Conclusion: checkpoint selection is not the main blocker. The more likely
 blocker is the training objective/label construction itself.
+
+### Reporting Cleanup Notes
+
+The benchmark table and logs need two cleanup passes after the active queue is
+finished:
+
+- `collapse_warning` currently means any epoch had a low prediction standard
+  deviation, not necessarily that the selected checkpoint collapsed. Replace or
+  extend it with fields such as `collapse_warning_any`,
+  `collapse_warning_count`, `best_epoch_collapse_warning`, and `min_pred_std`.
+- `val_query_f1` in logs is semantically confusing when checkpoint selection
+  uses `checkpoint_f1_variant=range_usefulness`. Rename the selected value to
+  `val_selection_score` and report `val_range_point_f1` /
+  `val_range_usefulness` separately.
+- workload generation metadata currently reports `requested_queries` even when
+  target-coverage generation produces more queries. Separate minimum requested
+  queries, max query cap, final generated query count, target coverage, final
+  coverage, and stop reason.
 
 ## Range Workload Generation Direction
 
