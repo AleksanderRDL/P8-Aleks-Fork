@@ -489,6 +489,11 @@ Implemented first pass:
 - added `--range_diagnostics_mode full|cached`
 - the real-usecase profile uses `cached`; without `--cache_dir` this falls back
   to normal computation
+- range usefulness label diagnostics now include per-component positive label
+  mass and mass fractions, making it easier to see whether the local/additive
+  proxy is overemphasizing point hits, ship presence, crossing brackets,
+  temporal span, gap coverage, turn points, or shape points; component mass is
+  reported before the final training-label clamp so saturation remains visible
 - persistent cache entries are stored under `<cache_dir>/range_diagnostics/`
 - cache keys include points/boundaries fingerprints, typed query digest,
   workload map, compression ratio, range label mode, boundary prior, diagnostic

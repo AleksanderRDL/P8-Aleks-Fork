@@ -16,6 +16,18 @@ KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
 RANGE_LABEL_MODES = ("point_f1", "usefulness")
 RANGE_USEFULNESS_LABEL_WEIGHTS = dict(RANGE_USEFULNESS_WEIGHTS)
+RANGE_USEFULNESS_LABEL_COMPONENTS = tuple(RANGE_USEFULNESS_LABEL_WEIGHTS.keys())
+
+
+def _label_targets(
+    labels: torch.Tensor,
+    component_labels: dict[str, torch.Tensor] | None,
+    component_name: str,
+) -> tuple[torch.Tensor, ...]:
+    """Return main labels plus the optional component-specific label tensor."""
+    if component_labels is None:
+        return (labels,)
+    return (labels, component_labels[component_name])
 
 
 def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
@@ -305,6 +317,7 @@ def _add_range_usefulness_labels(
     point_trajectory_ids: torch.Tensor,
     type_idx: int,
     range_boundary_prior_weight: float,
+    component_labels: dict[str, torch.Tensor] | None = None,
 ) -> None:
     """Add a local proxy for the range usefulness audit components."""
     hit_count = int(box_support.sum().item())
@@ -315,19 +328,21 @@ def _add_range_usefulness_labels(
 
     weights = RANGE_USEFULNESS_LABEL_WEIGHTS
     if hit_count > 0:
-        _add_range_point_f1_labels(
-            labels=labels,
-            points=points,
-            boundaries=boundaries,
-            box_support=box_support,
-            type_idx=type_idx,
-            range_boundary_prior_weight=range_boundary_prior_weight,
-            component_weight=float(weights["range_point_f1"]),
-        )
+        for target in _label_targets(labels, component_labels, "range_point_f1"):
+            _add_range_point_f1_labels(
+                labels=target,
+                points=points,
+                boundaries=boundaries,
+                box_support=box_support,
+                type_idx=type_idx,
+                range_boundary_prior_weight=range_boundary_prior_weight,
+                component_weight=float(weights["range_point_f1"]),
+            )
 
     if crossing_count > 0:
         crossing_gain = float(2.0 / (crossing_count + 1.0))
-        labels[crossing_support, type_idx] += float(weights["range_crossing_f1"]) * crossing_gain
+        for target in _label_targets(labels, component_labels, "range_crossing_f1"):
+            target[crossing_support, type_idx] += float(weights["range_crossing_f1"]) * crossing_gain
 
     hit_ids = {
         int(value)
@@ -348,7 +363,8 @@ def _add_range_usefulness_labels(
     boundary_count = int(boundary_support.sum().item())
     if boundary_count > 0:
         boundary_gain = float(2.0 / (boundary_count + 1.0))
-        labels[boundary_support, type_idx] += float(weights["range_entry_exit_f1"]) * boundary_gain
+        for target in _label_targets(labels, component_labels, "range_entry_exit_f1"):
+            target[boundary_support, type_idx] += float(weights["range_entry_exit_f1"]) * boundary_gain
 
     for trajectory_id in sorted(hit_ids):
         if trajectory_id >= len(boundaries):
@@ -360,51 +376,58 @@ def _add_range_usefulness_labels(
         if not bool(trajectory_support.any().item()):
             continue
 
-        _add_distributed_hit_label(
-            labels,
-            trajectory_support,
-            type_idx,
-            float(weights["range_ship_f1"]) * float(ship_gain),
-        )
+        for target in _label_targets(labels, component_labels, "range_ship_f1"):
+            _add_distributed_hit_label(
+                target,
+                trajectory_support,
+                type_idx,
+                float(weights["range_ship_f1"]) * float(ship_gain),
+            )
 
         support_count = int(trajectory_support.sum().item())
         if support_count > 0:
             ship_coverage_gain = float(2.0 / (support_count + 1.0))
-            labels[trajectory_support, type_idx] += ship_coverage_mass_per_ship * ship_coverage_gain
+            for target in _label_targets(labels, component_labels, "range_ship_coverage"):
+                target[trajectory_support, type_idx] += ship_coverage_mass_per_ship * ship_coverage_gain
 
         in_offsets = torch.where(box_support[start:end])[0]
         if in_offsets.numel() == 0:
             continue
         if in_offsets.numel() == 1:
-            labels[start + in_offsets[0], type_idx] += temporal_mass_per_ship
+            for target in _label_targets(labels, component_labels, "range_temporal_coverage"):
+                target[start + in_offsets[0], type_idx] += temporal_mass_per_ship
         else:
-            labels[start + in_offsets[0], type_idx] += 0.5 * temporal_mass_per_ship
-            labels[start + in_offsets[-1], type_idx] += 0.5 * temporal_mass_per_ship
+            for target in _label_targets(labels, component_labels, "range_temporal_coverage"):
+                target[start + in_offsets[0], type_idx] += 0.5 * temporal_mass_per_ship
+                target[start + in_offsets[-1], type_idx] += 0.5 * temporal_mass_per_ship
 
         global_indices = start + in_offsets
         turn_weights = _local_turn_weights(points, global_indices)
         if float(turn_weights.sum().item()) > 1e-12:
+            for target in _label_targets(labels, component_labels, "range_turn_coverage"):
+                _add_weighted_index_label(
+                    target,
+                    global_indices,
+                    type_idx,
+                    turn_mass_per_ship,
+                    turn_weights,
+                )
+        for target in _label_targets(labels, component_labels, "range_gap_coverage"):
             _add_weighted_index_label(
-                labels,
+                target,
                 global_indices,
                 type_idx,
-                turn_mass_per_ship,
-                turn_weights,
+                gap_mass_per_ship,
+                _local_gap_weights(int(global_indices.numel()), labels.device),
             )
-        _add_weighted_index_label(
-            labels,
-            global_indices,
-            type_idx,
-            gap_mass_per_ship,
-            _local_gap_weights(int(global_indices.numel()), labels.device),
-        )
-        _add_weighted_index_label(
-            labels,
-            global_indices,
-            type_idx,
-            shape_mass,
-            _local_shape_weights(points, global_indices),
-        )
+        for target in _label_targets(labels, component_labels, "range_shape_score"):
+            _add_weighted_index_label(
+                target,
+                global_indices,
+                type_idx,
+                shape_mass,
+                _local_shape_weights(points, global_indices),
+            )
 
 
 def _knn_representative_support(
@@ -496,7 +519,7 @@ def _cluster_members(labels: Mapping[int, int] | Sequence[int]) -> dict[int, lis
     return clusters
 
 
-def compute_typed_importance_labels(
+def _compute_typed_importance_labels(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     typed_queries: list[dict[str, Any]],
@@ -505,7 +528,8 @@ def compute_typed_importance_labels(
     clustering_sample_rate: float = 0.70,
     range_boundary_prior_weight: float = 0.0,
     range_label_mode: str = "point_f1",
-) -> tuple[torch.Tensor, torch.Tensor]:
+    return_range_components: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor] | None]:
     """Compute per-point per-type labels as expected query-F1 contribution."""
     range_label_mode = str(range_label_mode).lower()
     if range_label_mode not in RANGE_LABEL_MODES:
@@ -513,6 +537,14 @@ def compute_typed_importance_labels(
 
     n = points.shape[0]
     labels = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.float32, device=points.device)
+    component_labels = (
+        {
+            component_name: torch.zeros_like(labels)
+            for component_name in RANGE_USEFULNESS_LABEL_COMPONENTS
+        }
+        if return_range_components and range_label_mode == "usefulness"
+        else None
+    )
     labelled_mask = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.bool, device=points.device)
     query_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.float32, device=points.device)
     point_trajectory_ids = _trajectory_id_per_point(n, boundaries, points.device)
@@ -541,6 +573,7 @@ def compute_typed_importance_labels(
                     point_trajectory_ids=point_trajectory_ids,
                     type_idx=t_idx,
                     range_boundary_prior_weight=range_boundary_prior_weight,
+                    component_labels=component_labels,
                 )
             else:
                 _add_range_point_f1_labels(
@@ -597,6 +630,59 @@ def compute_typed_importance_labels(
         count = float(query_counts[type_idx].item())
         if count > 0.0:
             labels[:, type_idx] = torch.clamp(labels[:, type_idx] / count, 0.0, 1.0)
+            if component_labels is not None:
+                for component_values in component_labels.values():
+                    component_values[:, type_idx] = component_values[:, type_idx] / count
             labelled_mask[:, type_idx] = True
 
+    return labels, labelled_mask, component_labels
+
+
+def compute_typed_importance_labels(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict[str, Any]],
+    seed: int,
+    similarity_sample_rate: float = 0.70,
+    clustering_sample_rate: float = 0.70,
+    range_boundary_prior_weight: float = 0.0,
+    range_label_mode: str = "point_f1",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-point per-type labels as expected query-F1 contribution."""
+    labels, labelled_mask, _component_labels = _compute_typed_importance_labels(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=typed_queries,
+        seed=seed,
+        similarity_sample_rate=similarity_sample_rate,
+        clustering_sample_rate=clustering_sample_rate,
+        range_boundary_prior_weight=range_boundary_prior_weight,
+        range_label_mode=range_label_mode,
+        return_range_components=False,
+    )
     return labels, labelled_mask
+
+
+def compute_typed_importance_labels_with_range_components(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict[str, Any]],
+    seed: int,
+    range_boundary_prior_weight: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute usefulness labels plus per-component range label contributions."""
+    labels, labelled_mask, component_labels = _compute_typed_importance_labels(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=typed_queries,
+        seed=seed,
+        range_boundary_prior_weight=range_boundary_prior_weight,
+        range_label_mode="usefulness",
+        return_range_components=True,
+    )
+    if component_labels is None:
+        component_labels = {
+            component_name: torch.zeros_like(labels)
+            for component_name in RANGE_USEFULNESS_LABEL_COMPONENTS
+        }
+    return labels, labelled_mask, component_labels

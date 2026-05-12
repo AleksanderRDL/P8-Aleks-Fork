@@ -11,7 +11,11 @@ from src.queries.query_types import (
     QUERY_TYPE_ID_RANGE,
     QUERY_TYPE_ID_SIMILARITY,
 )
-from src.training.importance_labels import compute_typed_importance_labels
+from src.training.importance_labels import (
+    RANGE_USEFULNESS_LABEL_COMPONENTS,
+    compute_typed_importance_labels,
+    compute_typed_importance_labels_with_range_components,
+)
 
 
 def test_range_labels_match_singleton_point_f1_contribution() -> None:
@@ -224,6 +228,49 @@ def test_range_usefulness_labels_prioritize_ship_span_and_shape_points() -> None
     assert useful_values[0].item() > useful_values[1].item()
     assert useful_values[3].item() > useful_values[2].item()
     assert useful_values[4].item() > useful_values[1].item()
+
+
+def test_range_usefulness_component_labels_sum_to_training_labels() -> None:
+    """Assert component diagnostics decompose the unclipped usefulness target."""
+    points = torch.tensor(
+        [
+            [0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [2.0, 0.2, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [3.0, 2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 4.0,
+            },
+        }
+    ]
+
+    labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+        points,
+        [(0, 4)],
+        queries,
+        seed=1,
+    )
+
+    component_sum = torch.stack(
+        [component_labels[name][:, QUERY_TYPE_ID_RANGE] for name in RANGE_USEFULNESS_LABEL_COMPONENTS]
+    ).sum(dim=0)
+    assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
+    assert torch.allclose(labels[:, QUERY_TYPE_ID_RANGE], component_sum)
+    assert component_labels["range_crossing_f1"][0, QUERY_TYPE_ID_RANGE].item() > 0.0
+    assert component_labels["range_crossing_f1"][3, QUERY_TYPE_ID_RANGE].item() > 0.0
+    assert component_labels["range_point_f1"][0, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.0)
+    assert component_labels["range_point_f1"][1, QUERY_TYPE_ID_RANGE].item() > 0.0
 
 
 def test_range_usefulness_labels_preserve_point_component_mass() -> None:

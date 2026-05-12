@@ -49,7 +49,10 @@ from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import single_workload_type
 from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
 from src.simplification.mlqds_scoring import workload_type_head
-from src.training.importance_labels import compute_typed_importance_labels
+from src.training.importance_labels import (
+    compute_typed_importance_labels,
+    compute_typed_importance_labels_with_range_components,
+)
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
 from src.experiments.torch_runtime import (
@@ -82,7 +85,7 @@ class RangeRuntimeCache:
 
 
 WORKLOAD_CACHE_SCHEMA_VERSION = 1
-RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION = 1
+RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION = 2
 
 
 def split_trajectories(
@@ -503,18 +506,28 @@ def _range_signal_diagnostics(
             "oracle_gap_over_best_baseline": 0.0,
         }
 
-    labels, labelled_mask = compute_typed_importance_labels(
-        points=points,
-        boundaries=boundaries,
-        typed_queries=range_queries,
-        seed=seed,
-        range_label_mode=range_label_mode,
-        range_boundary_prior_weight=range_boundary_prior_weight,
-    )
+    component_labels: dict[str, torch.Tensor] | None = None
+    if str(range_label_mode).lower() == "usefulness":
+        labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+        )
+    else:
+        labels, labelled_mask = compute_typed_importance_labels(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_label_mode=range_label_mode,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+        )
     if runtime_cache is not None:
         runtime_cache.labels = labels
         runtime_cache.labelled_mask = labelled_mask
-    label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
+    label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask, component_labels)
     oracle_labels = labels
     methods: list[Method] = [
         UniformTemporalMethod(),

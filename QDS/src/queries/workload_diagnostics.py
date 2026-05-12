@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 
@@ -286,17 +286,60 @@ def compute_range_workload_diagnostics(
     }
 
 
-def compute_range_label_diagnostics(labels: torch.Tensor, labelled_mask: torch.Tensor) -> dict[str, Any]:
+def _component_label_diagnostics(
+    component_labels: Mapping[str, torch.Tensor] | None,
+    active: torch.Tensor,
+) -> dict[str, Any]:
+    """Return compact per-component mass diagnostics for range usefulness labels."""
+    if component_labels is None:
+        return {
+            "component_label_mass_basis": "unavailable",
+            "component_positive_label_mass": {},
+            "component_positive_label_mass_fraction": {},
+            "component_positive_point_count": {},
+        }
+
+    masses: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for component_name, component_tensor in component_labels.items():
+        values = component_tensor[:, QUERY_TYPE_ID_RANGE].detach()
+        positive = active & (values > 0.0)
+        masses[str(component_name)] = float(values[positive].sum().item()) if bool(positive.any().item()) else 0.0
+        counts[str(component_name)] = int(positive.sum().item())
+
+    total_mass = sum(masses.values())
+    fractions = {
+        component_name: float(mass / total_mass) if total_mass > 1e-12 else 0.0
+        for component_name, mass in masses.items()
+    }
+    return {
+        "component_label_mass_basis": "pre_clamp_component_contributions",
+        "component_positive_label_mass": masses,
+        "component_positive_label_mass_fraction": fractions,
+        "component_positive_point_count": counts,
+    }
+
+
+def compute_range_label_diagnostics(
+    labels: torch.Tensor,
+    labelled_mask: torch.Tensor,
+    component_labels: Mapping[str, torch.Tensor] | None = None,
+) -> dict[str, Any]:
     """Summarize range-label density and magnitude."""
     if labels.numel() == 0 or labelled_mask.numel() == 0:
         return {
             "labelled_point_count": 0,
             "positive_point_count": 0,
             "positive_label_fraction": 0.0,
+            "positive_label_mass": 0.0,
             "positive_label_p50": 0.0,
             "positive_label_p90": 0.0,
             "positive_label_p95": 0.0,
             "positive_label_max": 0.0,
+            "component_label_mass_basis": "unavailable",
+            "component_positive_label_mass": {},
+            "component_positive_label_mass_fraction": {},
+            "component_positive_point_count": {},
         }
 
     active = labelled_mask[:, QUERY_TYPE_ID_RANGE]
@@ -305,12 +348,15 @@ def compute_range_label_diagnostics(labels: torch.Tensor, labelled_mask: torch.T
     positive_values = values[positive].detach().cpu().float().tolist()
     labelled_count = int(active.sum().item())
     positive_count = int(positive.sum().item())
-    return {
+    diagnostics = {
         "labelled_point_count": labelled_count,
         "positive_point_count": positive_count,
         "positive_label_fraction": float(positive_count / max(1, labelled_count)),
+        "positive_label_mass": float(values[positive].sum().item()) if bool(positive.any().item()) else 0.0,
         "positive_label_p50": _quantile(positive_values, 0.50),
         "positive_label_p90": _quantile(positive_values, 0.90),
         "positive_label_p95": _quantile(positive_values, 0.95),
         "positive_label_max": float(max(positive_values)) if positive_values else 0.0,
     }
+    diagnostics.update(_component_label_diagnostics(component_labels, active))
+    return diagnostics

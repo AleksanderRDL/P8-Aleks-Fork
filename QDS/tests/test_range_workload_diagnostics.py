@@ -17,7 +17,10 @@ from src.queries.workload_diagnostics import (
     compute_range_label_diagnostics,
     compute_range_workload_diagnostics,
 )
-from src.training.importance_labels import compute_typed_importance_labels
+from src.training.importance_labels import (
+    compute_typed_importance_labels,
+    compute_typed_importance_labels_with_range_components,
+)
 
 
 def _points_and_boundaries() -> tuple[torch.Tensor, list[tuple[int, int]]]:
@@ -178,6 +181,25 @@ def test_range_label_diagnostics_reports_positive_fraction() -> None:
     assert diagnostics["positive_point_count"] == 2
     assert diagnostics["positive_label_fraction"] == pytest.approx(0.4)
     assert diagnostics["positive_label_max"] > 0.0
+
+
+def test_range_label_diagnostics_reports_component_mass() -> None:
+    points, boundaries = _points_and_boundaries()
+    queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 2.5)]
+
+    labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+        points,
+        boundaries,
+        queries,
+        seed=1,
+    )
+    diagnostics = compute_range_label_diagnostics(labels, labelled_mask, component_labels)
+    fractions = diagnostics["component_positive_label_mass_fraction"]
+
+    assert diagnostics["positive_label_mass"] > 0.0
+    assert fractions["range_point_f1"] > 0.0
+    assert fractions["range_ship_f1"] > 0.0
+    assert sum(float(value) for value in fractions.values()) == pytest.approx(1.0)
 
 
 def test_phase2_diagnostics_dump_is_json_serializable() -> None:

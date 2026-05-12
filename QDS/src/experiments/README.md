@@ -121,6 +121,10 @@ which stores range workload summaries, per-query diagnostic rows, and training
 label tensors under `<cache_dir>/range_diagnostics/`. Final matched evaluation
 remains exact; stale or incomplete diagnostics cache entries are ignored and
 recomputed. Use `--refresh_cache` to force regeneration.
+For `range_label_mode=usefulness`, label diagnostics also include
+`component_positive_label_mass_fraction`, which shows whether the local proxy
+is mostly driven by point, ship, crossing, temporal, gap, turn, or shape
+supervision. Component mass is reported before the final training-label clamp.
 
 Direct matrix run:
 

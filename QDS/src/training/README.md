@@ -72,6 +72,13 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   counts, remaining candidate counts, residual positive-label counts, and how
   much positive label mass is consumed by the temporal spine versus left for
   learned residual fill.
+- Range diagnostics also report component-level usefulness label mass for
+  `range_label_mode="usefulness"`. Use
+  `component_positive_label_mass_fraction` to check whether point, ship,
+  crossing, temporal, gap, turn, or shape supervision is unexpectedly
+  dominating the local proxy before running another benchmark. These component
+  masses are reported before the final `[0, 1]` training-label clamp so
+  saturation remains visible.
 - `loss_objective="ranking_bce"` keeps the legacy margin-ranking objective for
   ablation. `pointwise_loss_weight` remains an auxiliary BCE term for both
   objectives.
