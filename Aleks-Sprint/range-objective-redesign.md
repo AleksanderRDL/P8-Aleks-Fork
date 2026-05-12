@@ -563,21 +563,20 @@ blocker is the training objective/label construction itself.
 
 ### Reporting Cleanup Notes
 
-The benchmark table and logs need two cleanup passes after the active queue is
-finished:
+The first reporting cleanup pass is implemented:
 
-- `collapse_warning` currently means any epoch had a low prediction standard
-  deviation, not necessarily that the selected checkpoint collapsed. Replace or
-  extend it with fields such as `collapse_warning_any`,
-  `collapse_warning_count`, `best_epoch_collapse_warning`, and `min_pred_std`.
-- `val_query_f1` in logs is semantically confusing when checkpoint selection
-  uses `checkpoint_f1_variant=range_usefulness`. Rename the selected value to
-  `val_selection_score` and report `val_range_point_f1` /
-  `val_range_usefulness` separately.
-- workload generation metadata currently reports `requested_queries` even when
-  target-coverage generation produces more queries. Separate minimum requested
-  queries, max query cap, final generated query count, target coverage, final
-  coverage, and stop reason.
+- benchmark rows report `collapse_warning_any`, `collapse_warning_count`,
+  `best_epoch_collapse_warning`, `min_pred_std`, and `best_epoch_pred_std` so a
+  transient collapsed epoch is not confused with a collapsed selected
+  checkpoint
+- validation history/logs report `val_selection_score` plus explicit
+  `val_range_point_f1` and `val_range_usefulness`, so range-usefulness
+  checkpointing is not mislabeled as generic query F1
+- workload generation metadata separates minimum requested queries, max query
+  cap, final generated query count, target coverage, final coverage, and stop
+  reason
+- benchmark matrix rows include temporal-random-fill usefulness,
+  MLQDS-vs-random-fill usefulness, and temporal-oracle-fill usefulness gap
 
 ## Range Workload Generation Direction
 

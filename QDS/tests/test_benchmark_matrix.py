@@ -224,6 +224,21 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "uniform": {"aggregate_f1": 0.35},
             "DouglasPeucker": {"aggregate_f1": 0.36},
         },
+        "learned_fill_diagnostics": {
+            "TemporalRandomFill": {
+                "range_point_f1": 0.38,
+                "range_usefulness_score": 0.41,
+            },
+            "TemporalOracleFill": {
+                "range_point_f1": 0.55,
+                "range_usefulness_score": 0.70,
+            },
+        },
+        "best_epoch": 2,
+        "training_history": [
+            {"epoch": 0.0, "pred_std": 0.0, "collapse_warning": 1.0},
+            {"epoch": 1.0, "pred_std": 0.2},
+        ],
         "torch_runtime": {
             "float32_matmul_precision": "high",
             "tf32_matmul_allowed": True,
@@ -268,6 +283,17 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_range_usefulness_score"] == 0.42
     assert row["mlqds_range_entry_exit_f1"] == 0.25
     assert row["mlqds_range_boundary_f1"] == 0.25
+    assert row["temporal_random_fill_range_point_f1"] == 0.38
+    assert row["temporal_random_fill_range_usefulness_score"] == 0.41
+    assert row["temporal_oracle_fill_range_point_f1"] == 0.55
+    assert row["temporal_oracle_fill_range_usefulness_score"] == 0.70
+    assert row["mlqds_vs_temporal_random_fill_range_usefulness"] == pytest.approx(0.01)
+    assert row["temporal_oracle_fill_gap_range_usefulness"] == pytest.approx(0.28)
+    assert row["collapse_warning_any"] is True
+    assert row["collapse_warning_count"] == 1
+    assert row["best_epoch_collapse_warning"] is False
+    assert row["min_pred_std"] == 0.0
+    assert row["best_epoch_pred_std"] == 0.2
     assert row["oracle_kind"] == "additive_label_greedy"
     assert row["oracle_exact_optimum"] is False
     assert row["mlqds_vs_uniform_f1"] == pytest.approx(0.05)

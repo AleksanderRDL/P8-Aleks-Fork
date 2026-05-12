@@ -64,6 +64,13 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
     assert workload.coverage_fraction is not None
     assert workload.coverage_fraction >= 0.01
     assert len(workload.typed_queries) == 25
+    assert workload.generation_diagnostics is not None
+    generation = workload.generation_diagnostics["query_generation"]
+    assert generation["mode"] == "target_coverage"
+    assert generation["minimum_queries"] == 25
+    assert generation["max_queries"] == 200
+    assert generation["final_query_count"] == 25
+    assert generation["stop_reason"] == "target_coverage_reached"
 
 
 def test_smaller_range_fraction_reduces_query_footprint() -> None:
@@ -207,6 +214,12 @@ def test_configured_workload_expands_to_max_queries_when_target_needs_more_queri
 
     assert len(workload.typed_queries) == 12
     assert float(workload.coverage_fraction or 0.0) < 1.0
+    assert workload.generation_diagnostics is not None
+    generation = workload.generation_diagnostics["query_generation"]
+    assert generation["minimum_queries"] == 4
+    assert generation["max_queries"] == 12
+    assert generation["final_query_count"] == 12
+    assert generation["stop_reason"] == "max_queries_reached"
 
 
 def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> None:

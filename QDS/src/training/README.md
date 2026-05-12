@@ -65,7 +65,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   `mlqds_temporal_fraction`.
 - Training artifacts include `training_target_diagnostics`, which records the
   configured budget ratios, effective learned-fill ratios, temporal-base point
-  counts, remaining candidate counts, and residual positive-label counts.
+  counts, remaining candidate counts, residual positive-label counts, and how
+  much positive label mass is consumed by the temporal spine versus left for
+  learned residual fill.
 - `loss_objective="ranking_bce"` keeps the legacy margin-ranking objective for
   ablation. `pointwise_loss_weight` remains an auxiliary BCE term for both
   objectives.
@@ -77,9 +79,12 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   `"answer"` and `"combined"` remain legacy diagnostics for explicit ablations.
   `uniform_gap`, `checkpoint_smoothing_window`, and `early_stopping_patience`
   are explicit selection stabilizers.
-- Validation query-F1 uses the same canonical MLQDS score conversion as final
+- Validation selection uses the same canonical MLQDS score conversion as final
   evaluation: one explicit workload score stream, `mlqds_score_mode`, and the
-  temporal/diversity retained-mask simplifier.
+  temporal/diversity retained-mask simplifier. History rows report
+  `val_selection_score` plus explicit `val_range_point_f1` and
+  `val_range_usefulness` fields so range-usefulness checkpointing is not
+  mislabeled as generic query F1.
 - AIS-scale stability knobs: `lr`, `pointwise_loss_weight`,
   `gradient_clip_norm`, `train_batch_size`, `inference_batch_size`,
   `query_chunk_size`, `float32_matmul_precision`, `allow_tf32`, and `amp_mode`.

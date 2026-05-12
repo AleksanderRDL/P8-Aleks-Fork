@@ -465,6 +465,17 @@ def _finalize_workload(
     covered_points = int(covered.sum().item())
     total_points = int(points.shape[0])
     coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
+    diagnostics = dict(generation_diagnostics or {})
+    query_generation = dict(diagnostics.get("query_generation") or {})
+    query_generation.update(
+        {
+            "final_query_count": int(len(typed)),
+            "covered_points": covered_points,
+            "total_points": total_points,
+            "final_coverage": coverage_fraction,
+        }
+    )
+    diagnostics["query_generation"] = query_generation
     return TypedQueryWorkload(
         query_features=features,
         typed_queries=typed,
@@ -472,7 +483,7 @@ def _finalize_workload(
         coverage_fraction=coverage_fraction,
         covered_points=covered_points,
         total_points=total_points,
-        generation_diagnostics=generation_diagnostics,
+        generation_diagnostics=diagnostics,
     )
 
 
@@ -508,6 +519,7 @@ def _range_acceptance_state(enabled: bool, max_attempts: int | None, requested_q
         "rejection_reasons": {},
         "exhausted": False,
         "max_attempts": int(max_attempts) if max_attempts is not None else None,
+        "minimum_queries": int(requested_queries),
         "requested_queries": int(requested_queries),
     }
 
@@ -669,6 +681,7 @@ def generate_typed_query_workload(
         covered = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
 
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
+        stop_reason = "max_queries_reached"
 
         # Generate kNN queries first so they always get their initial quota even
         # when other types advance coverage faster.
@@ -685,6 +698,7 @@ def generate_typed_query_workload(
         while len(typed) < query_limit:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
             if len(typed) >= requested_queries and current_coverage >= coverage_target:
+                stop_reason = "target_coverage_reached"
                 break
             desired = weights * float(len(typed) + 1)
             type_idx = int(torch.argmax(desired - counts.float()).item())
@@ -693,13 +707,37 @@ def generate_typed_query_workload(
             query = build_query(name, anchor_mask=anchor_mask)
             if query is None:
                 if name == "range" and range_acceptance.get("exhausted"):
+                    stop_reason = "range_acceptance_exhausted"
                     break
                 continue
             typed.append(query)
             counts[type_idx] += 1
             covered |= point_coverage_mask_for_query(points, query)
 
-        return _finalize_workload(points, typed, g, generation_diagnostics={"range_acceptance": range_acceptance})
+        final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
+        if (
+            stop_reason == "max_queries_reached"
+            and len(typed) >= requested_queries
+            and final_coverage >= coverage_target
+        ):
+            stop_reason = "target_coverage_reached"
+        query_generation = {
+            "mode": "target_coverage",
+            "minimum_queries": int(requested_queries),
+            "requested_queries": int(requested_queries),
+            "max_queries": int(query_limit),
+            "target_coverage": float(coverage_target),
+            "stop_reason": stop_reason,
+        }
+        return _finalize_workload(
+            points,
+            typed,
+            g,
+            generation_diagnostics={
+                "range_acceptance": range_acceptance,
+                "query_generation": query_generation,
+            },
+        )
 
     counts = torch.floor(weights * n_queries).to(torch.long)
     while int(counts.sum().item()) < n_queries:
@@ -707,6 +745,7 @@ def generate_typed_query_workload(
         counts[idx] += 1
 
     typed: list[dict[str, Any]] = []
+    stop_reason = "fixed_count_completed"
     # Front-load kNN queries before proportional types
     if front_load_knn > 0 and "knn" in names:
         knn_idx = names.index("knn")
@@ -721,8 +760,24 @@ def generate_typed_query_workload(
             query = build_query(name)
             if query is None:
                 if name == "range" and range_acceptance.get("exhausted"):
+                    stop_reason = "range_acceptance_exhausted"
                     break
                 continue
             typed.append(query)
 
-    return _finalize_workload(points, typed, g, generation_diagnostics={"range_acceptance": range_acceptance})
+    return _finalize_workload(
+        points,
+        typed,
+        g,
+        generation_diagnostics={
+            "range_acceptance": range_acceptance,
+            "query_generation": {
+                "mode": "fixed_count",
+                "minimum_queries": int(n_queries),
+                "requested_queries": int(n_queries),
+                "max_queries": int(n_queries),
+                "target_coverage": None,
+                "stop_reason": stop_reason,
+            },
+        },
+    )

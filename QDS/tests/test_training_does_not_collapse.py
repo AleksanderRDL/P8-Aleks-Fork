@@ -235,7 +235,7 @@ def test_filter_supervised_windows_removes_zero_positive_training_windows() -> N
     assert int(filtered[0].item()) == 2
 
 
-def test_training_records_validation_query_f1() -> None:
+def test_training_records_validation_selection_score() -> None:
     trajectories = generate_synthetic_ais_data(n_ships=5, n_points_per_ship=24, seed=444)
     train_trajectories = trajectories[:4]
     validation_trajectories = trajectories[4:]
@@ -287,12 +287,15 @@ def test_training_records_validation_query_f1() -> None:
         validation_workload_map={"range": 1.0},
     )
 
-    f1_rows = [row for row in out.history if "val_query_f1" in row]
+    f1_rows = [row for row in out.history if "val_selection_score" in row]
     assert f1_rows
     assert [int(row["epoch"]) for row in f1_rows] == [0, 1, 3, 5, 7]
-    assert all(0.0 <= row["val_query_f1"] <= 1.0 for row in f1_rows)
-    assert all("selection_score" not in row for row in out.history if "val_query_f1" not in row)
-    assert out.best_f1 == pytest.approx(max(row["val_query_f1"] for row in f1_rows))
+    assert all(0.0 <= row["val_selection_score"] <= 1.0 for row in f1_rows)
+    assert all("val_range_point_f1" in row for row in f1_rows)
+    assert all("val_range_usefulness" in row for row in f1_rows)
+    assert all("val_query_f1" not in row for row in f1_rows)
+    assert all("selection_score" not in row for row in out.history if "val_selection_score" not in row)
+    assert out.best_f1 == pytest.approx(max(row["val_selection_score"] for row in f1_rows))
 
 
 @pytest.mark.parametrize(

@@ -281,6 +281,7 @@ def _training_target_diagnostics(
     n_points = int(labels.shape[0])
     labelled_count = int(active.sum().item())
     positive_count = int(positive.sum().item())
+    total_positive_label_mass = float(values[positive].sum().item()) if bool(positive.any().item()) else 0.0
     diagnostics: dict[str, Any] = {
         "workload_type_id": int(workload_type_id),
         "residual_label_mode": str(residual_label_mode),
@@ -292,6 +293,7 @@ def _training_target_diagnostics(
         "labelled_point_count": labelled_count,
         "positive_label_count": positive_count,
         "positive_label_fraction": float(positive_count / max(1, labelled_count)),
+        "positive_label_mass": total_positive_label_mass,
         "budget_rows": [],
     }
 
@@ -306,6 +308,10 @@ def _training_target_diagnostics(
         candidate_count = int(candidate.sum().item())
         residual_labelled_count = int(residual_labelled.sum().item())
         residual_positive_count = int(residual_positive.sum().item())
+        base_label_mass = float(values[base_positive].sum().item()) if bool(base_positive.any().item()) else 0.0
+        residual_label_mass = (
+            float(values[residual_positive].sum().item()) if bool(residual_positive.any().item()) else 0.0
+        )
         rows.append(
             {
                 "total_budget_ratio": float(total_ratio),
@@ -318,6 +324,14 @@ def _training_target_diagnostics(
                 "residual_labelled_point_count": residual_labelled_count,
                 "residual_positive_label_count": residual_positive_count,
                 "residual_positive_label_fraction": float(residual_positive_count / max(1, residual_labelled_count)),
+                "temporal_base_label_mass": base_label_mass,
+                "residual_label_mass": residual_label_mass,
+                "temporal_base_label_mass_fraction": float(
+                    base_label_mass / max(1e-12, total_positive_label_mass)
+                ),
+                "residual_label_mass_fraction": float(
+                    residual_label_mass / max(1e-12, total_positive_label_mass)
+                ),
             }
         )
     diagnostics["budget_rows"] = rows
@@ -623,7 +637,7 @@ def _predict_workload_logits(
     return (all_pred / pred_count).detach().cpu()
 
 
-def _validation_query_f1(
+def _validation_checkpoint_scores(
     model: TrajectoryQDSModel,
     scaler: FeatureScaler,
     trajectories: list[torch.Tensor],
@@ -634,8 +648,8 @@ def _validation_query_f1(
     device: torch.device,
     validation_points: torch.Tensor | None = None,
     query_cache: Any | None = None,
-) -> tuple[float, dict[str, float]]:
-    """Evaluate a model checkpoint with the same query-F1 semantics as final evaluation."""
+) -> tuple[float, dict[str, float], dict[str, float]]:
+    """Evaluate a checkpoint and return selected score plus explicit validation metrics."""
     from src.evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
 
     points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
@@ -667,20 +681,66 @@ def _validation_query_f1(
         workload_map=workload_map,
         query_cache=query_cache,
     )
-    variant = str(getattr(model_config, "checkpoint_f1_variant", "range_usefulness")).lower()
-    if variant == "range_usefulness":
-        audit = score_range_usefulness(
+    metrics = {
+        "answer_f1": float(answer_agg),
+        "combined_f1": float(combined_agg),
+        "range_point_f1": float(answer_pt.get("range", 0.0)),
+    }
+    range_audit: dict[str, Any] | None = None
+    if any(str(query.get("type", "")).lower() == "range" for query in workload.typed_queries):
+        range_audit = score_range_usefulness(
             points=points,
             boundaries=boundaries,
             retained_mask=retained_mask,
             typed_queries=workload.typed_queries,
             query_cache=query_cache,
         )
-        score = float(audit["range_usefulness_score"])
-        return score, {"range": score}
+        metrics.update(
+            {
+                "range_usefulness": float(range_audit["range_usefulness_score"]),
+                "range_ship_f1": float(range_audit["range_ship_f1"]),
+                "range_entry_exit_f1": float(range_audit["range_entry_exit_f1"]),
+                "range_temporal_coverage": float(range_audit["range_temporal_coverage"]),
+                "range_shape_score": float(range_audit["range_shape_score"]),
+            }
+        )
+    variant = str(getattr(model_config, "checkpoint_f1_variant", "range_usefulness")).lower()
+    if variant == "range_usefulness":
+        if range_audit is None:
+            return float(answer_agg), answer_pt, metrics
+        score = float(range_audit["range_usefulness_score"])
+        return score, {"range": score}, metrics
     if variant == "combined":
-        return combined_agg, combined_pt
-    return answer_agg, answer_pt
+        return float(combined_agg), combined_pt, metrics
+    return float(answer_agg), answer_pt, metrics
+
+
+def _validation_query_f1(
+    model: TrajectoryQDSModel,
+    scaler: FeatureScaler,
+    trajectories: list[torch.Tensor],
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_map: dict[str, float],
+    model_config: ModelConfig,
+    device: torch.device,
+    validation_points: torch.Tensor | None = None,
+    query_cache: Any | None = None,
+) -> tuple[float, dict[str, float]]:
+    """Backward-compatible validation selector used by focused tests."""
+    score, per_type, _metrics = _validation_checkpoint_scores(
+        model=model,
+        scaler=scaler,
+        trajectories=trajectories,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map=workload_map,
+        model_config=model_config,
+        device=device,
+        validation_points=validation_points,
+        query_cache=query_cache,
+    )
+    return score, per_type
 
 
 def _validation_uniform_f1(
@@ -1202,7 +1262,7 @@ def train_model(
                 assert validation_trajectories is not None
                 assert validation_boundaries is not None
                 assert validation_workload is not None
-                query_f1, per_type_f1 = _validation_query_f1(
+                validation_score, per_type_f1, validation_metrics = _validation_checkpoint_scores(
                     model=model,
                     scaler=scaler,
                     trajectories=validation_trajectories,
@@ -1215,13 +1275,15 @@ def train_model(
                     query_cache=validation_query_cache,
                 )
                 epoch_timing["f1_s"] += time.perf_counter() - f1_t0
-                stats["val_query_f1"] = float(query_f1)
+                stats["val_selection_score"] = float(validation_score)
+                for metric_name, metric_value in validation_metrics.items():
+                    stats[f"val_{metric_name}"] = float(metric_value)
                 for type_name, value in per_type_f1.items():
-                    stats[f"val_query_f1_{type_name}"] = float(value)
+                    stats[f"val_selection_score_{type_name}"] = float(value)
                 if validation_uniform_result is not None:
                     uniform_f1, uniform_per_type = validation_uniform_result
                     stats["val_uniform_f1"] = float(uniform_f1)
-                    stats["val_query_uniform_gap"] = float(query_f1 - uniform_f1)
+                    stats["val_query_uniform_gap"] = float(validation_score - uniform_f1)
                     stats["val_query_type_deficit"] = _uniform_type_deficit(
                         per_type_f1,
                         uniform_per_type,
@@ -1229,7 +1291,7 @@ def train_model(
                     )
                     for type_name, value in uniform_per_type.items():
                         stats[f"val_uniform_f1_{type_name}"] = float(value)
-                        stats[f"val_query_f1_gap_{type_name}"] = float(per_type_f1.get(type_name, 0.0) - value)
+                        stats[f"val_selection_score_gap_{type_name}"] = float(per_type_f1.get(type_name, 0.0) - value)
         else:
             # Skip diagnostics this epoch; log only loss.  Patience counters
             # are only updated on diagnostic epochs below.
@@ -1263,14 +1325,18 @@ def train_model(
             avg_tau = sum(tau_vals) / max(1, len(tau_vals))
             collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
             selection: float | None
-            if selection_metric == "uniform_gap" and "val_query_f1" in stats and validation_uniform_result is not None:
+            if (
+                selection_metric == "uniform_gap"
+                and "val_selection_score" in stats
+                and validation_uniform_result is not None
+            ):
                 uniform_f1, uniform_per_type = validation_uniform_result
                 per_type_f1 = {
-                    name: stats.get(f"val_query_f1_{name}", 0.0)
+                    name: stats.get(f"val_selection_score_{name}", 0.0)
                     for name in ["range", "knn", "similarity", "clustering"]
                 }
                 selection = _uniform_gap_selection_score(
-                    query_f1=stats["val_query_f1"],
+                    query_f1=stats["val_selection_score"],
                     per_type_f1=per_type_f1,
                     uniform_f1=uniform_f1,
                     uniform_per_type=uniform_per_type,
@@ -1279,8 +1345,8 @@ def train_model(
                     aggregate_gap_weight=float(getattr(model_config, "checkpoint_uniform_gap_weight", 0.5)),
                     type_penalty_weight=float(getattr(model_config, "checkpoint_type_penalty_weight", 1.0)),
                 )
-            elif selection_metric == "f1" and "val_query_f1" in stats:
-                selection = _f1_selection_score(stats["val_query_f1"], stats["pred_std"])
+            elif selection_metric == "f1" and "val_selection_score" in stats:
+                selection = _f1_selection_score(stats["val_selection_score"], stats["pred_std"])
             elif selection_metric in {"f1", "uniform_gap"}:
                 selection = None
             else:
@@ -1318,23 +1384,23 @@ def train_model(
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
             )
-            if "val_query_f1" in stats:
+            if "val_selection_score" in stats:
                 print(
-                    f"    [{run_tag}] val_query_f1={stats['val_query_f1']:.6f}  "
-                    f"range={stats.get('val_query_f1_range', 0.0):.6f}  "
-                    f"knn={stats.get('val_query_f1_knn', 0.0):.6f}  "
-                    f"similarity={stats.get('val_query_f1_similarity', 0.0):.6f}  "
-                    f"clustering={stats.get('val_query_f1_clustering', 0.0):.6f}",
+                    f"    [{run_tag}] val_selection_score={stats['val_selection_score']:.6f}  "
+                    f"range_point_f1={stats.get('val_range_point_f1', 0.0):.6f}  "
+                    f"range_usefulness={stats.get('val_range_usefulness', 0.0):.6f}  "
+                    f"answer_f1={stats.get('val_answer_f1', 0.0):.6f}  "
+                    f"combined_f1={stats.get('val_combined_f1', 0.0):.6f}",
                     flush=True,
                 )
             if "val_uniform_f1" in stats:
                 print(
                     f"    [{run_tag}] val_vs_uniform aggregate={stats['val_query_uniform_gap']:+.6f}  "
                     f"type_deficit={stats['val_query_type_deficit']:.6f}  "
-                    f"range={stats.get('val_query_f1_gap_range', 0.0):+.6f}  "
-                    f"knn={stats.get('val_query_f1_gap_knn', 0.0):+.6f}  "
-                    f"similarity={stats.get('val_query_f1_gap_similarity', 0.0):+.6f}  "
-                    f"clustering={stats.get('val_query_f1_gap_clustering', 0.0):+.6f}",
+                    f"range={stats.get('val_selection_score_gap_range', 0.0):+.6f}  "
+                    f"knn={stats.get('val_selection_score_gap_knn', 0.0):+.6f}  "
+                    f"similarity={stats.get('val_selection_score_gap_similarity', 0.0):+.6f}  "
+                    f"clustering={stats.get('val_selection_score_gap_clustering', 0.0):+.6f}",
                     flush=True,
                 )
             diag_parts = []
@@ -1363,7 +1429,7 @@ def train_model(
             if is_new_best_model:
                 best_selection = float(stats["selection_score_smoothed"])
                 best_loss = stats["loss"]
-                best_f1 = float(stats.get("val_query_f1", best_f1))
+                best_f1 = float(stats.get("val_selection_score", best_f1))
                 best_epoch = epoch + 1
                 best_state_dict = _model_state_on_cpu(model)
 
@@ -1401,7 +1467,7 @@ def train_model(
         model.load_state_dict(best_state_dict)
         print(
             f"  [{run_tag}] restored best diagnostic epoch {best_epoch}/{epochs_trained} "
-            f"(selection={best_selection:+.3f}, loss={best_loss:.8f}, val_f1={best_f1:.6f})",
+            f"(selection={best_selection:+.3f}, loss={best_loss:.8f}, val_selection_score={best_f1:.6f})",
             flush=True,
         )
     return TrainingOutputs(

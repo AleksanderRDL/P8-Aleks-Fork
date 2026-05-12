@@ -105,6 +105,8 @@ learned score fill.
 `query_coverage` is a target used for workload generation and diagnostics.
 For the real-usecase profile, `n_queries` is only the minimum workload size;
 generation continues until the target is reached or `max_queries` is hit.
+`query_generation_diagnostics` records the minimum query count, max query cap,
+final generated query count, final coverage, and stop reason for each split.
 When `--cache_dir` is set, generated workloads are cached under
 `<cache_dir>/workloads/` by data fingerprint, query config, seed, and workload
 map. Use `--refresh_cache` to force regeneration.
@@ -183,10 +185,14 @@ For model behavior, inspect the variant `example_run.json`,
 metric; `RangeUseful` is the current audit score for range-local usefulness.
 `learned_fill_diagnostics.json` compares MLQDS against the same temporal base
 with random fill and oracle-label fill, so failures can be separated into
-temporal-base, learned-fill, and scoring issues. `training_target_diagnostics`
-inside `example_run.json` records the effective residual-label budgets used by
-the loss, while `range_workload_distribution_comparison.json` compares
-train/selection/eval query coverage and hit distributions.
+temporal-base, learned-fill, and scoring issues. The matrix CSV also reports
+temporal-random-fill usefulness, MLQDS-vs-random-fill usefulness, and the
+oracle-fill gap so residual-fill failures are visible in compact tables.
+`training_target_diagnostics` inside `example_run.json` records the effective
+residual-label budgets and label-mass split used by the loss, while
+`range_workload_distribution_comparison.json` compares train/selection/eval
+query coverage and hit distributions. `collapse_warning_any` means any epoch
+collapsed; `best_epoch_collapse_warning` is the selected-checkpoint signal.
 Use `--range_audit_compression_ratios 0.01,0.02,0.05,0.10` when you want the
 same range-usefulness components rerun across multiple retained-point budgets;
 it is disabled by default because it reruns method evaluation.

@@ -565,7 +565,48 @@ def _has_collapse_warning(run_json: dict[str, Any] | None) -> bool | None:
     """Return whether training history contains a collapse warning."""
     if not run_json:
         return None
-    return any("collapse_warning" in row for row in run_json.get("training_history", []))
+    return bool(_collapse_warning_summary(run_json)["collapse_warning_any"])
+
+
+def _collapse_warning_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
+    """Summarize collapse diagnostics without conflating any epoch with the selected checkpoint."""
+    if not run_json:
+        return {
+            "collapse_warning_any": None,
+            "collapse_warning_count": None,
+            "best_epoch_collapse_warning": None,
+            "min_pred_std": None,
+            "best_epoch_pred_std": None,
+        }
+    history = run_json.get("training_history", [])
+    collapse_count = sum(1 for row in history if bool(row.get("collapse_warning", False)))
+    pred_std_values = [
+        float(row["pred_std"])
+        for row in history
+        if row.get("pred_std") is not None
+    ]
+    best_epoch = run_json.get("best_epoch")
+    best_row = None
+    if best_epoch is not None:
+        best_epoch_int = int(best_epoch)
+        for idx, row in enumerate(history):
+            epoch_one_based = int(row.get("epoch", idx)) + 1
+            if epoch_one_based == best_epoch_int:
+                best_row = row
+                break
+    return {
+        "collapse_warning_any": bool(collapse_count > 0),
+        "collapse_warning_count": int(collapse_count),
+        "best_epoch_collapse_warning": (
+            bool(best_row.get("collapse_warning", False)) if best_row is not None else None
+        ),
+        "min_pred_std": min(pred_std_values) if pred_std_values else None,
+        "best_epoch_pred_std": (
+            float(best_row["pred_std"])
+            if best_row is not None and best_row.get("pred_std") is not None
+            else None
+        ),
+    }
 
 
 def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) -> list[dict[str, Any]]:
@@ -625,14 +666,20 @@ def _row_from_run(
     mlqds = (run_json or {}).get("matched", {}).get("MLQDS", {})
     uniform = (run_json or {}).get("matched", {}).get("uniform", {})
     dp = (run_json or {}).get("matched", {}).get("DouglasPeucker", {})
+    learned_fill = (run_json or {}).get("learned_fill_diagnostics", {})
+    temporal_random_fill = learned_fill.get("TemporalRandomFill", {})
+    temporal_oracle_fill = learned_fill.get("TemporalOracleFill", {})
     cuda_memory = (run_json or {}).get("cuda_memory", {}).get("training", {})
     child_torch_runtime = (run_json or {}).get("torch_runtime") or {}
     child_amp = child_torch_runtime.get("amp") or {}
     model_config = (run_json or {}).get("config", {}).get("model", {})
     oracle_diagnostic = (run_json or {}).get("oracle_diagnostic") or {}
+    collapse_summary = _collapse_warning_summary(run_json)
     mlqds_f1 = mlqds.get("aggregate_f1")
     mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds.get("pure_range_f1", mlqds_f1))
     mlqds_range_usefulness = mlqds.get("range_usefulness_score")
+    random_fill_range_usefulness = temporal_random_fill.get("range_usefulness_score")
+    oracle_fill_range_usefulness = temporal_oracle_fill.get("range_usefulness_score")
     uniform_f1 = uniform.get("aggregate_f1")
     dp_f1 = dp.get("aggregate_f1")
     return {
@@ -671,7 +718,26 @@ def _row_from_run(
         "mlqds_latency_ms": mlqds.get("latency_ms"),
         "avg_length_preserved": mlqds.get("avg_length_preserved"),
         "combined_query_shape_score": mlqds.get("combined_query_shape_score"),
-        "collapse_warning": _has_collapse_warning(run_json),
+        "temporal_random_fill_range_point_f1": temporal_random_fill.get("range_point_f1"),
+        "temporal_random_fill_range_usefulness_score": random_fill_range_usefulness,
+        "temporal_oracle_fill_range_point_f1": temporal_oracle_fill.get("range_point_f1"),
+        "temporal_oracle_fill_range_usefulness_score": oracle_fill_range_usefulness,
+        "mlqds_vs_temporal_random_fill_range_usefulness": (
+            float(mlqds_range_usefulness) - float(random_fill_range_usefulness)
+            if mlqds_range_usefulness is not None and random_fill_range_usefulness is not None
+            else None
+        ),
+        "temporal_oracle_fill_gap_range_usefulness": (
+            float(oracle_fill_range_usefulness) - float(mlqds_range_usefulness)
+            if mlqds_range_usefulness is not None and oracle_fill_range_usefulness is not None
+            else None
+        ),
+        "collapse_warning": collapse_summary["collapse_warning_any"],
+        "collapse_warning_any": collapse_summary["collapse_warning_any"],
+        "collapse_warning_count": collapse_summary["collapse_warning_count"],
+        "best_epoch_collapse_warning": collapse_summary["best_epoch_collapse_warning"],
+        "min_pred_std": collapse_summary["min_pred_std"],
+        "best_epoch_pred_std": collapse_summary["best_epoch_pred_std"],
         "checkpoint_f1_variant": variant.checkpoint_f1_variant,
         "loss_objective": model_config.get("loss_objective"),
         "budget_loss_ratios": model_config.get("budget_loss_ratios"),
@@ -731,13 +797,16 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
         "mlqds_f1",
         "mlqds_range_point_f1",
         "mlqds_range_usefulness_score",
+        "temporal_random_fill_range_usefulness_score",
+        "mlqds_vs_temporal_random_fill_range_usefulness",
         "mlqds_range_entry_exit_f1",
         "uniform_f1",
         "douglas_peucker_f1",
         "mlqds_vs_uniform_f1",
         "mlqds_vs_douglas_peucker_f1",
         "mlqds_latency_ms",
-        "collapse_warning",
+        "best_epoch_collapse_warning",
+        "collapse_warning_count",
     ]
     lines = [
         "| " + " | ".join(columns) + " |",
