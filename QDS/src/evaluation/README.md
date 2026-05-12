@@ -35,12 +35,13 @@ This module compares query-aware ML simplification against temporal, geometric, 
   objective-redesign conclusion.
 - `RangeUseful` is a versioned audit score combining `RangePointF1`, ship
   presence, per-ship point coverage, entry/exit preservation, temporal span
-  coverage, in-query gap coverage, route-change preservation, and range-local
-  path-shape preservation. It is reported separately so it can guide objective
-  redesign without pretending to be a mathematically final target. Schema v4
-  weights are `0.23/0.14/0.14/0.14/0.11/0.10/0.07/0.07` for point, ship
-  presence, ship coverage, entry/exit, temporal span, gap, turn, and shape
-  respectively.
+  coverage, in-query gap coverage, crossing-bracket preservation, route-change
+  preservation, and range-local path-shape preservation. It is reported
+  separately so it can guide objective redesign without pretending to be a
+  mathematically final target. Schema v5 weights are
+  `0.22/0.13/0.13/0.10/0.10/0.10/0.09/0.07/0.06` for point, ship presence,
+  ship coverage, sampled entry/exit, crossing brackets, temporal span, gap,
+  turn, and shape respectively.
 - `EntryExitF1` is reported separately for range workloads. It measures
   retained in-box boundary-crossing points and is a shape-preservation
   diagnostic, not part of `RangePointF1`.
@@ -51,6 +52,9 @@ This module compares query-aware ML simplification against temporal, geometric, 
     sparse representation of another queried ship.
   - `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true box
     crossings.
+  - `CrossingF1` scores the AIS point pairs bracketing observed outside/inside
+    range transitions, so retaining only the in-box endpoint is not treated as
+    perfect boundary-crossing context.
   - `TemporalCov` scores retained in-query time span. It intentionally does
     not penalize large interior gaps when endpoints survive.
   - `GapCov` scores the largest missing run between retained in-query points,
@@ -86,7 +90,8 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 Keep final benchmark audits exact. `EvaluationQueryCache` precomputes
 retained-independent per-query range support: full ship IDs, compact entry/exit
-indices, in-query offsets, full local time spans, and full local path lengths.
+indices, crossing brackets, in-query offsets, turn weights, full local time
+spans, and full local path lengths.
 Reuse that cache across MLQDS, baselines, Oracle, and compression ratios. Only
 use sampled approximations for checkpoint-selection diagnostics when needed;
 final reported audit metrics should stay exact.

@@ -227,6 +227,26 @@ def _range_entry_exit_mask(
     return boundary_full
 
 
+def _range_crossing_bracket_mask(
+    box_mask: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+) -> torch.Tensor:
+    """Return observed point pairs bracketing outside/inside range transitions."""
+    bracket_full = torch.zeros_like(box_mask, dtype=torch.bool)
+    for start, end in boundaries:
+        if end - start < 2:
+            continue
+        traj_in = box_mask[start:end]
+        if not bool(traj_in.any().item()):
+            continue
+        transitions = torch.where(traj_in[1:] != traj_in[:-1])[0]
+        if transitions.numel() == 0:
+            continue
+        bracket_full[start + transitions] = True
+        bracket_full[start + transitions + 1] = True
+    return bracket_full
+
+
 def _local_shape_weights(points: torch.Tensor, global_indices: torch.Tensor) -> torch.Tensor:
     """Return range-local shape weights for one trajectory slice."""
     count = int(global_indices.numel())
@@ -340,6 +360,12 @@ def _add_range_usefulness_labels(
     if boundary_count > 0:
         boundary_gain = float(2.0 / (boundary_count + 1.0))
         labels[boundary_support, type_idx] += float(weights["range_entry_exit_f1"]) * boundary_gain
+
+    crossing_support = _range_crossing_bracket_mask(box_support, boundaries)
+    crossing_count = int(crossing_support.sum().item())
+    if crossing_count > 0:
+        crossing_gain = float(2.0 / (crossing_count + 1.0))
+        labels[crossing_support, type_idx] += float(weights["range_crossing_f1"]) * crossing_gain
 
     for trajectory_id in sorted(hit_ids):
         if trajectory_id >= len(boundaries):
@@ -510,8 +536,7 @@ def compute_typed_importance_labels(
     trajectories = _trajectories_from_boundaries(points, boundaries)
 
     # Column 7 of the trajectory feature tensor is turn_score in [0,1] = normalized |Δheading|.
-    # Used as a Douglas-Peucker-style shape prior for similarity and clustering branches only.
-    # Range is excluded (steals budget from in-box stretches → hurts point recall).
+    # It acts as a local route-change prior for usefulness labels and non-range representatives.
     turn_score = points[:, 7] if points.shape[1] >= 8 else torch.zeros(n, device=points.device)
     TURN_BIAS_ALPHA = 0.05
 

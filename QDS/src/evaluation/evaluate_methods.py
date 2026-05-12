@@ -45,6 +45,7 @@ class RangeQueryAuditSupport:
 
     range_mask: torch.Tensor
     boundary_indices_cpu: torch.Tensor
+    crossing_bracket_indices_cpu: torch.Tensor
     full_trajectory_ids: tuple[int, ...]
     trajectories: tuple[RangeTrajectoryAuditSupport, ...]
 
@@ -267,6 +268,30 @@ def _range_boundary_indices_for_trajectories(
     return torch.cat(boundary_indices).to(dtype=torch.long)
 
 
+def _range_crossing_bracket_indices_for_trajectories(
+    range_mask: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    trajectory_ids: list[int],
+) -> torch.Tensor:
+    """Return point pairs bracketing observed outside/inside range transitions."""
+    bracket_indices: list[torch.Tensor] = []
+    for trajectory_id in trajectory_ids:
+        if trajectory_id < 0 or trajectory_id >= len(boundaries):
+            continue
+        start, end = boundaries[trajectory_id]
+        if end - start < 2:
+            continue
+        traj_in = range_mask[start:end]
+        transitions = torch.where(traj_in[1:] != traj_in[:-1])[0]
+        if transitions.numel() == 0:
+            continue
+        pairs = torch.stack((transitions, transitions + 1), dim=1).reshape(-1)
+        bracket_indices.append((torch.unique(pairs) + int(start)).detach().cpu())
+    if not bracket_indices:
+        return torch.empty((0,), dtype=torch.long)
+    return torch.unique(torch.cat(bracket_indices).to(dtype=torch.long))
+
+
 def _range_turn_weights_for_points(points_cpu: torch.Tensor) -> torch.Tensor:
     """Return retained-independent route-change weights for one in-query trajectory slice."""
     count = int(points_cpu.shape[0])
@@ -293,6 +318,11 @@ def _build_range_query_audit_support(
     range_mask = range_mask.bool()
     full_ids = tuple(_trajectory_ids_for_mask(range_mask, point_trajectory_ids))
     boundary_indices_cpu = _range_boundary_indices_for_trajectories(range_mask, boundaries, list(full_ids))
+    crossing_bracket_indices_cpu = _range_crossing_bracket_indices_for_trajectories(
+        range_mask,
+        boundaries,
+        list(full_ids),
+    )
     range_mask_cpu = range_mask.detach().cpu()
     trajectory_support: list[RangeTrajectoryAuditSupport] = []
     for trajectory_id in full_ids:
@@ -324,6 +354,7 @@ def _build_range_query_audit_support(
     return RangeQueryAuditSupport(
         range_mask=range_mask,
         boundary_indices_cpu=boundary_indices_cpu,
+        crossing_bracket_indices_cpu=crossing_bracket_indices_cpu,
         full_trajectory_ids=full_ids,
         trajectories=tuple(trajectory_support),
     )
@@ -483,7 +514,7 @@ def score_range_usefulness(
     typed_queries: list[dict],
     query_cache: EvaluationQueryCache | None = None,
 ) -> dict[str, Any]:
-    """Audit range simplification with point, ship, coverage, entry/exit, temporal, gap, turn, and shape components.
+    """Audit range simplification with point, ship, crossing, temporal, gap, turn, and shape components.
 
     `range_point_f1` is the current retained in-box point metric. The combined
     `range_usefulness_score` is an audit score for comparing candidates; it is
@@ -501,6 +532,7 @@ def score_range_usefulness(
     ship_scores: list[float] = []
     ship_coverage_scores: list[float] = []
     entry_exit_scores: list[float] = []
+    crossing_scores: list[float] = []
     temporal_scores: list[float] = []
     gap_scores: list[float] = []
     turn_scores: list[float] = []
@@ -526,6 +558,7 @@ def score_range_usefulness(
         ship_scores.append(f1_score(set(support.full_trajectory_ids), set(retained_ids)))
 
         entry_exit_scores.append(_point_index_subset_f1(retained_bool, support.boundary_indices_cpu))
+        crossing_scores.append(_point_index_subset_f1(retained_bool, support.crossing_bracket_indices_cpu))
 
         ship_coverage, temporal_score, gap_score, turn_score, shape_score = _range_trajectory_detail_scores_for_query(
             points_cpu=points_cpu,
@@ -543,6 +576,7 @@ def score_range_usefulness(
     range_ship_f1 = _mean(ship_scores)
     range_ship_coverage = _mean(ship_coverage_scores)
     range_entry_exit_f1 = _mean(entry_exit_scores)
+    range_crossing_f1 = _mean(crossing_scores)
     range_temporal_coverage = _mean(temporal_scores)
     range_gap_coverage = _mean(gap_scores)
     range_turn_coverage = _mean(turn_scores)
@@ -554,6 +588,7 @@ def score_range_usefulness(
             ("range_ship_f1", range_ship_f1),
             ("range_ship_coverage", range_ship_coverage),
             ("range_entry_exit_f1", range_entry_exit_f1),
+            ("range_crossing_f1", range_crossing_f1),
             ("range_temporal_coverage", range_temporal_coverage),
             ("range_gap_coverage", range_gap_coverage),
             ("range_turn_coverage", range_turn_coverage),
@@ -569,6 +604,7 @@ def score_range_usefulness(
         "range_ship_coverage": float(range_ship_coverage),
         "range_entry_exit_f1": float(range_entry_exit_f1),
         "range_boundary_f1": float(range_entry_exit_f1),
+        "range_crossing_f1": float(range_crossing_f1),
         "range_temporal_coverage": float(range_temporal_coverage),
         "range_gap_coverage": float(range_gap_coverage),
         "range_turn_coverage": float(range_turn_coverage),
@@ -856,6 +892,7 @@ def evaluate_method(
         range_ship_f1=float(range_audit.get("range_ship_f1", 0.0)),
         range_ship_coverage=float(range_audit.get("range_ship_coverage", 0.0)),
         range_entry_exit_f1=boundary_f1,
+        range_crossing_f1=float(range_audit.get("range_crossing_f1", 0.0)),
         range_temporal_coverage=float(range_audit.get("range_temporal_coverage", 0.0)),
         range_gap_coverage=float(range_audit.get("range_gap_coverage", 0.0)),
         range_turn_coverage=float(range_audit.get("range_turn_coverage", 0.0)),
@@ -1026,18 +1063,19 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
 def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
     """Render detailed range usefulness audit components."""
-    col1, col2, col3, col4, col5, col6, col7, col8, col9, col10 = 24, 14, 10, 10, 13, 13, 10, 10, 12, 13
+    col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = 24, 14, 10, 10, 13, 11, 13, 10, 10, 12, 13
     header = (
         f"{'Method':<{col1}}"
         f"{'RangePointF1':>{col2}}"
         f"{'ShipF1':>{col3}}"
         f"{'ShipCov':>{col4}}"
         f"{'EntryExitF1':>{col5}}"
-        f"{'TemporalCov':>{col6}}"
-        f"{'GapCov':>{col7}}"
-        f"{'TurnCov':>{col8}}"
-        f"{'ShapeScore':>{col9}}"
-        f"{'RangeUseful':>{col10}}"
+        f"{'CrossingF1':>{col6}}"
+        f"{'TemporalCov':>{col7}}"
+        f"{'GapCov':>{col8}}"
+        f"{'TurnCov':>{col9}}"
+        f"{'ShapeScore':>{col10}}"
+        f"{'RangeUseful':>{col11}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -1047,11 +1085,12 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
             f"{metrics.range_ship_f1:>{col3}.6f}"
             f"{metrics.range_ship_coverage:>{col4}.6f}"
             f"{float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1):>{col5}.6f}"
-            f"{metrics.range_temporal_coverage:>{col6}.6f}"
-            f"{metrics.range_gap_coverage:>{col7}.6f}"
-            f"{metrics.range_turn_coverage:>{col8}.6f}"
-            f"{metrics.range_shape_score:>{col9}.6f}"
-            f"{_range_usefulness_metric(metrics):>{col10}.6f}"
+            f"{metrics.range_crossing_f1:>{col6}.6f}"
+            f"{metrics.range_temporal_coverage:>{col7}.6f}"
+            f"{metrics.range_gap_coverage:>{col8}.6f}"
+            f"{metrics.range_turn_coverage:>{col9}.6f}"
+            f"{metrics.range_shape_score:>{col10}.6f}"
+            f"{_range_usefulness_metric(metrics):>{col11}.6f}"
         )
     return "\n".join(lines)
 

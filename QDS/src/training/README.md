@@ -28,8 +28,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - Range labels now support two explicit modes. `point_f1` is the old point-hit
   proxy: every point inside a range query box receives the same singleton
   retained-hit gain for that query. `usefulness` is the default training mode:
-  it adds local proxy signal for ship presence, sampled entry/exit points,
-  in-query temporal span endpoints, and local shape/turn points. Cross-trajectory
+  it adds local proxy signal for ship presence, per-ship coverage, sampled
+  entry/exit points, observed crossing brackets, in-query temporal span
+  endpoints, gap coverage, and local shape/turn points. Cross-trajectory
   proximity is not used.
 - `range_boundary_prior_weight` is still available as an explicit point-hit
   boundary prior, but the default real-usecase path keeps it at `0.0` because
@@ -39,7 +40,8 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   exact optimizer for multi-budget retained-set utility; see
   `../../../Aleks-Sprint/range-objective-redesign.md`.
 - kNN and similarity labels execute the query on the original data, identify the original trajectory-ID answer set, and assign points the F1 gain of recovering one true-positive trajectory ID.
-- Similarity and clustering labels can use the optional `turn_score` feature as a small shape prior.
+- Range usefulness, similarity, and clustering labels can use the optional
+  `turn_score` feature as a small route-change prior.
 - Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs. Within a clustered query box, point mass is weighted by distance from the trajectory's in-box centroid.
 - Labels are averaged per query type and clamped to `[0, 1]`, so higher labels directly mean higher expected query F1 contribution.
 - Training keeps those raw labels for reporting and oracle diagnostics, but rescales each active type internally so tiny F1 gains still produce useful gradients.

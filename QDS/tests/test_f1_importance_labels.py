@@ -227,7 +227,7 @@ def test_range_usefulness_labels_prioritize_ship_span_and_shape_points() -> None
 
 
 def test_range_usefulness_labels_preserve_point_component_mass() -> None:
-    """Assert usefulness labels remain finite and positive for all in-box hits."""
+    """Assert usefulness labels remain finite and include crossing brackets."""
     points = torch.tensor(
         [
             [0.0, 0.0, 0.0, 1.0],
@@ -263,7 +263,8 @@ def test_range_usefulness_labels_preserve_point_component_mass() -> None:
     assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
     assert torch.isfinite(values).all()
     assert bool((values[:3] > 0.0).all().item())
-    assert values[3].item() == pytest.approx(0.0)
+    assert values[3].item() > 0.0
+    assert values[3].item() < values[:3].max().item()
 
 
 def test_range_label_mode_rejects_unknown_mode() -> None:

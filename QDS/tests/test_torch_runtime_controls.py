@@ -330,6 +330,7 @@ def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
             "mlqds_aggregate_f1": 0.5,
             "mlqds_range_usefulness_score": None,
             "mlqds_range_ship_coverage": None,
+            "mlqds_range_crossing_f1": None,
             "mlqds_range_gap_coverage": None,
             "mlqds_range_turn_coverage": None,
         }

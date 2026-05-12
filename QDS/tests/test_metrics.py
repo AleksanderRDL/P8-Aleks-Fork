@@ -630,6 +630,42 @@ def test_range_usefulness_gap_coverage_penalizes_interior_gap() -> None:
     assert full_audit["range_usefulness_score"] > endpoint_audit["range_usefulness_score"]
 
 
+def test_range_usefulness_crossing_f1_requires_transition_brackets() -> None:
+    points = torch.tensor(
+        [
+            [0.0, -2.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [2.0, 0.2, 0.0, 1.0],
+            [3.0, 2.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 4.0,
+            },
+        }
+    ]
+    inside_only = torch.tensor([False, True, True, False])
+    with_brackets = torch.tensor([True, True, True, True])
+
+    inside_audit = score_range_usefulness(points, [(0, 4)], inside_only, queries)
+    bracket_audit = score_range_usefulness(points, [(0, 4)], with_brackets, queries)
+
+    assert inside_audit["range_point_f1"] == pytest.approx(1.0)
+    assert inside_audit["range_entry_exit_f1"] == pytest.approx(1.0)
+    assert inside_audit["range_crossing_f1"] == pytest.approx(2.0 / 3.0)
+    assert bracket_audit["range_crossing_f1"] == pytest.approx(1.0)
+    assert bracket_audit["range_usefulness_score"] > inside_audit["range_usefulness_score"]
+
+
 def test_range_usefulness_shape_score_penalizes_curved_endpoint_shortcut() -> None:
     points = torch.tensor(
         [
@@ -768,11 +804,12 @@ def test_range_usefulness_table_reports_audit_components() -> None:
                 range_ship_f1=0.7,
                 range_ship_coverage=0.65,
                 range_entry_exit_f1=0.25,
+                range_crossing_f1=0.2,
                 range_temporal_coverage=0.8,
                 range_gap_coverage=0.4,
                 range_turn_coverage=0.3,
                 range_shape_score=0.6,
-                range_usefulness_score=0.53,
+                range_usefulness_score=0.5035,
             )
         }
     )
@@ -780,6 +817,7 @@ def test_range_usefulness_table_reports_audit_components() -> None:
     assert "RangePointF1" in table
     assert "ShipF1" in table
     assert "ShipCov" in table
+    assert "CrossingF1" in table
     assert "GapCov" in table
     assert "TurnCov" in table
     assert "RangeUseful" in table

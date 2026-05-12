@@ -449,6 +449,7 @@ def main() -> None:
                 "range_ship_coverage": m.range_ship_coverage,
                 "range_entry_exit_f1": m.range_entry_exit_f1,
                 "range_boundary_f1": m.range_entry_exit_f1,
+                "range_crossing_f1": m.range_crossing_f1,
                 "range_temporal_coverage": m.range_temporal_coverage,
                 "range_gap_coverage": m.range_gap_coverage,
                 "range_turn_coverage": m.range_turn_coverage,
