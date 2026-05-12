@@ -244,6 +244,8 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "range_usefulness_score": 0.42,
                 "range_entry_exit_f1": 0.25,
                 "range_boundary_f1": 0.25,
+                "range_gap_coverage": 0.31,
+                "range_usefulness_schema_version": 2,
             },
             "uniform": {"aggregate_f1": 0.35},
             "DouglasPeucker": {"aggregate_f1": 0.36},
@@ -313,6 +315,8 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_range_usefulness_score"] == 0.42
     assert row["mlqds_range_entry_exit_f1"] == 0.25
     assert row["mlqds_range_boundary_f1"] == 0.25
+    assert row["mlqds_range_gap_coverage"] == 0.31
+    assert row["range_usefulness_schema_version"] == 2
     assert row["temporal_random_fill_range_point_f1"] == 0.38
     assert row["temporal_random_fill_range_usefulness_score"] == 0.41
     assert row["temporal_oracle_fill_range_point_f1"] == 0.55

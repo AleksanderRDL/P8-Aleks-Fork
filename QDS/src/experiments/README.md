@@ -193,7 +193,9 @@ For comparisons, start with `benchmark_matrix.md` or `benchmark_matrix.csv`.
 For model behavior, inspect the variant `example_run.json`,
 `matched_table.txt`, `range_usefulness_table.txt`, and
 `range_workload_diagnostics.json`. `RangePointF1` is the retained in-box point
-metric; `RangeUseful` is the current audit score for range-local usefulness.
+metric; `RangeUseful` is the current versioned audit score for range-local
+usefulness, including ship presence, entry/exit, temporal span, gap coverage,
+and local shape fidelity.
 `learned_fill_diagnostics.json` compares MLQDS against the same temporal base
 with random fill and oracle-label fill, so failures can be separated into
 temporal-base, learned-fill, and scoring issues. The matrix CSV also reports

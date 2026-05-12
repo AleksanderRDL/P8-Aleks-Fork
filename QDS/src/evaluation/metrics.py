@@ -85,8 +85,10 @@ class MethodEvaluation:
     range_ship_f1: float = 0.0
     range_entry_exit_f1: float = 0.0
     range_temporal_coverage: float = 0.0
+    range_gap_coverage: float = 0.0
     range_shape_score: float = 0.0
     range_usefulness_score: float = 0.0
+    range_usefulness_schema_version: int = 0
     range_audit: dict[str, Any] = field(default_factory=dict)
     retained_mask: torch.Tensor | None = None
 

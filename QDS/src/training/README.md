@@ -90,7 +90,8 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   temporal/diversity retained-mask simplifier. History rows report
   `val_selection_score` plus explicit `val_range_point_f1` and
   `val_range_usefulness` fields so range-usefulness checkpointing is not
-  mislabeled as generic query F1.
+  mislabeled as generic query F1. Range usefulness is versioned in audit JSON
+  because component weights may change during objective redesign.
 - AIS-scale stability knobs: `lr`, `pointwise_loss_weight`,
   `gradient_clip_norm`, `train_batch_size`, `inference_batch_size`,
   `query_chunk_size`, `float32_matmul_precision`, `allow_tf32`, and `amp_mode`.

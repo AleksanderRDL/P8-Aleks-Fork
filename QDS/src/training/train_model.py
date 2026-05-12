@@ -877,6 +877,7 @@ def _validation_checkpoint_scores(
                 "range_ship_f1": float(range_audit["range_ship_f1"]),
                 "range_entry_exit_f1": float(range_audit["range_entry_exit_f1"]),
                 "range_temporal_coverage": float(range_audit["range_temporal_coverage"]),
+                "range_gap_coverage": float(range_audit["range_gap_coverage"]),
                 "range_shape_score": float(range_audit["range_shape_score"]),
             }
         )

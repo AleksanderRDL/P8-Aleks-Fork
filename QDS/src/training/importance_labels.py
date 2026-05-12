@@ -7,19 +7,14 @@ from typing import Any, Mapping, Sequence, cast
 
 import torch
 
+from src.evaluation.range_usefulness import RANGE_USEFULNESS_WEIGHTS
 from src.queries.query_executor import execute_typed_query
 from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
 RANGE_LABEL_MODES = ("point_f1", "usefulness")
-RANGE_USEFULNESS_LABEL_WEIGHTS = {
-    "range_point_f1": 0.35,
-    "range_ship_f1": 0.20,
-    "range_entry_exit_f1": 0.15,
-    "range_temporal_coverage": 0.15,
-    "range_shape_score": 0.15,
-}
+RANGE_USEFULNESS_LABEL_WEIGHTS = dict(RANGE_USEFULNESS_WEIGHTS)
 
 
 def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
@@ -250,6 +245,18 @@ def _local_shape_weights(points: torch.Tensor, global_indices: torch.Tensor) -> 
     return weights
 
 
+def _local_gap_weights(count: int, device: torch.device) -> torch.Tensor:
+    """Return interior-biased weights for range gap-coverage labels."""
+    weights = torch.ones((int(count),), dtype=torch.float32, device=device)
+    if count >= 3:
+        positions = torch.linspace(0.0, 1.0, int(count), dtype=torch.float32, device=device)
+        interior = torch.minimum(positions, 1.0 - positions)
+        max_interior = float(interior.max().item())
+        if max_interior > 1e-12:
+            weights = weights + interior / max_interior
+    return weights
+
+
 def _add_range_point_f1_labels(
     labels: torch.Tensor,
     points: torch.Tensor,
@@ -308,6 +315,7 @@ def _add_range_usefulness_labels(
     ship_count = len(hit_ids)
     ship_gain = _set_query_singleton_gain(hit_ids)
     temporal_mass_per_ship = float(weights["range_temporal_coverage"]) / float(ship_count)
+    gap_mass_per_ship = float(weights["range_gap_coverage"]) / float(ship_count)
     shape_mass = float(weights["range_shape_score"]) * float(ship_gain)
 
     boundary_support = _range_entry_exit_mask(box_support, boundaries)
@@ -343,6 +351,13 @@ def _add_range_usefulness_labels(
             labels[start + in_offsets[-1], type_idx] += 0.5 * temporal_mass_per_ship
 
         global_indices = start + in_offsets
+        _add_weighted_index_label(
+            labels,
+            global_indices,
+            type_idx,
+            gap_mass_per_ship,
+            _local_gap_weights(int(global_indices.numel()), labels.device),
+        )
         _add_weighted_index_label(
             labels,
             global_indices,

@@ -60,7 +60,9 @@ range usefulness audit:
 - `ShipF1`: whether ships/trajectories present in the query are still present
 - `EntryExitF1`: whether range entry/exit points are retained
 - `TemporalCov`: how much of each in-query ship time span remains covered
-- `ShapeScore`: range-local retained path-length preservation
+- `GapCov`: whether retained in-query points avoid one large missing interior
+  run
+- `ShapeScore`: range-local route fidelity from shortcut error
 - `RangeUseful`: weighted audit score over those components
 
 Consequence: a model can improve the current training loss or point-hit proxy
@@ -80,13 +82,18 @@ ground truth for the training objective:
   It does not interpolate true geometric boundary crossings between AIS
   samples.
 - `TemporalCov` measures retained in-query time span divided by original
-  in-query time span per ship. It is a useful coverage proxy, but it does not
-  yet penalize large interior gaps if the endpoints are retained.
-- `ShapeScore` measures retained in-query path-length preservation. It is a
-  cheap local shape proxy, not full local SED/PED fidelity.
+  in-query time span per ship. It is a useful coverage proxy, but intentionally
+  does not penalize large interior gaps if endpoints are retained.
+- `GapCov` penalizes the largest missing run between retained in-query points.
+  It is a first-pass continuity proxy, not a full time/distance resampling
+  metric.
+- `ShapeScore` measures range-local shortcut error using SED/PED-style
+  fidelity. It is still a proxy, not a human route-quality metric.
 - `RangeUseful` is a weighted audit score over these components. Treat it as a
-  comparison and checkpoint-selection diagnostic while the objective is being
-  redesigned, not as the mathematically final utility target.
+  versioned comparison and checkpoint-selection diagnostic while the objective
+  is being redesigned, not as the mathematically final utility target. Schema
+  v2 weights are point `0.30`, ship `0.20`, entry/exit `0.15`, temporal span
+  `0.15`, gap `0.10`, and shape `0.10`.
 
 Before making these metrics central to the loss, add focused unit/property
 tests for single-ship, multi-ship, no-hit, single-point-hit, duplicate-point,
@@ -266,6 +273,9 @@ they are still proxies:
   boundary crossings.
 - `TemporalCov` rewards retained in-query span, but can miss large interior
   gaps.
+- `GapCov` now penalizes the largest missing run between retained in-query
+  points. It is a first-pass continuity proxy, not a full time/distance
+  resampling metric.
 - `ShapeScore` now uses range-local SED/PED-style shortcut error normalized by
   original in-query segment scale. It is more route-fidelity oriented than the
   old path-length ratio, but it remains a proxy rather than a final human
@@ -276,8 +286,8 @@ Potential future components or replacements:
 - further route-fidelity refinements inside the query, such as stronger
   weighting of local SED/PED errors or distance from original in-query points
   to the simplified in-query polyline
-- gap coverage, which penalizes large time or distance gaps even when first and
-  last in-query points are retained
+- stronger gap coverage, especially time- or distance-normalized variants for
+  irregular AIS sampling
 - per-ship minimum interpretability, which rewards enough retained points per
   queried ship rather than only one retained point
 - turn/change-point preservation, especially heading, speed, or course changes
@@ -299,7 +309,9 @@ Therefore the redesign should follow two tracks:
 Avoid baking every navigational preference into a single hidden score too
 early. Report the sub-components alongside `RangeUseful` so it remains clear
 whether a run improved point hits, ship presence, boundary behavior, temporal
-coverage, or shape preservation.
+span, gap coverage, or shape preservation. `RangeUseful` is schema-versioned;
+old and new benchmark scores should be compared through sub-components unless
+they use the same schema and weights.
 
 ### Pretraining Position
 
@@ -634,7 +646,7 @@ Run a focused benchmark comparison between:
 
 Keep the rest of the real-usecase profile fixed. Evaluate at `0.01,0.02,0.05,0.10`
 retained ratios and compare `RangePointF1`, `RangeUseful`, `ShipF1`,
-`EntryExitF1`, `TemporalCov`, and `ShapeScore`.
+`EntryExitF1`, `TemporalCov`, `GapCov`, and `ShapeScore`.
 
 If budget-top-k improves audit quality, repeat across seeds. If it does not,
 move to query-local set/value labels or explicit retained-set marginal-gain

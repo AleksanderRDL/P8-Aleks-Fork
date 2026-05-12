@@ -33,10 +33,12 @@ This module compares query-aware ML simplification against temporal, geometric, 
   interpretability, entry/exit preservation, or range-local trajectory shape.
   See `../../../Aleks-Sprint/range-objective-redesign.md` for the current
   objective-redesign conclusion.
-- `RangeUseful` is an audit score combining `RangePointF1`, ship presence,
-  entry/exit preservation, temporal coverage, and range-local path-shape
-  preservation. It is reported separately so it can guide objective redesign
-  without pretending to be a mathematically final target.
+- `RangeUseful` is a versioned audit score combining `RangePointF1`, ship
+  presence, entry/exit preservation, temporal span coverage, in-query gap
+  coverage, and range-local path-shape preservation. It is reported separately
+  so it can guide objective redesign without pretending to be a mathematically
+  final target. Schema v2 weights are `0.30/0.20/0.15/0.15/0.10/0.10` for
+  point, ship, entry/exit, temporal span, gap, and shape respectively.
 - `EntryExitF1` is reported separately for range workloads. It measures
   retained in-box boundary-crossing points and is a shape-preservation
   diagnostic, not part of `RangePointF1`.
@@ -45,8 +47,11 @@ This module compares query-aware ML simplification against temporal, geometric, 
     ship.
   - `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true box
     crossings.
-  - `TemporalCov` scores retained in-query time span; it does not yet penalize
-    large interior gaps when endpoints survive.
+  - `TemporalCov` scores retained in-query time span. It intentionally does
+    not penalize large interior gaps when endpoints survive.
+  - `GapCov` scores the largest missing run between retained in-query points,
+    so endpoints-only simplifications no longer look complete on straight
+    tracks.
   - `ShapeScore` scores range-local route fidelity from SED/PED-style shortcut
     error normalized by the original in-query segment scale. It is still a
     proxy, but it now penalizes geometric shortcuts more directly than retained

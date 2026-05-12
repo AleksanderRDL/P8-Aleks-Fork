@@ -732,8 +732,10 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "range_entry_exit_f1": metrics.range_entry_exit_f1,
         "range_boundary_f1": metrics.range_entry_exit_f1,
         "range_temporal_coverage": metrics.range_temporal_coverage,
+        "range_gap_coverage": metrics.range_gap_coverage,
         "range_shape_score": metrics.range_shape_score,
         "range_usefulness_score": metrics.range_usefulness_score,
+        "range_usefulness_schema_version": metrics.range_usefulness_schema_version,
         "range_audit": metrics.range_audit,
     }
 
