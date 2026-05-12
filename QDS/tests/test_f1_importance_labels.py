@@ -267,6 +267,42 @@ def test_range_usefulness_labels_preserve_point_component_mass() -> None:
     assert values[3].item() < values[:3].max().item()
 
 
+def test_range_usefulness_labels_include_between_sample_crossing_brackets() -> None:
+    points = torch.tensor(
+        [
+            [0.0, -2.0, 0.0, 1.0],
+            [1.0, 2.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 2.0,
+            },
+        }
+    ]
+
+    point_labels, _ = compute_typed_importance_labels(points, [(0, 2)], queries, seed=1, range_label_mode="point_f1")
+    useful_labels, labelled_mask = compute_typed_importance_labels(
+        points,
+        [(0, 2)],
+        queries,
+        seed=1,
+        range_label_mode="usefulness",
+    )
+
+    assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
+    assert point_labels[:, QUERY_TYPE_ID_RANGE].tolist() == pytest.approx([0.0, 0.0])
+    assert bool((useful_labels[:, QUERY_TYPE_ID_RANGE] > 0.0).all().item())
+
+
 def test_range_label_mode_rejects_unknown_mode() -> None:
     points = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=torch.float32)
     queries = [

@@ -228,22 +228,47 @@ def _range_entry_exit_mask(
 
 
 def _range_crossing_bracket_mask(
-    box_mask: torch.Tensor,
+    points: torch.Tensor,
+    params: dict[str, float],
     boundaries: list[tuple[int, int]],
 ) -> torch.Tensor:
-    """Return observed point pairs bracketing outside/inside range transitions."""
-    bracket_full = torch.zeros_like(box_mask, dtype=torch.bool)
+    """Return point pairs bracketing segment-box intersections."""
+    bracket_full = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    lows = torch.tensor(
+        [float(params["t_start"]), float(params["lat_min"]), float(params["lon_min"])],
+        dtype=torch.float32,
+        device=points.device,
+    )
+    highs = torch.tensor(
+        [float(params["t_end"]), float(params["lat_max"]), float(params["lon_max"])],
+        dtype=torch.float32,
+        device=points.device,
+    )
     for start, end in boundaries:
         if end - start < 2:
             continue
-        traj_in = box_mask[start:end]
-        if not bool(traj_in.any().item()):
+        start_xyz = points[start : end - 1, [0, 1, 2]].float()
+        end_xyz = points[start + 1 : end, [0, 1, 2]].float()
+        delta = end_xyz - start_xyz
+        u_min = torch.zeros((start_xyz.shape[0],), dtype=torch.float32, device=points.device)
+        u_max = torch.ones((start_xyz.shape[0],), dtype=torch.float32, device=points.device)
+        valid = torch.ones((start_xyz.shape[0],), dtype=torch.bool, device=points.device)
+        for dim in range(3):
+            dim_delta = delta[:, dim]
+            dim_start = start_xyz[:, dim]
+            parallel = torch.abs(dim_delta) <= 1e-12
+            valid &= (~parallel) | ((dim_start >= lows[dim]) & (dim_start <= highs[dim]))
+            non_parallel = ~parallel
+            if bool(non_parallel.any().item()):
+                u1 = (lows[dim] - dim_start[non_parallel]) / dim_delta[non_parallel]
+                u2 = (highs[dim] - dim_start[non_parallel]) / dim_delta[non_parallel]
+                u_min[non_parallel] = torch.maximum(u_min[non_parallel], torch.minimum(u1, u2))
+                u_max[non_parallel] = torch.minimum(u_max[non_parallel], torch.maximum(u1, u2))
+        segment_offsets = torch.where(valid & (u_max >= u_min) & (u_max >= 0.0) & (u_min <= 1.0))[0]
+        if segment_offsets.numel() == 0:
             continue
-        transitions = torch.where(traj_in[1:] != traj_in[:-1])[0]
-        if transitions.numel() == 0:
-            continue
-        bracket_full[start + transitions] = True
-        bracket_full[start + transitions + 1] = True
+        bracket_full[start + segment_offsets] = True
+        bracket_full[start + segment_offsets + 1] = True
     return bracket_full
 
 
@@ -320,25 +345,33 @@ def _add_range_usefulness_labels(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     box_support: torch.Tensor,
+    params: dict[str, float],
     point_trajectory_ids: torch.Tensor,
     type_idx: int,
     range_boundary_prior_weight: float,
 ) -> None:
     """Add a local proxy for the range usefulness audit components."""
     hit_count = int(box_support.sum().item())
-    if hit_count <= 0:
+    crossing_support = _range_crossing_bracket_mask(points, params, boundaries)
+    crossing_count = int(crossing_support.sum().item())
+    if hit_count <= 0 and crossing_count <= 0:
         return
 
     weights = RANGE_USEFULNESS_LABEL_WEIGHTS
-    _add_range_point_f1_labels(
-        labels=labels,
-        points=points,
-        boundaries=boundaries,
-        box_support=box_support,
-        type_idx=type_idx,
-        range_boundary_prior_weight=range_boundary_prior_weight,
-        component_weight=float(weights["range_point_f1"]),
-    )
+    if hit_count > 0:
+        _add_range_point_f1_labels(
+            labels=labels,
+            points=points,
+            boundaries=boundaries,
+            box_support=box_support,
+            type_idx=type_idx,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+            component_weight=float(weights["range_point_f1"]),
+        )
+
+    if crossing_count > 0:
+        crossing_gain = float(2.0 / (crossing_count + 1.0))
+        labels[crossing_support, type_idx] += float(weights["range_crossing_f1"]) * crossing_gain
 
     hit_ids = {
         int(value)
@@ -360,12 +393,6 @@ def _add_range_usefulness_labels(
     if boundary_count > 0:
         boundary_gain = float(2.0 / (boundary_count + 1.0))
         labels[boundary_support, type_idx] += float(weights["range_entry_exit_f1"]) * boundary_gain
-
-    crossing_support = _range_crossing_bracket_mask(box_support, boundaries)
-    crossing_count = int(crossing_support.sum().item())
-    if crossing_count > 0:
-        crossing_gain = float(2.0 / (crossing_count + 1.0))
-        labels[crossing_support, type_idx] += float(weights["range_crossing_f1"]) * crossing_gain
 
     for trajectory_id in sorted(hit_ids):
         if trajectory_id >= len(boundaries):
@@ -554,6 +581,7 @@ def compute_typed_importance_labels(
                     points=points,
                     boundaries=boundaries,
                     box_support=box_support,
+                    params=params,
                     point_trajectory_ids=point_trajectory_ids,
                     type_idx=t_idx,
                     range_boundary_prior_weight=range_boundary_prior_weight,

@@ -666,6 +666,39 @@ def test_range_usefulness_crossing_f1_requires_transition_brackets() -> None:
     assert bracket_audit["range_usefulness_score"] > inside_audit["range_usefulness_score"]
 
 
+def test_range_usefulness_crossing_f1_detects_between_sample_box_crossing() -> None:
+    points = torch.tensor(
+        [
+            [0.0, -2.0, 0.0, 1.0],
+            [1.0, 2.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 2.0,
+            },
+        }
+    ]
+    drop_crossing = torch.tensor([False, False])
+    keep_crossing = torch.tensor([True, True])
+
+    dropped_audit = score_range_usefulness(points, [(0, 2)], drop_crossing, queries)
+    kept_audit = score_range_usefulness(points, [(0, 2)], keep_crossing, queries)
+
+    assert dropped_audit["range_point_f1"] == pytest.approx(1.0)
+    assert dropped_audit["range_crossing_f1"] == pytest.approx(0.0)
+    assert kept_audit["range_crossing_f1"] == pytest.approx(1.0)
+    assert kept_audit["range_usefulness_score"] > dropped_audit["range_usefulness_score"]
+
+
 def test_range_usefulness_shape_score_penalizes_curved_endpoint_shortcut() -> None:
     points = torch.tensor(
         [

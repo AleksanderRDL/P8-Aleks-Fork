@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-RANGE_USEFULNESS_SCHEMA_VERSION = 5
+RANGE_USEFULNESS_SCHEMA_VERSION = 6
 
 RANGE_USEFULNESS_WEIGHTS: dict[str, float] = {
     "range_point_f1": 0.22,
