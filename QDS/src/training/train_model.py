@@ -860,6 +860,13 @@ def train_model(
             f"residual_pos={row['residual_positive_label_count']}",
             flush=True,
         )
+    if temporal_residual_budget_masks:
+        temporal_residual_budget_masks = tuple(
+            (total_ratio, effective_ratio, base_mask.to(device=device, non_blocking=True))
+            for total_ratio, effective_ratio, base_mask in temporal_residual_budget_masks
+        )
+    if temporal_residual_union_mask is not None:
+        temporal_residual_union_mask = temporal_residual_union_mask.to(device=device, non_blocking=True)
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
     grad_scaler = torch.amp.GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))

@@ -174,6 +174,226 @@ problem. The preferred sequence is now:
    explicit retained-set marginal-gain approximations
 6. vectorize the final loss path after the target is clearer
 
+## Runtime Optimization Plan
+
+Current real-usecase runs do not fully utilize the GPU because the dominant
+work is not the dense transformer forward pass. Recent queue logs show a
+typical epoch spending roughly:
+
+- `forward`: about 1 second
+- `loss`: about 30-40 seconds
+- `backward`: about 18-22 seconds
+- training diagnostics and held-out F1: about 20-25 seconds
+
+This means simply increasing model size would not fix the bottleneck. The
+runtime work should focus on removing Python/window-loop overhead, reducing
+repeated exact diagnostics during sweeps, and then increasing batch size to
+consume available VRAM.
+
+### 1. Vectorize Budget-Top-K Loss
+
+Code targets:
+
+- `QDS/src/training/train_model.py`
+- `_budget_topk_recall_loss`
+- `_budget_topk_temporal_residual_loss`
+- the inner `for b in range(B)` loop in `train_model`
+
+Current issue:
+
+- training batches already contain multiple windows, but loss construction
+  still iterates over each window
+- each window then loops over budget ratios and performs small `topk`,
+  `sigmoid`, masking, and pointwise-BCE operations
+- this creates many small GPU launches and CPU-side orchestration overhead,
+  so GPU utilization remains low even with BF16/TF32 enabled
+
+Prepared implementation direction:
+
+- build batched tensors shaped approximately `[B, L]` for predictions, labels,
+  valid masks, and global indices
+- create one residual candidate mask per budget ratio with shape `[R, B, L]`
+  where `R = len(budget_loss_ratios)`
+- compute per-row valid counts and per-row `k` values for each ratio
+- perform batched top-k/threshold selection across flattened `(R * B)` rows
+  instead of calling the scalar helper for every window
+- compute ideal label mass and captured soft mass in one tensor expression
+- return both loss and useful diagnostics such as active row count and skipped
+  no-positive rows
+- keep the existing scalar helpers temporarily for unit tests and correctness
+  comparison, then remove them once the vectorized path is trusted
+
+Correctness requirements:
+
+- must match current scalar behavior on small deterministic examples
+- must handle padded windows and windows with no residual positives
+- must handle temporal residual masks for each budget independently
+- must preserve the configured `budget_loss_temperature`
+- must leave final evaluation semantics unchanged
+
+Expected impact:
+
+- reduce the largest per-epoch cost
+- increase GPU utilization by replacing many small operations with fewer,
+  larger tensor operations
+- make larger `train_batch_size` values more useful
+
+### 2. Cheaper Checkpoint Validation
+
+Code targets:
+
+- `QDS/src/training/train_model.py`
+- `_validation_query_f1`
+- checkpoint-selection logic around `f1_diagnostic_every`,
+  `selection_history`, and best-state restoration
+- `QDS/src/experiments/experiment_cli.py` and
+  `QDS/src/experiments/experiment_config.py` for new knobs
+
+Current issue:
+
+- `f1_diagnostic_every=1` runs full validation every epoch
+- exact validation is useful but costs about 17-19 seconds per epoch in the
+  current profile
+
+Prepared implementation direction:
+
+- add a candidate-checkpoint tournament:
+  - every epoch computes cheap signals such as loss, prediction std, and sampled
+    diagnostic statistics
+  - keep the top `K` candidate model snapshots since the previous full
+    validation
+  - every `N` epochs, run exact validation F1/`RangeUseful` only on those
+    candidate snapshots
+  - promote the best validated snapshot to canonical best checkpoint
+- add config knobs:
+  - `checkpoint_full_f1_every`, defaulting to current behavior at `1`
+  - `checkpoint_candidate_pool_size`, likely `2` or `3`
+  - optionally `checkpoint_candidate_metric`, initially based on loss plus
+    non-collapse prediction std
+- keep final evaluation exact
+
+Correctness requirements:
+
+- exact validation remains the only score that can promote the canonical best
+  checkpoint
+- candidate filtering must never select a collapsed model solely due to low
+  loss
+- when `checkpoint_full_f1_every=1`, behavior should match the current path
+  except for harmless refactoring
+
+Expected impact:
+
+- reduce validation overhead without blindly selecting only every Nth epoch
+- preserve robustness against noisy validation F1 spikes
+- make longer epoch budgets less expensive
+
+### 3. Cache Or Skip Repeated Range Diagnostics During Sweeps
+
+Code targets:
+
+- `QDS/src/experiments/experiment_pipeline_helpers.py`
+- `_range_workload_diagnostics`
+- `_range_signal_diagnostics`
+- the `range-diagnostics` phase in `run_experiment_pipeline`
+
+Current issue:
+
+- range workloads are cached, but full diagnostics are recomputed for each run
+- when only model/loss/scoring parameters change, train/eval/selection queries
+  are identical and the expensive range diagnostic/signals are identical too
+- current logs show this phase can cost multiple minutes before training
+
+Prepared implementation direction:
+
+- add persistent diagnostics cache keyed by:
+  - points/boundaries fingerprint
+  - typed query workload cache key or query digest
+  - compression ratio
+  - range label mode
+  - range boundary prior weight
+  - diagnostics schema version
+- reuse cached:
+  - workload summary
+  - per-query diagnostics rows
+  - range labels/labelled masks
+  - evaluation query cache inputs where safely reconstructable
+  - baseline/oracle signal summaries
+- add a sweep mode such as `--reuse_range_diagnostics` or
+  `--range_diagnostics_mode cached|full|minimal`
+- for parameter sweeps, use cached/minimal diagnostics by default when workload
+  generation settings are unchanged
+- force full diagnostics for audit runs and after query-generation changes
+
+Correctness requirements:
+
+- cache key must include every value that can change labels or diagnostic
+  scores
+- final matched evaluation remains exact and uncached with respect to method
+  masks
+- stale diagnostics must fail closed by recomputing
+
+Expected impact:
+
+- large speedup for queues that test only loss/scoring/model parameters
+- less CPU/RAM churn before training
+- cleaner separation between workload-generation experiments and model-training
+  experiments
+
+### 4. Use Available VRAM With Larger Training Batches
+
+Code targets:
+
+- `QDS/src/experiments/benchmark_matrix.py`
+- `MatrixVariant`
+- `QDS/src/experiments/benchmark_runtime.py`
+- `QDS/src/training/trajectory_batching.py`
+- `QDS/src/training/train_model.py`
+
+Current issue:
+
+- current real-usecase runs use about 2.6GB of a 16GB GPU
+- `train_batch_size=32` leaves substantial VRAM unused
+- larger batches can reduce optimizer/Python overhead and provide larger GPU
+  work units, but they do not fully solve the loss bottleneck by themselves
+
+Prepared implementation direction:
+
+- after vectorizing the loss, benchmark `train_batch_size=64` and `128`
+- add matrix variants:
+  - `tf32_bf16_bs64_inf32`
+  - `tf32_bf16_bs128_inf32`
+- compare runtime, peak VRAM, best epoch, `RangeUseful`, and collapse warnings
+- keep inference batch size separate; inference can likely also increase if
+  validation remains expensive
+
+Correctness requirements:
+
+- batch-size changes alter optimizer step count per epoch, so quality must be
+  compared, not only speed
+- monitor VRAM and host RAM; WSL/host memory pressure may still dominate
+
+Expected impact:
+
+- moderate speedup before loss vectorization
+- larger speedup after loss vectorization because the GPU receives larger,
+  fewer kernels
+
+### 5. Optimization Benchmark Order
+
+After the current corrected queue finishes:
+
+1. analyze fixed queue quality and timing
+2. implement vectorized budget-top-k loss
+3. run one A/B runtime+quality comparison against the current scalar loss
+4. implement cached/minimal range diagnostics for repeated model sweeps
+5. implement candidate-checkpoint tournament
+6. benchmark `train_batch_size=64` and `128`
+
+Do not change all optimization knobs at once. The first comparison should
+answer whether the vectorized loss is numerically equivalent enough and faster.
+The second should answer how much repeated diagnostics cost can be removed. The
+third should tune checkpoint cadence and batch size.
+
 ## Current Benchmark Evidence
 
 The `range_objective_audit_20260512-032736` real-usecase audit showed MLQDS did
