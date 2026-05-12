@@ -16,7 +16,6 @@ from src.experiments.benchmark_matrix import (
     DEFAULT_WORKLOADS,
     DEFAULT_PROFILE,
     MatrixDataSources,
-    MatrixVariant,
     PURE_WORKLOADS,
     _format_markdown_table,
     _index_entry,
@@ -28,7 +27,12 @@ from src.experiments.benchmark_matrix import (
     _runner_environment_metadata,
     _selected_variants,
     _write_family_indexes,
+    _variant_args,
     _variant_run_dir,
+)
+from src.experiments.benchmark_profiles import (
+    BenchmarkProfileVariant,
+    benchmark_profile_variant_settings,
 )
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
@@ -118,90 +122,35 @@ def test_selected_variants_default_to_range_usefulness_checkpointing() -> None:
     variants = _selected_variants(None)
 
     assert [variant.name for variant in variants] == list(DEFAULT_VARIANTS)
-    assert [variant.name for variant in variants] == ["tf32_bf16_bs64_inf32"]
+    assert [variant.name for variant in variants] == ["baseline"]
     assert variants[0].checkpoint_f1_variant == "range_usefulness"
     assert variants[0].amp_mode == "bf16"
-    assert variants[0].train_batch_size == 64
+    assert variants[0].train_batch_size is None
+    settings = benchmark_profile_variant_settings(DEFAULT_PROFILE, variants[0].name)
+    assert settings["train_batch_size"] == 64
+    assert settings["inference_batch_size"] == 64
+    variant_args = _variant_args(DEFAULT_PROFILE, variants[0])
+    assert "--train_batch_size" not in variant_args
+    assert "--inference_batch_size" not in variant_args
 
 
-def test_selected_variants_can_run_explicit_sweeps() -> None:
-    variants = _selected_variants(
-        "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs64_inf32,tf32_bf16_bs128_inf32,"
-        "tf32_bf16_bs32_inf32_ranking_bce,"
-        "tf32_bf16_bs32_inf32_point_f1_labels,"
-        "tf32_bf16_bs32_inf32_combined,"
-        "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_temporal050,"
-        "tf32_bf16_bs32_inf32_temporal075,"
-        "tf32_bf16_bs32_inf32_residual_none,"
-        "tf32_bf16_bs32_inf32_diversity000,tf32_bf16_bs32_inf32_diversity005,"
-        "tf32_bf16_bs32_inf32_score_rank_tie,"
-        "tf32_bf16_bs32_inf32_score_zscore,tf32_bf16_bs32_inf32_score_rank_confidence,"
-        "tf32_bf16_bs32_inf32_score_temp_sigmoid"
-    )
+def test_selected_variants_reject_stale_named_sweeps() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        _selected_variants("old_named_sweep")
 
-    assert [variant.name for variant in variants] == [
-        "fp32",
-        "tf32_bf16_bs32_inf32",
-        "tf32_bf16_bs64_inf32",
-        "tf32_bf16_bs128_inf32",
-        "tf32_bf16_bs32_inf32_ranking_bce",
-        "tf32_bf16_bs32_inf32_point_f1_labels",
-        "tf32_bf16_bs32_inf32_combined",
-        "tf32_bf16_bs32_inf32_temporal000",
-        "tf32_bf16_bs32_inf32_temporal050",
-        "tf32_bf16_bs32_inf32_temporal075",
-        "tf32_bf16_bs32_inf32_residual_none",
-        "tf32_bf16_bs32_inf32_diversity000",
-        "tf32_bf16_bs32_inf32_diversity005",
-        "tf32_bf16_bs32_inf32_score_rank_tie",
-        "tf32_bf16_bs32_inf32_score_zscore",
-        "tf32_bf16_bs32_inf32_score_rank_confidence",
-        "tf32_bf16_bs32_inf32_score_temp_sigmoid",
-    ]
-    assert variants[0].checkpoint_f1_variant == "range_usefulness"
-    assert variants[1].amp_mode == "bf16"
-    assert variants[1].checkpoint_f1_variant == "range_usefulness"
-    assert variants[2].train_batch_size == 64
-    assert variants[2].inference_batch_size == 64
-    assert variants[3].train_batch_size == 128
-    assert variants[3].inference_batch_size == 32
-    assert variants[2].amp_mode == "bf16"
-    assert variants[4].checkpoint_f1_variant == "range_usefulness"
-    assert variants[4].extra_args == ("--loss_objective", "ranking_bce")
-    assert variants[5].checkpoint_f1_variant == "range_usefulness"
-    assert variants[5].extra_args == ("--range_label_mode", "point_f1")
-    assert variants[6].checkpoint_f1_variant == "combined"
-    assert variants[7].checkpoint_f1_variant == "range_usefulness"
-    assert variants[7].extra_args == ("--mlqds_temporal_fraction", "0.00")
-    assert variants[8].checkpoint_f1_variant == "range_usefulness"
-    assert variants[8].extra_args == ("--mlqds_temporal_fraction", "0.50")
-    assert variants[9].checkpoint_f1_variant == "range_usefulness"
-    assert variants[9].extra_args == ("--mlqds_temporal_fraction", "0.75")
-    assert variants[10].checkpoint_f1_variant == "range_usefulness"
-    assert variants[10].extra_args == ("--residual_label_mode", "none")
-    assert variants[11].checkpoint_f1_variant == "range_usefulness"
-    assert variants[11].extra_args == ("--mlqds_diversity_bonus", "0.0")
-    assert variants[12].checkpoint_f1_variant == "range_usefulness"
-    assert variants[12].extra_args == ("--mlqds_diversity_bonus", "0.05")
-    assert variants[13].checkpoint_f1_variant == "range_usefulness"
-    assert variants[13].extra_args == ("--mlqds_score_mode", "rank_tie")
-    assert variants[14].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
-    assert variants[15].extra_args == (
-        "--mlqds_score_mode",
-        "rank_confidence",
-        "--mlqds_rank_confidence_weight",
-        "0.15",
-    )
-    assert variants[16].extra_args == (
-        "--mlqds_score_mode",
-        "temperature_sigmoid",
-        "--mlqds_score_temperature",
-        "1.00",
-    )
+    with pytest.raises(ValueError, match="unknown"):
+        _selected_variants("old_point_f1_label_sweep")
 
 
 def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
-    variants = [MatrixVariant(name="tf32_bf16", float32_matmul_precision="high", allow_tf32=True, amp_mode="bf16")]
+    variants = [
+        BenchmarkProfileVariant(
+            name="custom_runtime",
+            float32_matmul_precision="high",
+            allow_tf32=True,
+            amp_mode="bf16",
+        )
+    ]
 
     environment = _runner_environment_metadata(variants)
 
@@ -209,7 +158,7 @@ def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
     assert "rows[*].child_torch_runtime" in environment["note"]
     assert environment["requested_variant_torch_settings"] == [
         {
-            "variant": "tf32_bf16",
+            "variant": "custom_runtime",
             "float32_matmul_precision": "high",
             "allow_tf32": True,
             "amp_mode": "bf16",
@@ -219,7 +168,12 @@ def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
 
 
 def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
-    variant = MatrixVariant(name="tf32_bf16", float32_matmul_precision="high", allow_tf32=True, amp_mode="bf16")
+    variant = BenchmarkProfileVariant(
+        name="custom_runtime",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+    )
     run_json = {
         "config": {
             "model": {
@@ -524,10 +478,10 @@ def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:
 
 
 def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:
-    variant = MatrixVariant(name="fp32")
+    variant = BenchmarkProfileVariant(name="custom_variant")
 
-    assert _variant_run_dir(tmp_path, "range", variant, 1) == tmp_path / "variants" / "fp32"
-    assert _variant_run_dir(tmp_path, "knn", variant, 2) == tmp_path / "variants" / "knn" / "fp32"
+    assert _variant_run_dir(tmp_path, "range", variant, 1) == tmp_path / "variants" / "custom_variant"
+    assert _variant_run_dir(tmp_path, "knn", variant, 2) == tmp_path / "variants" / "knn" / "custom_variant"
 
 
 def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> None:
@@ -538,7 +492,7 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
         max_segments=None,
         max_trajectories=None,
     )
-    variants = [MatrixVariant(name="fp32")]
+    variants = [BenchmarkProfileVariant(name="custom_variant")]
     sources = MatrixDataSources(train_csv_path="day1.csv", validation_csv_path="day2.csv", eval_csv_path="day3.csv")
     git = {"commit": "abc123", "dirty": False}
     running_status = {
@@ -580,7 +534,7 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
             variants=variants,
             data_sources=sources,
             results_dir=tmp_path / "runs" / "run-a",
-            rows=[{"variant": "fp32", "mlqds_f1": 0.4}],
+            rows=[{"variant": "custom_variant", "mlqds_f1": 0.4}],
             git=git,
         ),
     )
@@ -637,7 +591,7 @@ def test_matrix_markdown_table_is_compact() -> None:
         [
             {
                 "workload": "range",
-                "variant": "tf32",
+                "variant": "custom",
                 "returncode": 0,
                 "elapsed_seconds": 12.34567,
                 "epoch_mean_seconds": 1.25,
@@ -656,7 +610,7 @@ def test_matrix_markdown_table_is_compact() -> None:
 
     assert "| workload | variant |" in table
     assert "train_label_mass_range_point_f1" in table
-    assert "| range | tf32 | 0 | 12.3457 |" in table
+    assert "| range | custom | 0 | 12.3457 |" in table
 
 
 def test_run_capture_streaming_writes_log_and_console(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -19,10 +19,16 @@ from typing import Any
 from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.benchmark_profiles import (
     DEFAULT_PROFILE,
+    DEFAULT_PROFILE_VARIANTS,
     PROFILE_CHOICES,
+    PROFILE_VARIANT_CHOICES,
+    BenchmarkProfileVariant,
     ProfileSetting,
     benchmark_profile_args,
     benchmark_profile_settings,
+    benchmark_profile_variant,
+    benchmark_profile_variant_args,
+    benchmark_profile_variant_settings,
 )
 from src.experiments.benchmark_runtime import (
     EPOCH_RE,
@@ -40,181 +46,7 @@ DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 3
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
 DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE)
-
-
-@dataclass(frozen=True)
-class MatrixVariant:
-    """Runtime/config variant for one matrix run."""
-
-    name: str
-    float32_matmul_precision: str = "highest"
-    allow_tf32: bool = False
-    amp_mode: str = "off"
-    train_batch_size: int = 16
-    inference_batch_size: int = 16
-    checkpoint_f1_variant: str = "range_usefulness"
-    extra_args: tuple[str, ...] = ()
-
-
-MATRIX_VARIANTS: dict[str, MatrixVariant] = {
-    "fp32": MatrixVariant(name="fp32"),
-    "tf32": MatrixVariant(name="tf32", float32_matmul_precision="high", allow_tf32=True),
-    "tf32_bf16": MatrixVariant(
-        name="tf32_bf16",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-    ),
-    "tf32_bs32_inf32": MatrixVariant(
-        name="tf32_bs32_inf32",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        train_batch_size=32,
-        inference_batch_size=32,
-    ),
-    "tf32_bf16_bs32_inf32": MatrixVariant(
-        name="tf32_bf16_bs32_inf32",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-    ),
-    "tf32_bf16_bs64_inf32": MatrixVariant(
-        name="tf32_bf16_bs64_inf32",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=64,
-        inference_batch_size=64,
-    ),
-    "tf32_bf16_bs128_inf32": MatrixVariant(
-        name="tf32_bf16_bs128_inf32",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=128,
-        inference_batch_size=32,
-    ),
-    "tf32_bf16_bs32_inf32_ranking_bce": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_ranking_bce",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--loss_objective", "ranking_bce"),
-    ),
-    "tf32_bf16_bs32_inf32_point_f1_labels": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_point_f1_labels",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--range_label_mode", "point_f1"),
-    ),
-    "tf32_bf16_bs32_inf32_combined": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_combined",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        checkpoint_f1_variant="combined",
-    ),
-    "tf32_bf16_bs32_inf32_temporal000": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_temporal000",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_temporal_fraction", "0.00"),
-    ),
-    "tf32_bf16_bs32_inf32_temporal050": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_temporal050",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_temporal_fraction", "0.50"),
-    ),
-    "tf32_bf16_bs32_inf32_temporal075": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_temporal075",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_temporal_fraction", "0.75"),
-    ),
-    "tf32_bf16_bs32_inf32_residual_none": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_residual_none",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--residual_label_mode", "none"),
-    ),
-    "tf32_bf16_bs32_inf32_diversity000": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_diversity000",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_diversity_bonus", "0.0"),
-    ),
-    "tf32_bf16_bs32_inf32_diversity005": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_diversity005",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_diversity_bonus", "0.05"),
-    ),
-    "tf32_bf16_bs32_inf32_score_rank_tie": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_score_rank_tie",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_score_mode", "rank_tie"),
-    ),
-    "tf32_bf16_bs32_inf32_score_zscore": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_score_zscore",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_score_mode", "zscore_sigmoid"),
-    ),
-    "tf32_bf16_bs32_inf32_score_rank_confidence": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_score_rank_confidence",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_score_mode", "rank_confidence", "--mlqds_rank_confidence_weight", "0.15"),
-    ),
-    "tf32_bf16_bs32_inf32_score_temp_sigmoid": MatrixVariant(
-        name="tf32_bf16_bs32_inf32_score_temp_sigmoid",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-        train_batch_size=32,
-        inference_batch_size=32,
-        extra_args=("--mlqds_score_mode", "temperature_sigmoid", "--mlqds_score_temperature", "1.00"),
-    ),
-}
-DEFAULT_VARIANTS = ("tf32_bf16_bs64_inf32",)
+DEFAULT_VARIANTS = DEFAULT_PROFILE_VARIANTS
 
 
 @dataclass(frozen=True)
@@ -380,17 +212,17 @@ def _parse_name_list(raw: str | None, *, allowed: tuple[str, ...] | set[str], ar
     return values
 
 
-def _selected_variants(raw: str | None) -> list[MatrixVariant]:
+def _selected_variants(raw: str | None) -> list[BenchmarkProfileVariant]:
     """Return benchmark variants selected by CLI text."""
     names = _parse_name_list(
         raw or ",".join(DEFAULT_VARIANTS),
-        allowed=set(MATRIX_VARIANTS),
+        allowed=set(PROFILE_VARIANT_CHOICES),
         arg_name="--variants",
     )
-    return [MATRIX_VARIANTS[name] for name in names]
+    return [benchmark_profile_variant(name) for name in names]
 
 
-def _runner_environment_metadata(variants: list[MatrixVariant]) -> dict[str, Any]:
+def _runner_environment_metadata(variants: list[BenchmarkProfileVariant]) -> dict[str, Any]:
     """Return parent-process environment metadata with explicit variant-runtime scope."""
     environment = _environment_metadata("off")
     environment["scope"] = "benchmark_matrix_parent_process"
@@ -546,31 +378,16 @@ def _profile_settings(profile: str) -> dict[str, ProfileSetting]:
     return benchmark_profile_settings(profile)
 
 
-def _variant_run_dir(results_dir: Path, workload: str, variant: MatrixVariant, workload_count: int) -> Path:
+def _variant_run_dir(results_dir: Path, workload: str, variant: BenchmarkProfileVariant, workload_count: int) -> Path:
     """Return the child experiment output directory for a matrix row."""
     if workload_count == 1:
         return results_dir / "variants" / variant.name
     return results_dir / "variants" / workload / variant.name
 
 
-def _variant_args(variant: MatrixVariant) -> list[str]:
+def _variant_args(profile: str, variant: BenchmarkProfileVariant) -> list[str]:
     """Return CLI args for a variant."""
-    return [
-        "--float32_matmul_precision",
-        variant.float32_matmul_precision,
-        "--allow_tf32" if variant.allow_tf32 else "--no-allow_tf32",
-        "--amp_mode",
-        variant.amp_mode,
-        "--train_batch_size",
-        str(variant.train_batch_size),
-        "--inference_batch_size",
-        str(variant.inference_batch_size),
-        "--checkpoint_selection_metric",
-        "f1",
-        "--checkpoint_f1_variant",
-        variant.checkpoint_f1_variant,
-        *variant.extra_args,
-    ]
+    return benchmark_profile_variant_args(profile, variant.name)
 
 
 def _phase_seconds(timings: dict[str, Any], name: str) -> float | None:
@@ -716,7 +533,7 @@ def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) 
 def _row_from_run(
     *,
     workload: str,
-    variant: MatrixVariant,
+    variant: BenchmarkProfileVariant,
     command: list[str],
     returncode: int,
     elapsed_seconds: float,
@@ -864,8 +681,8 @@ def _row_from_run(
         "child_amp_enabled": child_amp.get("enabled"),
         "child_amp_dtype": child_amp.get("dtype"),
         "child_torch_runtime": child_torch_runtime or None,
-        "train_batch_size": variant.train_batch_size,
-        "inference_batch_size": variant.inference_batch_size,
+        "train_batch_size": model_config.get("train_batch_size", variant.train_batch_size),
+        "inference_batch_size": model_config.get("inference_batch_size", variant.inference_batch_size),
         "run_dir": str(run_dir),
         "example_run_path": str(run_json_path) if run_json_path.exists() else None,
         "stdout_path": str(stdout_path),
@@ -1001,7 +818,7 @@ def _run_config(
     args: argparse.Namespace,
     run_id: str,
     workloads: list[str],
-    variants: list[MatrixVariant],
+    variants: list[BenchmarkProfileVariant],
     data_sources: MatrixDataSources,
     results_dir: Path,
 ) -> dict[str, Any]:
@@ -1014,19 +831,7 @@ def _run_config(
         "profile_settings": _profile_settings(args.profile),
         "seed": int(args.seed),
         "workloads": workloads,
-        "variants": [
-            {
-                "name": variant.name,
-                "float32_matmul_precision": variant.float32_matmul_precision,
-                "allow_tf32": variant.allow_tf32,
-                "amp_mode": variant.amp_mode,
-                "train_batch_size": variant.train_batch_size,
-                "inference_batch_size": variant.inference_batch_size,
-                "checkpoint_f1_variant": variant.checkpoint_f1_variant,
-                "extra_args": list(variant.extra_args),
-            }
-            for variant in variants
-        ],
+        "variants": [benchmark_profile_variant_settings(args.profile, variant.name) for variant in variants],
         "data_sources": {
             "csv_path": data_sources.csv_path,
             "train_csv_path": data_sources.train_csv_path,
@@ -1098,7 +903,7 @@ def _index_entry(
     status_payload: dict[str, Any],
     args: argparse.Namespace,
     workloads: list[str],
-    variants: list[MatrixVariant],
+    variants: list[BenchmarkProfileVariant],
     data_sources: MatrixDataSources,
     results_dir: Path,
     rows: list[dict[str, Any]],
@@ -1265,7 +1070,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--profile", choices=PROFILE_CHOICES, default=DEFAULT_PROFILE)
     parser.add_argument("--workloads", type=str, default=",".join(DEFAULT_WORKLOADS))
-    parser.add_argument("--variants", type=str, default=",".join(DEFAULT_VARIANTS))
+    parser.add_argument(
+        "--variants",
+        type=str,
+        default=",".join(DEFAULT_VARIANTS),
+        help="Comma-separated profile variants defined in benchmark_profiles.py.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--results_dir",
@@ -1433,7 +1243,7 @@ def main() -> None:
                     str(run_dir),
                     "--f1_diagnostic_every",
                     str(args.f1_diagnostic_every),
-                    *_variant_args(variant),
+                    *_variant_args(args.profile, variant),
                     *_split_extra_args(args.extra_args),
                 ]
                 print(f"[matrix] {workload}/{variant.name}: {' '.join(shlex.quote(part) for part in command)}", flush=True)

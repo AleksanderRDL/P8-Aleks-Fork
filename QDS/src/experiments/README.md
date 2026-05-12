@@ -90,24 +90,16 @@ Profile shape:
 | Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
 | Range diagnostics | `range_diagnostics_mode=cached` when `--cache_dir` is set |
 | Diagnostics | F1 diagnostics are eligible every epoch; exact validation runs every second eligible epoch with `checkpoint_full_f1_every=2`, `checkpoint_candidate_pool_size=2`, no smoothing (`checkpoint_smoothing_window=1`) |
-| Runtime variant | `tf32_bf16_bs64_inf32` by default |
+| Profile variant | `baseline` by default: TF32/BF16 with profile batch sizes |
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
 
-Use matrix variant `tf32_bf16_bs32_inf32_point_f1_labels` as the direct
-ablation for the old range point-F1 label target. Use
-`tf32_bf16_bs32_inf32_ranking_bce` as the legacy pairwise-loss ablation.
-Use `tf32_bf16_bs64_inf32` and `tf32_bf16_bs128_inf32` to test whether the
-batched budget-top-k loss can use more available VRAM efficiently.
-Use `tf32_bf16_bs32_inf32_temporal000`,
-`tf32_bf16_bs32_inf32_temporal050`, and
-`tf32_bf16_bs32_inf32_temporal075` as temporal-spine ablations. The default is
-`0.25`; `0.75` is an explicit high-scaffold comparison rather than the
-baseline.
-Use `tf32_bf16_bs32_inf32_residual_none` to test whether training on all labels
-beats temporal-residual learned-fill training.
-Use `tf32_bf16_bs32_inf32_diversity005` to test the old spacing bonus against
-the no-diversity default.
+Profile variants live in `benchmark_profiles.py`; the active registry only
+keeps `baseline`. `benchmark_matrix.py` runs the selected variant and writes
+comparison tables. Use CLI `--extra_args` or queue-plan child args for A/B
+changes such as label mode, loss mode, temporal fraction, scoring mode, batch
+size, or precision. Promote an override into `benchmark_profiles.py` only after
+it becomes a repeated, named baseline worth keeping.
 
 `query_coverage` is a target used for workload generation and diagnostics.
 For the testing-baseline profile, `n_queries` is only the minimum workload size;
@@ -148,7 +140,7 @@ Direct matrix run:
   --workloads range \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_testing_baseline \
-  --variants tf32_bf16_bs64_inf32 \
+  --variants baseline \
   --results_dir artifacts/benchmarks/range_testing_baseline/runs/manual_range_testing_baseline_a \
   --run_id manual_range_testing_baseline_a
 ```

@@ -114,8 +114,8 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   compression ratios before further tuning.
 - Defaults: `window_length=512`, `window_stride=256`,
   `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
-  `allow_tf32=False`, and `amp_mode="off"`. The testing-baseline benchmark profile
-  overrides runtime precision through its selected matrix variant.
+  `allow_tf32=False`, and `amp_mode="off"`. The testing-baseline benchmark
+  applies runtime precision through its selected profile variant.
 
 ## Persistence
 

@@ -22,8 +22,8 @@ Environment overrides:
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
                                artifacts/benchmarks/range_testing_baseline.
-  VARIANTS                     benchmark_matrix --variants value. Default:
-                               tf32_bf16_bs64_inf32.
+  VARIANTS                     benchmark_matrix profile-variant value. Default:
+                               baseline.
   SEEDS                        Comma-separated seeds for default plan. Default: 42,43,44.
   CHILD_EXTRA_ARGS             String passed as benchmark_matrix --extra_args for
                                every default-plan run. Example:
@@ -82,7 +82,7 @@ WORKLOADS="${WORKLOADS:-range}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
-VARIANTS="${VARIANTS:-tf32_bf16_bs64_inf32}"
+VARIANTS="${VARIANTS:-baseline}"
 SEEDS="${SEEDS:-42,43,44}"
 CHILD_EXTRA_ARGS="${CHILD_EXTRA_ARGS:-}"
 PLAN_FILE="${PLAN_FILE:-}"

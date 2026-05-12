@@ -26,8 +26,8 @@ Environment overrides:
   MAX_POINTS_PER_SEGMENT       Optional per-segment point cap. Default: unset.
   MAX_SEGMENTS                 Optional segment cap. Default: unset.
   MAX_TRAJECTORIES             Optional post-load trajectory cap. Default: unset.
-  VARIANTS                     benchmark_matrix --variants value. Default:
-                               tf32_bf16_bs64_inf32.
+  VARIANTS                     benchmark_matrix profile-variant value. Default:
+                               baseline.
   MONITOR_INTERVAL             Monitor sample interval in seconds. Default: 10.
   ATTACH                       Attach to tmux after start. Default: 1.
 
@@ -59,7 +59,7 @@ CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-}"
 MAX_SEGMENTS="${MAX_SEGMENTS:-}"
 MAX_TRAJECTORIES="${MAX_TRAJECTORIES:-}"
-VARIANTS="${VARIANTS:-tf32_bf16_bs64_inf32}"
+VARIANTS="${VARIANTS:-baseline}"
 VARIANT_SLUG="$(printf '%s' "$VARIANTS" | tr -cs '[:alnum:]' '_' | sed 's/_$//')"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
