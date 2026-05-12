@@ -87,7 +87,7 @@ Profile shape:
 | MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.50`, `mlqds_diversity_bonus=0.0`, `mlqds_score_temperature=1.0` |
 | Attention chunk | `query_chunk_size=2048`; the profile uses the same value for `max_queries` |
 | Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
-| Diagnostics | `f1_diagnostic_every=1`, no smoothing (`checkpoint_smoothing_window=1`) |
+| Diagnostics | exact validation every eligible epoch by default: `f1_diagnostic_every=1`, `checkpoint_full_f1_every=1`, `checkpoint_candidate_pool_size=1`, no smoothing (`checkpoint_smoothing_window=1`) |
 | Runtime variant | `tf32_bf16_bs32_inf32` by default |
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
@@ -95,6 +95,8 @@ Profile shape:
 Use matrix variant `tf32_bf16_bs32_inf32_point_f1_labels` as the direct
 ablation for the old range point-F1 label target. Use
 `tf32_bf16_bs32_inf32_ranking_bce` as the legacy pairwise-loss ablation.
+Use `tf32_bf16_bs64_inf32` and `tf32_bf16_bs128_inf32` to test whether the
+batched budget-top-k loss can use more available VRAM efficiently.
 Use `tf32_bf16_bs32_inf32_temporal000`,
 `tf32_bf16_bs32_inf32_temporal050`, and
 `tf32_bf16_bs32_inf32_temporal075` as temporal-spine ablations. The default is

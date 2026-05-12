@@ -80,8 +80,11 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - `checkpoint_f1_variant="range_usefulness"` is the default selection target
   for range training because it matches the range-local usefulness objective.
   `"answer"` and `"combined"` remain legacy diagnostics for explicit ablations.
-  `uniform_gap`, `checkpoint_smoothing_window`, and `early_stopping_patience`
-  are explicit selection stabilizers.
+  `uniform_gap`, `checkpoint_smoothing_window`, `checkpoint_full_f1_every`,
+  `checkpoint_candidate_pool_size`, and `early_stopping_patience` are explicit
+  selection stabilizers. `checkpoint_full_f1_every=1` keeps exact validation
+  every eligible epoch. Higher values keep cheap-diagnostic candidate snapshots
+  and run exact validation only on the best candidates in each validation round.
 - Validation selection uses the same canonical MLQDS score conversion as final
   evaluation: one explicit workload score stream, `mlqds_score_mode`, and the
   temporal/diversity retained-mask simplifier. History rows report

@@ -61,6 +61,8 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         mlqds_score_temperature=0.5,
         mlqds_rank_confidence_weight=0.3,
         range_audit_compression_ratios=[0.01, 0.05],
+        checkpoint_full_f1_every=3,
+        checkpoint_candidate_pool_size=2,
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
 
@@ -87,6 +89,8 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.mlqds_rank_confidence_weight == 0.3
     assert restored.model.range_audit_compression_ratios == [0.01, 0.05]
     assert restored.model.checkpoint_selection_metric == "f1"
+    assert restored.model.checkpoint_full_f1_every == 3
+    assert restored.model.checkpoint_candidate_pool_size == 2
 
 
 def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
@@ -112,6 +116,10 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "0.01,0.05",
             "--budget_loss_temperature",
             "0.20",
+            "--checkpoint_full_f1_every",
+            "3",
+            "--checkpoint_candidate_pool_size",
+            "2",
             "--validation_csv_path",
             "validation.csv",
         ]
@@ -128,6 +136,8 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
         loss_objective=args.loss_objective,
         budget_loss_ratios=args.budget_loss_ratios,
         budget_loss_temperature=args.budget_loss_temperature,
+        checkpoint_full_f1_every=args.checkpoint_full_f1_every,
+        checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
         validation_csv_path=args.validation_csv_path,
     )
 
@@ -141,6 +151,8 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.loss_objective == "budget_topk"
     assert args.budget_loss_ratios == [0.01, 0.05]
     assert args.budget_loss_temperature == 0.20
+    assert args.checkpoint_full_f1_every == 3
+    assert args.checkpoint_candidate_pool_size == 2
     assert args.validation_csv_path == "validation.csv"
     assert cfg.model.ranking_pairs_per_type == 64
     assert cfg.model.ranking_top_quantile == 0.70
@@ -152,6 +164,8 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert cfg.model.loss_objective == "budget_topk"
     assert cfg.model.budget_loss_ratios == [0.01, 0.05]
     assert cfg.model.budget_loss_temperature == 0.20
+    assert cfg.model.checkpoint_full_f1_every == 3
+    assert cfg.model.checkpoint_candidate_pool_size == 2
     assert cfg.data.validation_csv_path == "validation.csv"
 
 
@@ -170,6 +184,8 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     payload["model"].pop("mlqds_score_mode")
     payload["model"].pop("mlqds_score_temperature")
     payload["model"].pop("mlqds_rank_confidence_weight")
+    payload["model"].pop("checkpoint_full_f1_every")
+    payload["model"].pop("checkpoint_candidate_pool_size")
 
     restored = ExperimentConfig.from_dict(payload)
 
@@ -188,6 +204,8 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.model.mlqds_rank_confidence_weight == 0.15
     assert restored.model.checkpoint_selection_metric == "f1"
     assert restored.model.checkpoint_f1_variant == "range_usefulness"
+    assert restored.model.checkpoint_full_f1_every == 1
+    assert restored.model.checkpoint_candidate_pool_size == 1
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:
@@ -237,6 +255,8 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
+    assert args[args.index("--checkpoint_full_f1_every") + 1] == "1"
+    assert args[args.index("--checkpoint_candidate_pool_size") + 1] == "1"
     assert args[args.index("--loss_objective") + 1] == "budget_topk"
     assert args[args.index("--budget_loss_ratios") + 1] == "0.01,0.02,0.05,0.10"
     assert args[args.index("--budget_loss_temperature") + 1] == "0.10"

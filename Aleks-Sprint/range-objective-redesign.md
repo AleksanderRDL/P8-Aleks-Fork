@@ -388,7 +388,7 @@ Expected impact:
   larger tensor operations
 - make larger `train_batch_size` values more useful
 
-### 2. Cheaper Checkpoint Validation
+### 2. Cheaper Checkpoint Validation - First Pass Implemented
 
 Code targets:
 
@@ -399,37 +399,34 @@ Code targets:
 - `QDS/src/experiments/experiment_cli.py` and
   `QDS/src/experiments/experiment_config.py` for new knobs
 
-Current issue:
+Original issue:
 
 - `f1_diagnostic_every=1` runs full validation every epoch
 - exact validation is useful but costs about 17-19 seconds per epoch in the
   current profile
 
-Prepared implementation direction:
+Implemented first pass:
 
-- add a candidate-checkpoint tournament:
-  - every epoch computes cheap signals such as loss, prediction std, and sampled
-    diagnostic statistics
-  - keep the top `K` candidate model snapshots since the previous full
-    validation
-  - every `N` epochs, run exact validation F1/`RangeUseful` only on those
-    candidate snapshots
-  - promote the best validated snapshot to canonical best checkpoint
-- add config knobs:
-  - `checkpoint_full_f1_every`, defaulting to current behavior at `1`
-  - `checkpoint_candidate_pool_size`, likely `2` or `3`
-  - optionally `checkpoint_candidate_metric`, initially based on loss plus
-    non-collapse prediction std
+- added `checkpoint_full_f1_every`, defaulting to current behavior at `1`
+- added `checkpoint_candidate_pool_size`, defaulting to `1`
+- when `checkpoint_full_f1_every > 1`, each eligible diagnostic epoch records a
+  cheap candidate score based on loss, sampled rank diagnostic, and prediction
+  spread
+- the best cheap candidate snapshots are held until the next full-validation
+  round, where exact validation F1/`RangeUseful` is run only for those
+  candidates
+- exact validation remains the only score that can promote the canonical best
+  checkpoint
 - keep final evaluation exact
 
 Correctness requirements:
 
-- exact validation remains the only score that can promote the canonical best
-  checkpoint
-- candidate filtering must never select a collapsed model solely due to low
-  loss
-- when `checkpoint_full_f1_every=1`, behavior should match the current path
-  except for harmless refactoring
+- candidate filtering uses the existing collapse-penalized cheap selection
+  score, so low loss alone cannot promote a collapsed model
+- when `checkpoint_full_f1_every=1`, behavior matches the current exact
+  validation path
+- training history marks checkpoint candidates, full-validation due epochs,
+  evaluated candidates, and promoted candidates
 
 Expected impact:
 
@@ -509,7 +506,7 @@ Current issue:
 Prepared implementation direction:
 
 - after vectorizing the loss, benchmark `train_batch_size=64` and `128`
-- add matrix variants:
+- matrix variants are available:
   - `tf32_bf16_bs64_inf32`
   - `tf32_bf16_bs128_inf32`
 - compare runtime, peak VRAM, best epoch, `RangeUseful`, and collapse warnings
@@ -535,8 +532,7 @@ After the current corrected queue finishes:
 1. analyze fixed queue quality and timing
 2. run one runtime+quality comparison against the previous scalar-loss baseline
 3. implement cached/minimal range diagnostics for repeated model sweeps
-4. implement candidate-checkpoint tournament
-5. benchmark `train_batch_size=64` and `128`
+4. benchmark `train_batch_size=64` and `128`
 
 Do not change all optimization knobs at once. The first comparison should
 answer whether the batched loss path is faster without changing quality. The

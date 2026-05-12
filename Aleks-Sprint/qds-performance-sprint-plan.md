@@ -840,8 +840,9 @@ cd QDS
   80 range queries, 20% target query coverage, fixed 2.2 km / 5 hour range
   half-windows, 5% retained-point compression, `query_chunk_size=2048`,
   20 epochs with early stopping, range-usefulness checkpointing,
-  `checkpoint_smoothing_window=1` (no rolling smoothing), vectorized
-  ranking-pair sampling, `mlqds_temporal_fraction=0.50`,
+  `checkpoint_smoothing_window=1` (no rolling smoothing),
+  `checkpoint_full_f1_every=1`, `checkpoint_candidate_pool_size=1`,
+  vectorized ranking-pair sampling, `mlqds_temporal_fraction=0.50`,
   `mlqds_diversity_bonus=0.0`,
   `residual_label_mode=temporal`, and F1 diagnostics every epoch. Budget-top-k
   training now applies temporal residual masking per retained-point budget

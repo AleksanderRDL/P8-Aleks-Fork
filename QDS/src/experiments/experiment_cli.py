@@ -309,6 +309,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pick checkpoints by rolling-mean selection score over the last K diagnostic epochs. Reduces selection bias from noisy single-epoch F1. 1 = original single-epoch behavior; 5 = average over 5 latest diagnostic epochs.",
     )
     parser.add_argument(
+        "--checkpoint_full_f1_every",
+        type=int,
+        default=1,
+        help="Run exact validation F1/usefulness every N F1-diagnostic epochs. 1 keeps exact validation every eligible epoch.",
+    )
+    parser.add_argument(
+        "--checkpoint_candidate_pool_size",
+        type=int,
+        default=1,
+        help="When checkpoint_full_f1_every > 1, keep this many cheap-diagnostic candidate snapshots for the next exact validation round.",
+    )
+    parser.add_argument(
         "--checkpoint_f1_variant",
         type=str,
         default="range_usefulness",

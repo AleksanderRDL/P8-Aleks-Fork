@@ -115,6 +115,8 @@ class ModelConfig:
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
     checkpoint_smoothing_window: int = 1
+    checkpoint_full_f1_every: int = 1
+    checkpoint_candidate_pool_size: int = 1
     checkpoint_f1_variant: str = "range_usefulness"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
@@ -285,6 +287,8 @@ def build_experiment_config(
     checkpoint_uniform_gap_weight: float = 0.5,
     checkpoint_type_penalty_weight: float = 1.0,
     checkpoint_smoothing_window: int = 1,
+    checkpoint_full_f1_every: int = 1,
+    checkpoint_candidate_pool_size: int = 1,
     checkpoint_f1_variant: str = "range_usefulness",
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
@@ -361,6 +365,8 @@ def build_experiment_config(
             checkpoint_uniform_gap_weight=checkpoint_uniform_gap_weight,
             checkpoint_type_penalty_weight=checkpoint_type_penalty_weight,
             checkpoint_smoothing_window=checkpoint_smoothing_window,
+            checkpoint_full_f1_every=checkpoint_full_f1_every,
+            checkpoint_candidate_pool_size=checkpoint_candidate_pool_size,
             checkpoint_f1_variant=checkpoint_f1_variant,
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,

@@ -171,6 +171,8 @@ def main() -> None:
         checkpoint_uniform_gap_weight=args.checkpoint_uniform_gap_weight,
         checkpoint_type_penalty_weight=args.checkpoint_type_penalty_weight,
         checkpoint_smoothing_window=args.checkpoint_smoothing_window,
+        checkpoint_full_f1_every=args.checkpoint_full_f1_every,
+        checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
         checkpoint_f1_variant=args.checkpoint_f1_variant,
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
@@ -214,6 +216,8 @@ def main() -> None:
         f"uniform_gap_weight={args.checkpoint_uniform_gap_weight}  "
         f"type_penalty_weight={args.checkpoint_type_penalty_weight}  "
         f"smoothing_window={args.checkpoint_smoothing_window}  "
+        f"full_f1_every={args.checkpoint_full_f1_every}  "
+        f"candidate_pool={args.checkpoint_candidate_pool_size}  "
         f"f1_variant={args.checkpoint_f1_variant}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
         f"range_spatial_km={args.range_spatial_km}  range_time_hours={args.range_time_hours}  "

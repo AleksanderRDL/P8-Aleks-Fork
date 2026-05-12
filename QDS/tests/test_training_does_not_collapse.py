@@ -416,6 +416,72 @@ def test_training_records_validation_selection_score() -> None:
     assert out.best_f1 == pytest.approx(max(row["val_selection_score"] for row in f1_rows))
 
 
+def test_checkpoint_candidate_pool_defers_full_validation() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=5, n_points_per_ship=24, seed=445)
+    train_trajectories = trajectories[:4]
+    validation_trajectories = trajectories[4:]
+    train_boundaries = TrajectoryDataset(train_trajectories).get_trajectory_boundaries()
+    validation_boundaries = TrajectoryDataset(validation_trajectories).get_trajectory_boundaries()
+
+    cfg = build_experiment_config(
+        epochs=5,
+        n_queries=4,
+        workload="range",
+        checkpoint_selection_metric="f1",
+        f1_diagnostic_every=1,
+        checkpoint_full_f1_every=3,
+        checkpoint_candidate_pool_size=1,
+        compression_ratio=0.5,
+    )
+    cfg.model.embed_dim = 16
+    cfg.model.num_heads = 2
+    cfg.model.num_layers = 1
+    cfg.model.query_chunk_size = 8
+    cfg.model.window_length = 16
+    cfg.model.window_stride = 8
+    cfg.model.ranking_pairs_per_type = 8
+    cfg.model.train_batch_size = 4
+    cfg.model.diagnostic_window_fraction = 1.0
+
+    train_workload = generate_typed_query_workload(
+        trajectories=train_trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=111,
+    )
+    validation_workload = generate_typed_query_workload(
+        trajectories=validation_trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=222,
+    )
+
+    out = train_model(
+        train_trajectories=train_trajectories,
+        train_boundaries=train_boundaries,
+        workload=train_workload,
+        model_config=cfg.model,
+        seed=333,
+        validation_trajectories=validation_trajectories,
+        validation_boundaries=validation_boundaries,
+        validation_workload=validation_workload,
+        validation_workload_map={"range": 1.0},
+    )
+
+    candidate_rows = [row for row in out.history if row.get("checkpoint_f1_candidate") == 1.0]
+    evaluated_rows = [row for row in out.history if row.get("checkpoint_candidate_evaluated") == 1.0]
+
+    assert len(candidate_rows) == 5
+    assert 1 <= len(evaluated_rows) <= 3
+    assert all("val_selection_score" in row for row in evaluated_rows)
+    assert all("selection_score" in row for row in evaluated_rows)
+    assert all(0.0 <= row["val_selection_score"] <= 1.0 for row in evaluated_rows)
+    assert all("selection_score" not in row for row in candidate_rows if row.get("checkpoint_candidate_evaluated") != 1.0)
+    assert out.best_selection_score == pytest.approx(
+        max(row["val_selection_score"] for row in evaluated_rows)
+    )
+
+
 @pytest.mark.parametrize(
     "score_mode",
     ["rank", "rank_tie", "raw", "sigmoid", "zscore_sigmoid", "rank_confidence", "temperature_sigmoid"],

@@ -63,6 +63,10 @@ def _profile_core_args() -> list[str]:
         "5",
         "--checkpoint_smoothing_window",
         "1",
+        "--checkpoint_full_f1_every",
+        "1",
+        "--checkpoint_candidate_pool_size",
+        "1",
         "--loss_objective",
         "budget_topk",
         "--budget_loss_ratios",
@@ -115,7 +119,8 @@ def test_selected_variants_default_to_range_usefulness_checkpointing() -> None:
 
 def test_selected_variants_can_run_explicit_sweeps() -> None:
     variants = _selected_variants(
-        "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_ranking_bce,"
+        "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs64_inf32,tf32_bf16_bs128_inf32,"
+        "tf32_bf16_bs32_inf32_ranking_bce,"
         "tf32_bf16_bs32_inf32_point_f1_labels,"
         "tf32_bf16_bs32_inf32_combined,"
         "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_temporal050,"
@@ -130,6 +135,8 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert [variant.name for variant in variants] == [
         "fp32",
         "tf32_bf16_bs32_inf32",
+        "tf32_bf16_bs64_inf32",
+        "tf32_bf16_bs128_inf32",
         "tf32_bf16_bs32_inf32_ranking_bce",
         "tf32_bf16_bs32_inf32_point_f1_labels",
         "tf32_bf16_bs32_inf32_combined",
@@ -147,34 +154,38 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert variants[0].checkpoint_f1_variant == "range_usefulness"
     assert variants[1].amp_mode == "bf16"
     assert variants[1].checkpoint_f1_variant == "range_usefulness"
+    assert variants[2].train_batch_size == 64
+    assert variants[2].inference_batch_size == 32
+    assert variants[3].train_batch_size == 128
+    assert variants[3].inference_batch_size == 32
     assert variants[2].amp_mode == "bf16"
-    assert variants[2].checkpoint_f1_variant == "range_usefulness"
-    assert variants[2].extra_args == ("--loss_objective", "ranking_bce")
-    assert variants[3].checkpoint_f1_variant == "range_usefulness"
-    assert variants[3].extra_args == ("--range_label_mode", "point_f1")
-    assert variants[4].checkpoint_f1_variant == "combined"
+    assert variants[4].checkpoint_f1_variant == "range_usefulness"
+    assert variants[4].extra_args == ("--loss_objective", "ranking_bce")
     assert variants[5].checkpoint_f1_variant == "range_usefulness"
-    assert variants[5].extra_args == ("--mlqds_temporal_fraction", "0.00")
-    assert variants[6].checkpoint_f1_variant == "range_usefulness"
-    assert variants[6].extra_args == ("--mlqds_temporal_fraction", "0.50")
+    assert variants[5].extra_args == ("--range_label_mode", "point_f1")
+    assert variants[6].checkpoint_f1_variant == "combined"
     assert variants[7].checkpoint_f1_variant == "range_usefulness"
-    assert variants[7].extra_args == ("--mlqds_temporal_fraction", "0.75")
+    assert variants[7].extra_args == ("--mlqds_temporal_fraction", "0.00")
     assert variants[8].checkpoint_f1_variant == "range_usefulness"
-    assert variants[8].extra_args == ("--residual_label_mode", "none")
+    assert variants[8].extra_args == ("--mlqds_temporal_fraction", "0.50")
     assert variants[9].checkpoint_f1_variant == "range_usefulness"
-    assert variants[9].extra_args == ("--mlqds_diversity_bonus", "0.0")
+    assert variants[9].extra_args == ("--mlqds_temporal_fraction", "0.75")
     assert variants[10].checkpoint_f1_variant == "range_usefulness"
-    assert variants[10].extra_args == ("--mlqds_diversity_bonus", "0.05")
+    assert variants[10].extra_args == ("--residual_label_mode", "none")
     assert variants[11].checkpoint_f1_variant == "range_usefulness"
-    assert variants[11].extra_args == ("--mlqds_score_mode", "rank_tie")
-    assert variants[12].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
-    assert variants[13].extra_args == (
+    assert variants[11].extra_args == ("--mlqds_diversity_bonus", "0.0")
+    assert variants[12].checkpoint_f1_variant == "range_usefulness"
+    assert variants[12].extra_args == ("--mlqds_diversity_bonus", "0.05")
+    assert variants[13].checkpoint_f1_variant == "range_usefulness"
+    assert variants[13].extra_args == ("--mlqds_score_mode", "rank_tie")
+    assert variants[14].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
+    assert variants[15].extra_args == (
         "--mlqds_score_mode",
         "rank_confidence",
         "--mlqds_rank_confidence_weight",
         "0.15",
     )
-    assert variants[14].extra_args == (
+    assert variants[16].extra_args == (
         "--mlqds_score_mode",
         "temperature_sigmoid",
         "--mlqds_score_temperature",
@@ -216,6 +227,8 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "loss_objective": "budget_topk",
                 "budget_loss_ratios": [0.01, 0.02, 0.05, 0.10],
                 "budget_loss_temperature": 0.10,
+                "checkpoint_full_f1_every": 3,
+                "checkpoint_candidate_pool_size": 2,
             }
         },
         "oracle_diagnostic": {
@@ -288,6 +301,8 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["loss_objective"] == "budget_topk"
     assert row["budget_loss_ratios"] == [0.01, 0.02, 0.05, 0.10]
     assert row["budget_loss_temperature"] == 0.10
+    assert row["checkpoint_full_f1_every"] == 3
+    assert row["checkpoint_candidate_pool_size"] == 2
     assert row["best_selection_score"] == 0.42
     assert row["best_f1"] == 0.42
     assert row["range_boundary_prior_weight"] == 0.0

@@ -27,6 +27,8 @@ class BenchmarkProfile:
     epochs: int
     early_stopping_patience: int
     checkpoint_smoothing_window: int
+    checkpoint_full_f1_every: int
+    checkpoint_candidate_pool_size: int
     mlqds_temporal_fraction: float
     workload: str
     checkpoint_selection_metric: str
@@ -57,6 +59,8 @@ RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
     epochs=20,
     early_stopping_patience=5,
     checkpoint_smoothing_window=1,
+    checkpoint_full_f1_every=1,
+    checkpoint_candidate_pool_size=1,
     mlqds_temporal_fraction=0.50,
     workload="range",
     checkpoint_selection_metric="f1",
@@ -122,6 +126,10 @@ def benchmark_profile_args(
         str(profile.early_stopping_patience),
         "--checkpoint_smoothing_window",
         str(profile.checkpoint_smoothing_window),
+        "--checkpoint_full_f1_every",
+        str(profile.checkpoint_full_f1_every),
+        "--checkpoint_candidate_pool_size",
+        str(profile.checkpoint_candidate_pool_size),
         "--loss_objective",
         profile.loss_objective,
         "--budget_loss_ratios",
@@ -176,6 +184,8 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "early_stopping_patience": profile.early_stopping_patience,
         "checkpoint_selection_metric": profile.checkpoint_selection_metric,
         "checkpoint_f1_variant": "range_usefulness",
+        "checkpoint_full_f1_every": profile.checkpoint_full_f1_every,
+        "checkpoint_candidate_pool_size": profile.checkpoint_candidate_pool_size,
         "loss_objective": profile.loss_objective,
         "budget_loss_ratios": list(profile.budget_loss_ratios),
         "budget_loss_temperature": profile.budget_loss_temperature,
