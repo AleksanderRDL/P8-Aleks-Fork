@@ -33,6 +33,7 @@ class DataConfig:
     eval_csv_path: str | None = None
     cache_dir: str | None = None
     refresh_cache: bool = False
+    range_diagnostics_mode: str = "full"
     seed: int = 42
     train_fraction: float = 0.70
     val_fraction: float = 0.15
@@ -273,6 +274,7 @@ def build_experiment_config(
     eval_csv_path: str | None = None,
     cache_dir: str | None = None,
     refresh_cache: bool = False,
+    range_diagnostics_mode: str = "full",
     model_type: str = "baseline",
     workload: str = "range",
     seed: int = 42,
@@ -321,6 +323,7 @@ def build_experiment_config(
             eval_csv_path=eval_csv_path,
             cache_dir=cache_dir,
             refresh_cache=refresh_cache,
+            range_diagnostics_mode=range_diagnostics_mode,
             seed=seed,
         ),
         query=QueryConfig(

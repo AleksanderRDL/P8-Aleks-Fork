@@ -52,6 +52,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rebuild AIS cache entries even when a matching manifest exists.",
     )
+    parser.add_argument(
+        "--range_diagnostics_mode",
+        type=str,
+        default="full",
+        choices=["full", "cached"],
+        help="Use full range diagnostics or reuse persistent range-diagnostics caches when --cache_dir is set.",
+    )
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
     parser.add_argument(

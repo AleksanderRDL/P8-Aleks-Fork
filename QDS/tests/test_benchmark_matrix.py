@@ -51,6 +51,8 @@ def _profile_core_args() -> list[str]:
         "5.0",
         "--range_footprint_jitter",
         "0.0",
+        "--range_diagnostics_mode",
+        "cached",
         "--query_chunk_size",
         "2048",
         "--max_queries",

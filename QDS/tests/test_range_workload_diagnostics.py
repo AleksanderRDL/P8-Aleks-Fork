@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
 
 from src.data.ais_loader import generate_synthetic_ais_data
+from src.experiments.experiment_config import TypedQueryWorkload, build_experiment_config
+from src.experiments.experiment_pipeline_helpers import RangeRuntimeCache, _range_workload_diagnostics
 from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import QUERY_TYPE_ID_RANGE
+from src.queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
 from src.queries.workload_diagnostics import (
     compute_range_label_diagnostics,
     compute_range_workload_diagnostics,
@@ -184,3 +187,57 @@ def test_phase2_diagnostics_dump_is_json_serializable() -> None:
     diagnostics = compute_range_workload_diagnostics(points, boundaries, queries)
 
     json.dumps(diagnostics)
+
+
+def test_range_workload_diagnostics_cache_reuses_labels(tmp_path: Path) -> None:
+    points, boundaries = _points_and_boundaries()
+    queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 2.5)]
+    features, type_ids = pad_query_features(queries)
+    workload = TypedQueryWorkload(
+        query_features=features,
+        typed_queries=queries,
+        type_ids=type_ids,
+        coverage_fraction=0.60,
+        covered_points=3,
+        total_points=5,
+    )
+    cfg = build_experiment_config(
+        cache_dir=str(tmp_path / "cache"),
+        range_diagnostics_mode="cached",
+        compression_ratio=0.4,
+        workload="range",
+    )
+
+    first_cache = RangeRuntimeCache()
+    first_summary, first_rows = _range_workload_diagnostics(
+        "train",
+        points,
+        boundaries,
+        workload,
+        {"range": 1.0},
+        cfg,
+        seed=123,
+        runtime_cache=first_cache,
+    )
+    assert first_summary["range_diagnostics_cache"]["hit"] is False
+    assert first_cache.labels is not None
+    assert first_cache.labelled_mask is not None
+    first_labels = first_cache.labels.clone()
+
+    second_cache = RangeRuntimeCache()
+    second_summary, second_rows = _range_workload_diagnostics(
+        "train",
+        points,
+        boundaries,
+        workload,
+        {"range": 1.0},
+        cfg,
+        seed=123,
+        runtime_cache=second_cache,
+    )
+
+    assert second_summary["range_diagnostics_cache"]["hit"] is True
+    assert second_rows == first_rows
+    assert second_cache.labels is not None
+    assert torch.equal(second_cache.labels, first_labels)
+    assert second_cache.query_cache is not None

@@ -82,6 +82,7 @@ class RangeRuntimeCache:
 
 
 WORKLOAD_CACHE_SCHEMA_VERSION = 1
+RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION = 1
 
 
 def split_trajectories(
@@ -316,6 +317,153 @@ def _workload_cache_name(workload: TypedQueryWorkload) -> str:
     return f"{hit} ({key})"
 
 
+def _range_diagnostics_cache_root(config: ExperimentConfig) -> Path | None:
+    """Return persistent range-diagnostics cache root when enabled."""
+    if str(getattr(config.data, "range_diagnostics_mode", "full")).lower() != "cached":
+        return None
+    if not config.data.cache_dir:
+        return None
+    return Path(config.data.cache_dir) / "range_diagnostics"
+
+
+def _typed_queries_digest(typed_queries: list[dict[str, Any]]) -> str:
+    """Return a stable digest for a typed query list."""
+    encoded = json.dumps(typed_queries, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _range_diagnostics_cache_payload(
+    *,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_map: dict[str, float],
+    config: ExperimentConfig,
+    seed: int,
+) -> dict[str, Any]:
+    """Build the canonical cache key payload for range workload diagnostics."""
+    return {
+        "schema_version": RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION,
+        "points_sha256": _tensor_cache_digest(points),
+        "boundaries_sha256": hashlib.sha256(
+            json.dumps(boundaries, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "typed_queries_sha256": _typed_queries_digest(workload.typed_queries),
+        "workload_map": {key: float(workload_map[key]) for key in sorted(workload_map)},
+        "seed": int(seed),
+        "compression_ratio": float(config.model.compression_ratio),
+        "range_label_mode": str(getattr(config.model, "range_label_mode", "usefulness")),
+        "range_boundary_prior_weight": float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
+        "max_point_hit_fraction": config.query.range_max_point_hit_fraction,
+        "max_trajectory_hit_fraction": config.query.range_max_trajectory_hit_fraction,
+        "max_box_volume_fraction": config.query.range_max_box_volume_fraction,
+        "duplicate_iou_threshold": _range_diagnostic_duplicate_threshold(config),
+    }
+
+
+def _range_diagnostics_cache_key(payload: dict[str, Any]) -> str:
+    """Return a stable cache key for range diagnostics."""
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _range_diagnostics_cache_paths(config: ExperimentConfig, label: str, key: str) -> tuple[Path, Path] | None:
+    """Return JSON and tensor paths for a range diagnostics cache entry."""
+    cache_root = _range_diagnostics_cache_root(config)
+    if cache_root is None:
+        return None
+    stem = f"{label}-{key[:16]}"
+    return cache_root / f"{stem}.json", cache_root / f"{stem}.pt"
+
+
+def _load_range_diagnostics_cache(
+    *,
+    config: ExperimentConfig,
+    label: str,
+    key: str,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    scored_queries: list[dict[str, Any]],
+    runtime_cache: RangeRuntimeCache | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Load cached range diagnostics and runtime tensors when the entry is complete."""
+    paths = _range_diagnostics_cache_paths(config, label, key)
+    if paths is None or config.data.refresh_cache:
+        return None
+    json_path, tensor_path = paths
+    if not json_path.exists() or not tensor_path.exists():
+        return None
+    try:
+        cached = json.loads(json_path.read_text(encoding="utf-8"))
+        if cached.get("schema_version") != RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION or cached.get("key") != key:
+            return None
+        tensors = torch.load(tensor_path, map_location="cpu", weights_only=True)
+        if not isinstance(tensors, dict):
+            return None
+        labels = tensors.get("labels")
+        labelled_mask = tensors.get("labelled_mask")
+        if not isinstance(labels, torch.Tensor) or not isinstance(labelled_mask, torch.Tensor):
+            return None
+        if runtime_cache is not None:
+            runtime_cache.labels = labels
+            runtime_cache.labelled_mask = labelled_mask
+            runtime_cache.query_cache = EvaluationQueryCache.for_workload(points, boundaries, scored_queries)
+        summary = cached["summary"]
+        rows = cached["rows"]
+        if not isinstance(summary, dict) or not isinstance(rows, list):
+            return None
+        summary = dict(summary)
+        cache_info = dict(summary.get("range_diagnostics_cache") or {})
+        cache_info.update({"hit": True, "path": str(json_path), "tensor_path": str(tensor_path), "key": key})
+        summary["range_diagnostics_cache"] = cache_info
+        return summary, rows
+    except (OSError, KeyError, TypeError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"  WARNING: ignoring unreadable range diagnostics cache {json_path}: {exc}", flush=True)
+        return None
+
+
+def _write_range_diagnostics_cache(
+    *,
+    config: ExperimentConfig,
+    label: str,
+    key: str,
+    summary: dict[str, Any],
+    rows: list[dict[str, Any]],
+    runtime_cache: RangeRuntimeCache | None,
+) -> None:
+    """Persist range diagnostics plus label tensors for reuse in repeated sweeps."""
+    paths = _range_diagnostics_cache_paths(config, label, key)
+    if paths is None or runtime_cache is None or runtime_cache.labels is None or runtime_cache.labelled_mask is None:
+        return
+    json_path, tensor_path = paths
+    try:
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"labels": runtime_cache.labels.cpu(), "labelled_mask": runtime_cache.labelled_mask.cpu()},
+            tensor_path,
+        )
+        cache_summary = dict(summary)
+        cache_info = dict(cache_summary.get("range_diagnostics_cache") or {})
+        cache_info.update({"hit": False, "path": str(json_path), "tensor_path": str(tensor_path), "key": key})
+        cache_summary["range_diagnostics_cache"] = cache_info
+        json_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION,
+                    "key": key,
+                    "summary": cache_summary,
+                    "rows": rows,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        summary["range_diagnostics_cache"] = cache_info
+    except OSError as exc:
+        print(f"  WARNING: could not write range diagnostics cache {json_path}: {exc}", flush=True)
+
+
 def _range_diagnostic_duplicate_threshold(config: ExperimentConfig) -> float | None:
     """Use explicit duplicate threshold for diagnostics, or a diagnostic-only default."""
     threshold = config.query.range_duplicate_iou_threshold
@@ -432,6 +580,30 @@ def _range_workload_diagnostics(
     runtime_cache: RangeRuntimeCache | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Build summary and JSONL rows for one workload."""
+    range_queries = _range_only_queries(workload.typed_queries)
+    is_pure_range_workload = len(range_queries) == len(workload.typed_queries)
+    scored_queries = workload.typed_queries if is_pure_range_workload else range_queries
+    cache_payload = _range_diagnostics_cache_payload(
+        points=points,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map=workload_map,
+        config=config,
+        seed=seed,
+    )
+    cache_key = _range_diagnostics_cache_key(cache_payload)
+    cached = _load_range_diagnostics_cache(
+        config=config,
+        label=label,
+        key=cache_key,
+        points=points,
+        boundaries=boundaries,
+        scored_queries=scored_queries,
+        runtime_cache=runtime_cache,
+    )
+    if cached is not None:
+        return cached
+
     workload_diagnostics = compute_range_workload_diagnostics(
         points=points,
         boundaries=boundaries,
@@ -442,8 +614,6 @@ def _range_workload_diagnostics(
         duplicate_iou_threshold=_range_diagnostic_duplicate_threshold(config),
         coverage_fraction=workload.coverage_fraction,
     )
-    range_queries = _range_only_queries(workload.typed_queries)
-    is_pure_range_workload = len(range_queries) == len(workload.typed_queries)
     signal = _range_signal_diagnostics(
         points=points,
         boundaries=boundaries,
@@ -462,6 +632,14 @@ def _range_workload_diagnostics(
         "generation": workload.generation_diagnostics or {},
     }
     rows = [{"workload": label, **row} for row in workload_diagnostics["queries"]]
+    _write_range_diagnostics_cache(
+        config=config,
+        label=label,
+        key=cache_key,
+        summary=summary,
+        rows=rows,
+        runtime_cache=runtime_cache,
+    )
     return summary, rows
 
 
@@ -777,12 +955,17 @@ def run_experiment_pipeline(
         for label, summary in range_diagnostics_summary.items():
             range_summary = summary["range"]
             signal = summary["range_signal"]
+            diagnostics_cache = summary.get("range_diagnostics_cache") or {}
+            cache_text = "disabled"
+            if isinstance(diagnostics_cache, dict) and diagnostics_cache:
+                cache_text = "hit" if diagnostics_cache.get("hit") else "miss"
             print(
                 f"  {label}: range_queries={range_summary['range_query_count']}  "
                 f"empty={range_summary['empty_query_rate']:.2%}  "
                 f"broad={range_summary['too_broad_query_rate']:.2%}  "
                 f"duplicates={range_summary['near_duplicate_query_rate']:.2%}  "
-                f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}",
+                f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}  "
+                f"diag_cache={cache_text}",
                 flush=True,
             )
         workload_distribution_comparison = _range_workload_distribution_comparison(range_diagnostics_summary)

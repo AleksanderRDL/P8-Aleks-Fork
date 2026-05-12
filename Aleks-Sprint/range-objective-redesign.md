@@ -434,7 +434,7 @@ Expected impact:
 - preserve robustness against noisy validation F1 spikes
 - make longer epoch budgets less expensive
 
-### 3. Cache Or Skip Repeated Range Diagnostics During Sweeps
+### 3. Cache Or Skip Repeated Range Diagnostics During Sweeps - First Pass Implemented
 
 Code targets:
 
@@ -443,41 +443,34 @@ Code targets:
 - `_range_signal_diagnostics`
 - the `range-diagnostics` phase in `run_experiment_pipeline`
 
-Current issue:
+Original issue:
 
 - range workloads are cached, but full diagnostics are recomputed for each run
 - when only model/loss/scoring parameters change, train/eval/selection queries
   are identical and the expensive range diagnostic/signals are identical too
 - current logs show this phase can cost multiple minutes before training
 
-Prepared implementation direction:
+Implemented first pass:
 
-- add persistent diagnostics cache keyed by:
-  - points/boundaries fingerprint
-  - typed query workload cache key or query digest
-  - compression ratio
-  - range label mode
-  - range boundary prior weight
-  - diagnostics schema version
-- reuse cached:
-  - workload summary
-  - per-query diagnostics rows
-  - range labels/labelled masks
-  - evaluation query cache inputs where safely reconstructable
-  - baseline/oracle signal summaries
-- add a sweep mode such as `--reuse_range_diagnostics` or
-  `--range_diagnostics_mode cached|full|minimal`
-- for parameter sweeps, use cached/minimal diagnostics by default when workload
-  generation settings are unchanged
-- force full diagnostics for audit runs and after query-generation changes
+- added `--range_diagnostics_mode full|cached`
+- the real-usecase profile uses `cached`; without `--cache_dir` this falls back
+  to normal computation
+- persistent cache entries are stored under `<cache_dir>/range_diagnostics/`
+- cache keys include points/boundaries fingerprints, typed query digest,
+  workload map, compression ratio, range label mode, boundary prior, diagnostic
+  filter settings, seed, and schema version
+- cached entries reuse workload summary, per-query diagnostic rows,
+  range labels/labelled masks, label diagnostics, baseline/oracle signal
+  summaries, and rebuild the runtime `EvaluationQueryCache` from the cached
+  workload
+- `--refresh_cache` forces recomputation
 
 Correctness requirements:
 
-- cache key must include every value that can change labels or diagnostic
-  scores
-- final matched evaluation remains exact and uncached with respect to method
-  masks
-- stale diagnostics must fail closed by recomputing
+- cache key includes values that change labels or diagnostic scores
+- final matched evaluation remains exact with respect to method masks
+- stale, missing, or unreadable diagnostics cache entries fail closed by
+  recomputing
 
 Expected impact:
 
@@ -531,8 +524,7 @@ After the current corrected queue finishes:
 
 1. analyze fixed queue quality and timing
 2. run one runtime+quality comparison against the previous scalar-loss baseline
-3. implement cached/minimal range diagnostics for repeated model sweeps
-4. benchmark `train_batch_size=64` and `128`
+3. benchmark `train_batch_size=64` and `128`
 
 Do not change all optimization knobs at once. The first comparison should
 answer whether the batched loss path is faster without changing quality. The

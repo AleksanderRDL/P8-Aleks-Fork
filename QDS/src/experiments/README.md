@@ -87,6 +87,7 @@ Profile shape:
 | MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.50`, `mlqds_diversity_bonus=0.0`, `mlqds_score_temperature=1.0` |
 | Attention chunk | `query_chunk_size=2048`; the profile uses the same value for `max_queries` |
 | Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
+| Range diagnostics | `range_diagnostics_mode=cached` when `--cache_dir` is set |
 | Diagnostics | exact validation every eligible epoch by default: `f1_diagnostic_every=1`, `checkpoint_full_f1_every=1`, `checkpoint_candidate_pool_size=1`, no smoothing (`checkpoint_smoothing_window=1`) |
 | Runtime variant | `tf32_bf16_bs32_inf32` by default |
 | Ranking sampler | `vectorized` by default |
@@ -115,7 +116,11 @@ final generated query count, per-type query counts, final coverage, and stop
 reason for each split.
 When `--cache_dir` is set, generated workloads are cached under
 `<cache_dir>/workloads/` by data fingerprint, query config, seed, and workload
-map. Use `--refresh_cache` to force regeneration.
+map. The real-usecase profile also enables `--range_diagnostics_mode cached`,
+which stores range workload summaries, per-query diagnostic rows, and training
+label tensors under `<cache_dir>/range_diagnostics/`. Final matched evaluation
+remains exact; stale or incomplete diagnostics cache entries are ignored and
+recomputed. Use `--refresh_cache` to force regeneration.
 
 Direct matrix run:
 

@@ -22,6 +22,7 @@ class BenchmarkProfile:
     range_spatial_km: float | None
     range_time_hours: float | None
     range_footprint_jitter: float
+    range_diagnostics_mode: str
     query_chunk_size: int
     compression_ratio: float
     epochs: int
@@ -54,6 +55,7 @@ RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
     range_spatial_km=2.2,
     range_time_hours=5.0,
     range_footprint_jitter=0.0,
+    range_diagnostics_mode="cached",
     query_chunk_size=2048,
     compression_ratio=0.05,
     epochs=20,
@@ -114,6 +116,8 @@ def benchmark_profile_args(
     args += [
         "--range_footprint_jitter",
         str(profile.range_footprint_jitter),
+        "--range_diagnostics_mode",
+        profile.range_diagnostics_mode,
         "--query_chunk_size",
         str(profile.query_chunk_size),
         "--max_queries",
@@ -178,6 +182,7 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "range_spatial_km": profile.range_spatial_km,
         "range_time_hours": profile.range_time_hours,
         "range_footprint_jitter": profile.range_footprint_jitter,
+        "range_diagnostics_mode": profile.range_diagnostics_mode,
         "query_chunk_size": profile.query_chunk_size,
         "compression_ratio": profile.compression_ratio,
         "epochs": profile.epochs,

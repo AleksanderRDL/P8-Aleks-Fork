@@ -160,6 +160,7 @@ def main() -> None:
         model_type=args.model_type,
         workload=args.workload,
         seed=args.seed,
+        range_diagnostics_mode=args.range_diagnostics_mode,
         early_stopping_patience=args.early_stopping_patience,
         train_batch_size=args.train_batch_size,
         inference_batch_size=args.inference_batch_size,
@@ -210,6 +211,7 @@ def main() -> None:
         f"train_batch_size={args.train_batch_size}  "
         f"inference_batch_size={args.inference_batch_size}  "
         f"query_chunk_size={args.query_chunk_size}  "
+        f"range_diagnostics_mode={args.range_diagnostics_mode}  "
         f"diagnostic_every={args.diagnostic_every}  "
         f"checkpoint_selection_metric={args.checkpoint_selection_metric}  "
         f"f1_diagnostic_every={args.f1_diagnostic_every}  "
