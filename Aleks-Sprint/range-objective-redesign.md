@@ -141,6 +141,33 @@ less opportunity to learn query-specific retention behavior. High temporal
 fractions should therefore be treated as provisional scaffolding, not proof
 that the learned range model is solving the target task.
 
+### Long-Term Default Risks
+
+Some defaults are useful for stabilizing experiments but can also hide whether
+the model is learning the desired query-driven behavior:
+
+- high `mlqds_temporal_fraction`: preserves temporal coverage through a
+  hardcoded evenly-spaced spine and leaves less budget for learned selection
+- nonzero `mlqds_diversity_bonus`: adds another algorithmic spacing prior on
+  top of the temporal spine, which can make learned residual quality harder to
+  isolate
+- per-trajectory rank scoring: makes scores easy to use for per-trajectory
+  top-k simplification, but discards absolute score calibration across
+  trajectories
+- mandatory per-trajectory budget and endpoint retention: protects every
+  trajectory, but may conflict with a purely query-usefulness objective if many
+  trajectories are irrelevant to likely range workloads
+- local/additive label modes: provide cheap supervision, but do not model
+  retained-set interactions such as redundancy, ship-level coverage, or local
+  shape preservation under a fixed budget
+- high audit/checkpoint cadence: gives better selection feedback, but can make
+  iteration slow enough that fewer objective variants are tested
+
+These defaults should be separated into two categories in future benchmarks:
+stabilizing scaffolds and learned-quality controls. A model-quality claim
+should identify how much quality comes from the learned score fill after
+subtracting the temporal/random-fill baseline.
+
 ### Residual Fill Bottleneck
 
 The corrected `rangefix_*` queue has so far reinforced the residual-fill issue.
@@ -239,6 +266,22 @@ they are still proxies:
   gaps.
 - `ShapeScore` currently rewards retained path-length coverage; it is not a
   full geometric route-fidelity metric.
+
+Potential future components or replacements:
+
+- route-fidelity error inside the query, such as local SED/PED or distance from
+  original in-query points to the simplified in-query polyline
+- gap coverage, which penalizes large time or distance gaps even when first and
+  last in-query points are retained
+- per-ship minimum interpretability, which rewards enough retained points per
+  queried ship rather than only one retained point
+- turn/change-point preservation, especially heading, speed, or course changes
+  inside the query
+- entry/exit interpolation quality, approximating where trajectories cross the
+  query boundary between AIS samples instead of only retaining sampled
+  boundary-adjacent points
+- traffic-pattern coverage, measuring whether dense groups, crossings, or
+  route alternatives remain understandable inside the query result
 
 Therefore the redesign should follow two tracks:
 
@@ -551,8 +594,39 @@ patterns such as:
 - variable temporal windows that represent plausible analyst questions
 - some background/uniform queries to avoid overfitting only dense hotspots
 
+Concrete generator improvements to consider:
+
+- anchor more queries on actual traffic structures instead of only sampled
+  points, for example high-density tiles, route corridors, ports, and
+  chokepoints
+- stratify queries by hit shape: single-ship, few-ship, many-ship, dense-area,
+  sparse-area, entry/exit-heavy, and long-transit cases
+- explicitly control temporal-window families, such as short event windows,
+  watch windows of several hours, and full-shift/daypart windows
+- enforce query diversity using spatial/temporal overlap limits so coverage is
+  not achieved by many near-duplicate boxes
+- keep a reserved background/uniform slice to measure generalization outside
+  dense hotspots
+- report the final generated query count, coverage, hit-count distribution,
+  trajectory-hit distribution, and stop reason for every workload split
+
 The generator should continue to report coverage and query diagnostics, but
 coverage alone should not define workload quality.
+
+## Benchmarking Cadence
+
+Prefer smaller iterative benchmark runs over large broad queues. The default
+research loop should be:
+
+1. formulate one concrete hypothesis
+2. run a focused A/B comparison or small sweep
+3. inspect quality, runtime, and diagnostics
+4. update the next hypothesis
+
+Large queues are useful only when the factor under test is already clear or
+when the computer would otherwise be idle for a long period. Avoid mixing too
+many unrelated factors in one queue because it increases waiting time and makes
+causal interpretation weaker.
 
 ## Next Step
 
