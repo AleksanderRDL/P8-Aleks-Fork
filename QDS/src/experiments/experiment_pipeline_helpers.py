@@ -756,6 +756,109 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
     }
 
 
+def _target_budget_row(target_diagnostics: dict[str, Any], compression_ratio: float) -> dict[str, Any]:
+    """Return target-diagnostics row closest to the run compression ratio."""
+    rows = target_diagnostics.get("budget_rows") or []
+    if not isinstance(rows, list) or not rows:
+        return {}
+    best_row: dict[str, Any] = {}
+    best_distance = float("inf")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_ratio = row.get("total_budget_ratio")
+        if raw_ratio is None:
+            continue
+        try:
+            ratio = float(raw_ratio)
+        except (TypeError, ValueError):
+            continue
+        distance = abs(ratio - float(compression_ratio))
+        if distance < best_distance:
+            best_distance = distance
+            best_row = row
+    return best_row
+
+
+def _optional_delta(left: float | None, right: float | None) -> float | None:
+    """Return ``left - right`` when both values are present."""
+    if left is None or right is None:
+        return None
+    return float(left) - float(right)
+
+
+def _metric_value(metrics: MethodEvaluation | None, field_name: str) -> float | None:
+    """Read one float field from optional method metrics."""
+    if metrics is None:
+        return None
+    value = getattr(metrics, field_name)
+    return float(value) if value is not None else None
+
+
+def _range_residual_objective_summary(
+    *,
+    learned_fill_diagnostics: dict[str, MethodEvaluation],
+    training_target_diagnostics: dict[str, Any],
+    range_diagnostics_summary: dict[str, Any],
+    compression_ratio: float,
+) -> dict[str, Any]:
+    """Build a compact run-level summary for residual-fill objective analysis."""
+    mlqds = learned_fill_diagnostics.get("MLQDS")
+    random_fill = learned_fill_diagnostics.get("TemporalRandomFill")
+    oracle_fill = learned_fill_diagnostics.get("TemporalOracleFill")
+    mlqds_usefulness = _metric_value(mlqds, "range_usefulness_score")
+    random_usefulness = _metric_value(random_fill, "range_usefulness_score")
+    oracle_usefulness = _metric_value(oracle_fill, "range_usefulness_score")
+    mlqds_point = _metric_value(mlqds, "range_point_f1")
+    random_point = _metric_value(random_fill, "range_point_f1")
+    oracle_point = _metric_value(oracle_fill, "range_point_f1")
+
+    train_signal = (
+        range_diagnostics_summary.get("train", {})
+        .get("range_signal", {})
+        if isinstance(range_diagnostics_summary, dict)
+        else {}
+    )
+    train_labels = train_signal.get("labels", {}) if isinstance(train_signal, dict) else {}
+    target_row = _target_budget_row(training_target_diagnostics, float(compression_ratio))
+    usefulness_delta = _optional_delta(mlqds_usefulness, random_usefulness)
+    point_delta = _optional_delta(mlqds_point, random_point)
+
+    return {
+        "summary_version": 1,
+        "compression_ratio": float(compression_ratio),
+        "methods": sorted(learned_fill_diagnostics.keys()),
+        "mlqds_range_usefulness_score": mlqds_usefulness,
+        "temporal_random_fill_range_usefulness_score": random_usefulness,
+        "temporal_oracle_fill_range_usefulness_score": oracle_usefulness,
+        "mlqds_vs_temporal_random_fill_range_usefulness": usefulness_delta,
+        "temporal_oracle_fill_gap_range_usefulness": _optional_delta(oracle_usefulness, mlqds_usefulness),
+        "mlqds_range_point_f1": mlqds_point,
+        "temporal_random_fill_range_point_f1": random_point,
+        "temporal_oracle_fill_range_point_f1": oracle_point,
+        "mlqds_vs_temporal_random_fill_range_point_f1": point_delta,
+        "temporal_oracle_fill_gap_range_point_f1": _optional_delta(oracle_point, mlqds_point),
+        "learned_fill_beats_temporal_random_usefulness": (
+            bool(usefulness_delta > 0.0) if usefulness_delta is not None else None
+        ),
+        "learned_fill_beats_temporal_random_point_f1": bool(point_delta > 0.0) if point_delta is not None else None,
+        "train_positive_label_mass": train_labels.get("positive_label_mass") if isinstance(train_labels, dict) else None,
+        "train_label_component_mass_basis": (
+            train_labels.get("component_label_mass_basis") if isinstance(train_labels, dict) else None
+        ),
+        "train_label_component_mass_fraction": (
+            train_labels.get("component_positive_label_mass_fraction", {}) if isinstance(train_labels, dict) else {}
+        ),
+        "target_budget_row": target_row,
+        "target_positive_label_mass": training_target_diagnostics.get("positive_label_mass"),
+        "target_budget_ratio": target_row.get("total_budget_ratio"),
+        "target_effective_fill_budget_ratio": target_row.get("effective_fill_budget_ratio"),
+        "target_temporal_base_label_mass_fraction": target_row.get("temporal_base_label_mass_fraction"),
+        "target_residual_label_mass_fraction": target_row.get("residual_label_mass_fraction"),
+        "target_residual_positive_label_fraction": target_row.get("residual_positive_label_fraction"),
+    }
+
+
 def run_experiment_pipeline(
     config: ExperimentConfig,
     trajectories: list[torch.Tensor],
@@ -1258,6 +1361,12 @@ def run_experiment_pipeline(
                 ).aggregate_f1
             )
     shift_table = print_shift_table(shift_pairs)
+    range_residual_objective_summary = _range_residual_objective_summary(
+        learned_fill_diagnostics=learned_fill_diagnostics,
+        training_target_diagnostics=trained.target_diagnostics,
+        range_diagnostics_summary=range_diagnostics_summary,
+        compression_ratio=float(config.model.compression_ratio),
+    )
 
     dump = {
         "config": config.to_dict(),
@@ -1277,6 +1386,7 @@ def run_experiment_pipeline(
         "learned_fill_diagnostics": {
             name: _evaluation_metrics_payload(metrics) for name, metrics in learned_fill_diagnostics.items()
         },
+        "range_residual_objective_summary": range_residual_objective_summary,
         "range_objective_audit": range_objective_audit,
         "shift": shift_pairs,
         "training_history": trained.history,
@@ -1328,6 +1438,10 @@ def run_experiment_pipeline(
                 indent=2,
             )
             + "\n",
+            encoding="utf-8",
+        )
+        (out_dir / "range_residual_objective_summary.json").write_text(
+            json.dumps(range_residual_objective_summary, indent=2) + "\n",
             encoding="utf-8",
         )
         if range_objective_audit:

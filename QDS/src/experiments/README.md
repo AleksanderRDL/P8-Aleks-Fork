@@ -211,6 +211,9 @@ with random fill and oracle-label fill, so failures can be separated into
 temporal-base, learned-fill, and scoring issues. The matrix CSV also reports
 temporal-random-fill usefulness, MLQDS-vs-random-fill usefulness, and the
 oracle-fill gap so residual-fill failures are visible in compact tables.
+`range_residual_objective_summary.json` collects the same learned-fill deltas
+with the train label component mix and residual target mass split, so a single
+run can be inspected without opening the full `example_run.json`.
 `training_target_diagnostics` inside `example_run.json` records the effective
 residual-label budgets and label-mass split used by the loss, while
 `range_workload_distribution_comparison.json` compares train/selection/eval

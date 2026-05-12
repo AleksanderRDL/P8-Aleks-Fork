@@ -614,6 +614,9 @@ The first reporting cleanup pass is implemented:
   reason
 - benchmark matrix rows include temporal-random-fill usefulness,
   MLQDS-vs-random-fill usefulness, and temporal-oracle-fill usefulness gap
+- `range_residual_objective_summary.json` now combines learned-fill deltas,
+  label-component mass fractions, and residual target mass split for one-run
+  inspection
 
 ## Range Workload Generation Direction
 

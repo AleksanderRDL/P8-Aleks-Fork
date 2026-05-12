@@ -27,6 +27,7 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert "TemporalRandomFill" in out.metrics_dump["learned_fill_diagnostics"]
     assert "TemporalOracleFill" in out.metrics_dump["learned_fill_diagnostics"]
     assert "training_target_diagnostics" in out.metrics_dump
+    assert "range_residual_objective_summary" in out.metrics_dump
     assert "workload_distribution_comparison" in out.metrics_dump
     assert "RangePointF1" in out.matched_table
     assert "RangeUseful" in out.matched_table
@@ -37,10 +38,16 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert out.metrics_dump["checkpoint_selection_metric"] == "f1"
     assert out.metrics_dump["checkpoint_f1_variant"] == "range_usefulness"
     assert out.metrics_dump["checkpoint_smoothing_window"] == 1
+    residual_summary = out.metrics_dump["range_residual_objective_summary"]
+    assert residual_summary["summary_version"] == 1
+    assert "mlqds_vs_temporal_random_fill_range_usefulness" in residual_summary
+    assert "target_residual_label_mass_fraction" in residual_summary
+    assert "train_label_component_mass_fraction" in residual_summary
 
     # F1 is higher-is-better, so callers should rank with max(), not min().
     scores = [float(metrics["aggregate_f1"]) for metrics in out.metrics_dump["matched"].values()]
     assert max(scores) >= min(scores)
     assert (tmp_path / "simplified" / "ML_simplified_eval.csv").exists()
+    assert (tmp_path / "range_residual_objective_summary.json").exists()
     assert not (tmp_path / "simplified" / "ML_simplified_train.csv").exists()
     assert not (tmp_path / "simplified" / "ML_simplified.csv").exists()
