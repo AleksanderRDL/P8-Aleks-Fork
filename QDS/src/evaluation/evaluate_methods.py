@@ -21,6 +21,7 @@ from src.evaluation.metrics import (
 )
 from src.evaluation.range_usefulness import RANGE_USEFULNESS_SCHEMA_VERSION, RANGE_USEFULNESS_WEIGHTS
 from src.queries.query_executor import execute_typed_query
+from src.queries.range_geometry import segment_box_bracket_indices
 from src.queries.query_types import normalize_pure_workload_map
 
 POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
@@ -268,62 +269,13 @@ def _range_boundary_indices_for_trajectories(
     return torch.cat(boundary_indices).to(dtype=torch.long)
 
 
-def _segment_box_intersections(points_cpu: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
-    """Return true for trajectory segments that intersect the query space-time box."""
-    if points_cpu.shape[0] < 2:
-        return torch.empty((0,), dtype=torch.bool)
-    start_xyz = points_cpu[:-1, [0, 1, 2]].float()
-    end_xyz = points_cpu[1:, [0, 1, 2]].float()
-    delta = end_xyz - start_xyz
-    lows = torch.tensor(
-        [float(params["t_start"]), float(params["lat_min"]), float(params["lon_min"])],
-        dtype=torch.float32,
-    )
-    highs = torch.tensor(
-        [float(params["t_end"]), float(params["lat_max"]), float(params["lon_max"])],
-        dtype=torch.float32,
-    )
-
-    u_min = torch.zeros((start_xyz.shape[0],), dtype=torch.float32)
-    u_max = torch.ones((start_xyz.shape[0],), dtype=torch.float32)
-    valid = torch.ones((start_xyz.shape[0],), dtype=torch.bool)
-    eps = 1e-12
-    for dim in range(3):
-        dim_delta = delta[:, dim]
-        dim_start = start_xyz[:, dim]
-        parallel = torch.abs(dim_delta) <= eps
-        valid &= (~parallel) | ((dim_start >= lows[dim]) & (dim_start <= highs[dim]))
-
-        non_parallel = ~parallel
-        if bool(non_parallel.any().item()):
-            u1 = (lows[dim] - dim_start[non_parallel]) / dim_delta[non_parallel]
-            u2 = (highs[dim] - dim_start[non_parallel]) / dim_delta[non_parallel]
-            u_low = torch.minimum(u1, u2)
-            u_high = torch.maximum(u1, u2)
-            u_min[non_parallel] = torch.maximum(u_min[non_parallel], u_low)
-            u_max[non_parallel] = torch.minimum(u_max[non_parallel], u_high)
-    return valid & (u_max >= u_min) & (u_max >= 0.0) & (u_min <= 1.0)
-
-
 def _range_crossing_bracket_indices_for_trajectories(
     points_cpu: torch.Tensor,
     params: dict[str, float],
     boundaries: list[tuple[int, int]],
 ) -> torch.Tensor:
-    """Return point pairs bracketing segment-box intersections."""
-    bracket_indices: list[torch.Tensor] = []
-    for start, end in boundaries:
-        if end - start < 2:
-            continue
-        intersecting = _segment_box_intersections(points_cpu[start:end], params)
-        segment_offsets = torch.where(intersecting)[0]
-        if segment_offsets.numel() == 0:
-            continue
-        pairs = torch.stack((segment_offsets, segment_offsets + 1), dim=1).reshape(-1)
-        bracket_indices.append((torch.unique(pairs) + int(start)).detach().cpu())
-    if not bracket_indices:
-        return torch.empty((0,), dtype=torch.long)
-    return torch.unique(torch.cat(bracket_indices).to(dtype=torch.long))
+    """Return point pairs bracketing range-box boundary/pass-through crossings."""
+    return segment_box_bracket_indices(points_cpu, boundaries, params).detach().cpu()
 
 
 def _range_turn_weights_for_points(points_cpu: torch.Tensor) -> torch.Tensor:

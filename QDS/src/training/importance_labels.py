@@ -9,6 +9,7 @@ import torch
 
 from src.evaluation.range_usefulness import RANGE_USEFULNESS_WEIGHTS
 from src.queries.query_executor import execute_typed_query
+from src.queries.range_geometry import segment_box_bracket_mask
 from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
@@ -227,51 +228,6 @@ def _range_entry_exit_mask(
     return boundary_full
 
 
-def _range_crossing_bracket_mask(
-    points: torch.Tensor,
-    params: dict[str, float],
-    boundaries: list[tuple[int, int]],
-) -> torch.Tensor:
-    """Return point pairs bracketing segment-box intersections."""
-    bracket_full = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    lows = torch.tensor(
-        [float(params["t_start"]), float(params["lat_min"]), float(params["lon_min"])],
-        dtype=torch.float32,
-        device=points.device,
-    )
-    highs = torch.tensor(
-        [float(params["t_end"]), float(params["lat_max"]), float(params["lon_max"])],
-        dtype=torch.float32,
-        device=points.device,
-    )
-    for start, end in boundaries:
-        if end - start < 2:
-            continue
-        start_xyz = points[start : end - 1, [0, 1, 2]].float()
-        end_xyz = points[start + 1 : end, [0, 1, 2]].float()
-        delta = end_xyz - start_xyz
-        u_min = torch.zeros((start_xyz.shape[0],), dtype=torch.float32, device=points.device)
-        u_max = torch.ones((start_xyz.shape[0],), dtype=torch.float32, device=points.device)
-        valid = torch.ones((start_xyz.shape[0],), dtype=torch.bool, device=points.device)
-        for dim in range(3):
-            dim_delta = delta[:, dim]
-            dim_start = start_xyz[:, dim]
-            parallel = torch.abs(dim_delta) <= 1e-12
-            valid &= (~parallel) | ((dim_start >= lows[dim]) & (dim_start <= highs[dim]))
-            non_parallel = ~parallel
-            if bool(non_parallel.any().item()):
-                u1 = (lows[dim] - dim_start[non_parallel]) / dim_delta[non_parallel]
-                u2 = (highs[dim] - dim_start[non_parallel]) / dim_delta[non_parallel]
-                u_min[non_parallel] = torch.maximum(u_min[non_parallel], torch.minimum(u1, u2))
-                u_max[non_parallel] = torch.minimum(u_max[non_parallel], torch.maximum(u1, u2))
-        segment_offsets = torch.where(valid & (u_max >= u_min) & (u_max >= 0.0) & (u_min <= 1.0))[0]
-        if segment_offsets.numel() == 0:
-            continue
-        bracket_full[start + segment_offsets] = True
-        bracket_full[start + segment_offsets + 1] = True
-    return bracket_full
-
-
 def _local_shape_weights(points: torch.Tensor, global_indices: torch.Tensor) -> torch.Tensor:
     """Return range-local shape weights for one trajectory slice."""
     count = int(global_indices.numel())
@@ -352,7 +308,7 @@ def _add_range_usefulness_labels(
 ) -> None:
     """Add a local proxy for the range usefulness audit components."""
     hit_count = int(box_support.sum().item())
-    crossing_support = _range_crossing_bracket_mask(points, params, boundaries)
+    crossing_support = segment_box_bracket_mask(points, boundaries, params)
     crossing_count = int(crossing_support.sum().item())
     if hit_count <= 0 and crossing_count <= 0:
         return

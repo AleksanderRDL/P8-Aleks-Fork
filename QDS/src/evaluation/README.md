@@ -38,7 +38,7 @@ This module compares query-aware ML simplification against temporal, geometric, 
   coverage, in-query gap coverage, crossing-bracket preservation, route-change
   preservation, and range-local path-shape preservation. It is reported
   separately so it can guide objective redesign without pretending to be a
-  mathematically final target. Schema v6 weights are
+  mathematically final target. Schema v7 weights are
   `0.22/0.13/0.13/0.10/0.10/0.10/0.09/0.07/0.06` for point, ship presence,
   ship coverage, sampled entry/exit, crossing brackets, temporal span, gap,
   turn, and shape respectively.
@@ -52,10 +52,10 @@ This module compares query-aware ML simplification against temporal, geometric, 
     sparse representation of another queried ship.
   - `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true box
     crossings.
-  - `CrossingF1` scores AIS point pairs bracketing segment-box intersections,
-    including cases where a trajectory passes through the box between samples.
-    Retaining only the in-box endpoint is not treated as perfect
-    boundary-crossing context.
+  - `CrossingF1` scores AIS point pairs bracketing range-box boundary
+    crossings and between-sample pass-throughs. Fully inside segments are
+    handled by point and shape components instead of being counted as crossing
+    support.
   - `TemporalCov` scores retained in-query time span. It intentionally does
     not penalize large interior gaps when endpoints survive.
   - `GapCov` scores the largest missing run between retained in-query points,

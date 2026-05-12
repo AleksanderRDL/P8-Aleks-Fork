@@ -60,8 +60,8 @@ range usefulness audit:
 - `ShipF1`: whether ships/trajectories present in the query are still present
 - `ShipCov`: average per-hit-ship point coverage
 - `EntryExitF1`: whether range entry/exit points are retained
-- `CrossingF1`: whether AIS point pairs bracketing segment-box intersections
-  are retained
+- `CrossingF1`: whether AIS point pairs bracketing range-box boundary
+  crossings or between-sample pass-throughs are retained
 - `TemporalCov`: how much of each in-query ship time span remains covered
 - `GapCov`: whether retained in-query points avoid one large missing interior
   run
@@ -88,11 +88,10 @@ ground truth for the training objective:
 - `EntryExitF1` measures whether sampled in-box entry/exit points are retained.
   It does not interpolate true geometric boundary crossings between AIS
   samples.
-- `CrossingF1` measures retained AIS point pairs bracketing segment-box
-  intersections, including cases where a trajectory passes through the query
-  box between samples. It is closer to interpolation quality than sampled
-  `EntryExitF1`, but it still scores retained brackets rather than exact
-  crossing-time or crossing-location error.
+- `CrossingF1` measures retained AIS point pairs bracketing range-box boundary
+  crossings and between-sample pass-throughs. It is closer to interpolation
+  quality than sampled `EntryExitF1`, but it still scores retained brackets
+  rather than exact crossing-time or crossing-location error.
 - `TemporalCov` measures retained in-query time span divided by original
   in-query time span per ship. It is a useful coverage proxy, but intentionally
   does not penalize large interior gaps if endpoints are retained.
@@ -108,7 +107,7 @@ ground truth for the training objective:
 - `RangeUseful` is a weighted audit score over these components. Treat it as a
   versioned comparison and checkpoint-selection diagnostic while the objective
   is being redesigned, not as the mathematically final utility target. Schema
-  v6 weights are point `0.22`, ship presence `0.13`, ship coverage `0.13`,
+  v7 weights are point `0.22`, ship presence `0.13`, ship coverage `0.13`,
   sampled entry/exit `0.10`, crossing brackets `0.10`, temporal span `0.10`,
   gap `0.09`, turn `0.07`, and shape `0.06`.
 
@@ -292,7 +291,8 @@ they are still proxies:
   `ShipF1=1.0` hides sparse representation for one queried ship.
 - `EntryExitF1` measures sampled entry/exit support, not exact continuous
   boundary crossings.
-- `CrossingF1` now measures retained brackets for segment-box intersections.
+- `CrossingF1` now measures retained brackets for range-box boundary crossings
+  and between-sample pass-throughs.
 - `TemporalCov` rewards retained in-query span, but can miss large interior
   gaps.
 - `GapCov` now penalizes the largest missing run between retained in-query
