@@ -34,6 +34,7 @@ class RangeTrajectoryAuditSupport:
     trajectory_id: int
     start: int
     in_offsets_cpu: torch.Tensor
+    turn_weights_cpu: torch.Tensor
     full_time_span: float
     full_length_km: float
 
@@ -266,6 +267,22 @@ def _range_boundary_indices_for_trajectories(
     return torch.cat(boundary_indices).to(dtype=torch.long)
 
 
+def _range_turn_weights_for_points(points_cpu: torch.Tensor) -> torch.Tensor:
+    """Return retained-independent route-change weights for one in-query trajectory slice."""
+    count = int(points_cpu.shape[0])
+    weights = torch.zeros((count,), dtype=torch.float32)
+    if count >= 3:
+        coords = points_cpu[:, 1:3].float()
+        before = torch.linalg.vector_norm(coords[1:-1] - coords[:-2], dim=1)
+        after = torch.linalg.vector_norm(coords[2:] - coords[1:-1], dim=1)
+        shortcut = torch.linalg.vector_norm(coords[2:] - coords[:-2], dim=1)
+        curvature = torch.clamp(before + after - shortcut, min=0.0)
+        weights[1:-1] = curvature
+    if points_cpu.shape[1] >= 8:
+        weights = torch.maximum(weights, points_cpu[:, 7].float().clamp(min=0.0))
+    return weights
+
+
 def _build_range_query_audit_support(
     points_cpu: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -292,11 +309,13 @@ def _build_range_query_audit_support(
         full_span = float((times[in_offsets[-1]] - times[in_offsets[0]]).item())
         full_points = points_cpu[start + in_offsets]
         full_length = _polyline_length_km(full_points[:, 1], full_points[:, 2])
+        turn_weights = _range_turn_weights_for_points(full_points)
         trajectory_support.append(
             RangeTrajectoryAuditSupport(
                 trajectory_id=int(trajectory_id),
                 start=int(start),
                 in_offsets_cpu=in_offsets,
+                turn_weights_cpu=turn_weights.cpu(),
                 full_time_span=float(full_span),
                 full_length_km=float(full_length),
             )
@@ -377,25 +396,41 @@ def _range_ship_coverage_for_offsets(in_offsets: torch.Tensor, retained_offsets:
     return float((2.0 * recall) / (1.0 + recall))
 
 
+def _range_turn_coverage_for_mask(turn_weights: torch.Tensor, retained_local: torch.Tensor) -> float:
+    """Return weighted point-subset F1 over route-change support."""
+    turn_weights = turn_weights.to(dtype=torch.float32).clamp(min=0.0)
+    full_mass = float(turn_weights.sum().item())
+    if full_mass <= 1e-12:
+        return 1.0
+    retained_mass = float(turn_weights[retained_local].sum().item())
+    if retained_mass <= 0.0:
+        return 0.0
+    recall = retained_mass / full_mass
+    return float((2.0 * recall) / (1.0 + recall))
+
+
 def _range_trajectory_detail_scores_for_query(
     points_cpu: torch.Tensor,
     retained_cpu: torch.Tensor,
     trajectory_support: tuple[RangeTrajectoryAuditSupport, ...],
-) -> tuple[float, float, float, float]:
-    """Return query-level per-ship coverage, temporal coverage, gap coverage, and route fidelity."""
+) -> tuple[float, float, float, float, float]:
+    """Return query-level per-ship coverage, temporal, gap, turn, and route-fidelity scores."""
     ship_coverage_scores: list[float] = []
     temporal_scores: list[float] = []
     gap_scores: list[float] = []
+    turn_scores: list[float] = []
     shape_scores: list[float] = []
     times = points_cpu[:, 0]
     for support in trajectory_support:
         in_offsets = support.in_offsets_cpu
         start = int(support.start)
-        retained_offsets = in_offsets[retained_cpu[start + in_offsets]]
+        retained_local = retained_cpu[start + in_offsets]
+        retained_offsets = in_offsets[retained_local]
         if retained_offsets.numel() == 0:
             ship_coverage_scores.append(0.0)
             temporal_scores.append(0.0)
             gap_scores.append(0.0)
+            turn_scores.append(0.0)
             shape_scores.append(0.0)
             continue
 
@@ -410,6 +445,7 @@ def _range_trajectory_detail_scores_for_query(
             temporal_score = float(max(0.0, min(1.0, retained_span / support.full_time_span)))
         temporal_scores.append(temporal_score)
         gap_scores.append(_range_gap_coverage_for_offsets(in_offsets, retained_offsets))
+        turn_scores.append(_range_turn_coverage_for_mask(support.turn_weights_cpu, retained_local))
 
         if support.full_length_km <= 1e-9:
             shape_scores.append(1.0)
@@ -417,7 +453,6 @@ def _range_trajectory_detail_scores_for_query(
             shape_scores.append(0.0)
         else:
             local_points = points_cpu[start + in_offsets]
-            retained_local = retained_cpu[start + in_offsets]
             sed_sum, _sed_max, ped_sum, _ped_max, removed_count = _trajectory_sed_ped_km(
                 local_points[:, 0],
                 local_points[:, 1],
@@ -436,6 +471,7 @@ def _range_trajectory_detail_scores_for_query(
         _mean(ship_coverage_scores, default=1.0),
         _mean(temporal_scores, default=1.0),
         _mean(gap_scores, default=1.0),
+        _mean(turn_scores, default=1.0),
         _mean(shape_scores, default=1.0),
     )
 
@@ -447,7 +483,7 @@ def score_range_usefulness(
     typed_queries: list[dict],
     query_cache: EvaluationQueryCache | None = None,
 ) -> dict[str, Any]:
-    """Audit range simplification with point, ship, per-ship coverage, entry/exit, temporal, gap, and shape components.
+    """Audit range simplification with point, ship, coverage, entry/exit, temporal, gap, turn, and shape components.
 
     `range_point_f1` is the current retained in-box point metric. The combined
     `range_usefulness_score` is an audit score for comparing candidates; it is
@@ -467,6 +503,7 @@ def score_range_usefulness(
     entry_exit_scores: list[float] = []
     temporal_scores: list[float] = []
     gap_scores: list[float] = []
+    turn_scores: list[float] = []
     shape_scores: list[float] = []
 
     for query_index, query in enumerate(typed_queries):
@@ -490,7 +527,7 @@ def score_range_usefulness(
 
         entry_exit_scores.append(_point_index_subset_f1(retained_bool, support.boundary_indices_cpu))
 
-        ship_coverage, temporal_score, gap_score, shape_score = _range_trajectory_detail_scores_for_query(
+        ship_coverage, temporal_score, gap_score, turn_score, shape_score = _range_trajectory_detail_scores_for_query(
             points_cpu=points_cpu,
             retained_cpu=retained_cpu,
             trajectory_support=support.trajectories,
@@ -498,6 +535,7 @@ def score_range_usefulness(
         ship_coverage_scores.append(ship_coverage)
         temporal_scores.append(temporal_score)
         gap_scores.append(gap_score)
+        turn_scores.append(turn_score)
         shape_scores.append(shape_score)
 
     query_count = len(point_scores)
@@ -507,6 +545,7 @@ def score_range_usefulness(
     range_entry_exit_f1 = _mean(entry_exit_scores)
     range_temporal_coverage = _mean(temporal_scores)
     range_gap_coverage = _mean(gap_scores)
+    range_turn_coverage = _mean(turn_scores)
     range_shape_score = _mean(shape_scores)
     range_usefulness_score = sum(
         float(RANGE_USEFULNESS_WEIGHTS[name]) * value
@@ -517,6 +556,7 @@ def score_range_usefulness(
             ("range_entry_exit_f1", range_entry_exit_f1),
             ("range_temporal_coverage", range_temporal_coverage),
             ("range_gap_coverage", range_gap_coverage),
+            ("range_turn_coverage", range_turn_coverage),
             ("range_shape_score", range_shape_score),
         )
     )
@@ -531,6 +571,7 @@ def score_range_usefulness(
         "range_boundary_f1": float(range_entry_exit_f1),
         "range_temporal_coverage": float(range_temporal_coverage),
         "range_gap_coverage": float(range_gap_coverage),
+        "range_turn_coverage": float(range_turn_coverage),
         "range_shape_score": float(range_shape_score),
         "range_usefulness_score": float(range_usefulness_score),
         "range_usefulness_weights": dict(RANGE_USEFULNESS_WEIGHTS),
@@ -817,6 +858,7 @@ def evaluate_method(
         range_entry_exit_f1=boundary_f1,
         range_temporal_coverage=float(range_audit.get("range_temporal_coverage", 0.0)),
         range_gap_coverage=float(range_audit.get("range_gap_coverage", 0.0)),
+        range_turn_coverage=float(range_audit.get("range_turn_coverage", 0.0)),
         range_shape_score=float(range_audit.get("range_shape_score", 0.0)),
         range_usefulness_score=float(range_audit.get("range_usefulness_score", 0.0)),
         range_usefulness_schema_version=int(range_audit.get("range_usefulness_schema_version", 0) or 0),
@@ -984,7 +1026,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
 def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
     """Render detailed range usefulness audit components."""
-    col1, col2, col3, col4, col5, col6, col7, col8, col9 = 24, 14, 10, 10, 13, 13, 10, 12, 13
+    col1, col2, col3, col4, col5, col6, col7, col8, col9, col10 = 24, 14, 10, 10, 13, 13, 10, 10, 12, 13
     header = (
         f"{'Method':<{col1}}"
         f"{'RangePointF1':>{col2}}"
@@ -993,8 +1035,9 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
         f"{'EntryExitF1':>{col5}}"
         f"{'TemporalCov':>{col6}}"
         f"{'GapCov':>{col7}}"
-        f"{'ShapeScore':>{col8}}"
-        f"{'RangeUseful':>{col9}}"
+        f"{'TurnCov':>{col8}}"
+        f"{'ShapeScore':>{col9}}"
+        f"{'RangeUseful':>{col10}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -1006,8 +1049,9 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
             f"{float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1):>{col5}.6f}"
             f"{metrics.range_temporal_coverage:>{col6}.6f}"
             f"{metrics.range_gap_coverage:>{col7}.6f}"
-            f"{metrics.range_shape_score:>{col8}.6f}"
-            f"{_range_usefulness_metric(metrics):>{col9}.6f}"
+            f"{metrics.range_turn_coverage:>{col8}.6f}"
+            f"{metrics.range_shape_score:>{col9}.6f}"
+            f"{_range_usefulness_metric(metrics):>{col10}.6f}"
         )
     return "\n".join(lines)
 

@@ -35,11 +35,12 @@ This module compares query-aware ML simplification against temporal, geometric, 
   objective-redesign conclusion.
 - `RangeUseful` is a versioned audit score combining `RangePointF1`, ship
   presence, per-ship point coverage, entry/exit preservation, temporal span
-  coverage, in-query gap coverage, and range-local path-shape preservation. It
-  is reported separately so it can guide objective redesign without pretending
-  to be a mathematically final target. Schema v3 weights are
-  `0.25/0.15/0.15/0.15/0.12/0.10/0.08` for point, ship presence, ship
-  coverage, entry/exit, temporal span, gap, and shape respectively.
+  coverage, in-query gap coverage, route-change preservation, and range-local
+  path-shape preservation. It is reported separately so it can guide objective
+  redesign without pretending to be a mathematically final target. Schema v4
+  weights are `0.23/0.14/0.14/0.14/0.11/0.10/0.07/0.07` for point, ship
+  presence, ship coverage, entry/exit, temporal span, gap, turn, and shape
+  respectively.
 - `EntryExitF1` is reported separately for range workloads. It measures
   retained in-box boundary-crossing points and is a shape-preservation
   diagnostic, not part of `RangePointF1`.
@@ -55,6 +56,8 @@ This module compares query-aware ML simplification against temporal, geometric, 
   - `GapCov` scores the largest missing run between retained in-query points,
     so endpoints-only simplifications no longer look complete on straight
     tracks.
+  - `TurnCov` scores weighted coverage of route-change points inside the query,
+    using local curvature and persisted turn-score features when available.
   - `ShapeScore` scores range-local route fidelity from SED/PED-style shortcut
     error normalized by the original in-query segment scale. It is still a
     proxy, but it now penalizes geometric shortcuts more directly than retained

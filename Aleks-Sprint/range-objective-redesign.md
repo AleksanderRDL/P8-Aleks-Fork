@@ -63,6 +63,7 @@ range usefulness audit:
 - `TemporalCov`: how much of each in-query ship time span remains covered
 - `GapCov`: whether retained in-query points avoid one large missing interior
   run
+- `TurnCov`: whether high route-change points inside the query are retained
 - `ShapeScore`: range-local route fidelity from shortcut error
 - `RangeUseful`: weighted audit score over those components
 
@@ -91,13 +92,18 @@ ground truth for the training objective:
 - `GapCov` penalizes the largest missing run between retained in-query points.
   It is a first-pass continuity proxy, not a full time/distance resampling
   metric.
+- `TurnCov` scores weighted coverage of route-change points inside the query
+  using local curvature and persisted turn-score features when available. It
+  is useful for navigational interpretability, but still only measures sampled
+  route-change points rather than semantic maneuver intent.
 - `ShapeScore` measures range-local shortcut error using SED/PED-style
   fidelity. It is still a proxy, not a human route-quality metric.
 - `RangeUseful` is a weighted audit score over these components. Treat it as a
   versioned comparison and checkpoint-selection diagnostic while the objective
   is being redesigned, not as the mathematically final utility target. Schema
-  v3 weights are point `0.25`, ship presence `0.15`, ship coverage `0.15`,
-  entry/exit `0.15`, temporal span `0.12`, gap `0.10`, and shape `0.08`.
+  v4 weights are point `0.23`, ship presence `0.14`, ship coverage `0.14`,
+  entry/exit `0.14`, temporal span `0.11`, gap `0.10`, turn `0.07`, and shape
+  `0.07`.
 
 Before making these metrics central to the loss, add focused unit/property
 tests for single-ship, multi-ship, no-hit, single-point-hit, duplicate-point,
@@ -282,6 +288,7 @@ they are still proxies:
 - `GapCov` now penalizes the largest missing run between retained in-query
   points. It is a first-pass continuity proxy, not a full time/distance
   resampling metric.
+- `TurnCov` now measures weighted route-change preservation inside the query.
 - `ShapeScore` now uses range-local SED/PED-style shortcut error normalized by
   original in-query segment scale. It is more route-fidelity oriented than the
   old path-length ratio, but it remains a proxy rather than a final human
@@ -296,8 +303,8 @@ Potential future components or replacements:
   irregular AIS sampling
 - stronger per-ship interpretability, such as a minimum useful retained-point
   count or spacing-aware coverage inside each queried ship
-- turn/change-point preservation, especially heading, speed, or course changes
-  inside the query
+- stronger turn/change-point preservation, especially heading, speed, or
+  course-change semantics inside the query
 - entry/exit interpolation quality, approximating where trajectories cross the
   query boundary between AIS samples instead of only retaining sampled
   boundary-adjacent points
@@ -315,9 +322,9 @@ Therefore the redesign should follow two tracks:
 Avoid baking every navigational preference into a single hidden score too
 early. Report the sub-components alongside `RangeUseful` so it remains clear
 whether a run improved point hits, ship presence, boundary behavior, temporal
-span, gap coverage, or shape preservation. `RangeUseful` is schema-versioned;
-old and new benchmark scores should be compared through sub-components unless
-they use the same schema and weights.
+span, gap coverage, turn preservation, or shape preservation. `RangeUseful` is
+schema-versioned; old and new benchmark scores should be compared through
+sub-components unless they use the same schema and weights.
 
 ### Pretraining Position
 
@@ -652,7 +659,8 @@ Run a focused benchmark comparison between:
 
 Keep the rest of the real-usecase profile fixed. Evaluate at `0.01,0.02,0.05,0.10`
 retained ratios and compare `RangePointF1`, `RangeUseful`, `ShipF1`,
-`ShipCov`, `EntryExitF1`, `TemporalCov`, `GapCov`, and `ShapeScore`.
+`ShipCov`, `EntryExitF1`, `TemporalCov`, `GapCov`, `TurnCov`, and
+`ShapeScore`.
 
 If budget-top-k improves audit quality, repeat across seeds. If it does not,
 move to query-local set/value labels or explicit retained-set marginal-gain

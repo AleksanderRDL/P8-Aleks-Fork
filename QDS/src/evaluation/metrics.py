@@ -87,6 +87,7 @@ class MethodEvaluation:
     range_entry_exit_f1: float = 0.0
     range_temporal_coverage: float = 0.0
     range_gap_coverage: float = 0.0
+    range_turn_coverage: float = 0.0
     range_shape_score: float = 0.0
     range_usefulness_score: float = 0.0
     range_usefulness_schema_version: int = 0

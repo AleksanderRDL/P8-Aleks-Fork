@@ -660,6 +660,39 @@ def test_range_usefulness_shape_score_penalizes_curved_endpoint_shortcut() -> No
     assert 0.0 < audit["range_shape_score"] < 0.65
 
 
+def test_range_usefulness_turn_coverage_penalizes_missing_change_point() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [2.0, 0.0, 2.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 2.0,
+                "lon_min": -1.0,
+                "lon_max": 3.0,
+                "t_start": -1.0,
+                "t_end": 3.0,
+            },
+        }
+    ]
+    endpoint_retained = torch.tensor([True, False, True])
+    all_retained = torch.tensor([True, True, True])
+
+    endpoint_audit = score_range_usefulness(points, [(0, 3)], endpoint_retained, queries)
+    full_audit = score_range_usefulness(points, [(0, 3)], all_retained, queries)
+
+    assert endpoint_audit["range_turn_coverage"] == pytest.approx(0.0)
+    assert full_audit["range_turn_coverage"] == pytest.approx(1.0)
+    assert full_audit["range_usefulness_score"] > endpoint_audit["range_usefulness_score"]
+
+
 def test_range_usefulness_cache_reuses_retained_independent_support() -> None:
     points = torch.tensor(
         [
@@ -737,8 +770,9 @@ def test_range_usefulness_table_reports_audit_components() -> None:
                 range_entry_exit_f1=0.25,
                 range_temporal_coverage=0.8,
                 range_gap_coverage=0.4,
+                range_turn_coverage=0.3,
                 range_shape_score=0.6,
-                range_usefulness_score=0.549,
+                range_usefulness_score=0.53,
             )
         }
     )
@@ -747,6 +781,7 @@ def test_range_usefulness_table_reports_audit_components() -> None:
     assert "ShipF1" in table
     assert "ShipCov" in table
     assert "GapCov" in table
+    assert "TurnCov" in table
     assert "RangeUseful" in table
 
 

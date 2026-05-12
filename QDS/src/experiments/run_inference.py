@@ -451,6 +451,7 @@ def main() -> None:
                 "range_boundary_f1": m.range_entry_exit_f1,
                 "range_temporal_coverage": m.range_temporal_coverage,
                 "range_gap_coverage": m.range_gap_coverage,
+                "range_turn_coverage": m.range_turn_coverage,
                 "range_shape_score": m.range_shape_score,
                 "range_usefulness_score": m.range_usefulness_score,
                 "range_usefulness_schema_version": m.range_usefulness_schema_version,

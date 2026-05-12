@@ -245,6 +245,21 @@ def _local_shape_weights(points: torch.Tensor, global_indices: torch.Tensor) -> 
     return weights
 
 
+def _local_turn_weights(points: torch.Tensor, global_indices: torch.Tensor) -> torch.Tensor:
+    """Return range-local route-change weights for one trajectory slice."""
+    count = int(global_indices.numel())
+    weights = torch.zeros((count,), dtype=torch.float32, device=points.device)
+    if count >= 3:
+        coords = points[global_indices, 1:3].float()
+        before = torch.linalg.vector_norm(coords[1:-1] - coords[:-2], dim=1)
+        after = torch.linalg.vector_norm(coords[2:] - coords[1:-1], dim=1)
+        shortcut = torch.linalg.vector_norm(coords[2:] - coords[:-2], dim=1)
+        weights[1:-1] = torch.clamp(before + after - shortcut, min=0.0)
+    if points.shape[1] >= 8:
+        weights = torch.maximum(weights, points[global_indices, 7].float().clamp(min=0.0))
+    return weights
+
+
 def _local_gap_weights(count: int, device: torch.device) -> torch.Tensor:
     """Return interior-biased weights for range gap-coverage labels."""
     weights = torch.ones((int(count),), dtype=torch.float32, device=device)
@@ -317,6 +332,7 @@ def _add_range_usefulness_labels(
     ship_coverage_mass_per_ship = float(weights["range_ship_coverage"]) / float(ship_count)
     temporal_mass_per_ship = float(weights["range_temporal_coverage"]) / float(ship_count)
     gap_mass_per_ship = float(weights["range_gap_coverage"]) / float(ship_count)
+    turn_mass_per_ship = float(weights["range_turn_coverage"]) / float(ship_count)
     shape_mass = float(weights["range_shape_score"]) * float(ship_gain)
 
     boundary_support = _range_entry_exit_mask(box_support, boundaries)
@@ -357,6 +373,15 @@ def _add_range_usefulness_labels(
             labels[start + in_offsets[-1], type_idx] += 0.5 * temporal_mass_per_ship
 
         global_indices = start + in_offsets
+        turn_weights = _local_turn_weights(points, global_indices)
+        if float(turn_weights.sum().item()) > 1e-12:
+            _add_weighted_index_label(
+                labels,
+                global_indices,
+                type_idx,
+                turn_mass_per_ship,
+                turn_weights,
+            )
         _add_weighted_index_label(
             labels,
             global_indices,
