@@ -643,6 +643,36 @@ def _collapse_warning_summary(run_json: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
+def _target_budget_row(target_diagnostics: dict[str, Any], compression_ratio: Any) -> dict[str, Any]:
+    """Return the target-diagnostics budget row closest to the run compression ratio."""
+    rows = target_diagnostics.get("budget_rows") or []
+    if not isinstance(rows, list) or not rows:
+        return {}
+    try:
+        target_ratio = float(compression_ratio)
+    except (TypeError, ValueError):
+        last_row = rows[-1]
+        return last_row if isinstance(last_row, dict) else {}
+
+    best_row: dict[str, Any] = {}
+    best_distance = float("inf")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_ratio = row.get("total_budget_ratio")
+        if raw_ratio is None:
+            continue
+        try:
+            ratio = float(raw_ratio)
+        except (TypeError, ValueError):
+            continue
+        distance = abs(ratio - target_ratio)
+        if distance < best_distance:
+            best_distance = distance
+            best_row = row
+    return best_row
+
+
 def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) -> list[dict[str, Any]]:
     """Prebuild segmented AIS caches for all CSV sources used by the matrix."""
     if not args.cache_dir or not data_sources.csv_sources or args.no_cache_warmup:
@@ -709,6 +739,16 @@ def _row_from_run(
     model_config = (run_json or {}).get("config", {}).get("model", {})
     oracle_diagnostic = (run_json or {}).get("oracle_diagnostic") or {}
     collapse_summary = _collapse_warning_summary(run_json)
+    train_label_diagnostics = (
+        (run_json or {})
+        .get("workload_diagnostics", {})
+        .get("train", {})
+        .get("range_signal", {})
+        .get("labels", {})
+    )
+    label_mass_fraction = train_label_diagnostics.get("component_positive_label_mass_fraction", {})
+    target_diagnostics = (run_json or {}).get("training_target_diagnostics") or {}
+    target_budget_row = _target_budget_row(target_diagnostics, model_config.get("compression_ratio"))
     mlqds_f1 = mlqds.get("aggregate_f1")
     mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds.get("pure_range_f1", mlqds_f1))
     mlqds_range_usefulness = mlqds.get("range_usefulness_score")
@@ -793,6 +833,25 @@ def _row_from_run(
         "range_label_mode": model_config.get("range_label_mode"),
         "range_boundary_prior_weight": model_config.get("range_boundary_prior_weight"),
         "range_boundary_prior_enabled": bool(float(model_config.get("range_boundary_prior_weight") or 0.0) > 0.0),
+        "train_positive_label_mass": train_label_diagnostics.get("positive_label_mass"),
+        "train_label_mass_basis": train_label_diagnostics.get("component_label_mass_basis"),
+        "train_label_mass_range_point_f1": label_mass_fraction.get("range_point_f1"),
+        "train_label_mass_range_ship_f1": label_mass_fraction.get("range_ship_f1"),
+        "train_label_mass_range_ship_coverage": label_mass_fraction.get("range_ship_coverage"),
+        "train_label_mass_range_entry_exit_f1": label_mass_fraction.get("range_entry_exit_f1"),
+        "train_label_mass_range_crossing_f1": label_mass_fraction.get("range_crossing_f1"),
+        "train_label_mass_range_temporal_coverage": label_mass_fraction.get("range_temporal_coverage"),
+        "train_label_mass_range_gap_coverage": label_mass_fraction.get("range_gap_coverage"),
+        "train_label_mass_range_turn_coverage": label_mass_fraction.get("range_turn_coverage"),
+        "train_label_mass_range_shape_score": label_mass_fraction.get("range_shape_score"),
+        "train_target_positive_label_mass": target_diagnostics.get("positive_label_mass"),
+        "train_target_budget_ratio": target_budget_row.get("total_budget_ratio"),
+        "train_target_effective_fill_budget_ratio": target_budget_row.get("effective_fill_budget_ratio"),
+        "train_target_temporal_base_label_mass_fraction": target_budget_row.get(
+            "temporal_base_label_mass_fraction"
+        ),
+        "train_target_residual_label_mass_fraction": target_budget_row.get("residual_label_mass_fraction"),
+        "train_target_residual_positive_label_fraction": target_budget_row.get("residual_positive_label_fraction"),
         "oracle_kind": oracle_diagnostic.get("kind"),
         "oracle_exact_optimum": oracle_diagnostic.get("exact_optimum"),
         "float32_matmul_precision": variant.float32_matmul_precision,
@@ -837,6 +896,15 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
         "loss_objective",
         "residual_label_mode",
         "mlqds_diversity_bonus",
+        "train_label_mass_range_point_f1",
+        "train_label_mass_range_ship_coverage",
+        "train_label_mass_range_crossing_f1",
+        "train_label_mass_range_temporal_coverage",
+        "train_label_mass_range_gap_coverage",
+        "train_label_mass_range_turn_coverage",
+        "train_label_mass_range_shape_score",
+        "train_target_residual_label_mass_fraction",
+        "train_target_effective_fill_budget_ratio",
         "checkpoint_full_f1_every",
         "checkpoint_candidate_pool_size",
         "mlqds_f1",

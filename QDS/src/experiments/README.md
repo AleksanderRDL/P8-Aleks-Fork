@@ -194,6 +194,11 @@ kernel markers. If a launcher observes an abnormal exit, it marks stale
 ## Artifacts And Timing
 
 For comparisons, start with `benchmark_matrix.md` or `benchmark_matrix.csv`.
+The matrix includes train-split usefulness-label component mass fractions so
+quality deltas can be checked against the supervision mix used by that run.
+It also includes the training target residual label-mass fraction at the run
+compression ratio, which helps identify cases where the temporal base consumes
+most of the useful signal before learned fill is trained.
 For model behavior, inspect the variant `example_run.json`,
 `matched_table.txt`, `range_usefulness_table.txt`, and
 `range_workload_diagnostics.json`. `RangePointF1` is the retained in-box point

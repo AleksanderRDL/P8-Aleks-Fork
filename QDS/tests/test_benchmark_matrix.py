@@ -231,11 +231,52 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "budget_loss_temperature": 0.10,
                 "checkpoint_full_f1_every": 3,
                 "checkpoint_candidate_pool_size": 2,
+                "compression_ratio": 0.05,
             }
         },
         "oracle_diagnostic": {
             "kind": "additive_label_greedy",
             "exact_optimum": False,
+        },
+        "workload_diagnostics": {
+            "train": {
+                "range_signal": {
+                    "labels": {
+                        "positive_label_mass": 12.5,
+                        "component_label_mass_basis": "pre_clamp_component_contributions",
+                        "component_positive_label_mass_fraction": {
+                            "range_point_f1": 0.22,
+                            "range_ship_f1": 0.13,
+                            "range_ship_coverage": 0.12,
+                            "range_entry_exit_f1": 0.09,
+                            "range_crossing_f1": 0.04,
+                            "range_temporal_coverage": 0.11,
+                            "range_gap_coverage": 0.10,
+                            "range_turn_coverage": 0.08,
+                            "range_shape_score": 0.11,
+                        },
+                    }
+                }
+            }
+        },
+        "training_target_diagnostics": {
+            "positive_label_mass": 11.0,
+            "budget_rows": [
+                {
+                    "total_budget_ratio": 0.01,
+                    "effective_fill_budget_ratio": 0.008,
+                    "temporal_base_label_mass_fraction": 0.20,
+                    "residual_label_mass_fraction": 0.80,
+                    "residual_positive_label_fraction": 0.10,
+                },
+                {
+                    "total_budget_ratio": 0.05,
+                    "effective_fill_budget_ratio": 0.041,
+                    "temporal_base_label_mass_fraction": 0.35,
+                    "residual_label_mass_fraction": 0.65,
+                    "residual_positive_label_fraction": 0.20,
+                },
+            ],
         },
         "matched": {
             "MLQDS": {
@@ -314,6 +355,23 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["best_f1"] == 0.42
     assert row["range_boundary_prior_weight"] == 0.0
     assert row["range_boundary_prior_enabled"] is False
+    assert row["train_positive_label_mass"] == 12.5
+    assert row["train_label_mass_basis"] == "pre_clamp_component_contributions"
+    assert row["train_label_mass_range_point_f1"] == 0.22
+    assert row["train_label_mass_range_ship_f1"] == 0.13
+    assert row["train_label_mass_range_ship_coverage"] == 0.12
+    assert row["train_label_mass_range_entry_exit_f1"] == 0.09
+    assert row["train_label_mass_range_crossing_f1"] == 0.04
+    assert row["train_label_mass_range_temporal_coverage"] == 0.11
+    assert row["train_label_mass_range_gap_coverage"] == 0.10
+    assert row["train_label_mass_range_turn_coverage"] == 0.08
+    assert row["train_label_mass_range_shape_score"] == 0.11
+    assert row["train_target_positive_label_mass"] == 11.0
+    assert row["train_target_budget_ratio"] == 0.05
+    assert row["train_target_effective_fill_budget_ratio"] == 0.041
+    assert row["train_target_temporal_base_label_mass_fraction"] == 0.35
+    assert row["train_target_residual_label_mass_fraction"] == 0.65
+    assert row["train_target_residual_positive_label_fraction"] == 0.20
     assert row["mlqds_range_point_f1"] == 0.40
     assert row["mlqds_range_usefulness_score"] == 0.42
     assert row["mlqds_range_ship_coverage"] == 0.64
@@ -592,6 +650,7 @@ def test_matrix_markdown_table_is_compact() -> None:
     )
 
     assert "| workload | variant |" in table
+    assert "train_label_mass_range_point_f1" in table
     assert "| range | tf32 | 0 | 12.3457 |" in table
 
 
