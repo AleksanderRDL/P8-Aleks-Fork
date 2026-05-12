@@ -19,7 +19,12 @@ This module compares query-aware ML simplification against temporal, geometric, 
   to the main matched-method table.
 - `UniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
 - `DouglasPeuckerMethod` is a true recursive Douglas-Peucker baseline that keeps endpoints and repeatedly splits the current highest-error segment until the compression budget is filled.
-- `OracleMethod` is an additive-label greedy diagnostic. It uses oracle labels for the explicit workload, but it is not an exact combinatorial optimizer for final retained-set F1.
+- `OracleMethod` is an additive-label greedy diagnostic. It uses oracle labels
+  for the explicit workload, but it is not an exact combinatorial optimizer for
+  final retained-set F1 or RangeUseful. For residual-fill analysis,
+  `TemporalOracleFill` is usually the more relevant reference because it uses
+  the same temporal base as MLQDS and fills only the learned budget with oracle
+  labels.
 
 ## Metrics
 
@@ -41,7 +46,9 @@ This module compares query-aware ML simplification against temporal, geometric, 
   mathematically final target. Schema v7 weights are
   `0.22/0.13/0.13/0.10/0.10/0.10/0.09/0.07/0.06` for point, ship presence,
   ship coverage, sampled entry/exit, crossing brackets, temporal span, gap,
-  turn, and shape respectively.
+  turn, and shape respectively. Grouped by intent, those weights are point
+  coverage `0.22`, ship representation `0.26`, boundary/crossing context
+  `0.20`, temporal/continuity `0.19`, and route fidelity `0.13`.
 - `EntryExitF1` is reported separately for range workloads. It measures
   retained in-box boundary-crossing points and is a shape-preservation
   diagnostic, not part of `RangePointF1`.

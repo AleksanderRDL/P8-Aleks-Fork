@@ -17,8 +17,9 @@ from src.evaluation.evaluate_methods import (
     score_retained_mask,
 )
 from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
+from src.evaluation.range_usefulness import range_usefulness_weight_summary
 from src.simplification.mlqds_scoring import pure_workload_scores
-from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
+from src.simplification.simplify_trajectories import simplify_with_scores, simplify_with_temporal_score_hybrid
 
 
 class KeepAllMethod:
@@ -452,6 +453,14 @@ def test_oracle_method_uses_explicit_workload_head() -> None:
     assert OracleMethod(labels=labels, workload_type="range").oracle_kind == "additive_label_greedy"
 
 
+def test_score_simplifier_skips_empty_boundaries() -> None:
+    scores = torch.tensor([0.1, 0.9, 0.2], dtype=torch.float32)
+
+    retained = simplify_with_scores(scores, [(0, 0), (0, 3)], compression_ratio=0.4)
+
+    assert retained.tolist() == [True, True, True]
+
+
 def test_range_boundary_preservation_is_separate_from_range_f1() -> None:
     points = torch.tensor(
         [
@@ -854,6 +863,20 @@ def test_range_usefulness_table_reports_audit_components() -> None:
     assert "GapCov" in table
     assert "TurnCov" in table
     assert "RangeUseful" in table
+
+
+def test_range_usefulness_weight_summary_groups_current_schema() -> None:
+    summary = range_usefulness_weight_summary()
+
+    assert summary["schema_version"] == 7
+    assert summary["total_weight"] == pytest.approx(1.0)
+    group_weights = summary["group_weights"]
+    assert isinstance(group_weights, dict)
+    assert group_weights["point_statistical_coverage"] == pytest.approx(0.22)
+    assert group_weights["ship_representation"] == pytest.approx(0.26)
+    assert group_weights["boundary_context"] == pytest.approx(0.20)
+    assert group_weights["temporal_continuity"] == pytest.approx(0.19)
+    assert group_weights["route_fidelity"] == pytest.approx(0.13)
 
 
 def test_method_comparison_table_shows_close_f1_values() -> None:

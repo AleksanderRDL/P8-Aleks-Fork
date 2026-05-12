@@ -110,6 +110,9 @@ ground truth for the training objective:
   v7 weights are point `0.22`, ship presence `0.13`, ship coverage `0.13`,
   sampled entry/exit `0.10`, crossing brackets `0.10`, temporal span `0.10`,
   gap `0.09`, turn `0.07`, and shape `0.06`.
+  Grouped by intent this is statistical point coverage `0.22`, ship
+  representation `0.26`, boundary/crossing context `0.20`,
+  temporal/continuity `0.19`, and route fidelity `0.13`.
 
 Before making these metrics central to the loss, add focused unit/property
 tests for single-ship, multi-ship, no-hit, single-point-hit, duplicate-point,
@@ -617,6 +620,10 @@ The first reporting cleanup pass is implemented:
 - `range_residual_objective_summary.json` now combines learned-fill deltas,
   label-component mass fractions, and residual target mass split for one-run
   inspection
+- Oracle reporting now explicitly distinguishes additive-label greedy
+  diagnostics from exact retained-set optimization. `TemporalOracleFill` is
+  the most relevant residual-fill reference because it uses the same temporal
+  base as MLQDS and fills only the learned budget with oracle labels.
 
 ## Range Workload Generation Direction
 

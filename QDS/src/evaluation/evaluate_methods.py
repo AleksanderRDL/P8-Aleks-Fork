@@ -19,7 +19,11 @@ from src.evaluation.metrics import (
     compute_length_preservation,
     f1_score,
 )
-from src.evaluation.range_usefulness import RANGE_USEFULNESS_SCHEMA_VERSION, RANGE_USEFULNESS_WEIGHTS
+from src.evaluation.range_usefulness import (
+    RANGE_USEFULNESS_SCHEMA_VERSION,
+    RANGE_USEFULNESS_WEIGHTS,
+    range_usefulness_weight_summary,
+)
 from src.queries.query_executor import execute_typed_query
 from src.queries.range_geometry import segment_box_bracket_indices
 from src.queries.query_types import normalize_pure_workload_map
@@ -599,6 +603,7 @@ def score_range_usefulness(
         "range_shape_score": float(range_shape_score),
         "range_usefulness_score": float(range_usefulness_score),
         "range_usefulness_weights": dict(RANGE_USEFULNESS_WEIGHTS),
+        "range_usefulness_weight_summary": range_usefulness_weight_summary(),
     }
 
 

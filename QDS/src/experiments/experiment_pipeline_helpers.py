@@ -43,6 +43,7 @@ from src.evaluation.evaluate_methods import (
     score_retained_mask,
 )
 from src.evaluation.metrics import MethodEvaluation
+from src.evaluation.range_usefulness import range_usefulness_weight_summary
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
@@ -842,6 +843,11 @@ def _range_residual_objective_summary(
             bool(usefulness_delta > 0.0) if usefulness_delta is not None else None
         ),
         "learned_fill_beats_temporal_random_point_f1": bool(point_delta > 0.0) if point_delta is not None else None,
+        "oracle_notes": {
+            "temporal_oracle_fill_kind": "temporal_base_plus_additive_label_fill",
+            "exact_optimum": False,
+            "purpose": "diagnostic upper reference for learned residual fill, not exact retained-set RangeUseful optimum",
+        },
         "train_positive_label_mass": train_labels.get("positive_label_mass") if isinstance(train_labels, dict) else None,
         "train_label_component_mass_basis": (
             train_labels.get("component_label_mass_basis") if isinstance(train_labels, dict) else None
@@ -1397,6 +1403,7 @@ def run_experiment_pipeline(
         "best_f1": trained.best_f1,
         "checkpoint_selection_metric": config.model.checkpoint_selection_metric,
         "checkpoint_f1_variant": config.model.checkpoint_f1_variant,
+        "range_usefulness_weight_summary": range_usefulness_weight_summary(),
         "checkpoint_smoothing_window": config.model.checkpoint_smoothing_window,
         "mlqds_score_mode": config.model.mlqds_score_mode,
         "mlqds_score_temperature": config.model.mlqds_score_temperature,
@@ -1404,6 +1411,8 @@ def run_experiment_pipeline(
         "oracle_diagnostic": {
             "kind": "additive_label_greedy",
             "exact_optimum": False,
+            "retained_mask_constructor": "per_trajectory_topk_with_endpoints",
+            "purpose": "diagnostic label-greedy reference, not exact retained-set RangeUseful optimum",
         },
         "range_label_mode": config.model.range_label_mode,
         "range_boundary_prior_weight": config.model.range_boundary_prior_weight,

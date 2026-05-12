@@ -51,7 +51,10 @@ def simplify_with_scores(
     for tid, (start, end) in enumerate(boundaries):
         local = scores[start:end]
         n = local.numel()
+        if n <= 0:
+            continue
         k = max(2, int(math.ceil(compression_ratio * n)))
+        k = min(k, n)
         idx = deterministic_topk_with_jitter(local, k=k, trajectory_id=tid)
         retained[start:end][idx] = True
         retained[start] = True
