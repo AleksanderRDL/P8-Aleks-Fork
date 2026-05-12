@@ -193,6 +193,8 @@ residual-label budgets and label-mass split used by the loss, while
 `range_workload_distribution_comparison.json` compares train/selection/eval
 query coverage and hit distributions. `collapse_warning_any` means any epoch
 collapsed; `best_epoch_collapse_warning` is the selected-checkpoint signal.
+`best_selection_score` is the canonical checkpoint score, while `best_f1` is
+kept for compatibility with older artifacts.
 Use `--range_audit_compression_ratios 0.01,0.02,0.05,0.10` when you want the
 same range-usefulness components rerun across multiple retained-point budgets;
 it is disabled by default because it reruns method evaluation.

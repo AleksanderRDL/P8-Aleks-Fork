@@ -235,6 +235,8 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
             },
         },
         "best_epoch": 2,
+        "best_selection_score": 0.42,
+        "best_f1": 0.42,
         "training_history": [
             {"epoch": 0.0, "pred_std": 0.0, "collapse_warning": 1.0},
             {"epoch": 1.0, "pred_std": 0.2},
@@ -277,6 +279,8 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["loss_objective"] == "budget_topk"
     assert row["budget_loss_ratios"] == [0.01, 0.02, 0.05, 0.10]
     assert row["budget_loss_temperature"] == 0.10
+    assert row["best_selection_score"] == 0.42
+    assert row["best_f1"] == 0.42
     assert row["range_boundary_prior_weight"] == 0.0
     assert row["range_boundary_prior_enabled"] is False
     assert row["mlqds_range_point_f1"] == 0.40

@@ -615,7 +615,7 @@ def test_range_usefulness_shape_score_penalizes_curved_endpoint_shortcut() -> No
     audit = score_range_usefulness(points, [(0, 3)], retained, queries)
 
     assert audit["range_temporal_coverage"] == pytest.approx(1.0)
-    assert 0.0 < audit["range_shape_score"] < 0.8
+    assert 0.0 < audit["range_shape_score"] < 0.65
 
 
 def test_range_usefulness_cache_reuses_retained_independent_support() -> None:

@@ -72,8 +72,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   ablation. `pointwise_loss_weight` remains an auxiliary BCE term for both
   objectives.
 - The configured epoch count is used literally, with a minimum of 1 epoch. The
-  returned model is restored to the best diagnostic epoch; by default that means
-  held-out final query F1.
+  returned model is restored to the best diagnostic epoch. `best_selection_score`
+  is the canonical selected validation score; `best_f1` remains as a legacy
+  compatibility alias.
 - `checkpoint_f1_variant="range_usefulness"` is the default selection target
   for range training because it matches the range-local usefulness objective.
   `"answer"` and `"combined"` remain legacy diagnostics for explicit ablations.

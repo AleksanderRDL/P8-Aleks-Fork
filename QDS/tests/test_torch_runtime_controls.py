@@ -294,6 +294,7 @@ def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
             "epoch_time_max_seconds": 3.0,
             "peak_allocated_mb": 123.0,
             "peak_reserved_mb": 256.0,
+            "best_selection_score": 0.4,
             "best_f1": 0.4,
             "mlqds_aggregate_f1": 0.5,
             "mlqds_range_usefulness_score": None,

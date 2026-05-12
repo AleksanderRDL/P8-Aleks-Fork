@@ -375,8 +375,16 @@ class TrainingOutputs:
     epochs_trained: int = 0
     best_epoch: int = 0
     best_loss: float = float("inf")
+    best_selection_score: float = 0.0
     best_f1: float = 0.0
     target_diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Keep legacy best_f1 and explicit best_selection_score in sync."""
+        if self.best_selection_score == 0.0 and self.best_f1 != 0.0:
+            self.best_selection_score = float(self.best_f1)
+        elif self.best_f1 == 0.0 and self.best_selection_score != 0.0:
+            self.best_f1 = float(self.best_selection_score)
 
 
 def _kendall_tau(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -1052,7 +1060,7 @@ def train_model(
     selection_history: list[float] = []
     best_selection = float("-inf")
     best_loss = float("inf")
-    best_f1 = 0.0
+    best_selection_score = 0.0
     best_epoch = 0
     best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
@@ -1429,7 +1437,7 @@ def train_model(
             if is_new_best_model:
                 best_selection = float(stats["selection_score_smoothed"])
                 best_loss = stats["loss"]
-                best_f1 = float(stats.get("val_selection_score", best_f1))
+                best_selection_score = float(stats.get("val_selection_score", best_selection_score))
                 best_epoch = epoch + 1
                 best_state_dict = _model_state_on_cpu(model)
 
@@ -1467,7 +1475,8 @@ def train_model(
         model.load_state_dict(best_state_dict)
         print(
             f"  [{run_tag}] restored best diagnostic epoch {best_epoch}/{epochs_trained} "
-            f"(selection={best_selection:+.3f}, loss={best_loss:.8f}, val_selection_score={best_f1:.6f})",
+            f"(selection={best_selection:+.3f}, loss={best_loss:.8f}, "
+            f"val_selection_score={best_selection_score:.6f})",
             flush=True,
         )
     return TrainingOutputs(
@@ -1479,6 +1488,7 @@ def train_model(
         epochs_trained=epochs_trained,
         best_epoch=best_epoch,
         best_loss=best_loss,
-        best_f1=best_f1,
+        best_selection_score=best_selection_score,
+        best_f1=best_selection_score,
         target_diagnostics=target_diagnostics,
     )

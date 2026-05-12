@@ -37,6 +37,25 @@ def test_selection_score_penalizes_collapsed_predictions() -> None:
     assert _selection_score(avg_tau=0.0, pred_std=0.0) < _selection_score(avg_tau=-0.05, pred_std=0.01)
 
 
+def test_training_outputs_keeps_best_f1_compatibility_alias() -> None:
+    outputs = TrainingOutputs(
+        model=TrajectoryQDSModel(point_dim=7, query_dim=4, embed_dim=8, num_heads=2, num_layers=1),
+        scaler=FeatureScaler(
+            point_min=torch.zeros(7),
+            point_max=torch.ones(7),
+            query_min=torch.zeros(4),
+            query_max=torch.ones(4),
+        ),
+        labels=torch.zeros((0, 4)),
+        labelled_mask=torch.zeros((0, 4), dtype=torch.bool),
+        history=[],
+        best_selection_score=0.42,
+    )
+
+    assert outputs.best_f1 == pytest.approx(0.42)
+    assert outputs.best_selection_score == pytest.approx(0.42)
+
+
 def test_temporal_residual_budget_ratios_match_learned_fill_budget() -> None:
     cfg = build_experiment_config(
         compression_ratio=0.05,
@@ -295,6 +314,7 @@ def test_training_records_validation_selection_score() -> None:
     assert all("val_range_usefulness" in row for row in f1_rows)
     assert all("val_query_f1" not in row for row in f1_rows)
     assert all("selection_score" not in row for row in out.history if "val_selection_score" not in row)
+    assert out.best_selection_score == pytest.approx(max(row["val_selection_score"] for row in f1_rows))
     assert out.best_f1 == pytest.approx(max(row["val_selection_score"] for row in f1_rows))
 
 

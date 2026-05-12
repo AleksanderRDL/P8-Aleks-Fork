@@ -13,6 +13,7 @@ from src.evaluation.baselines import Method
 from src.evaluation.metrics import (
     MethodEvaluation,
     _polyline_length_km,
+    _trajectory_sed_ped_km,
     clustering_f1,
     compute_geometric_distortion,
     compute_length_preservation,
@@ -351,7 +352,7 @@ def _range_temporal_and_shape_scores_for_query(
     retained_cpu: torch.Tensor,
     trajectory_support: tuple[RangeTrajectoryAuditSupport, ...],
 ) -> tuple[float, float]:
-    """Return query-level temporal coverage and local path-length preservation."""
+    """Return query-level temporal coverage and local route fidelity."""
     temporal_scores: list[float] = []
     shape_scores: list[float] = []
     times = points_cpu[:, 0]
@@ -365,21 +366,34 @@ def _range_temporal_and_shape_scores_for_query(
             continue
 
         if support.full_time_span <= 1e-9:
-            temporal_scores.append(1.0)
+            temporal_score = 1.0
         elif retained_offsets.numel() < 2:
-            temporal_scores.append(0.0)
+            temporal_score = 0.0
         else:
             retained_span = float((times[start + retained_offsets[-1]] - times[start + retained_offsets[0]]).item())
-            temporal_scores.append(float(max(0.0, min(1.0, retained_span / support.full_time_span))))
+            temporal_score = float(max(0.0, min(1.0, retained_span / support.full_time_span)))
+        temporal_scores.append(temporal_score)
 
         if support.full_length_km <= 1e-9:
             shape_scores.append(1.0)
         elif retained_offsets.numel() < 2:
             shape_scores.append(0.0)
         else:
-            retained_points = points_cpu[start + retained_offsets]
-            retained_length = _polyline_length_km(retained_points[:, 1], retained_points[:, 2])
-            shape_scores.append(float(max(0.0, min(1.0, retained_length / support.full_length_km))))
+            local_points = points_cpu[start + in_offsets]
+            retained_local = retained_cpu[start + in_offsets]
+            sed_sum, _sed_max, ped_sum, _ped_max, removed_count = _trajectory_sed_ped_km(
+                local_points[:, 0],
+                local_points[:, 1],
+                local_points[:, 2],
+                retained_local,
+            )
+            if removed_count <= 0:
+                fidelity = 1.0
+            else:
+                avg_error_km = (sed_sum + ped_sum) / float(2 * removed_count)
+                avg_segment_km = support.full_length_km / float(max(1, int(in_offsets.numel()) - 1))
+                fidelity = 1.0 / (1.0 + avg_error_km / max(avg_segment_km, 1e-6))
+            shape_scores.append(float(max(0.0, min(1.0, temporal_score * fidelity))))
 
     return _mean(temporal_scores, default=1.0), _mean(shape_scores, default=1.0)
 

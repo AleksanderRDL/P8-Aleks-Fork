@@ -264,13 +264,16 @@ they are still proxies:
   boundary crossings.
 - `TemporalCov` rewards retained in-query span, but can miss large interior
   gaps.
-- `ShapeScore` currently rewards retained path-length coverage; it is not a
-  full geometric route-fidelity metric.
+- `ShapeScore` now uses range-local SED/PED-style shortcut error normalized by
+  original in-query segment scale. It is more route-fidelity oriented than the
+  old path-length ratio, but it remains a proxy rather than a final human
+  interpretability metric.
 
 Potential future components or replacements:
 
-- route-fidelity error inside the query, such as local SED/PED or distance from
-  original in-query points to the simplified in-query polyline
+- further route-fidelity refinements inside the query, such as stronger
+  weighting of local SED/PED errors or distance from original in-query points
+  to the simplified in-query polyline
 - gap coverage, which penalizes large time or distance gaps even when first and
   last in-query points are retained
 - per-ship minimum interpretability, which rewards enough retained points per

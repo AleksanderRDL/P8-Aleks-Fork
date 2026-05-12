@@ -47,8 +47,10 @@ This module compares query-aware ML simplification against temporal, geometric, 
     crossings.
   - `TemporalCov` scores retained in-query time span; it does not yet penalize
     large interior gaps when endpoints survive.
-  - `ShapeScore` scores local path-length preservation; it is cheaper than
-    local SED/PED and should be treated as a proxy.
+  - `ShapeScore` scores range-local route fidelity from SED/PED-style shortcut
+    error normalized by the original in-query segment scale. It is still a
+    proxy, but it now penalizes geometric shortcuts more directly than retained
+    path-length ratio.
 - kNN, similarity, and clustering queries report pure answer-set agreement as `AnswerF1`; `CombinedF1` additionally multiplies answer agreement by retained support-point quality for diagnostic comparison.
 - `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.
 - `clustering_f1(original_labels, simplified_labels)` - F1 over same-cluster trajectory co-membership pairs, ignoring noise label `-1`.

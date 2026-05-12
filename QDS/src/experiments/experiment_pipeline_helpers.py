@@ -1082,6 +1082,7 @@ def run_experiment_pipeline(
         "training_target_diagnostics": trained.target_diagnostics,
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
+        "best_selection_score": trained.best_selection_score,
         "best_f1": trained.best_f1,
         "checkpoint_selection_metric": config.model.checkpoint_selection_metric,
         "checkpoint_f1_variant": config.model.checkpoint_f1_variant,
