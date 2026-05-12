@@ -151,14 +151,14 @@ fi
 csv_abs="$(abs_path "$CSV_PATH")"
 if [[ -d "$csv_abs" ]]; then
   csv_count="$(find "$csv_abs" -maxdepth 1 -type f -iname '*.csv' | wc -l)"
-  if [[ "$csv_count" -ge 2 ]]; then
-    ok "cleaned CSV directory has at least two CSV files: $csv_abs ($csv_count files)"
+  if [[ "$csv_count" -ge 3 ]]; then
+    ok "cleaned CSV directory has at least three CSV files: $csv_abs ($csv_count files)"
   else
-    fail "cleaned CSV directory needs at least two CSV files: $csv_abs ($csv_count files found)"
+    fail "cleaned CSV directory needs at least three CSV files: $csv_abs ($csv_count files found)"
   fi
 elif [[ -f "$csv_abs" ]]; then
   ok "cleaned CSV file exists: $csv_abs"
-  warn "range real-usecase profile normally expects a directory with two cleaned CSV days"
+  warn "range real-usecase profile normally expects a directory with three cleaned CSV days"
 else
   fail "cleaned CSV path does not exist: $csv_abs"
 fi
@@ -206,7 +206,7 @@ if [[ -r /proc/meminfo ]]; then
   if is_positive_int "$MIN_AVAILABLE_RAM_GB"; then
     min_ram_kb=$((MIN_AVAILABLE_RAM_GB * 1024 * 1024))
     if [[ "${mem_available_kb:-0}" -lt "$min_ram_kb" ]]; then
-      warn "available RAM is below ${MIN_AVAILABLE_RAM_GB}GB; two-day range benchmarks may hit host-memory pressure"
+      warn "available RAM is below ${MIN_AVAILABLE_RAM_GB}GB; three-day range benchmarks may hit host-memory pressure"
     fi
   else
     fail "--min-ram-gb must be a positive integer: $MIN_AVAILABLE_RAM_GB"

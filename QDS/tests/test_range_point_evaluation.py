@@ -62,6 +62,8 @@ def test_range_evaluation_scores_point_hits_not_trajectory_presence() -> None:
 
     assert result.per_type_f1["range"] == pytest.approx(0.4)
     assert result.aggregate_f1 == pytest.approx(0.4)
+    assert result.range_point_f1 == pytest.approx(0.4)
+    assert 0.0 <= result.range_usefulness_score <= 1.0
 
 
 def test_range_evaluation_counts_duplicate_rows_as_distinct_point_hits() -> None:
@@ -98,3 +100,4 @@ def test_range_evaluation_counts_duplicate_rows_as_distinct_point_hits() -> None
 
     assert result.per_type_f1["range"] == pytest.approx(2.0 / 3.0)
     assert result.aggregate_f1 == pytest.approx(2.0 / 3.0)
+    assert result.range_point_f1 == pytest.approx(2.0 / 3.0)

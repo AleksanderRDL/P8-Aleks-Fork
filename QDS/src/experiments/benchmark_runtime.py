@@ -302,7 +302,13 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             "compression_ratio": payload.get("compression_ratio"),
             "avg_length_preserved": payload.get("avg_length_preserved"),
             "combined_query_shape_score": payload.get("combined_query_shape_score"),
+            "range_point_f1": payload.get("range_point_f1"),
+            "range_ship_f1": payload.get("range_ship_f1"),
+            "range_entry_exit_f1": payload.get("range_entry_exit_f1"),
             "range_boundary_f1": payload.get("range_boundary_f1"),
+            "range_temporal_coverage": payload.get("range_temporal_coverage"),
+            "range_shape_score": payload.get("range_shape_score"),
+            "range_usefulness_score": payload.get("range_usefulness_score"),
         }
     config = run_json.get("config", {})
     model_config = config.get("model", {}) if isinstance(config, dict) else {}
@@ -391,6 +397,9 @@ def _batch_size_sweep_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any
                 "peak_reserved_mb": training_memory.get("max_reserved_mb"),
                 "best_f1": metrics.get("best_f1"),
                 "mlqds_aggregate_f1": mlqds.get("aggregate_f1") if isinstance(mlqds, dict) else None,
+                "mlqds_range_usefulness_score": (
+                    mlqds.get("range_usefulness_score") if isinstance(mlqds, dict) else None
+                ),
             }
         )
     return rows

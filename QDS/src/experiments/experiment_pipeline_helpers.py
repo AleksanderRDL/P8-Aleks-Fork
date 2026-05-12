@@ -27,6 +27,7 @@ def _phase(name: str):
 from src.data.trajectory_dataset import TrajectoryDataset
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
+    Method,
     MLQDSMethod,
     OracleMethod,
     UniformTemporalMethod,
@@ -36,9 +37,11 @@ from src.evaluation.evaluate_methods import (
     evaluate_method,
     print_geometric_distortion_table,
     print_method_comparison_table,
+    print_range_usefulness_table,
     print_shift_table,
     score_retained_mask,
 )
+from src.evaluation.metrics import MethodEvaluation
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
@@ -63,6 +66,8 @@ class ExperimentOutputs:
     shift_table: str
     metrics_dump: dict
     geometric_table: str = ""
+    range_usefulness_table: str = ""
+    range_objective_audit_table: str = ""
 
 
 @dataclass
@@ -327,6 +332,7 @@ def _range_signal_diagnostics(
     workload_map: dict[str, float],
     compression_ratio: float,
     seed: int,
+    range_label_mode: str = "usefulness",
     range_boundary_prior_weight: float = 0.0,
     runtime_cache: RangeRuntimeCache | None = None,
     cache_typed_queries: list[dict[str, Any]] | None = None,
@@ -335,6 +341,7 @@ def _range_signal_diagnostics(
     if not range_queries:
         return {
             "range_query_count": 0,
+            "range_label_mode": str(range_label_mode),
             "labels": compute_range_label_diagnostics(
                 torch.zeros((0, 4), dtype=torch.float32),
                 torch.zeros((0, 4), dtype=torch.bool),
@@ -351,6 +358,7 @@ def _range_signal_diagnostics(
         boundaries=boundaries,
         typed_queries=range_queries,
         seed=seed,
+        range_label_mode=range_label_mode,
         range_boundary_prior_weight=range_boundary_prior_weight,
     )
     if runtime_cache is not None:
@@ -358,15 +366,7 @@ def _range_signal_diagnostics(
         runtime_cache.labelled_mask = labelled_mask
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
     oracle_labels = labels
-    if float(range_boundary_prior_weight) > 0.0:
-        oracle_labels, _ = compute_typed_importance_labels(
-            points=points,
-            boundaries=boundaries,
-            typed_queries=range_queries,
-            seed=seed,
-            range_boundary_prior_weight=0.0,
-        )
-    methods = [
+    methods: list[Method] = [
         UniformTemporalMethod(),
         DouglasPeuckerMethod(),
         OracleMethod(labels=oracle_labels, workload_type="range"),
@@ -406,7 +406,8 @@ def _range_signal_diagnostics(
         "range_workload_weight": float(range_weight),
         "range_boundary_prior_weight": float(range_boundary_prior_weight),
         "range_boundary_prior_enabled": bool(float(range_boundary_prior_weight) > 0.0),
-        "oracle_label_mode": "pure_range_point_f1",
+        "range_label_mode": str(range_label_mode),
+        "oracle_label_mode": str(range_label_mode),
         "oracle_kind": "additive_label_greedy",
         "oracle_exact_optimum": False,
         "labels": label_diagnostics,
@@ -448,6 +449,7 @@ def _range_workload_diagnostics(
         workload_map=workload_map,
         compression_ratio=config.model.compression_ratio,
         seed=seed,
+        range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
         range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
         runtime_cache=runtime_cache,
         cache_typed_queries=workload.typed_queries if is_pure_range_workload else None,
@@ -461,6 +463,38 @@ def _range_workload_diagnostics(
     return summary, rows
 
 
+def _range_audit_ratios(config: ExperimentConfig) -> list[float]:
+    """Return configured multi-budget range-audit ratios, deduped and sorted."""
+    raw = getattr(config.model, "range_audit_compression_ratios", []) or []
+    return sorted({float(value) for value in raw if 0.0 < float(value) <= 1.0})
+
+
+def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
+    """Serialize method metrics with explicit range aliases."""
+    return {
+        "aggregate_f1": metrics.aggregate_f1,
+        "per_type_f1": metrics.per_type_f1,
+        "compression_ratio": metrics.compression_ratio,
+        "latency_ms": metrics.latency_ms,
+        "avg_retained_point_gap": metrics.avg_retained_point_gap,
+        "avg_retained_point_gap_norm": metrics.avg_retained_point_gap_norm,
+        "max_retained_point_gap": metrics.max_retained_point_gap,
+        "geometric_distortion": metrics.geometric_distortion,
+        "avg_length_preserved": metrics.avg_length_preserved,
+        "avg_length_loss": metrics.avg_length_loss,
+        "combined_query_shape_score": metrics.combined_query_shape_score,
+        "range_point_f1": metrics.range_point_f1,
+        "pure_range_f1": metrics.range_point_f1,
+        "range_ship_f1": metrics.range_ship_f1,
+        "range_entry_exit_f1": metrics.range_entry_exit_f1,
+        "range_boundary_f1": metrics.range_entry_exit_f1,
+        "range_temporal_coverage": metrics.range_temporal_coverage,
+        "range_shape_score": metrics.range_shape_score,
+        "range_usefulness_score": metrics.range_usefulness_score,
+        "range_audit": metrics.range_audit,
+    }
+
+
 def run_experiment_pipeline(
     config: ExperimentConfig,
     trajectories: list[torch.Tensor],
@@ -469,6 +503,7 @@ def run_experiment_pipeline(
     save_queries_dir: str | None = None,
     save_simplified_dir: str | None = None,
     trajectory_mmsis: list[int] | None = None,
+    validation_trajectories: list[torch.Tensor] | None = None,
     eval_trajectories: list[torch.Tensor] | None = None,
     eval_trajectory_mmsis: list[int] | None = None,
     data_audit: dict[str, Any] | None = None,
@@ -482,8 +517,14 @@ def run_experiment_pipeline(
             flush=True,
         )
     else:
+        validation_part = (
+            f", validation={len(validation_trajectories)} trajectories"
+            if validation_trajectories is not None
+            else ""
+        )
         print(
-            f"[pipeline] train={len(trajectories)} trajectories, eval={len(eval_trajectories)} trajectories, "
+            f"[pipeline] train={len(trajectories)} trajectories{validation_part}, "
+            f"eval={len(eval_trajectories)} trajectories, "
             f"workload={_workload_name(eval_workload_map)}",
             flush=True,
         )
@@ -523,7 +564,9 @@ def run_experiment_pipeline(
             test_traj = eval_trajectories
             train_mmsis = trajectory_mmsis
             test_mmsis = eval_trajectory_mmsis
-            if needs_validation_f1:
+            if validation_trajectories is not None:
+                selection_traj = validation_trajectories if needs_validation_f1 else None
+            elif needs_validation_f1:
                 n = len(train_traj)
                 g = torch.Generator().manual_seed(int(seeds.split_seed))
                 perm = torch.randperm(n, generator=g).tolist()
@@ -758,7 +801,8 @@ def run_experiment_pipeline(
         DouglasPeuckerMethod(),
     ]
 
-    matched: dict[str, Any] = {}
+    matched: dict[str, MethodEvaluation] = {}
+    oracle_method: OracleMethod | None = None
     save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
         eval_query_cache = (
@@ -793,12 +837,13 @@ def run_experiment_pipeline(
                 boundaries=test_boundaries,
                 typed_queries=eval_workload.typed_queries,
                 seed=seeds.eval_query_seed,
+                range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
                 range_boundary_prior_weight=0.0,
             )
-            oracle = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_workload_map))
-            with _phase(f"  eval {oracle.name}"):
-                matched[oracle.name] = evaluate_method(
-                    method=oracle,
+            oracle_method = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_workload_map))
+            with _phase(f"  eval {oracle_method.name}"):
+                matched[oracle_method.name] = evaluate_method(
+                    method=oracle_method,
                     points=test_points,
                     boundaries=test_boundaries,
                     typed_queries=eval_workload.typed_queries,
@@ -809,6 +854,38 @@ def run_experiment_pipeline(
 
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
+    range_usefulness_table = print_range_usefulness_table(matched)
+    range_objective_audit: dict[str, dict[str, Any]] = {}
+    range_objective_audit_table = ""
+    audit_ratios = _range_audit_ratios(config)
+    if audit_ratios:
+        audit_methods = [*methods]
+        if oracle_method is not None:
+            audit_methods.append(oracle_method)
+        audit_sections: list[str] = []
+        with _phase("range-objective-audit"):
+            for ratio in audit_ratios:
+                if abs(float(ratio) - float(config.model.compression_ratio)) <= 1e-9:
+                    ratio_results = matched
+                else:
+                    ratio_results: dict[str, MethodEvaluation] = {}
+                    for method in audit_methods:
+                        with _phase(f"  audit {method.name} ratio={ratio:.4f}"):
+                            ratio_results[method.name] = evaluate_method(
+                                method=method,
+                                points=test_points,
+                                boundaries=test_boundaries,
+                                typed_queries=eval_workload.typed_queries,
+                                workload_map=eval_workload_map,
+                                compression_ratio=float(ratio),
+                                query_cache=eval_query_cache,
+                            )
+                ratio_key = f"{float(ratio):.4f}"
+                range_objective_audit[ratio_key] = {
+                    name: _evaluation_metrics_payload(metrics) for name, metrics in ratio_results.items()
+                }
+                audit_sections.append(f"compression_ratio={ratio_key}\n{print_range_usefulness_table(ratio_results)}")
+        range_objective_audit_table = "\n\n".join(audit_sections)
 
     with _phase("evaluate-shift"):
         train_name = _workload_name(train_workload_map)
@@ -861,24 +938,8 @@ def run_experiment_pipeline(
             "eval": eval_workload.generation_diagnostics,
             "selection": selection_workload.generation_diagnostics if selection_workload is not None else None,
         },
-        "matched": {
-            name: {
-                "aggregate_f1": m.aggregate_f1,
-                "per_type_f1": m.per_type_f1,
-                "compression_ratio": m.compression_ratio,
-                "latency_ms": m.latency_ms,
-                "avg_retained_point_gap": m.avg_retained_point_gap,
-                "avg_retained_point_gap_norm": m.avg_retained_point_gap_norm,
-                "max_retained_point_gap": m.max_retained_point_gap,
-                "geometric_distortion": m.geometric_distortion,
-                "avg_length_preserved": m.avg_length_preserved,
-                "avg_length_loss": m.avg_length_loss,
-                "combined_query_shape_score": m.combined_query_shape_score,
-                "pure_range_f1": m.per_type_f1.get("range", 0.0),
-                "range_boundary_f1": m.range_boundary_f1,
-            }
-            for name, m in matched.items()
-        },
+        "matched": {name: _evaluation_metrics_payload(m) for name, m in matched.items()},
+        "range_objective_audit": range_objective_audit,
         "shift": shift_pairs,
         "training_history": trained.history,
         "best_epoch": trained.best_epoch,
@@ -894,6 +955,7 @@ def run_experiment_pipeline(
             "kind": "additive_label_greedy",
             "exact_optimum": False,
         },
+        "range_label_mode": config.model.range_label_mode,
         "range_boundary_prior_weight": config.model.range_boundary_prior_weight,
         "range_boundary_prior_enabled": config.model.range_boundary_prior_weight > 0.0,
         "data_audit": data_audit,
@@ -913,6 +975,16 @@ def run_experiment_pipeline(
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+        (out_dir / "range_usefulness_table.txt").write_text(range_usefulness_table + "\n", encoding="utf-8")
+        if range_objective_audit:
+            (out_dir / "range_objective_audit.json").write_text(
+                json.dumps(range_objective_audit, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (out_dir / "range_objective_audit_table.txt").write_text(
+                range_objective_audit_table + "\n",
+                encoding="utf-8",
+            )
         (out_dir / "range_workload_diagnostics.json").write_text(
             json.dumps(range_diagnostics_summary, indent=2) + "\n",
             encoding="utf-8",
@@ -972,6 +1044,8 @@ def run_experiment_pipeline(
         shift_table=shift_table,
         metrics_dump=dump,
         geometric_table=geometric_table,
+        range_usefulness_table=range_usefulness_table,
+        range_objective_audit_table=range_objective_audit_table,
     )
 
 

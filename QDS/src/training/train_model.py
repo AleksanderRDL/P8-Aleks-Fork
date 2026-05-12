@@ -118,6 +118,150 @@ def _balanced_pointwise_loss(
     return F.binary_cross_entropy_with_logits(pred[pointwise_idx], target[pointwise_idx].clamp(0.0, 1.0))
 
 
+def _budget_topk_recall_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    budget_ratios: tuple[float, ...],
+    temperature: float,
+) -> torch.Tensor:
+    """Differentiable retained-budget label-mass loss for one trajectory window.
+
+    The loss approximates the final simplification decision more directly than
+    pairwise ranking: for each configured retained-point budget, it asks how
+    much target mass would be captured by the model's soft top-k points.
+    """
+    valid_idx = torch.where(valid_mask)[0]
+    if valid_idx.numel() < 2:
+        return pred.new_tensor(0.0)
+
+    x = pred[valid_idx]
+    y = target[valid_idx].clamp(min=0.0)
+    if not bool((y > 0).any().item()):
+        return pred.new_tensor(0.0)
+
+    n = int(y.numel())
+    tau = max(float(temperature), 1e-4)
+    losses: list[torch.Tensor] = []
+    for raw_ratio in budget_ratios:
+        ratio = min(1.0, max(0.0, float(raw_ratio)))
+        if ratio <= 0.0:
+            continue
+        k = min(n, max(1, int(math.ceil(ratio * n))))
+        ideal_mass = torch.topk(y, k=k).values.sum().detach()
+        if float(ideal_mass.item()) <= 1e-12:
+            continue
+        threshold = torch.topk(x.detach(), k=k).values[-1]
+        soft_keep = torch.sigmoid((x - threshold) / tau)
+        soft_keep = soft_keep * (float(k) / soft_keep.sum().clamp(min=1e-6))
+        soft_keep = soft_keep.clamp(max=1.0)
+        captured_mass = (soft_keep * y).sum()
+        recall = (captured_mass / ideal_mass.clamp(min=1e-6)).clamp(0.0, 1.0)
+        losses.append(1.0 - recall)
+
+    if not losses:
+        return pred.new_tensor(0.0)
+    return torch.stack(losses).mean()
+
+
+def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
+    """Return configured retained-budget ratios for budget-aware loss."""
+    raw = getattr(model_config, "budget_loss_ratios", None) or []
+    if not raw:
+        raw = getattr(model_config, "range_audit_compression_ratios", None) or []
+    if not raw:
+        raw = [float(getattr(model_config, "compression_ratio", 0.05))]
+    ratios = sorted({float(value) for value in raw if 0.0 < float(value) <= 1.0})
+    if not ratios:
+        ratios = [float(getattr(model_config, "compression_ratio", 0.05))]
+    return tuple(ratios)
+
+
+def _effective_budget_loss_ratios(model_config: ModelConfig, residual_label_mode: str) -> tuple[float, ...]:
+    """Return retained-budget ratios in the candidate set the model actually controls."""
+    ratios = _budget_loss_ratios(model_config)
+    if residual_label_mode != "temporal":
+        return ratios
+
+    temporal_fraction = min(1.0, max(0.0, float(getattr(model_config, "mlqds_temporal_fraction", 0.0))))
+    if temporal_fraction <= 0.0:
+        return ratios
+
+    effective: list[float] = []
+    for ratio in ratios:
+        total_ratio = min(1.0, max(0.0, float(ratio)))
+        base_ratio = min(total_ratio, total_ratio * temporal_fraction)
+        fill_ratio = max(0.0, total_ratio - base_ratio)
+        candidate_ratio = max(1e-6, 1.0 - base_ratio)
+        value = fill_ratio / candidate_ratio
+        if value > 0.0:
+            effective.append(min(1.0, value))
+    return tuple(effective) if effective else ratios
+
+
+def _temporal_base_masks_for_budget_ratios(
+    *,
+    n_points: int,
+    boundaries: list[tuple[int, int]],
+    budget_ratios: tuple[float, ...],
+    temporal_fraction: float,
+    device: torch.device,
+) -> tuple[tuple[float, float, torch.Tensor], ...]:
+    """Return per-budget temporal-base masks and learned-fill ratios."""
+    base_fraction = min(1.0, max(0.0, float(temporal_fraction)))
+    if base_fraction <= 0.0:
+        return ()
+
+    masks: list[tuple[float, float, torch.Tensor]] = []
+    for raw_ratio in budget_ratios:
+        total_ratio = min(1.0, max(0.0, float(raw_ratio)))
+        if total_ratio <= 0.0:
+            continue
+        base_mask = torch.zeros((n_points,), dtype=torch.bool, device=device)
+        for start, end in boundaries:
+            n = int(end - start)
+            if n <= 0:
+                continue
+            k_total = min(n, max(2, int(math.ceil(total_ratio * n))))
+            k_base = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
+            base_idx = evenly_spaced_indices(n, k_base, device)
+            base_mask[start + base_idx] = True
+        base_ratio = float(base_mask.float().mean().item()) if n_points > 0 else 0.0
+        fill_ratio = max(0.0, total_ratio - base_ratio)
+        candidate_ratio = max(1e-6, 1.0 - base_ratio)
+        effective_ratio = min(1.0, max(1e-6, fill_ratio / candidate_ratio))
+        masks.append((total_ratio, effective_ratio, base_mask))
+    return tuple(masks)
+
+
+def _budget_topk_temporal_residual_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    global_idx: torch.Tensor,
+    temporal_base_masks: tuple[tuple[float, float, torch.Tensor], ...],
+    temperature: float,
+) -> torch.Tensor:
+    """Budget-top-k loss over only the per-budget learned-fill candidate points."""
+    losses: list[torch.Tensor] = []
+    for _total_ratio, effective_ratio, base_mask in temporal_base_masks:
+        residual_mask = valid_mask & (~base_mask[global_idx])
+        if not bool((residual_mask & (target > 0)).any().item()):
+            continue
+        losses.append(
+            _budget_topk_recall_loss(
+                pred=pred,
+                target=target,
+                valid_mask=residual_mask,
+                budget_ratios=(effective_ratio,),
+                temperature=temperature,
+            )
+        )
+    if not losses:
+        return pred.new_tensor(0.0)
+    return torch.stack(losses).mean()
+
+
 def _discriminative_sample(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -429,7 +573,7 @@ def _validation_query_f1(
     query_cache: Any | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate a model checkpoint with the same query-F1 semantics as final evaluation."""
-    from src.evaluation.evaluate_methods import score_retained_mask
+    from src.evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
 
     points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
     predictions = _predict_workload_logits(
@@ -460,7 +604,17 @@ def _validation_query_f1(
         workload_map=workload_map,
         query_cache=query_cache,
     )
-    variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
+    variant = str(getattr(model_config, "checkpoint_f1_variant", "range_usefulness")).lower()
+    if variant == "range_usefulness":
+        audit = score_range_usefulness(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            typed_queries=workload.typed_queries,
+            query_cache=query_cache,
+        )
+        score = float(audit["range_usefulness_score"])
+        return score, {"range": score}
     if variant == "combined":
         return combined_agg, combined_pt
     return answer_agg, answer_pt
@@ -477,7 +631,7 @@ def _validation_uniform_f1(
 ) -> tuple[float, dict[str, float]]:
     """Evaluate fair uniform on the held-out validation workload once per run."""
     from src.evaluation.baselines import UniformTemporalMethod
-    from src.evaluation.evaluate_methods import score_retained_mask
+    from src.evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
 
     points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
     retained_mask = UniformTemporalMethod().simplify(
@@ -493,7 +647,17 @@ def _validation_uniform_f1(
         workload_map=workload_map,
         query_cache=query_cache,
     )
-    variant = str(getattr(model_config, "checkpoint_f1_variant", "answer")).lower()
+    variant = str(getattr(model_config, "checkpoint_f1_variant", "range_usefulness")).lower()
+    if variant == "range_usefulness":
+        audit = score_range_usefulness(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            typed_queries=workload.typed_queries,
+            query_cache=query_cache,
+        )
+        score = float(audit["range_usefulness_score"])
+        return score, {"range": score}
     if variant == "combined":
         return combined_agg, combined_pt
     return answer_agg, answer_pt
@@ -529,6 +693,7 @@ def train_model(
             boundaries=train_boundaries,
             typed_queries=workload.typed_queries,
             seed=seed,
+            range_label_mode=str(getattr(model_config, "range_label_mode", "usefulness")),
             range_boundary_prior_weight=float(getattr(model_config, "range_boundary_prior_weight", 0.0)),
         )
     else:
@@ -542,8 +707,28 @@ def train_model(
     residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
     if residual_label_mode not in {"none", "temporal"}:
         raise ValueError("residual_label_mode must be 'none' or 'temporal'.")
+    loss_objective = str(getattr(model_config, "loss_objective", "budget_topk")).lower()
+    if loss_objective not in {"ranking_bce", "budget_topk"}:
+        raise ValueError("loss_objective must be 'ranking_bce' or 'budget_topk'.")
+    configured_budget_ratios = _budget_loss_ratios(model_config)
+    budget_ratios = configured_budget_ratios
+    temporal_residual_budget_masks: tuple[tuple[float, float, torch.Tensor], ...] = ()
+    temporal_residual_union_mask: torch.Tensor | None = None
     workload_type_id = _pure_query_type_id(workload.type_ids)
-    if residual_label_mode == "temporal":
+    if residual_label_mode == "temporal" and loss_objective == "budget_topk":
+        budget_ratios = _effective_budget_loss_ratios(model_config, residual_label_mode)
+        temporal_residual_budget_masks = _temporal_base_masks_for_budget_ratios(
+            n_points=int(labels.shape[0]),
+            boundaries=train_boundaries,
+            budget_ratios=configured_budget_ratios,
+            temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+            device=labels.device,
+        )
+        if temporal_residual_budget_masks:
+            temporal_residual_union_mask = torch.zeros((labels.shape[0],), dtype=torch.bool, device=labels.device)
+            for _total_ratio, _effective_ratio, base_mask in temporal_residual_budget_masks:
+                temporal_residual_union_mask |= base_mask
+    elif residual_label_mode == "temporal":
         labels, labelled_mask = _apply_temporal_residual_labels(
             labels=labels,
             labelled_mask=labelled_mask,
@@ -582,7 +767,16 @@ def train_model(
         raise ValueError("Training workload map and workload query type must refer to the same pure workload.")
     active_type_ids = [active_type_id]
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
+    budget_loss_temperature = float(getattr(model_config, "budget_loss_temperature", 0.10))
     run_tag = "main"
+    if budget_ratios != configured_budget_ratios:
+        print(
+            f"  [{run_tag}] effective_budget_loss_ratios={list(budget_ratios)} "
+            f"from configured={list(configured_budget_ratios)} "
+            f"residual_label_mode={residual_label_mode} "
+            f"mlqds_temporal_fraction={float(getattr(model_config, 'mlqds_temporal_fraction', 0.0)):.3f}",
+            flush=True,
+        )
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
     grad_scaler = torch.amp.GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))
@@ -702,7 +896,7 @@ def train_model(
     eval_g = torch.Generator().manual_seed(int(seed) + 777)
     history: list[dict[str, float]] = []
 
-    effective_epochs = max(8, int(model_config.epochs))
+    effective_epochs = max(1, int(model_config.epochs))
     patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
     smoothing_window = max(1, int(getattr(model_config, "checkpoint_smoothing_window", 1) or 1))
     selection_history: list[float] = []
@@ -758,17 +952,40 @@ def train_model(
                     skipped_zero_windows[active_type_id] += 1
                     continue
                 positive_windows[active_type_id] += 1
-                rank_loss, pair_count = _ranking_loss_for_type(
-                    pred=pred_valid,
-                    target=t_labels,
-                    valid_mask=t_mask,
-                    pairs_per_type=model_config.ranking_pairs_per_type,
-                    top_quantile=model_config.ranking_top_quantile,
-                    margin=model_config.rank_margin,
-                    generator=g,
-                )
-                ranking_pair_counts[active_type_id] += int(pair_count)
-                pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, t_mask, generator=g)
+                if loss_objective == "budget_topk":
+                    if temporal_residual_budget_masks:
+                        rank_loss = _budget_topk_temporal_residual_loss(
+                            pred=pred_valid,
+                            target=t_labels,
+                            valid_mask=t_mask,
+                            global_idx=global_idx,
+                            temporal_base_masks=temporal_residual_budget_masks,
+                            temperature=budget_loss_temperature,
+                        )
+                    else:
+                        rank_loss = _budget_topk_recall_loss(
+                            pred=pred_valid,
+                            target=t_labels,
+                            valid_mask=t_mask,
+                            budget_ratios=budget_ratios,
+                            temperature=budget_loss_temperature,
+                        )
+                    pair_count = 0
+                else:
+                    rank_loss, pair_count = _ranking_loss_for_type(
+                        pred=pred_valid,
+                        target=t_labels,
+                        valid_mask=t_mask,
+                        pairs_per_type=model_config.ranking_pairs_per_type,
+                        top_quantile=model_config.ranking_top_quantile,
+                        margin=model_config.rank_margin,
+                        generator=g,
+                    )
+                    ranking_pair_counts[active_type_id] += int(pair_count)
+                pointwise_mask = t_mask
+                if temporal_residual_union_mask is not None:
+                    pointwise_mask = t_mask & (~temporal_residual_union_mask[global_idx])
+                pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, pointwise_mask, generator=g)
                 loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_term)
             epoch_timing["loss_s"] += time.perf_counter() - loss_t0
 

@@ -14,19 +14,30 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 ## Training Flow
 
-1. `compute_typed_importance_labels` turns the typed workload into F1-contribution `labels[N,4]` and `labelled_mask[N,4]`.
+1. `compute_typed_importance_labels` turns the typed workload into per-point
+   label targets `labels[N,4]` and `labelled_mask[N,4]`.
 2. `FeatureScaler.fit` learns min-max stats from training points and query features, then normalizes both.
 3. `build_trajectory_windows` produces padded windows that never cross trajectory boundaries.
-4. `train_model` rescales sparse F1 labels per type for optimization, then trains a query-conditioned transformer with per-type margin ranking losses plus balanced pointwise BCE supervision.
+4. `train_model` rescales sparse labels per type for optimization, then trains a
+   query-conditioned transformer with the active loss objective plus balanced
+   pointwise BCE supervision.
 5. `windowed_predict` and `forward_predict` reuse the same windowing logic for deterministic inference.
 
 ## Label Construction
 
-- Range labels default to pure point-F1 contribution: every point inside a range query box receives the same singleton retained-hit gain for that query. `range_boundary_prior_weight` can optionally boost in-box boundary-crossing points before normalization, but it defaults to `0.0` for rigorous pure-F1 benchmarks. Cross-trajectory proximity is not used for range labels.
-- These range labels are local/additive proxy labels. They are not yet a direct
-  objective for range-local retained-set usefulness across compression rates;
-  see `../../../Aleks-Sprint/range-objective-redesign.md` before changing
-  range label or loss behavior.
+- Range labels now support two explicit modes. `point_f1` is the old point-hit
+  proxy: every point inside a range query box receives the same singleton
+  retained-hit gain for that query. `usefulness` is the default training mode:
+  it adds local proxy signal for ship presence, sampled entry/exit points,
+  in-query temporal span endpoints, and local shape/turn points. Cross-trajectory
+  proximity is not used.
+- `range_boundary_prior_weight` is still available as an explicit point-hit
+  boundary prior, but the default real-usecase path keeps it at `0.0` because
+  `usefulness` already reports entry/exit signal as a separate component.
+- These labels remain local/additive approximations. They are closer to
+  range-local retained-set usefulness than pure point hits, but they are not an
+  exact optimizer for multi-budget retained-set utility; see
+  `../../../Aleks-Sprint/range-objective-redesign.md`.
 - kNN and similarity labels execute the query on the original data, identify the original trajectory-ID answer set, and assign points the F1 gain of recovering one true-positive trajectory ID.
 - Similarity and clustering labels can use the optional `turn_score` feature as a small shape prior.
 - Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs. Within a clustered query box, point mass is weighted by distance from the trajectory's in-box centroid.
@@ -43,13 +54,26 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   no positive labels for any active workload type before the model forward; any
   remaining per-type zero-positive lanes are still skipped for that type. The
   pointwise BCE term samples zeros to avoid all-zero collapse.
-- The effective epoch count is clamped to at least 8. The returned model is
-  restored to the best diagnostic epoch; by default that means held-out final
-  query F1.
-- `checkpoint_f1_variant="answer"` is the default selection target. `"combined"`
-  remains a legacy answer/support diagnostic. `uniform_gap`,
-  `checkpoint_smoothing_window`, and `early_stopping_patience` are explicit
-  selection stabilizers.
+- `loss_objective="budget_topk"` is the default range objective. It trains the
+  score stream to capture high label mass inside soft top-k retained budgets
+  across `budget_loss_ratios` (`0.01,0.02,0.05,0.10` by default). This is closer
+  to the final simplification decision than the old local pair sampler.
+- With `residual_label_mode="temporal"`, budget-top-k does not globally delete
+  temporal-spine labels once. It computes per-budget temporal-base masks and
+  trains the learned fill only on the points still controlled by the model at
+  each retained-point ratio. This keeps the multi-budget objective aligned with
+  `mlqds_temporal_fraction`.
+- `loss_objective="ranking_bce"` keeps the legacy margin-ranking objective for
+  ablation. `pointwise_loss_weight` remains an auxiliary BCE term for both
+  objectives.
+- The configured epoch count is used literally, with a minimum of 1 epoch. The
+  returned model is restored to the best diagnostic epoch; by default that means
+  held-out final query F1.
+- `checkpoint_f1_variant="range_usefulness"` is the default selection target
+  for range training because it matches the range-local usefulness objective.
+  `"answer"` and `"combined"` remain legacy diagnostics for explicit ablations.
+  `uniform_gap`, `checkpoint_smoothing_window`, and `early_stopping_patience`
+  are explicit selection stabilizers.
 - Validation query-F1 uses the same canonical MLQDS score conversion as final
   evaluation: one explicit workload score stream, `mlqds_score_mode`, and the
   temporal/diversity retained-mask simplifier.
@@ -60,6 +84,10 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - Epoch diagnostics record `epoch_forward_seconds`, `epoch_loss_seconds`,
   `epoch_backward_seconds`, `epoch_diagnostic_seconds`,
   `epoch_f1_seconds`, and filtered-window counts for bottleneck analysis.
+- Real-usecase profiling showed the old ranking loss could dominate epoch time
+  while optimizing a local proxy. The budget-top-k objective is the first loss
+  redesign step; judge it by retained-set `RangeUseful`/`RangePointF1` across
+  compression ratios before further tuning.
 - Defaults: `window_length=512`, `window_stride=256`,
   `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
   `allow_tf32=False`, and `amp_mode="off"`. The real-usecase benchmark profile

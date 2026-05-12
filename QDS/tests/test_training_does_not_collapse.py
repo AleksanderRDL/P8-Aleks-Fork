@@ -8,7 +8,7 @@ import torch
 from src.data.ais_loader import generate_synthetic_ais_data
 from src.data.trajectory_dataset import TrajectoryDataset
 from src.evaluation.baselines import MLQDSMethod
-from src.evaluation.evaluate_methods import score_retained_mask
+from src.evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
 from src.experiments.experiment_config import build_experiment_config
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.queries.query_generator import generate_typed_query_workload
@@ -18,6 +18,8 @@ from src.training.train_model import (
     TrainingOutputs,
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
+    _effective_budget_loss_ratios,
+    _budget_topk_recall_loss,
     _filter_supervised_windows,
     _f1_selection_score,
     _ranking_loss_for_type,
@@ -33,6 +35,26 @@ from src.training.trajectory_batching import build_trajectory_windows
 def test_selection_score_penalizes_collapsed_predictions() -> None:
     """Assert model selection does not prefer collapsed output solely because tau is nonnegative."""
     assert _selection_score(avg_tau=0.0, pred_std=0.0) < _selection_score(avg_tau=-0.05, pred_std=0.01)
+
+
+def test_temporal_residual_budget_ratios_match_learned_fill_budget() -> None:
+    cfg = build_experiment_config(
+        compression_ratio=0.05,
+        budget_loss_ratios=[0.01, 0.02, 0.05, 0.10],
+        mlqds_temporal_fraction=0.75,
+    )
+
+    ratios = _effective_budget_loss_ratios(cfg.model, "temporal")
+
+    assert ratios == pytest.approx(
+        (
+            0.0025188917,
+            0.0050761421,
+            0.0129870130,
+            0.0270270270,
+        )
+    )
+    assert _effective_budget_loss_ratios(cfg.model, "none") == pytest.approx((0.01, 0.02, 0.05, 0.10))
 
 
 def test_selection_score_uses_loss_before_tau_proxy() -> None:
@@ -108,6 +130,50 @@ def test_ranking_pair_sampler_returns_finite_loss() -> None:
 
     assert 0 < pair_count <= 16
     assert bool(torch.isfinite(loss).item())
+
+
+def test_budget_topk_recall_loss_prefers_budget_aligned_scores() -> None:
+    target = torch.tensor([1.0, 0.9, 0.1, 0.0, 0.0, 0.0], dtype=torch.float32)
+    valid_mask = torch.ones((6,), dtype=torch.bool)
+    good_pred = torch.tensor([3.0, 2.0, 0.5, -1.0, -2.0, -3.0], dtype=torch.float32)
+    bad_pred = torch.flip(good_pred, dims=(0,))
+
+    good_loss = _budget_topk_recall_loss(
+        pred=good_pred,
+        target=target,
+        valid_mask=valid_mask,
+        budget_ratios=(0.20, 0.40),
+        temperature=0.10,
+    )
+    bad_loss = _budget_topk_recall_loss(
+        pred=bad_pred,
+        target=target,
+        valid_mask=valid_mask,
+        budget_ratios=(0.20, 0.40),
+        temperature=0.10,
+    )
+
+    assert bool(torch.isfinite(good_loss).item())
+    assert good_loss.item() < bad_loss.item()
+
+
+def test_budget_topk_recall_loss_has_useful_gradients() -> None:
+    pred = torch.zeros((6,), dtype=torch.float32, requires_grad=True)
+    target = torch.tensor([1.0, 0.8, 0.2, 0.0, 0.0, 0.0], dtype=torch.float32)
+    valid_mask = torch.ones((6,), dtype=torch.bool)
+
+    loss = _budget_topk_recall_loss(
+        pred=pred,
+        target=target,
+        valid_mask=valid_mask,
+        budget_ratios=(0.20, 0.40),
+        temperature=0.10,
+    )
+    loss.backward()
+
+    assert pred.grad is not None
+    assert float(pred.grad[:2].sum().item()) < 0.0
+    assert float(pred.grad[3:].sum().item()) > 0.0
 
 
 def test_temporal_residual_labels_drop_base_points() -> None:
@@ -254,6 +320,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         mlqds_score_mode=score_mode,
         mlqds_score_temperature=0.75,
         mlqds_rank_confidence_weight=0.35,
+        checkpoint_f1_variant="answer",
     )
     predictions = torch.linspace(-1.0, 1.0, steps=points.shape[0])
 
@@ -319,6 +386,88 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
     assert validation_per_type["range"] == pytest.approx(final_per_type["range"])
 
 
+def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=2, n_points_per_ship=12, seed=615)
+    ds = TrajectoryDataset(trajectories)
+    points = ds.get_all_points()
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_map={"range": 1.0},
+        seed=616,
+        range_spatial_fraction=0.40,
+        range_time_fraction=0.40,
+    )
+    cfg = build_experiment_config(
+        compression_ratio=0.40,
+        workload="range",
+        mlqds_temporal_fraction=0.25,
+        mlqds_diversity_bonus=0.0,
+        mlqds_score_mode="rank",
+        checkpoint_f1_variant="range_usefulness",
+    )
+    predictions = torch.linspace(-1.0, 1.0, steps=points.shape[0])
+
+    model = TrajectoryQDSModel(
+        point_dim=7,
+        query_dim=int(workload.query_features.shape[1]),
+        embed_dim=16,
+        num_heads=2,
+        num_layers=1,
+        query_chunk_size=8,
+    )
+    scaler = FeatureScaler.fit(points[:, :7], workload.query_features)
+    trained = TrainingOutputs(
+        model=model,
+        scaler=scaler,
+        labels=torch.zeros((points.shape[0], 4), dtype=torch.float32),
+        labelled_mask=torch.ones((points.shape[0], 4), dtype=torch.bool),
+        history=[],
+    )
+
+    monkeypatch.setattr(
+        "src.training.train_model._predict_workload_logits",
+        lambda **_kwargs: predictions.clone(),
+    )
+    monkeypatch.setattr(
+        "src.evaluation.baselines.windowed_predict",
+        lambda **_kwargs: predictions.clone(),
+    )
+
+    validation_score, validation_per_type = _validation_query_f1(
+        model=model,
+        scaler=scaler,
+        trajectories=trajectories,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map={"range": 1.0},
+        model_config=cfg.model,
+        device=torch.device("cpu"),
+        validation_points=points,
+    )
+    retained = MLQDSMethod(
+        name="MLQDS",
+        trained=trained,
+        workload=workload,
+        workload_type="range",
+        score_mode=cfg.model.mlqds_score_mode,
+        temporal_fraction=cfg.model.mlqds_temporal_fraction,
+        diversity_bonus=cfg.model.mlqds_diversity_bonus,
+        inference_device="cpu",
+        inference_batch_size=cfg.model.inference_batch_size,
+    ).simplify(points, boundaries, cfg.model.compression_ratio)
+    audit = score_range_usefulness(
+        points=points,
+        boundaries=boundaries,
+        retained_mask=retained,
+        typed_queries=workload.typed_queries,
+    )
+
+    assert validation_score == pytest.approx(audit["range_usefulness_score"])
+    assert validation_per_type["range"] == pytest.approx(audit["range_usefulness_score"])
+
+
 def test_training_accepts_precomputed_importance_labels() -> None:
     trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=12, seed=818)
     ds = TrajectoryDataset(trajectories)
@@ -362,15 +511,16 @@ def test_training_accepts_precomputed_importance_labels() -> None:
     )
 
     assert out.history
+    assert out.epochs_trained == 1
 
 
-def test_range_training_does_not_collapse(synthetic_dataset) -> None:
-    """Assert range-focused training keeps prediction spread and rank signal healthy."""
+def test_legacy_ranking_objective_keeps_rank_signal(synthetic_dataset) -> None:
+    """Assert the legacy ranking objective still preserves its rank-signal invariant."""
     trajectories, _ = synthetic_dataset
     ds = TrajectoryDataset(trajectories)
     boundaries = ds.get_trajectory_boundaries()
 
-    cfg = build_experiment_config(epochs=4, n_queries=80, workload="range")
+    cfg = build_experiment_config(epochs=4, n_queries=80, workload="range", loss_objective="ranking_bce")
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,

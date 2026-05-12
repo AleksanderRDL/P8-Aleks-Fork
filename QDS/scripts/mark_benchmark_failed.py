@@ -26,6 +26,7 @@ DEFAULT_INDEX_FIELDS: list[str] = [
     "workloads",
     "variants",
     "train_csv_path",
+    "validation_csv_path",
     "eval_csv_path",
     "csv_path",
     "max_points_per_segment",

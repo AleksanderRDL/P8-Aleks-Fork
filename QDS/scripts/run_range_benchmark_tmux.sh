@@ -65,7 +65,7 @@ MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
 ATTACH="${ATTACH:-1}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_real_usecase}"
-RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_2day_full_${VARIANT_SLUG}}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_3day_full_${VARIANT_SLUG}}"
 RESULTS_DIR="${RESULTS_DIR:-$ARTIFACT_ROOT/runs/$RUN_ID}"
 
 extra_args=()

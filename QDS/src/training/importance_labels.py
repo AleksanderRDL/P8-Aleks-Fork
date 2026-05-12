@@ -12,6 +12,14 @@ from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
+RANGE_LABEL_MODES = ("point_f1", "usefulness")
+RANGE_USEFULNESS_LABEL_WEIGHTS = {
+    "range_point_f1": 0.35,
+    "range_ship_f1": 0.20,
+    "range_entry_exit_f1": 0.15,
+    "range_temporal_coverage": 0.15,
+    "range_shape_score": 0.15,
+}
 
 
 def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
@@ -103,6 +111,24 @@ def _add_weighted_hit_label(
     labels[support_idx, type_idx] += float(gain) * (w / total)
 
 
+def _add_weighted_index_label(
+    labels: torch.Tensor,
+    indices: torch.Tensor,
+    type_idx: int,
+    gain: float,
+    weights: torch.Tensor,
+) -> None:
+    """Distribute label gain over explicit indices using compact weights."""
+    if indices.numel() == 0:
+        return
+    w = weights.to(device=labels.device, dtype=torch.float32).clamp(min=0.0)
+    total = float(w.sum().item())
+    if total <= 0.0:
+        labels[indices, type_idx] += float(gain) / float(indices.numel())
+        return
+    labels[indices, type_idx] += float(gain) * (w / total)
+
+
 def _within_box_centroid_weights(
     points: torch.Tensor,
     box_mask: torch.Tensor,
@@ -182,6 +208,148 @@ def _range_boundary_weights(
     mean_raw = float(raw.mean().item())
     weights[in_box_idx] = raw / mean_raw if mean_raw > 1e-12 else 1.0
     return weights
+
+
+def _range_entry_exit_mask(
+    box_mask: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+) -> torch.Tensor:
+    """Return sampled in-box range entry/exit points."""
+    boundary_full = torch.zeros_like(box_mask, dtype=torch.bool)
+    for start, end in boundaries:
+        if end <= start:
+            continue
+        traj_in = box_mask[start:end]
+        if not bool(traj_in.any().item()):
+            continue
+        enters = torch.zeros_like(traj_in)
+        enters[1:] = traj_in[1:] & ~traj_in[:-1]
+        enters[0] = traj_in[0]
+        exits = torch.zeros_like(traj_in)
+        exits[:-1] = traj_in[:-1] & ~traj_in[1:]
+        exits[-1] = traj_in[-1]
+        boundary_full[start:end] = enters | exits
+    return boundary_full
+
+
+def _local_shape_weights(points: torch.Tensor, global_indices: torch.Tensor) -> torch.Tensor:
+    """Return range-local shape weights for one trajectory slice."""
+    count = int(global_indices.numel())
+    weights = torch.ones((count,), dtype=torch.float32, device=points.device)
+    if count >= 3:
+        coords = points[global_indices, 1:3].float()
+        before = torch.linalg.vector_norm(coords[1:-1] - coords[:-2], dim=1)
+        after = torch.linalg.vector_norm(coords[2:] - coords[1:-1], dim=1)
+        shortcut = torch.linalg.vector_norm(coords[2:] - coords[:-2], dim=1)
+        curvature = torch.clamp(before + after - shortcut, min=0.0)
+        mean_curvature = float(curvature.mean().item())
+        if mean_curvature > 1e-12:
+            weights[1:-1] = weights[1:-1] + curvature / mean_curvature
+    if points.shape[1] >= 8:
+        weights = weights + points[global_indices, 7].float().clamp(min=0.0)
+    return weights
+
+
+def _add_range_point_f1_labels(
+    labels: torch.Tensor,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    box_support: torch.Tensor,
+    type_idx: int,
+    range_boundary_prior_weight: float,
+    component_weight: float = 1.0,
+) -> None:
+    """Add point-F1 singleton gain for every in-box point."""
+    hit_count = int(box_support.sum().item())
+    if hit_count <= 0:
+        return
+    base_gain = float(2.0 / (hit_count + 1.0))
+    boundary_weights = _range_boundary_weights(
+        points,
+        box_support,
+        boundaries,
+        range_boundary_prior_weight,
+    )
+    labels[box_support, type_idx] += float(component_weight) * base_gain * boundary_weights[box_support]
+
+
+def _add_range_usefulness_labels(
+    labels: torch.Tensor,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    box_support: torch.Tensor,
+    point_trajectory_ids: torch.Tensor,
+    type_idx: int,
+    range_boundary_prior_weight: float,
+) -> None:
+    """Add a local proxy for the range usefulness audit components."""
+    hit_count = int(box_support.sum().item())
+    if hit_count <= 0:
+        return
+
+    weights = RANGE_USEFULNESS_LABEL_WEIGHTS
+    _add_range_point_f1_labels(
+        labels=labels,
+        points=points,
+        boundaries=boundaries,
+        box_support=box_support,
+        type_idx=type_idx,
+        range_boundary_prior_weight=range_boundary_prior_weight,
+        component_weight=float(weights["range_point_f1"]),
+    )
+
+    hit_ids = {
+        int(value)
+        for value in torch.unique(point_trajectory_ids[box_support]).detach().cpu().tolist()
+        if int(value) >= 0
+    }
+    if not hit_ids:
+        return
+    ship_count = len(hit_ids)
+    ship_gain = _set_query_singleton_gain(hit_ids)
+    temporal_mass_per_ship = float(weights["range_temporal_coverage"]) / float(ship_count)
+    shape_mass = float(weights["range_shape_score"]) * float(ship_gain)
+
+    boundary_support = _range_entry_exit_mask(box_support, boundaries)
+    boundary_count = int(boundary_support.sum().item())
+    if boundary_count > 0:
+        boundary_gain = float(2.0 / (boundary_count + 1.0))
+        labels[boundary_support, type_idx] += float(weights["range_entry_exit_f1"]) * boundary_gain
+
+    for trajectory_id in sorted(hit_ids):
+        if trajectory_id >= len(boundaries):
+            continue
+        start, end = boundaries[trajectory_id]
+        if end <= start:
+            continue
+        trajectory_support = box_support & (point_trajectory_ids == int(trajectory_id))
+        if not bool(trajectory_support.any().item()):
+            continue
+
+        _add_distributed_hit_label(
+            labels,
+            trajectory_support,
+            type_idx,
+            float(weights["range_ship_f1"]) * float(ship_gain),
+        )
+
+        in_offsets = torch.where(box_support[start:end])[0]
+        if in_offsets.numel() == 0:
+            continue
+        if in_offsets.numel() == 1:
+            labels[start + in_offsets[0], type_idx] += temporal_mass_per_ship
+        else:
+            labels[start + in_offsets[0], type_idx] += 0.5 * temporal_mass_per_ship
+            labels[start + in_offsets[-1], type_idx] += 0.5 * temporal_mass_per_ship
+
+        global_indices = start + in_offsets
+        _add_weighted_index_label(
+            labels,
+            global_indices,
+            type_idx,
+            shape_mass,
+            _local_shape_weights(points, global_indices),
+        )
 
 
 def _knn_representative_support(
@@ -281,8 +449,13 @@ def compute_typed_importance_labels(
     similarity_sample_rate: float = 0.70,
     clustering_sample_rate: float = 0.70,
     range_boundary_prior_weight: float = 0.0,
+    range_label_mode: str = "point_f1",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute per-point per-type labels as expected query-F1 contribution."""
+    range_label_mode = str(range_label_mode).lower()
+    if range_label_mode not in RANGE_LABEL_MODES:
+        raise ValueError(f"range_label_mode must be one of {RANGE_LABEL_MODES}.")
+
     n = points.shape[0]
     labels = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.float32, device=points.device)
     labelled_mask = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.bool, device=points.device)
@@ -304,16 +477,25 @@ def compute_typed_importance_labels(
 
         if qtype == "range":
             box_support = _box_mask(points, params)
-            hit_count = int(box_support.sum().item())
-            if hit_count > 0:
-                base_gain = float(2.0 / (hit_count + 1.0))
-                boundary_weights = _range_boundary_weights(
-                    points,
-                    box_support,
-                    boundaries,
-                    range_boundary_prior_weight,
+            if range_label_mode == "usefulness":
+                _add_range_usefulness_labels(
+                    labels=labels,
+                    points=points,
+                    boundaries=boundaries,
+                    box_support=box_support,
+                    point_trajectory_ids=point_trajectory_ids,
+                    type_idx=t_idx,
+                    range_boundary_prior_weight=range_boundary_prior_weight,
                 )
-                labels[box_support, t_idx] += base_gain * boundary_weights[box_support]
+            else:
+                _add_range_point_f1_labels(
+                    labels=labels,
+                    points=points,
+                    boundaries=boundaries,
+                    box_support=box_support,
+                    type_idx=t_idx,
+                    range_boundary_prior_weight=range_boundary_prior_weight,
+                )
 
         elif qtype == "knn":
             original_ids = set(execute_typed_query(points, trajectories, q, boundaries))

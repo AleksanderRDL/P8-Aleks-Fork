@@ -6,6 +6,23 @@ import argparse
 
 from src.experiments.torch_runtime import AMP_MODE_CHOICES, FLOAT32_MATMUL_PRECISION_CHOICES
 from src.simplification.mlqds_scoring import MLQDS_SCORE_MODES
+from src.training.importance_labels import RANGE_LABEL_MODES
+
+
+def _compression_ratio_list(value: str) -> list[float]:
+    """Parse comma-separated compression ratios for optional range audits."""
+    ratios: list[float] = []
+    for raw in value.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        ratio = float(item)
+        if ratio <= 0.0 or ratio > 1.0:
+            raise argparse.ArgumentTypeError("compression ratios must be in (0, 1].")
+        ratios.append(ratio)
+    if not ratios:
+        raise argparse.ArgumentTypeError("provide at least one compression ratio.")
+    return ratios
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -13,6 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run AIS-QDS experiment.")
     parser.add_argument("--csv_path", type=str, default=None)
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--validation_csv_path",
+        "--validation_csv",
+        "--val_csv_path",
+        "--val_csv",
+        dest="validation_csv_path",
+        type=str,
+        default=None,
+        help="Optional dedicated checkpoint-validation CSV. Requires --train_csv_path and --eval_csv_path.",
+    )
     parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
     parser.add_argument(
         "--cache_dir",
@@ -166,7 +193,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--pointwise_loss_weight",
         type=float,
         default=0.25,
-        help="Weight for balanced pointwise BCE supervision alongside ranking loss.",
+        help="Weight for balanced pointwise BCE supervision alongside the active set/ranking loss.",
+    )
+    parser.add_argument(
+        "--loss_objective",
+        type=str,
+        default="budget_topk",
+        choices=["ranking_bce", "budget_topk"],
+        help=(
+            "Training objective. 'ranking_bce' is the legacy pairwise ranking plus BCE loss; "
+            "'budget_topk' optimizes soft retained-budget target mass across budget ratios."
+        ),
+    )
+    parser.add_argument(
+        "--budget_loss_ratios",
+        type=_compression_ratio_list,
+        default=[0.01, 0.02, 0.05, 0.10],
+        help="Comma-separated retained-point ratios used by --loss_objective budget_topk.",
+    )
+    parser.add_argument(
+        "--budget_loss_temperature",
+        type=float,
+        default=0.10,
+        help="Soft top-k temperature for --loss_objective budget_topk.",
     )
     parser.add_argument(
         "--gradient_clip_norm",
@@ -262,9 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint_f1_variant",
         type=str,
-        default="answer",
-        choices=["answer", "combined"],
-        help="Which F1 to use for validation/checkpoint selection. 'answer' = final pure query F1 (default). 'combined' = legacy answer_f1 * point_subset_f1 diagnostic.",
+        default="range_usefulness",
+        choices=["answer", "combined", "range_usefulness"],
+        help=(
+            "Which validation score to use for checkpoint selection. "
+            "'range_usefulness' = range-local audit score for range workloads (default), "
+            "'answer' = legacy point/query F1, 'combined' = legacy answer_f1 * point_subset_f1."
+        ),
     )
     parser.add_argument(
         "--mlqds_temporal_fraction",
@@ -305,12 +358,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use labels directly, or train only on points not already kept by the temporal base.",
     )
     parser.add_argument(
+        "--range_label_mode",
+        type=str,
+        default="usefulness",
+        choices=RANGE_LABEL_MODES,
+        help=(
+            "Range label construction mode. 'point_f1' is the old in-box point proxy; "
+            "'usefulness' adds ship, entry/exit, temporal-span, and local-shape label signal."
+        ),
+    )
+    parser.add_argument(
         "--range_boundary_prior_weight",
         type=float,
         default=0.0,
         help=(
             "Optional range-label boundary prior. 0.0 keeps pure point-F1 labels; "
             "1.0 gives in-box boundary-crossing points 2x raw weight before normalization."
+        ),
+    )
+    parser.add_argument(
+        "--range_audit_compression_ratios",
+        type=_compression_ratio_list,
+        default=None,
+        help=(
+            "Optional comma-separated retained-point ratios for a multi-budget range usefulness audit, "
+            "for example 0.01,0.02,0.05,0.10. Disabled by default because it reruns method evaluation."
         ),
     )
     parser.add_argument(

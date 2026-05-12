@@ -86,8 +86,9 @@ make clean-smoke-artifacts
 make clean-smoke-artifacts CONFIRM=1
 ```
 
-The active benchmark profile is `range_real_usecase`: a range-only, two-day
-cleaned-CSV profile with no loader caps by default. Keep exact benchmark
+The active benchmark profile is `range_real_usecase`: a range-only, three-day
+cleaned-CSV profile with train, checkpoint-validation, and final-eval days and
+no loader caps by default. Keep exact benchmark
 settings in one place: [`src/experiments/README.md`](src/experiments/README.md).
 
 ## Dependencies

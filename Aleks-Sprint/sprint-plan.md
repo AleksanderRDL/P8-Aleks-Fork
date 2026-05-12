@@ -25,8 +25,8 @@ Status on 2026-05-08 after incorporating the non-artifact parts of
   they do not replace the Phase 2 diagnostics or define the Phase 3 benchmark
   protocol.
 - The useful incoming code changes are checkpoint smoothing, explicit MLQDS
-  gaps against baselines, length-preservation reporting, `AnswerF1` versus
-  `CombinedF1` reporting, selectable validation F1 variant, per-head
+  gaps against baselines, length-preservation reporting, range
+  `RangePointF1` / `RangeUseful` reporting, selectable validation F1 variant, per-head
   rank-normalized MLQDS score mixing, true recursive Douglas-Peucker, large
   tensor sampling/quantile safeguards, optional stationary trimming in the
   upstream AIS cleaning pipeline, and a multi-file CSV combine helper.
@@ -285,16 +285,17 @@ Goal: produce the first defensible specialist win.
 Entry state:
 
 - Range workload diagnostics are complete and accepted.
-- The benchmark output now reports `AnswerF1`, `CombinedF1`, SED/PED,
-  `LengthPres`, `F1xLen`, and MLQDS F1 gaps versus `uniform` and true
+- The benchmark output now reports range `RangePointF1`, `RangeUseful`,
+  SED/PED, `LengthPres`, `F1xLen`, and MLQDS gaps versus `uniform` and true
   Douglas-Peucker.
 - Checkpoint selection can use a rolling diagnostic score through
   `checkpoint_smoothing_window`, but smoothing is a selection stabilizer, not a
   training objective.
-- Checkpoint selection can use `checkpoint_f1_variant=answer` for the primary
-  pure answer-set metric or `checkpoint_f1_variant=combined` for the legacy
-  answer/support product. Phase 3 should default to `answer` unless the run is
-  explicitly testing support-preservation selection.
+- Checkpoint selection now defaults to
+  `checkpoint_f1_variant=range_usefulness` for range-specialist training,
+  because the older `answer` point/query F1 target is misaligned with the
+  range usefulness objective. `answer` and `combined` remain explicit legacy
+  ablations only.
 - MLQDS matched evaluation can still mix query-type heads by within-trajectory
   ranks for compatibility experiments, but current benchmark runs train one
   specialist model per pure query workload.

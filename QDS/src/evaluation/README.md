@@ -19,13 +19,32 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Metrics
 
-- Range queries are scored over retained point hits inside the spatiotemporal box, so sparse point retention is measured by how much of the original query-hit mass it preserves rather than by one retained point recovering an entire trajectory. Exact duplicate AIS rows are counted as separate point instances.
+- Range queries report `RangePointF1`, the retained point-hit metric inside the
+  spatiotemporal box. Sparse point retention is measured by how much of the
+  original query-hit mass it preserves rather than by one retained point
+  recovering an entire trajectory. Exact duplicate AIS rows are counted as
+  separate point instances.
 - This range score is a useful retained-point proxy, not the full target for
   range-query navigational usefulness. It does not directly score per-ship
   interpretability, entry/exit preservation, or range-local trajectory shape.
   See `../../../Aleks-Sprint/range-objective-redesign.md` for the current
   objective-redesign conclusion.
-- `BoundaryF1` is reported separately for range workloads. It measures retained in-box boundary-crossing points and is a shape-preservation diagnostic, not part of pure range F1.
+- `RangeUseful` is an audit score combining `RangePointF1`, ship presence,
+  entry/exit preservation, temporal coverage, and range-local path-shape
+  preservation. It is reported separately so it can guide objective redesign
+  without pretending to be a mathematically final target.
+- `EntryExitF1` is reported separately for range workloads. It measures
+  retained in-box boundary-crossing points and is a shape-preservation
+  diagnostic, not part of `RangePointF1`.
+- Audit component interpretation:
+  - `ShipF1` is ship presence only; one retained in-query point can recover a
+    ship.
+  - `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true box
+    crossings.
+  - `TemporalCov` scores retained in-query time span; it does not yet penalize
+    large interior gaps when endpoints survive.
+  - `ShapeScore` scores local path-length preservation; it is cheaper than
+    local SED/PED and should be treated as a proxy.
 - kNN, similarity, and clustering queries report pure answer-set agreement as `AnswerF1`; `CombinedF1` additionally multiplies answer agreement by retained support-point quality for diagnostic comparison.
 - `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.
 - `clustering_f1(original_labels, simplified_labels)` - F1 over same-cluster trajectory co-membership pairs, ignoring noise label `-1`.
@@ -37,9 +56,20 @@ This module compares query-aware ML simplification against temporal, geometric, 
 - `evaluate_method` scores one method against one typed workload. Reuse an
   `EvaluationQueryCache` when several methods share the same points,
   boundaries, and query list.
-- `print_method_comparison_table` reports F1, `AvgPtGap`, range `BoundaryF1`,
-  and MLQDS gaps versus `uniform`/Douglas-Peucker when available.
+- `print_method_comparison_table` reports `RangePointF1`/`RangeUseful` for
+  range workloads and `AnswerF1`/`CombinedF1` for non-range answer-set
+  workloads.
+- `print_range_usefulness_table` reports the detailed range audit components.
 - `print_geometric_distortion_table` reports SED/PED, length preservation, and
   `F1xLen`.
 - Read F1 and length-preservation columns as higher-is-better. Read `AvgPtGap`
   as lower-is-better.
+
+## Audit Caching
+
+Keep final benchmark audits exact. `EvaluationQueryCache` precomputes
+retained-independent per-query range support: full ship IDs, compact entry/exit
+indices, in-query offsets, full local time spans, and full local path lengths.
+Reuse that cache across MLQDS, baselines, Oracle, and compression ratios. Only
+use sampled approximations for checkpoint-selection diagnostics when needed;
+final reported audit metrics should stay exact.

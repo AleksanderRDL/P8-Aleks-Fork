@@ -38,6 +38,7 @@ from src.evaluation.evaluate_methods import (
     evaluate_method,
     print_geometric_distortion_table,
     print_method_comparison_table,
+    print_range_usefulness_table,
 )
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
@@ -396,15 +397,19 @@ def main() -> None:
 
     table = print_method_comparison_table(results)
     geometric_table = print_geometric_distortion_table(results)
+    range_usefulness_table = print_range_usefulness_table(results)
     print("\nMatched-workload table (inference on new CSV)")
     print(table)
     print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
     print(geometric_table)
+    print("\nRange-usefulness audit table")
+    print(range_usefulness_table)
 
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
     (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+    (out_dir / "range_usefulness_table.txt").write_text(range_usefulness_table + "\n", encoding="utf-8")
 
     dump = {
         "checkpoint": str(args.checkpoint),
@@ -438,8 +443,15 @@ def main() -> None:
                 "avg_length_preserved": m.avg_length_preserved,
                 "avg_length_loss": m.avg_length_loss,
                 "combined_query_shape_score": m.combined_query_shape_score,
-                "pure_range_f1": m.per_type_f1.get("range", 0.0),
-                "range_boundary_f1": m.range_boundary_f1,
+                "range_point_f1": m.range_point_f1,
+                "pure_range_f1": m.range_point_f1,
+                "range_ship_f1": m.range_ship_f1,
+                "range_entry_exit_f1": m.range_entry_exit_f1,
+                "range_boundary_f1": m.range_entry_exit_f1,
+                "range_temporal_coverage": m.range_temporal_coverage,
+                "range_shape_score": m.range_shape_score,
+                "range_usefulness_score": m.range_usefulness_score,
+                "range_audit": m.range_audit,
             }
             for name, m in results.items()
         },

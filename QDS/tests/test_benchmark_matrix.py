@@ -63,14 +63,24 @@ def _profile_core_args() -> list[str]:
         "5",
         "--checkpoint_smoothing_window",
         "1",
+        "--loss_objective",
+        "budget_topk",
+        "--budget_loss_ratios",
+        "0.01,0.02,0.05,0.10",
+        "--budget_loss_temperature",
+        "0.10",
         "--mlqds_temporal_fraction",
-        "0.25",
+        "0.75",
         "--mlqds_score_mode",
         "rank",
         "--mlqds_score_temperature",
         "1.00",
         "--mlqds_rank_confidence_weight",
         "0.15",
+        "--residual_label_mode",
+        "temporal",
+        "--range_label_mode",
+        "usefulness",
         "--range_boundary_prior_weight",
         "0.0",
     ]
@@ -92,19 +102,23 @@ def test_experiment_workload_resolution_is_pure_only() -> None:
         resolve_workload_maps("mixed")
 
 
-def test_selected_variants_default_to_answer_f1_baseline() -> None:
+def test_selected_variants_default_to_range_usefulness_checkpointing() -> None:
     variants = _selected_variants(None)
 
     assert [variant.name for variant in variants] == list(DEFAULT_VARIANTS)
     assert [variant.name for variant in variants] == ["tf32_bf16_bs32_inf32"]
-    assert variants[0].checkpoint_f1_variant == "answer"
+    assert variants[0].checkpoint_f1_variant == "range_usefulness"
     assert variants[0].amp_mode == "bf16"
 
 
 def test_selected_variants_can_run_explicit_sweeps() -> None:
     variants = _selected_variants(
-        "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_combined,"
-        "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_score_rank_tie,"
+        "fp32,tf32_bf16_bs32_inf32,tf32_bf16_bs32_inf32_ranking_bce,"
+        "tf32_bf16_bs32_inf32_point_f1_labels,"
+        "tf32_bf16_bs32_inf32_combined,"
+        "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_temporal050,"
+        "tf32_bf16_bs32_inf32_residual_none,"
+        "tf32_bf16_bs32_inf32_score_rank_tie,"
         "tf32_bf16_bs32_inf32_score_zscore,tf32_bf16_bs32_inf32_score_rank_confidence,"
         "tf32_bf16_bs32_inf32_score_temp_sigmoid"
     )
@@ -112,29 +126,42 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert [variant.name for variant in variants] == [
         "fp32",
         "tf32_bf16_bs32_inf32",
+        "tf32_bf16_bs32_inf32_ranking_bce",
+        "tf32_bf16_bs32_inf32_point_f1_labels",
         "tf32_bf16_bs32_inf32_combined",
         "tf32_bf16_bs32_inf32_temporal000",
+        "tf32_bf16_bs32_inf32_temporal050",
+        "tf32_bf16_bs32_inf32_residual_none",
         "tf32_bf16_bs32_inf32_score_rank_tie",
         "tf32_bf16_bs32_inf32_score_zscore",
         "tf32_bf16_bs32_inf32_score_rank_confidence",
         "tf32_bf16_bs32_inf32_score_temp_sigmoid",
     ]
-    assert variants[0].checkpoint_f1_variant == "answer"
+    assert variants[0].checkpoint_f1_variant == "range_usefulness"
     assert variants[1].amp_mode == "bf16"
-    assert variants[1].checkpoint_f1_variant == "answer"
+    assert variants[1].checkpoint_f1_variant == "range_usefulness"
     assert variants[2].amp_mode == "bf16"
-    assert variants[2].checkpoint_f1_variant == "combined"
-    assert variants[3].checkpoint_f1_variant == "answer"
-    assert variants[3].extra_args == ("--mlqds_temporal_fraction", "0.00")
-    assert variants[4].extra_args == ("--mlqds_score_mode", "rank_tie")
-    assert variants[5].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
-    assert variants[6].extra_args == (
+    assert variants[2].checkpoint_f1_variant == "range_usefulness"
+    assert variants[2].extra_args == ("--loss_objective", "ranking_bce")
+    assert variants[3].checkpoint_f1_variant == "range_usefulness"
+    assert variants[3].extra_args == ("--range_label_mode", "point_f1")
+    assert variants[4].checkpoint_f1_variant == "combined"
+    assert variants[5].checkpoint_f1_variant == "range_usefulness"
+    assert variants[5].extra_args == ("--mlqds_temporal_fraction", "0.00")
+    assert variants[6].checkpoint_f1_variant == "range_usefulness"
+    assert variants[6].extra_args == ("--mlqds_temporal_fraction", "0.50")
+    assert variants[7].checkpoint_f1_variant == "range_usefulness"
+    assert variants[7].extra_args == ("--residual_label_mode", "none")
+    assert variants[8].checkpoint_f1_variant == "range_usefulness"
+    assert variants[8].extra_args == ("--mlqds_score_mode", "rank_tie")
+    assert variants[9].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
+    assert variants[10].extra_args == (
         "--mlqds_score_mode",
         "rank_confidence",
         "--mlqds_rank_confidence_weight",
         "0.15",
     )
-    assert variants[7].extra_args == (
+    assert variants[11].extra_args == (
         "--mlqds_score_mode",
         "temperature_sigmoid",
         "--mlqds_score_temperature",
@@ -169,7 +196,12 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "mlqds_score_mode": "rank",
                 "mlqds_score_temperature": 1.0,
                 "mlqds_rank_confidence_weight": 0.15,
+                "residual_label_mode": "temporal",
+                "range_label_mode": "usefulness",
                 "range_boundary_prior_weight": 0.0,
+                "loss_objective": "budget_topk",
+                "budget_loss_ratios": [0.01, 0.02, 0.05, 0.10],
+                "budget_loss_temperature": 0.10,
             }
         },
         "oracle_diagnostic": {
@@ -177,7 +209,13 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "exact_optimum": False,
         },
         "matched": {
-            "MLQDS": {"aggregate_f1": 0.40, "range_boundary_f1": 0.25},
+            "MLQDS": {
+                "aggregate_f1": 0.40,
+                "range_point_f1": 0.40,
+                "range_usefulness_score": 0.42,
+                "range_entry_exit_f1": 0.25,
+                "range_boundary_f1": 0.25,
+            },
             "uniform": {"aggregate_f1": 0.35},
             "DouglasPeucker": {"aggregate_f1": 0.36},
         },
@@ -213,8 +251,16 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_score_mode"] == "rank"
     assert row["mlqds_score_temperature"] == 1.0
     assert row["mlqds_rank_confidence_weight"] == 0.15
+    assert row["residual_label_mode"] == "temporal"
+    assert row["range_label_mode"] == "usefulness"
+    assert row["loss_objective"] == "budget_topk"
+    assert row["budget_loss_ratios"] == [0.01, 0.02, 0.05, 0.10]
+    assert row["budget_loss_temperature"] == 0.10
     assert row["range_boundary_prior_weight"] == 0.0
     assert row["range_boundary_prior_enabled"] is False
+    assert row["mlqds_range_point_f1"] == 0.40
+    assert row["mlqds_range_usefulness_score"] == 0.42
+    assert row["mlqds_range_entry_exit_f1"] == 0.25
     assert row["mlqds_range_boundary_f1"] == 0.25
     assert row["oracle_kind"] == "additive_label_greedy"
     assert row["oracle_exact_optimum"] is False
@@ -226,6 +272,7 @@ def test_profile_args_use_csv_when_provided() -> None:
     args = argparse.Namespace(
         csv_path="../AISDATA/cleaned/day.csv",
         train_csv_path=None,
+        validation_csv_path=None,
         eval_csv_path=None,
         cache_dir="artifacts/cache/matrix",
         refresh_cache=True,
@@ -257,11 +304,12 @@ def test_profile_args_use_csv_when_provided() -> None:
     ]
 
 
-def test_profile_args_use_two_day_train_eval_sources() -> None:
+def test_profile_args_use_three_day_train_validation_eval_sources() -> None:
     args = argparse.Namespace(
         csv_path=None,
         train_csv_path="../AISDATA/cleaned/day1.csv",
-        eval_csv_path="../AISDATA/cleaned/day2.csv",
+        validation_csv_path="../AISDATA/cleaned/day2.csv",
+        eval_csv_path="../AISDATA/cleaned/day3.csv",
         cache_dir="artifacts/cache/matrix",
         refresh_cache=True,
         min_points_per_segment=4,
@@ -272,14 +320,17 @@ def test_profile_args_use_two_day_train_eval_sources() -> None:
     )
     data_sources = MatrixDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
-        eval_csv_path="../AISDATA/cleaned/day2.csv",
+        validation_csv_path="../AISDATA/cleaned/day2.csv",
+        eval_csv_path="../AISDATA/cleaned/day3.csv",
     )
 
     assert _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False) == [
         "--train_csv_path",
         "../AISDATA/cleaned/day1.csv",
-        "--eval_csv_path",
+        "--validation_csv_path",
         "../AISDATA/cleaned/day2.csv",
+        "--eval_csv_path",
+        "../AISDATA/cleaned/day3.csv",
         *_profile_core_args(),
         "--min_points_per_segment",
         "4",
@@ -294,7 +345,8 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
     args = argparse.Namespace(
         csv_path=None,
         train_csv_path="../AISDATA/cleaned/day1.csv",
-        eval_csv_path="../AISDATA/cleaned/day2.csv",
+        validation_csv_path="../AISDATA/cleaned/day2.csv",
+        eval_csv_path="../AISDATA/cleaned/day3.csv",
         cache_dir="artifacts/cache/matrix",
         refresh_cache=False,
         min_points_per_segment=4,
@@ -305,12 +357,13 @@ def test_real_usecase_profile_uses_requested_training_shape() -> None:
     )
     data_sources = MatrixDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
-        eval_csv_path="../AISDATA/cleaned/day2.csv",
+        validation_csv_path="../AISDATA/cleaned/day2.csv",
+        eval_csv_path="../AISDATA/cleaned/day3.csv",
     )
 
     profile_args = _profile_args(DEFAULT_PROFILE, args, data_sources, include_refresh_cache=False)
 
-    assert profile_args[4 : 4 + len(_profile_core_args())] == _profile_core_args()
+    assert profile_args[6 : 6 + len(_profile_core_args())] == _profile_core_args()
     assert "--max_points_per_segment" not in profile_args
     assert "--max_segments" not in profile_args
     assert "--max_trajectories" not in profile_args
@@ -327,7 +380,8 @@ def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:
         n_ships=24,
         n_points=200,
         train_csv_path="../AISDATA/cleaned/day1.csv",
-        eval_csv_path="../AISDATA/cleaned/day2.csv",
+        validation_csv_path="../AISDATA/cleaned/day2.csv",
+        eval_csv_path="../AISDATA/cleaned/day3.csv",
     )
 
     assert cfg.data.n_ships is None
@@ -350,7 +404,7 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
         max_trajectories=None,
     )
     variants = [MatrixVariant(name="fp32")]
-    sources = MatrixDataSources(train_csv_path="day1.csv", eval_csv_path="day2.csv")
+    sources = MatrixDataSources(train_csv_path="day1.csv", validation_csv_path="day2.csv", eval_csv_path="day3.csv")
     git = {"commit": "abc123", "dirty": False}
     running_status = {
         "status": "running",
@@ -406,22 +460,24 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
     assert events_text.count('"run_id": "run-a"') == 2
 
 
-def test_resolve_data_sources_selects_two_cleaned_days(tmp_path) -> None:
+def test_resolve_data_sources_selects_three_cleaned_days(tmp_path) -> None:
     (tmp_path / "aisdk-2026-02-02_cleaned.csv").write_text("x\n", encoding="utf-8")
     (tmp_path / "aisdk-2026-02-03_cleaned.csv").write_text("x\n", encoding="utf-8")
+    (tmp_path / "aisdk-2026-02-04_cleaned.csv").write_text("x\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("ignore\n", encoding="utf-8")
-    args = argparse.Namespace(csv_path=str(tmp_path), train_csv_path=None, eval_csv_path=None)
+    args = argparse.Namespace(csv_path=str(tmp_path), train_csv_path=None, validation_csv_path=None, eval_csv_path=None)
 
     sources = _resolve_data_sources(args)
 
     assert sources.csv_path is None
     assert sources.train_csv_path == str(tmp_path / "aisdk-2026-02-02_cleaned.csv")
-    assert sources.eval_csv_path == str(tmp_path / "aisdk-2026-02-03_cleaned.csv")
-    assert sources.csv_sources == (sources.train_csv_path, sources.eval_csv_path)
+    assert sources.validation_csv_path == str(tmp_path / "aisdk-2026-02-03_cleaned.csv")
+    assert sources.eval_csv_path == str(tmp_path / "aisdk-2026-02-04_cleaned.csv")
+    assert sources.csv_sources == (sources.train_csv_path, sources.validation_csv_path, sources.eval_csv_path)
 
 
 def test_resolve_data_sources_requires_paired_train_eval() -> None:
-    args = argparse.Namespace(csv_path=None, train_csv_path="train.csv", eval_csv_path=None)
+    args = argparse.Namespace(csv_path=None, train_csv_path="train.csv", validation_csv_path=None, eval_csv_path=None)
 
     with pytest.raises(ValueError, match="supplied together"):
         _resolve_data_sources(args)

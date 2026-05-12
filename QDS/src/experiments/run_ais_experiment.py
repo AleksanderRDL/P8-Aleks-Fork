@@ -127,10 +127,14 @@ def main() -> None:
         ranking_pairs_per_type=args.ranking_pairs_per_type,
         ranking_top_quantile=args.ranking_top_quantile,
         pointwise_loss_weight=args.pointwise_loss_weight,
+        loss_objective=args.loss_objective,
+        budget_loss_ratios=args.budget_loss_ratios,
+        budget_loss_temperature=args.budget_loss_temperature,
         gradient_clip_norm=args.gradient_clip_norm,
         compression_ratio=args.compression_ratio,
         csv_path=args.csv_path,
         train_csv_path=args.train_csv_path,
+        validation_csv_path=args.validation_csv_path,
         eval_csv_path=args.eval_csv_path,
         model_type=args.model_type,
         workload=args.workload,
@@ -153,7 +157,9 @@ def main() -> None:
         mlqds_score_temperature=args.mlqds_score_temperature,
         mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
         residual_label_mode=args.residual_label_mode,
+        range_label_mode=args.range_label_mode,
         range_boundary_prior_weight=args.range_boundary_prior_weight,
+        range_audit_compression_ratios=args.range_audit_compression_ratios,
         float32_matmul_precision=args.float32_matmul_precision,
         allow_tf32=args.allow_tf32,
         amp_mode=args.amp_mode,
@@ -174,6 +180,9 @@ def main() -> None:
         f"ranking_pairs_per_type={args.ranking_pairs_per_type}  "
         f"ranking_top_quantile={args.ranking_top_quantile}  "
         f"pointwise_loss_weight={args.pointwise_loss_weight}  "
+        f"loss_objective={args.loss_objective}  "
+        f"budget_loss_ratios={args.budget_loss_ratios}  "
+        f"budget_loss_temperature={args.budget_loss_temperature}  "
         f"gradient_clip_norm={args.gradient_clip_norm}  "
         f"train_batch_size={args.train_batch_size}  "
         f"inference_batch_size={args.inference_batch_size}  "
@@ -200,7 +209,9 @@ def main() -> None:
         f"mlqds_score_temperature={args.mlqds_score_temperature}  "
         f"mlqds_rank_confidence_weight={args.mlqds_rank_confidence_weight}  "
         f"residual_label_mode={args.residual_label_mode}  "
+        f"range_label_mode={args.range_label_mode}  "
         f"range_boundary_prior_weight={args.range_boundary_prior_weight}  "
+        f"range_audit_compression_ratios={args.range_audit_compression_ratios}  "
         f"min_points_per_segment={args.min_points_per_segment}  "
         f"max_points_per_segment={args.max_points_per_segment}  "
         f"max_time_gap_seconds={_normalized_gap_arg(args.max_time_gap_seconds)}  "
@@ -214,6 +225,7 @@ def main() -> None:
 
     t0 = time.perf_counter()
     mmsis: list[int] | None = None
+    validation_trajectories = None
     eval_trajectories = None
     eval_mmsis: list[int] | None = None
     data_audit = None
@@ -223,9 +235,12 @@ def main() -> None:
         "max_time_gap_seconds": _normalized_gap_arg(args.max_time_gap_seconds),
         "max_segments": args.max_segments,
     }
-    if args.train_csv_path or args.eval_csv_path:
+    if args.train_csv_path or args.eval_csv_path or args.validation_csv_path:
         if not args.train_csv_path or not args.eval_csv_path:
-            parser.error("--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together.")
+            parser.error(
+                "--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together; "
+                "--validation_csv_path is optional but also requires both."
+            )
         print(f"[load-data] reading train CSV: {args.train_csv_path}", flush=True)
         trajectories, mmsis, _train_audit, train_audit_payload = _load_csv_trajectories(
             "train",
@@ -234,6 +249,22 @@ def main() -> None:
             load_kwargs,
         )
         trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
+        validation_audit_payload = None
+        if args.validation_csv_path:
+            print(f"[load-data] reading validation CSV: {args.validation_csv_path}", flush=True)
+            validation_trajectories, _validation_mmsis, _validation_audit, validation_audit_payload = (
+                _load_csv_trajectories(
+                    "validation",
+                    args.validation_csv_path,
+                    args,
+                    load_kwargs,
+                )
+            )
+            validation_trajectories, _validation_mmsis = _cap_loaded_trajectories(
+                validation_trajectories,
+                _validation_mmsis,
+                args.max_trajectories,
+            )
         print(f"[load-data] reading eval CSV: {args.eval_csv_path}", flush=True)
         eval_trajectories, eval_mmsis, _eval_audit, eval_audit_payload = _load_csv_trajectories(
             "eval",
@@ -247,6 +278,8 @@ def main() -> None:
             args.max_trajectories,
         )
         data_audit = {"train": train_audit_payload, "eval": eval_audit_payload}
+        if validation_audit_payload is not None:
+            data_audit["validation"] = validation_audit_payload
     elif args.csv_path:
         print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
         trajectories, mmsis, _audit, audit_payload = _load_csv_trajectories(
@@ -270,8 +303,13 @@ def main() -> None:
     if eval_trajectories is None:
         print(f"[load-data] {len(trajectories)} trajectories loaded in {time.perf_counter() - t0:.2f}s", flush=True)
     else:
+        validation_part = (
+            f" validation={len(validation_trajectories)}"
+            if validation_trajectories is not None
+            else ""
+        )
         print(
-            f"[load-data] train={len(trajectories)} eval={len(eval_trajectories)} trajectories "
+            f"[load-data] train={len(trajectories)}{validation_part} eval={len(eval_trajectories)} trajectories "
             f"loaded in {time.perf_counter() - t0:.2f}s",
             flush=True,
         )
@@ -289,6 +327,7 @@ def main() -> None:
         save_queries_dir=args.save_queries_dir,
         save_simplified_dir=save_simplified_dir,
         trajectory_mmsis=mmsis,
+        validation_trajectories=validation_trajectories,
         eval_trajectories=eval_trajectories,
         eval_trajectory_mmsis=eval_mmsis,
         data_audit=data_audit,

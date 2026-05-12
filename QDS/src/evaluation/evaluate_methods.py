@@ -12,6 +12,7 @@ import torch
 from src.evaluation.baselines import Method
 from src.evaluation.metrics import (
     MethodEvaluation,
+    _polyline_length_km,
     clustering_f1,
     compute_geometric_distortion,
     compute_length_preservation,
@@ -22,6 +23,34 @@ from src.queries.query_types import normalize_pure_workload_map
 
 POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 POINT_AWARE_SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
+RANGE_USEFULNESS_WEIGHTS = {
+    "range_point_f1": 0.35,
+    "range_ship_f1": 0.20,
+    "range_entry_exit_f1": 0.15,
+    "range_temporal_coverage": 0.15,
+    "range_shape_score": 0.15,
+}
+
+
+@dataclass(frozen=True)
+class RangeTrajectoryAuditSupport:
+    """Retained-independent per-trajectory support for one range query."""
+
+    trajectory_id: int
+    start: int
+    in_offsets_cpu: torch.Tensor
+    full_time_span: float
+    full_length_km: float
+
+
+@dataclass(frozen=True)
+class RangeQueryAuditSupport:
+    """Retained-independent support reused across range audit methods and ratios."""
+
+    range_mask: torch.Tensor
+    boundary_indices_cpu: torch.Tensor
+    full_trajectory_ids: tuple[int, ...]
+    trajectories: tuple[RangeTrajectoryAuditSupport, ...]
 
 
 def _points_cache_token(points: torch.Tensor) -> tuple[int, int, tuple[int, ...], str, str]:
@@ -45,6 +74,7 @@ class EvaluationQueryCache:
     full_traj: list[torch.Tensor] | None = None
     full_results: dict[int, Any] = field(default_factory=dict)
     support_masks: dict[int, torch.Tensor] = field(default_factory=dict)
+    range_audit_supports: dict[int, RangeQueryAuditSupport] = field(default_factory=dict)
 
     @classmethod
     def for_workload(
@@ -92,6 +122,16 @@ class EvaluationQueryCache:
             self.support_masks[query_index] = builder()
         return self.support_masks[query_index]
 
+    def get_range_audit_support(
+        self,
+        query_index: int,
+        builder: Callable[[], RangeQueryAuditSupport],
+    ) -> RangeQueryAuditSupport:
+        """Return cached retained-independent range-audit support."""
+        if query_index not in self.range_audit_supports:
+            self.range_audit_supports[query_index] = builder()
+        return self.range_audit_supports[query_index]
+
 
 def _split_by_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
     """Split flattened points into trajectory list by boundaries. See src/evaluation/README.md for details."""
@@ -115,25 +155,6 @@ def _range_point_f1(retained_mask: torch.Tensor, range_mask: torch.Tensor) -> fl
     return _point_subset_f1(retained_mask.to(device=range_mask.device, dtype=torch.bool), range_mask)
 
 
-def _range_boundary_mask(range_mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> torch.Tensor:
-    """Return in-box points where a trajectory enters/leaves the range box."""
-    boundary = torch.zeros_like(range_mask, dtype=torch.bool)
-    for start, end in boundaries:
-        if end <= start:
-            continue
-        traj_in = range_mask[start:end]
-        if not bool(traj_in.any().item()):
-            continue
-        prev_out = torch.zeros_like(traj_in)
-        prev_out[1:] = traj_in[1:] & ~traj_in[:-1]
-        prev_out[0] = traj_in[0]
-        next_out = torch.zeros_like(traj_in)
-        next_out[:-1] = traj_in[:-1] & ~traj_in[1:]
-        next_out[-1] = traj_in[-1]
-        boundary[start:end] = prev_out | next_out
-    return boundary
-
-
 def score_range_boundary_preservation(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -141,26 +162,15 @@ def score_range_boundary_preservation(
     typed_queries: list[dict],
     query_cache: EvaluationQueryCache | None = None,
 ) -> float:
-    """Score retained range-boundary points separately from pure range F1."""
-    if query_cache is not None:
-        query_cache.validate(points, boundaries, typed_queries)
-
-    scores: list[float] = []
-    for query_index, query in enumerate(typed_queries):
-        if str(query.get("type", "")).lower() != "range":
-            continue
-        if query_cache is not None:
-            range_mask = query_cache.get_support_mask(
-                query_index,
-                lambda query=query: _range_box_mask(points, query["params"]),
-            )
-        else:
-            range_mask = _range_box_mask(points, query["params"])
-        boundary_mask = _range_boundary_mask(range_mask, boundaries)
-        if int(boundary_mask.sum().item()) <= 0:
-            continue
-        scores.append(_point_subset_f1(retained_mask.to(device=boundary_mask.device, dtype=torch.bool), boundary_mask))
-    return float(sum(scores) / len(scores)) if scores else 0.0
+    """Score retained range entry/exit points separately from range point F1."""
+    audit = score_range_usefulness(
+        points=points,
+        boundaries=boundaries,
+        retained_mask=retained_mask,
+        typed_queries=typed_queries,
+        query_cache=query_cache,
+    )
+    return float(audit.get("range_entry_exit_f1", 0.0))
 
 
 def _trajectory_id_per_point(n_points: int, boundaries: list[tuple[int, int]], device: torch.device) -> torch.Tensor:
@@ -203,6 +213,261 @@ def _point_subset_f1(retained_mask: torch.Tensor, support_mask: torch.Tensor) ->
         return 0.0
     recall = float(retained_hits / full_hits)
     return float((2.0 * recall) / (1.0 + recall))
+
+
+def _point_index_subset_f1(retained_mask: torch.Tensor, support_indices_cpu: torch.Tensor) -> float:
+    """Compute support-point F1 from compact support indices."""
+    full_hits = int(support_indices_cpu.numel())
+    if full_hits <= 0:
+        return 1.0
+    support_indices = support_indices_cpu.to(device=retained_mask.device, dtype=torch.long)
+    retained_hits = int(retained_mask[support_indices].sum().item())
+    if retained_hits <= 0:
+        return 0.0
+    recall = float(retained_hits / full_hits)
+    return float((2.0 * recall) / (1.0 + recall))
+
+
+def _mean(values: list[float], default: float = 0.0) -> float:
+    """Return a float mean with an explicit empty-list default."""
+    return float(sum(values) / len(values)) if values else float(default)
+
+
+def _trajectory_ids_for_mask(mask: torch.Tensor, point_trajectory_ids: torch.Tensor) -> list[int]:
+    """Return sorted trajectory IDs with at least one true point in a mask."""
+    if not bool(mask.any().item()):
+        return []
+    ids = torch.unique(point_trajectory_ids[mask])
+    return sorted(int(value) for value in ids.detach().cpu().tolist() if int(value) >= 0)
+
+
+def _range_boundary_indices_for_trajectories(
+    range_mask: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    trajectory_ids: list[int],
+) -> torch.Tensor:
+    """Return compact in-box entry/exit point indices for hit trajectories."""
+    boundary_indices: list[torch.Tensor] = []
+    for trajectory_id in trajectory_ids:
+        if trajectory_id < 0 or trajectory_id >= len(boundaries):
+            continue
+        start, end = boundaries[trajectory_id]
+        if end <= start:
+            continue
+        traj_in = range_mask[start:end]
+        if not bool(traj_in.any().item()):
+            continue
+        enters = torch.zeros_like(traj_in)
+        enters[1:] = traj_in[1:] & ~traj_in[:-1]
+        enters[0] = traj_in[0]
+        exits = torch.zeros_like(traj_in)
+        exits[:-1] = traj_in[:-1] & ~traj_in[1:]
+        exits[-1] = traj_in[-1]
+        local_indices = torch.where(enters | exits)[0]
+        if local_indices.numel() > 0:
+            boundary_indices.append((local_indices + int(start)).detach().cpu())
+    if not boundary_indices:
+        return torch.empty((0,), dtype=torch.long)
+    return torch.cat(boundary_indices).to(dtype=torch.long)
+
+
+def _build_range_query_audit_support(
+    points_cpu: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    range_mask: torch.Tensor,
+    point_trajectory_ids: torch.Tensor,
+) -> RangeQueryAuditSupport:
+    """Build retained-independent support for one range query."""
+    range_mask = range_mask.bool()
+    full_ids = tuple(_trajectory_ids_for_mask(range_mask, point_trajectory_ids))
+    boundary_indices_cpu = _range_boundary_indices_for_trajectories(range_mask, boundaries, list(full_ids))
+    range_mask_cpu = range_mask.detach().cpu()
+    trajectory_support: list[RangeTrajectoryAuditSupport] = []
+    for trajectory_id in full_ids:
+        if trajectory_id < 0 or trajectory_id >= len(boundaries):
+            continue
+        start, end = boundaries[trajectory_id]
+        if end <= start:
+            continue
+        in_offsets = torch.where(range_mask_cpu[start:end])[0].cpu()
+        if in_offsets.numel() == 0:
+            continue
+
+        times = points_cpu[start:end, 0]
+        full_span = float((times[in_offsets[-1]] - times[in_offsets[0]]).item())
+        full_points = points_cpu[start + in_offsets]
+        full_length = _polyline_length_km(full_points[:, 1], full_points[:, 2])
+        trajectory_support.append(
+            RangeTrajectoryAuditSupport(
+                trajectory_id=int(trajectory_id),
+                start=int(start),
+                in_offsets_cpu=in_offsets,
+                full_time_span=float(full_span),
+                full_length_km=float(full_length),
+            )
+        )
+
+    return RangeQueryAuditSupport(
+        range_mask=range_mask,
+        boundary_indices_cpu=boundary_indices_cpu,
+        full_trajectory_ids=full_ids,
+        trajectories=tuple(trajectory_support),
+    )
+
+
+def _range_query_audit_support(
+    *,
+    points: torch.Tensor,
+    points_cpu: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    query_index: int,
+    query: dict,
+    point_trajectory_ids: torch.Tensor,
+    query_cache: EvaluationQueryCache | None,
+) -> RangeQueryAuditSupport:
+    """Return retained-independent audit support, using caller cache when available."""
+    def build_range_mask() -> torch.Tensor:
+        return _range_box_mask(points, query["params"])
+
+    def build_support() -> RangeQueryAuditSupport:
+        if query_cache is not None:
+            range_mask = query_cache.get_support_mask(query_index, build_range_mask)
+        else:
+            range_mask = build_range_mask()
+        return _build_range_query_audit_support(
+            points_cpu=points_cpu,
+            boundaries=boundaries,
+            range_mask=range_mask,
+            point_trajectory_ids=point_trajectory_ids,
+        )
+
+    if query_cache is not None:
+        return query_cache.get_range_audit_support(query_index, build_support)
+    return build_support()
+
+
+def _range_temporal_and_shape_scores_for_query(
+    points_cpu: torch.Tensor,
+    retained_cpu: torch.Tensor,
+    trajectory_support: tuple[RangeTrajectoryAuditSupport, ...],
+) -> tuple[float, float]:
+    """Return query-level temporal coverage and local path-length preservation."""
+    temporal_scores: list[float] = []
+    shape_scores: list[float] = []
+    times = points_cpu[:, 0]
+    for support in trajectory_support:
+        in_offsets = support.in_offsets_cpu
+        start = int(support.start)
+        retained_offsets = in_offsets[retained_cpu[start + in_offsets]]
+        if retained_offsets.numel() == 0:
+            temporal_scores.append(0.0)
+            shape_scores.append(0.0)
+            continue
+
+        if support.full_time_span <= 1e-9:
+            temporal_scores.append(1.0)
+        elif retained_offsets.numel() < 2:
+            temporal_scores.append(0.0)
+        else:
+            retained_span = float((times[start + retained_offsets[-1]] - times[start + retained_offsets[0]]).item())
+            temporal_scores.append(float(max(0.0, min(1.0, retained_span / support.full_time_span))))
+
+        if support.full_length_km <= 1e-9:
+            shape_scores.append(1.0)
+        elif retained_offsets.numel() < 2:
+            shape_scores.append(0.0)
+        else:
+            retained_points = points_cpu[start + retained_offsets]
+            retained_length = _polyline_length_km(retained_points[:, 1], retained_points[:, 2])
+            shape_scores.append(float(max(0.0, min(1.0, retained_length / support.full_length_km))))
+
+    return _mean(temporal_scores, default=1.0), _mean(shape_scores, default=1.0)
+
+
+def score_range_usefulness(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    typed_queries: list[dict],
+    query_cache: EvaluationQueryCache | None = None,
+) -> dict[str, Any]:
+    """Audit range simplification with point, ship, entry/exit, temporal, and shape components.
+
+    `range_point_f1` is the current retained in-box point metric. The combined
+    `range_usefulness_score` is an audit score for comparing candidates; it is
+    intentionally reported separately instead of replacing final F1 semantics.
+    """
+    if query_cache is not None:
+        query_cache.validate(points, boundaries, typed_queries)
+
+    retained_bool = retained_mask.to(device=points.device, dtype=torch.bool)
+    point_trajectory_ids = _trajectory_id_per_point(points.shape[0], boundaries, points.device)
+    points_cpu = points.detach().cpu()
+    retained_cpu = retained_bool.detach().cpu()
+
+    point_scores: list[float] = []
+    ship_scores: list[float] = []
+    entry_exit_scores: list[float] = []
+    temporal_scores: list[float] = []
+    shape_scores: list[float] = []
+
+    for query_index, query in enumerate(typed_queries):
+        if str(query.get("type", "")).lower() != "range":
+            continue
+        support = _range_query_audit_support(
+            points=points,
+            points_cpu=points_cpu,
+            boundaries=boundaries,
+            query_index=query_index,
+            query=query,
+            point_trajectory_ids=point_trajectory_ids,
+            query_cache=query_cache,
+        )
+        range_mask = support.range_mask.to(device=points.device, dtype=torch.bool)
+        retained_in_range = retained_bool & range_mask
+        point_scores.append(_range_point_f1(retained_bool, range_mask))
+
+        retained_ids = _trajectory_ids_for_mask(retained_in_range, point_trajectory_ids)
+        ship_scores.append(f1_score(set(support.full_trajectory_ids), set(retained_ids)))
+
+        entry_exit_scores.append(_point_index_subset_f1(retained_bool, support.boundary_indices_cpu))
+
+        temporal_score, shape_score = _range_temporal_and_shape_scores_for_query(
+            points_cpu=points_cpu,
+            retained_cpu=retained_cpu,
+            trajectory_support=support.trajectories,
+        )
+        temporal_scores.append(temporal_score)
+        shape_scores.append(shape_score)
+
+    query_count = len(point_scores)
+    range_point_f1 = _mean(point_scores)
+    range_ship_f1 = _mean(ship_scores)
+    range_entry_exit_f1 = _mean(entry_exit_scores)
+    range_temporal_coverage = _mean(temporal_scores)
+    range_shape_score = _mean(shape_scores)
+    range_usefulness_score = sum(
+        float(RANGE_USEFULNESS_WEIGHTS[name]) * value
+        for name, value in (
+            ("range_point_f1", range_point_f1),
+            ("range_ship_f1", range_ship_f1),
+            ("range_entry_exit_f1", range_entry_exit_f1),
+            ("range_temporal_coverage", range_temporal_coverage),
+            ("range_shape_score", range_shape_score),
+        )
+    )
+    return {
+        "range_query_count": int(query_count),
+        "range_point_f1": float(range_point_f1),
+        "pure_range_f1": float(range_point_f1),
+        "range_ship_f1": float(range_ship_f1),
+        "range_entry_exit_f1": float(range_entry_exit_f1),
+        "range_boundary_f1": float(range_entry_exit_f1),
+        "range_temporal_coverage": float(range_temporal_coverage),
+        "range_shape_score": float(range_shape_score),
+        "range_usefulness_score": float(range_usefulness_score),
+        "range_usefulness_weights": dict(RANGE_USEFULNESS_WEIGHTS),
+    }
 
 
 def _knn_representative_mask(
@@ -456,13 +721,14 @@ def evaluate_method(
     geometric = compute_geometric_distortion(points, boundaries, retained_mask)
     avg_length_preserved = compute_length_preservation(points, boundaries, retained_mask)
     combined = float(aggregate) * max(0.0, min(1.0, avg_length_preserved))
-    boundary_f1 = score_range_boundary_preservation(
+    range_audit = score_range_usefulness(
         points=points,
         boundaries=boundaries,
         retained_mask=retained_mask,
         typed_queries=typed_queries,
         query_cache=query_cache,
     )
+    boundary_f1 = float(range_audit.get("range_entry_exit_f1", 0.0))
 
     return MethodEvaluation(
         aggregate_f1=float(aggregate),
@@ -478,44 +744,84 @@ def evaluate_method(
         avg_length_preserved=avg_length_preserved,
         combined_query_shape_score=combined,
         range_boundary_f1=boundary_f1,
+        range_point_f1=float(range_audit.get("range_point_f1", per_type.get("range", 0.0))),
+        range_ship_f1=float(range_audit.get("range_ship_f1", 0.0)),
+        range_entry_exit_f1=boundary_f1,
+        range_temporal_coverage=float(range_audit.get("range_temporal_coverage", 0.0)),
+        range_shape_score=float(range_audit.get("range_shape_score", 0.0)),
+        range_usefulness_score=float(range_audit.get("range_usefulness_score", 0.0)),
+        range_audit=range_audit,
         retained_mask=retained_mask if return_mask else None,
     )
 
 
-def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
-    """Render fixed-width method comparison table with per-type rows. See src/evaluation/README.md for details.
+def _range_focused_results(results: dict[str, MethodEvaluation]) -> bool:
+    """Return true when a result table represents a pure range workload."""
+    saw_range = False
+    for metrics in results.values():
+        if int(metrics.range_audit.get("range_query_count", 0) or 0) > 0:
+            saw_range = True
+        elif set(metrics.per_type_f1) <= {"range"} and "range" in metrics.per_type_f1:
+            saw_range = True
+        for qtype, value in metrics.per_type_f1.items():
+            if qtype != "range" and abs(float(value)) > 1e-12:
+                return False
+    return saw_range
 
-    Shows two F1 columns: AnswerF1 = pure set/cluster F1 between full and
-    simplified queries (the natural metric); CombinedF1 = legacy
-    answer_f1 * point_subset_f1 product kept for diagnostic comparison.
-    """
-    col1, col2, col3, col4, col5, col6, col7 = 24, 12, 12, 12, 12, 14, 12
+
+def _range_point_metric(metrics: MethodEvaluation) -> float:
+    """Return the explicit range point metric with compatibility fallback."""
+    if int(metrics.range_audit.get("range_query_count", 0) or 0) > 0:
+        return float(metrics.range_point_f1)
+    return float(metrics.per_type_f1.get("range", metrics.aggregate_f1))
+
+
+def _range_usefulness_metric(metrics: MethodEvaluation) -> float:
+    """Return the explicit range usefulness metric with compatibility fallback."""
+    if int(metrics.range_audit.get("range_query_count", 0) or 0) > 0:
+        return float(metrics.range_usefulness_score)
+    if metrics.range_usefulness_score > 0.0:
+        return float(metrics.range_usefulness_score)
+    return float(metrics.aggregate_combined_f1 or _range_point_metric(metrics))
+
+
+def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
+    """Render fixed-width method comparison table with workload-specific F1 labels."""
+    range_focused = _range_focused_results(results)
+    col1, col2, col3, col4, col5, col6, col7 = 24, 14, 13, 12, 12, 14, 13
+    primary_label = "RangePointF1" if range_focused else "AnswerF1"
+    secondary_label = "RangeUseful" if range_focused else "CombinedF1"
+    boundary_label = "EntryExitF1" if range_focused else "BoundaryF1"
     lines = []
     header = (
         f"{'Method':<{col1}}"
-        f"{'AnswerF1':>{col2}}"
-        f"{'CombinedF1':>{col3}}"
+        f"{primary_label:>{col2}}"
+        f"{secondary_label:>{col3}}"
         f"{'Compression':>{col4}}"
         f"{'AvgPtGap':>{col5}}"
         f"{'Latency(ms)':>{col6}}"
-        f"{'BoundaryF1':>{col7}}"
+        f"{boundary_label:>{col7}}"
         f"{'Type':>{col7}}"
     )
     lines.append(header)
     lines.append("-" * len(header))
 
+    type_rows: tuple[str, ...] = () if range_focused else ("range", "knn", "similarity", "clustering")
     for name, metrics in results.items():
+        primary = _range_point_metric(metrics) if range_focused else float(metrics.aggregate_f1)
+        secondary = _range_usefulness_metric(metrics) if range_focused else float(metrics.aggregate_combined_f1)
+        entry_exit = float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1)
         lines.append(
             f"{name:<{col1}}"
-            f"{metrics.aggregate_f1:>{col2}.6f}"
-            f"{metrics.aggregate_combined_f1:>{col3}.6f}"
+            f"{primary:>{col2}.6f}"
+            f"{secondary:>{col3}.6f}"
             f"{metrics.compression_ratio:>{col4}.4f}"
             f"{metrics.avg_retained_point_gap:>{col5}.2f}"
             f"{metrics.latency_ms:>{col6}.2f}"
-            f"{metrics.range_boundary_f1:>{col7}.6f}"
+            f"{entry_exit:>{col7}.6f}"
             f"{'all':>{col7}}"
         )
-        for t_name in ("range", "knn", "similarity", "clustering"):
+        for t_name in type_rows:
             lines.append(
                 f"{'  - ' + t_name:<{col1}}"
                 f"{metrics.per_type_f1.get(t_name, 0.0):>{col2}.6f}"
@@ -540,14 +846,21 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
     ]
     if mlqds is not None and any(ref is not None for _, ref in diff_references):
         lines.append("-" * len(header))
-        lines.append(f"{'Diff vs MLQDS (AnswerF1 / CombinedF1; abs and % vs baseline)':<{col1}}")
+        metric_pair = "RangePointF1 / RangeUseful" if range_focused else "AnswerF1 / CombinedF1"
+        lines.append(f"{f'Diff vs MLQDS ({metric_pair}; abs and % vs baseline)':<{col1}}")
         for ref_name, ref in diff_references:
             if ref is None:
                 continue
-            agg_ans = mlqds.aggregate_f1 - ref.aggregate_f1
-            agg_comb = mlqds.aggregate_combined_f1 - ref.aggregate_combined_f1
-            agg_ans_pct = _rel_pct(agg_ans, ref.aggregate_f1)
-            agg_comb_pct = _rel_pct(agg_comb, ref.aggregate_combined_f1)
+            if range_focused:
+                agg_ans = _range_point_metric(mlqds) - _range_point_metric(ref)
+                agg_comb = _range_usefulness_metric(mlqds) - _range_usefulness_metric(ref)
+                agg_ans_pct = _rel_pct(agg_ans, _range_point_metric(ref))
+                agg_comb_pct = _rel_pct(agg_comb, _range_usefulness_metric(ref))
+            else:
+                agg_ans = mlqds.aggregate_f1 - ref.aggregate_f1
+                agg_comb = mlqds.aggregate_combined_f1 - ref.aggregate_combined_f1
+                agg_ans_pct = _rel_pct(agg_ans, ref.aggregate_f1)
+                agg_comb_pct = _rel_pct(agg_comb, ref.aggregate_combined_f1)
             label = f"  vs {ref_name}"
             lines.append(
                 f"{label:<{col1}}"
@@ -569,7 +882,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                 f"{'':>{col7}}"
                 f"{'all':>{col7}}"
             )
-            for t_name in ("range", "knn", "similarity", "clustering"):
+            for t_name in type_rows:
                 ref_ans = ref.per_type_f1.get(t_name, 0.0)
                 ref_comb = ref.per_type_combined_f1.get(t_name, 0.0)
                 t_ans = mlqds.per_type_f1.get(t_name, 0.0) - ref_ans
@@ -596,6 +909,32 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
                     f"{'':>{col7}}"
                     f"{t_name:>{col7}}"
                 )
+    return "\n".join(lines)
+
+
+def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
+    """Render detailed range usefulness audit components."""
+    col1, col2, col3, col4, col5, col6, col7 = 24, 14, 10, 13, 13, 12, 13
+    header = (
+        f"{'Method':<{col1}}"
+        f"{'RangePointF1':>{col2}}"
+        f"{'ShipF1':>{col3}}"
+        f"{'EntryExitF1':>{col4}}"
+        f"{'TemporalCov':>{col5}}"
+        f"{'ShapeScore':>{col6}}"
+        f"{'RangeUseful':>{col7}}"
+    )
+    lines = [header, "-" * len(header)]
+    for name, metrics in results.items():
+        lines.append(
+            f"{name:<{col1}}"
+            f"{_range_point_metric(metrics):>{col2}.6f}"
+            f"{metrics.range_ship_f1:>{col3}.6f}"
+            f"{float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1):>{col4}.6f}"
+            f"{metrics.range_temporal_coverage:>{col5}.6f}"
+            f"{metrics.range_shape_score:>{col6}.6f}"
+            f"{_range_usefulness_metric(metrics):>{col7}.6f}"
+        )
     return "\n".join(lines)
 
 

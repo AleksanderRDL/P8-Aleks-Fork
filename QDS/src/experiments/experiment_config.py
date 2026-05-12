@@ -29,6 +29,7 @@ class DataConfig:
     max_trajectories: int | None = None
     csv_path: str | None = None
     train_csv_path: str | None = None
+    validation_csv_path: str | None = None
     eval_csv_path: str | None = None
     cache_dir: str | None = None
     refresh_cache: bool = False
@@ -99,6 +100,9 @@ class ModelConfig:
     ranking_pairs_per_type: int = 96
     ranking_top_quantile: float = 0.80
     pointwise_loss_weight: float = 0.25
+    loss_objective: str = "budget_topk"
+    budget_loss_ratios: list[float] = field(default_factory=lambda: [0.01, 0.02, 0.05, 0.10])
+    budget_loss_temperature: float = 0.10
     gradient_clip_norm: float = 1.0
     l2_score_weight: float = 1e-4
     early_stopping_patience: int = 0
@@ -111,14 +115,16 @@ class ModelConfig:
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
     checkpoint_smoothing_window: int = 1
-    checkpoint_f1_variant: str = "answer"
+    checkpoint_f1_variant: str = "range_usefulness"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.05
     mlqds_score_mode: str = "rank"
     mlqds_score_temperature: float = 1.0
     mlqds_rank_confidence_weight: float = 0.15
     residual_label_mode: str = "temporal"
+    range_label_mode: str = "usefulness"
     range_boundary_prior_weight: float = 0.0
+    range_audit_compression_ratios: list[float] = field(default_factory=list)
     float32_matmul_precision: str = "highest"
     allow_tf32: bool = False
     amp_mode: str = "off"
@@ -254,10 +260,14 @@ def build_experiment_config(
     ranking_pairs_per_type: int = 96,
     ranking_top_quantile: float = 0.80,
     pointwise_loss_weight: float = 0.25,
+    loss_objective: str = "budget_topk",
+    budget_loss_ratios: list[float] | None = None,
+    budget_loss_temperature: float = 0.10,
     gradient_clip_norm: float = 1.0,
     compression_ratio: float = 0.2,
     csv_path: str | None = None,
     train_csv_path: str | None = None,
+    validation_csv_path: str | None = None,
     eval_csv_path: str | None = None,
     cache_dir: str | None = None,
     refresh_cache: bool = False,
@@ -275,7 +285,7 @@ def build_experiment_config(
     checkpoint_uniform_gap_weight: float = 0.5,
     checkpoint_type_penalty_weight: float = 1.0,
     checkpoint_smoothing_window: int = 1,
-    checkpoint_f1_variant: str = "answer",
+    checkpoint_f1_variant: str = "range_usefulness",
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
@@ -283,13 +293,15 @@ def build_experiment_config(
     mlqds_score_temperature: float = 1.0,
     mlqds_rank_confidence_weight: float = 0.15,
     residual_label_mode: str = "temporal",
+    range_label_mode: str = "usefulness",
     range_boundary_prior_weight: float = 0.0,
+    range_audit_compression_ratios: list[float] | None = None,
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
     amp_mode: str = "off",
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
-    uses_csv = bool(csv_path or train_csv_path or eval_csv_path)
+    uses_csv = bool(csv_path or train_csv_path or validation_csv_path or eval_csv_path)
     return ExperimentConfig(
         data=DataConfig(
             n_ships=None if uses_csv else n_ships,
@@ -301,6 +313,7 @@ def build_experiment_config(
             max_trajectories=max_trajectories,
             csv_path=csv_path,
             train_csv_path=train_csv_path,
+            validation_csv_path=validation_csv_path,
             eval_csv_path=eval_csv_path,
             cache_dir=cache_dir,
             refresh_cache=refresh_cache,
@@ -331,6 +344,9 @@ def build_experiment_config(
             ranking_pairs_per_type=ranking_pairs_per_type,
             ranking_top_quantile=ranking_top_quantile,
             pointwise_loss_weight=pointwise_loss_weight,
+            loss_objective=loss_objective,
+            budget_loss_ratios=list(budget_loss_ratios or [0.01, 0.02, 0.05, 0.10]),
+            budget_loss_temperature=budget_loss_temperature,
             gradient_clip_norm=gradient_clip_norm,
             compression_ratio=compression_ratio,
             model_type=model_type,
@@ -352,7 +368,9 @@ def build_experiment_config(
             mlqds_score_temperature=mlqds_score_temperature,
             mlqds_rank_confidence_weight=mlqds_rank_confidence_weight,
             residual_label_mode=residual_label_mode,
+            range_label_mode=range_label_mode,
             range_boundary_prior_weight=range_boundary_prior_weight,
+            range_audit_compression_ratios=list(range_audit_compression_ratios or []),
             float32_matmul_precision=float32_matmul_precision,
             allow_tf32=allow_tf32,
             amp_mode=amp_mode,

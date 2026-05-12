@@ -80,10 +80,9 @@ Several important improvements are already present:
 - Result reporting now distinguishes query F1 from shape preservation through
   SED/PED, `LengthPres`, `F1xLen`, and explicit MLQDS gaps versus the main
   baselines.
-- The primary result table now separates `AnswerF1` from `CombinedF1`, where
-  `AnswerF1` is the pure query-answer score and `CombinedF1` is the legacy
-  answer/support product retained for diagnostics and optional checkpoint
-  selection.
+- The primary result table reports `RangePointF1` and `RangeUseful` for range
+  workloads. Non-range answer-set workloads still use `AnswerF1` and
+  `CombinedF1`.
 - The geometric baseline is now a true recursive Douglas-Peucker implementation
   rather than the earlier first-last chord proxy.
 - Large-tensor sampling and quantile safeguards are in place for combined-day
@@ -763,7 +762,8 @@ The existing layer already has important foundations:
 
 - matched-budget evaluation at the same compression ratio
 - baselines for uniform temporal sampling, true recursive Douglas-Peucker geometry, and Oracle
-- aggregate and per-query-type `AnswerF1` / `CombinedF1` reporting
+- range `RangePointF1` / `RangeUseful` reporting plus non-range
+  `AnswerF1` / `CombinedF1` reporting
 - point-aware range query scoring
 - kNN, similarity, and clustering scoring that combines answer-set F1 with retained point-support preservation
 - geometric distortion reporting through SED, PED, length preservation, and `F1xLen`

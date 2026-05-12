@@ -814,12 +814,13 @@ Range benchmark tightening, 2026-05-10:
 - Added cache warmup for cleaned-CSV matrix runs. When `--cache_dir` is set,
   the matrix prebuilds the segmented Parquet caches before measured variants
   and records warmup metadata in `benchmark_matrix.json`.
-- Updated the range real-usecase matrix profile to use two cleaned CSV days:
-  passing `--csv_path ../AISDATA/cleaned` selects the first two sorted cleaned
-  files as train/eval days. Explicit `--train_csv_path` and `--eval_csv_path`
-  can be used to choose the days manually.
-- Removed loader caps from the recommended two-day profile so the benchmark
-  uses all valid segments and points from both days unless a cap is explicitly
+- Updated the range real-usecase matrix profile to use three cleaned CSV days:
+  passing `--csv_path ../AISDATA/cleaned` selects the first three sorted cleaned
+  files as train/checkpoint-validation/eval days. Explicit `--train_csv_path`,
+  `--validation_csv_path`, and `--eval_csv_path` can be used to choose the days
+  manually.
+- Removed loader caps from the recommended three-day profile so the benchmark
+  uses all valid segments and points from those days unless a cap is explicitly
   passed.
 - Current range real-usecase benchmark shape:
 
@@ -836,12 +837,14 @@ cd QDS
 
   Current canonical profile settings are documented in
   `QDS/src/experiments/README.md`. As of the current range real-usecase profile:
-  80 range queries, 20% target query coverage, fixed 2.2 km / 3 hour range
+  80 range queries, 20% target query coverage, fixed 2.2 km / 5 hour range
   half-windows, 5% retained-point compression, `query_chunk_size=2048`,
-  20 epochs with early stopping, answer-set F1 checkpointing,
+  20 epochs with early stopping, range-usefulness checkpointing,
   `checkpoint_smoothing_window=1` (no rolling smoothing), vectorized
-  ranking-pair sampling, `mlqds_temporal_fraction=0.25`, and F1 diagnostics
-  every epoch.
+  ranking-pair sampling, `mlqds_temporal_fraction=0.75`,
+  `residual_label_mode=temporal`, and F1 diagnostics every epoch. Budget-top-k
+  training now applies temporal residual masking per retained-point budget
+  instead of globally removing one fixed temporal-base mask.
 
 - Removed the old synthetic `small`/`medium`/`serious` runtime benchmark
   profiles from `benchmark_runtime.py`. The runtime wrapper now exposes only
@@ -943,8 +946,9 @@ Acceptance check:
 Task:
 
 - Keep `checkpoint_selection_metric="f1"` as the default for real-usecase runs.
-- Compare `checkpoint_f1_variant="answer"` against `"combined"` in benchmark
-  matrices.
+- Use `checkpoint_f1_variant="range_usefulness"` as the default for
+  range-specialist real-usecase runs. Keep `"answer"` and `"combined"` only as
+  explicit legacy ablations.
 - Keep `uniform_gap` available as an explicit experimental variant rather than
   the default.
 

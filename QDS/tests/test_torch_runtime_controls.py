@@ -39,6 +39,9 @@ def test_apply_torch_runtime_settings_sets_precision_and_tf32() -> None:
 
 def test_experiment_config_roundtrips_precision_controls() -> None:
     cfg = build_experiment_config(
+        train_csv_path="train.csv",
+        validation_csv_path="validation.csv",
+        eval_csv_path="eval.csv",
         float32_matmul_precision="high",
         allow_tf32=True,
         train_batch_size=64,
@@ -46,6 +49,10 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         query_chunk_size=512,
         amp_mode="bf16",
         range_boundary_prior_weight=1.0,
+        range_label_mode="point_f1",
+        loss_objective="ranking_bce",
+        budget_loss_ratios=[0.02, 0.05],
+        budget_loss_temperature=0.2,
         ranking_pairs_per_type=192,
         ranking_top_quantile=0.9,
         range_spatial_km=2.2,
@@ -53,16 +60,24 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         mlqds_score_mode="rank_confidence",
         mlqds_score_temperature=0.5,
         mlqds_rank_confidence_weight=0.3,
+        range_audit_compression_ratios=[0.01, 0.05],
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
 
     assert restored.model.float32_matmul_precision == "high"
+    assert restored.data.train_csv_path == "train.csv"
+    assert restored.data.validation_csv_path == "validation.csv"
+    assert restored.data.eval_csv_path == "eval.csv"
     assert restored.model.allow_tf32 is True
     assert restored.model.train_batch_size == 64
     assert restored.model.inference_batch_size == 32
     assert restored.model.query_chunk_size == 512
     assert restored.model.amp_mode == "bf16"
     assert restored.model.range_boundary_prior_weight == 1.0
+    assert restored.model.range_label_mode == "point_f1"
+    assert restored.model.loss_objective == "ranking_bce"
+    assert restored.model.budget_loss_ratios == [0.02, 0.05]
+    assert restored.model.budget_loss_temperature == 0.2
     assert restored.model.ranking_pairs_per_type == 192
     assert restored.model.ranking_top_quantile == 0.9
     assert restored.query.range_spatial_km == 2.2
@@ -70,6 +85,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.mlqds_score_mode == "rank_confidence"
     assert restored.model.mlqds_score_temperature == 0.5
     assert restored.model.mlqds_rank_confidence_weight == 0.3
+    assert restored.model.range_audit_compression_ratios == [0.01, 0.05]
     assert restored.model.checkpoint_selection_metric == "f1"
 
 
@@ -86,6 +102,18 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "0.50",
             "--mlqds_rank_confidence_weight",
             "0.30",
+            "--range_audit_compression_ratios",
+            "0.01,0.02,0.10",
+            "--range_label_mode",
+            "point_f1",
+            "--loss_objective",
+            "budget_topk",
+            "--budget_loss_ratios",
+            "0.01,0.05",
+            "--budget_loss_temperature",
+            "0.20",
+            "--validation_csv_path",
+            "validation.csv",
         ]
     )
 
@@ -95,6 +123,12 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
         mlqds_score_mode=args.mlqds_score_mode,
         mlqds_score_temperature=args.mlqds_score_temperature,
         mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
+        range_audit_compression_ratios=args.range_audit_compression_ratios,
+        range_label_mode=args.range_label_mode,
+        loss_objective=args.loss_objective,
+        budget_loss_ratios=args.budget_loss_ratios,
+        budget_loss_temperature=args.budget_loss_temperature,
+        validation_csv_path=args.validation_csv_path,
     )
 
     assert args.ranking_pairs_per_type == 64
@@ -102,11 +136,23 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.mlqds_score_mode == "rank_confidence"
     assert args.mlqds_score_temperature == 0.50
     assert args.mlqds_rank_confidence_weight == 0.30
+    assert args.range_audit_compression_ratios == [0.01, 0.02, 0.10]
+    assert args.range_label_mode == "point_f1"
+    assert args.loss_objective == "budget_topk"
+    assert args.budget_loss_ratios == [0.01, 0.05]
+    assert args.budget_loss_temperature == 0.20
+    assert args.validation_csv_path == "validation.csv"
     assert cfg.model.ranking_pairs_per_type == 64
     assert cfg.model.ranking_top_quantile == 0.70
     assert cfg.model.mlqds_score_mode == "rank_confidence"
     assert cfg.model.mlqds_score_temperature == 0.50
     assert cfg.model.mlqds_rank_confidence_weight == 0.30
+    assert cfg.model.range_audit_compression_ratios == [0.01, 0.02, 0.10]
+    assert cfg.model.range_label_mode == "point_f1"
+    assert cfg.model.loss_objective == "budget_topk"
+    assert cfg.model.budget_loss_ratios == [0.01, 0.05]
+    assert cfg.model.budget_loss_temperature == 0.20
+    assert cfg.data.validation_csv_path == "validation.csv"
 
 
 def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
@@ -116,6 +162,11 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     payload["model"].pop("inference_batch_size")
     payload["model"].pop("amp_mode")
     payload["model"].pop("range_boundary_prior_weight")
+    payload["model"].pop("range_label_mode")
+    payload["model"].pop("loss_objective")
+    payload["model"].pop("budget_loss_ratios")
+    payload["model"].pop("budget_loss_temperature")
+    payload["model"].pop("range_audit_compression_ratios")
     payload["model"].pop("mlqds_score_mode")
     payload["model"].pop("mlqds_score_temperature")
     payload["model"].pop("mlqds_rank_confidence_weight")
@@ -127,10 +178,16 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.model.inference_batch_size == 16
     assert restored.model.amp_mode == "off"
     assert restored.model.range_boundary_prior_weight == 0.0
+    assert restored.model.range_label_mode == "usefulness"
+    assert restored.model.loss_objective == "budget_topk"
+    assert restored.model.budget_loss_ratios == [0.01, 0.02, 0.05, 0.10]
+    assert restored.model.budget_loss_temperature == 0.10
+    assert restored.model.range_audit_compression_ratios == []
     assert restored.model.mlqds_score_mode == "rank"
     assert restored.model.mlqds_score_temperature == 1.0
     assert restored.model.mlqds_rank_confidence_weight == 0.15
     assert restored.model.checkpoint_selection_metric == "f1"
+    assert restored.model.checkpoint_f1_variant == "range_usefulness"
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:
@@ -180,10 +237,15 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
-    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.25"
+    assert args[args.index("--loss_objective") + 1] == "budget_topk"
+    assert args[args.index("--budget_loss_ratios") + 1] == "0.01,0.02,0.05,0.10"
+    assert args[args.index("--budget_loss_temperature") + 1] == "0.10"
+    assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.75"
     assert args[args.index("--mlqds_score_mode") + 1] == "rank"
     assert args[args.index("--mlqds_score_temperature") + 1] == "1.00"
     assert args[args.index("--mlqds_rank_confidence_weight") + 1] == "0.15"
+    assert args[args.index("--residual_label_mode") + 1] == "temporal"
+    assert args[args.index("--range_label_mode") + 1] == "usefulness"
     assert args[args.index("--range_boundary_prior_weight") + 1] == "0.0"
     assert "--n_ships" not in args
     assert "--n_points" not in args
@@ -191,8 +253,11 @@ def test_runtime_profile_uses_real_usecase_shape(tmp_path) -> None:
 
 def test_runtime_profile_requires_real_training_data_source() -> None:
     assert _extra_args_include_training_data_source("--csv_path ../AISDATA/cleaned/day.csv")
-    assert _extra_args_include_training_data_source("--train_csv_path=train.csv --eval_csv_path eval.csv")
+    assert _extra_args_include_training_data_source(
+        "--train_csv_path=train.csv --validation_csv_path validation.csv --eval_csv_path eval.csv"
+    )
     assert not _extra_args_include_training_data_source("--max_segments 10")
+    assert not _extra_args_include_training_data_source("--validation_csv_path validation.csv")
 
 
 def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
@@ -231,5 +296,6 @@ def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
             "peak_reserved_mb": 256.0,
             "best_f1": 0.4,
             "mlqds_aggregate_f1": 0.5,
+            "mlqds_range_usefulness_score": None,
         }
     ]

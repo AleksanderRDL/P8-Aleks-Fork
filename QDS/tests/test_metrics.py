@@ -11,7 +11,9 @@ from src.evaluation.evaluate_methods import (
     _retained_point_gap_stats,
     evaluate_method,
     print_method_comparison_table,
+    print_range_usefulness_table,
     score_range_boundary_preservation,
+    score_range_usefulness,
     score_retained_mask,
 )
 from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
@@ -485,6 +487,172 @@ def test_range_boundary_preservation_is_separate_from_range_f1() -> None:
     assert boundary_f1 == pytest.approx(1.0)
 
 
+def test_range_usefulness_audit_separates_point_hits_from_local_shape() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+            [4.0, 0.0, 0.4, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 5)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 5.0,
+            },
+        }
+    ]
+    endpoint_retained = torch.tensor([True, False, False, False, True])
+    middle_retained = torch.tensor([False, True, True, False, False])
+
+    endpoint_audit = score_range_usefulness(points, boundaries, endpoint_retained, queries)
+    middle_audit = score_range_usefulness(points, boundaries, middle_retained, queries)
+
+    assert endpoint_audit["range_point_f1"] == pytest.approx(middle_audit["range_point_f1"])
+    assert endpoint_audit["range_entry_exit_f1"] > middle_audit["range_entry_exit_f1"]
+    assert endpoint_audit["range_temporal_coverage"] > middle_audit["range_temporal_coverage"]
+    assert endpoint_audit["range_usefulness_score"] > middle_audit["range_usefulness_score"]
+
+
+def test_range_usefulness_ship_f1_requires_each_hit_ship_present() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [0.0, 0.2, 0.0, 1.0],
+            [1.0, 0.2, 0.1, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 2), (2, 4)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 2.0,
+            },
+        }
+    ]
+    retained = torch.tensor([True, False, False, False])
+
+    audit = score_range_usefulness(points, boundaries, retained, queries)
+
+    assert audit["range_point_f1"] == pytest.approx(0.4)
+    assert audit["range_ship_f1"] == pytest.approx(2.0 / 3.0)
+
+
+def test_range_usefulness_temporal_span_does_not_penalize_interior_gap() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+            [4.0, 0.0, 0.4, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 5.0,
+            },
+        }
+    ]
+    retained = torch.tensor([True, False, False, False, True])
+
+    audit = score_range_usefulness(points, [(0, 5)], retained, queries)
+
+    assert audit["range_temporal_coverage"] == pytest.approx(1.0)
+    assert audit["range_shape_score"] == pytest.approx(1.0)
+
+
+def test_range_usefulness_shape_score_penalizes_curved_endpoint_shortcut() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [2.0, 0.0, 2.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 2.0,
+                "lon_min": -1.0,
+                "lon_max": 3.0,
+                "t_start": -1.0,
+                "t_end": 3.0,
+            },
+        }
+    ]
+    retained = torch.tensor([True, False, True])
+
+    audit = score_range_usefulness(points, [(0, 3)], retained, queries)
+
+    assert audit["range_temporal_coverage"] == pytest.approx(1.0)
+    assert 0.0 < audit["range_shape_score"] < 0.8
+
+
+def test_range_usefulness_cache_reuses_retained_independent_support() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 4)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 4.0,
+            },
+        }
+    ]
+    query_cache = EvaluationQueryCache.for_workload(points, boundaries, queries)
+
+    score_range_usefulness(points, boundaries, torch.tensor([True, False, False, True]), queries, query_cache)
+    support = query_cache.range_audit_supports[0]
+    score_range_usefulness(points, boundaries, torch.tensor([False, True, True, False]), queries, query_cache)
+
+    assert len(query_cache.range_audit_supports) == 1
+    assert query_cache.range_audit_supports[0] is support
+    assert support.boundary_indices_cpu.tolist() == [0, 3]
+
+
 def test_retained_point_gap_stats_measure_original_spacing() -> None:
     retained = torch.tensor([True, False, False, True, False, True, True, False, True])
 
@@ -507,11 +675,33 @@ def test_method_comparison_table_labels_f1() -> None:
         }
     )
 
-    assert "AnswerF1" in table
-    assert "CombinedF1" in table
+    assert "RangePointF1" in table
+    assert "RangeUseful" in table
     assert "AvgPtGap" in table
-    assert "BoundaryF1" in table
+    assert "EntryExitF1" in table
+    assert "AnswerF1" not in table
     assert "AggregateErr" not in table
+
+
+def test_range_usefulness_table_reports_audit_components() -> None:
+    table = print_range_usefulness_table(
+        {
+            "A": MethodEvaluation(
+                aggregate_f1=0.5,
+                per_type_f1={"range": 0.5},
+                range_point_f1=0.5,
+                range_ship_f1=0.7,
+                range_entry_exit_f1=0.25,
+                range_temporal_coverage=0.8,
+                range_shape_score=0.6,
+                range_usefulness_score=0.575,
+            )
+        }
+    )
+
+    assert "RangePointF1" in table
+    assert "ShipF1" in table
+    assert "RangeUseful" in table
 
 
 def test_method_comparison_table_shows_close_f1_values() -> None:

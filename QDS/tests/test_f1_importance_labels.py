@@ -176,6 +176,122 @@ def test_range_boundary_prior_is_optional_and_mass_preserving() -> None:
     assert float(boundary_values.sum().item()) == pytest.approx(float(pure_values.sum().item()))
 
 
+def test_range_usefulness_labels_prioritize_ship_span_and_shape_points() -> None:
+    """Assert usefulness labels add navigational signal beyond uniform in-box points."""
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.1, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.2, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.3, 1.0, 0.0, 0.0, 1.0, 0.0],
+            [1.5, 0.8, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 4), (4, 5)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 4.0,
+            },
+        }
+    ]
+
+    point_labels, _ = compute_typed_importance_labels(
+        points,
+        boundaries,
+        queries,
+        seed=1,
+        range_label_mode="point_f1",
+    )
+    useful_labels, _ = compute_typed_importance_labels(
+        points,
+        boundaries,
+        queries,
+        seed=1,
+        range_label_mode="usefulness",
+    )
+    point_values = point_labels[:, QUERY_TYPE_ID_RANGE]
+    useful_values = useful_labels[:, QUERY_TYPE_ID_RANGE]
+
+    assert point_values[:5].tolist() == pytest.approx([1.0 / 3.0] * 5)
+    assert useful_values[0].item() > useful_values[1].item()
+    assert useful_values[3].item() > useful_values[2].item()
+    assert useful_values[4].item() > useful_values[1].item()
+
+
+def test_range_usefulness_labels_preserve_point_component_mass() -> None:
+    """Assert usefulness labels remain finite and positive for all in-box hits."""
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 9.0, 9.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 3.0,
+            },
+        }
+    ]
+
+    labels, labelled_mask = compute_typed_importance_labels(
+        points,
+        [(0, 4)],
+        queries,
+        seed=1,
+        range_label_mode="usefulness",
+    )
+
+    values = labels[:, QUERY_TYPE_ID_RANGE]
+    assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
+    assert torch.isfinite(values).all()
+    assert bool((values[:3] > 0.0).all().item())
+    assert values[3].item() == pytest.approx(0.0)
+
+
+def test_range_label_mode_rejects_unknown_mode() -> None:
+    points = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=torch.float32)
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 1.0,
+            },
+        }
+    ]
+
+    with pytest.raises(ValueError, match="range_label_mode"):
+        compute_typed_importance_labels(
+            points,
+            [(0, 1)],
+            queries,
+            seed=1,
+            range_label_mode="not-a-mode",
+        )
+
+
 def test_knn_labels_follow_f1_trajectory_hits_not_speed() -> None:
     """Assert kNN labels are driven by F1 hit membership instead of speed heuristics."""
     points = torch.tensor(

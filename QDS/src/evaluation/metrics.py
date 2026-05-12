@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import AbstractSet, Hashable, Iterable, Mapping, Sequence
+from typing import AbstractSet, Any, Hashable, Iterable, Mapping, Sequence
 
 import torch
 
@@ -81,6 +81,13 @@ class MethodEvaluation:
     avg_length_preserved: float = 1.0
     combined_query_shape_score: float = 0.0
     range_boundary_f1: float = 0.0
+    range_point_f1: float = 0.0
+    range_ship_f1: float = 0.0
+    range_entry_exit_f1: float = 0.0
+    range_temporal_coverage: float = 0.0
+    range_shape_score: float = 0.0
+    range_usefulness_score: float = 0.0
+    range_audit: dict[str, Any] = field(default_factory=dict)
     retained_mask: torch.Tensor | None = None
 
     @property

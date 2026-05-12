@@ -20,6 +20,7 @@ from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.benchmark_profiles import (
     DEFAULT_PROFILE,
     PROFILE_CHOICES,
+    ProfileSetting,
     benchmark_profile_args,
     benchmark_profile_settings,
 )
@@ -36,7 +37,7 @@ from src.experiments.benchmark_runtime import (
 
 PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
-MIN_REALISTIC_CSV_DAYS = 2
+MIN_REALISTIC_CSV_DAYS = 3
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
 REAL_USECASE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE)
 
@@ -51,7 +52,7 @@ class MatrixVariant:
     amp_mode: str = "off"
     train_batch_size: int = 16
     inference_batch_size: int = 16
-    checkpoint_f1_variant: str = "answer"
+    checkpoint_f1_variant: str = "range_usefulness"
     extra_args: tuple[str, ...] = ()
 
 
@@ -79,6 +80,24 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         train_batch_size=32,
         inference_batch_size=32,
     ),
+    "tf32_bf16_bs32_inf32_ranking_bce": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_ranking_bce",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--loss_objective", "ranking_bce"),
+    ),
+    "tf32_bf16_bs32_inf32_point_f1_labels": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_point_f1_labels",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--range_label_mode", "point_f1"),
+    ),
     "tf32_bf16_bs32_inf32_combined": MatrixVariant(
         name="tf32_bf16_bs32_inf32_combined",
         float32_matmul_precision="high",
@@ -105,6 +124,15 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         train_batch_size=32,
         inference_batch_size=32,
         extra_args=("--mlqds_temporal_fraction", "0.50"),
+    ),
+    "tf32_bf16_bs32_inf32_residual_none": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_residual_none",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--residual_label_mode", "none"),
     ),
     "tf32_bf16_bs32_inf32_score_rank_tie": MatrixVariant(
         name="tf32_bf16_bs32_inf32_score_rank_tie",
@@ -152,13 +180,14 @@ class MatrixDataSources:
 
     csv_path: str | None = None
     train_csv_path: str | None = None
+    validation_csv_path: str | None = None
     eval_csv_path: str | None = None
     selected_cleaned_csv_files: tuple[str, ...] = ()
 
     @property
     def csv_sources(self) -> tuple[str, ...]:
         """Return unique CSV sources used by the run."""
-        candidates = [self.csv_path, self.train_csv_path, self.eval_csv_path]
+        candidates = [self.csv_path, self.train_csv_path, self.validation_csv_path, self.eval_csv_path]
         values: list[str] = []
         for candidate in candidates:
             if candidate and candidate not in values:
@@ -357,22 +386,27 @@ def _cleaned_csv_files(path: str | Path) -> list[Path]:
 
 
 def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
-    """Resolve matrix CSV inputs, using two cleaned days for directory inputs."""
-    has_train_eval = bool(args.train_csv_path or args.eval_csv_path)
-    if has_train_eval:
+    """Resolve matrix CSV inputs, using three cleaned days for directory inputs."""
+    has_explicit_sources = bool(args.train_csv_path or args.validation_csv_path or args.eval_csv_path)
+    if has_explicit_sources:
         if not args.train_csv_path or not args.eval_csv_path:
             raise ValueError("--train_csv_path and --eval_csv_path must be supplied together.")
         if args.csv_path:
-            raise ValueError("--csv_path cannot be combined with --train_csv_path/--eval_csv_path.")
+            raise ValueError("--csv_path cannot be combined with explicit train/validation/eval CSV paths.")
         train_path = str(Path(args.train_csv_path))
+        validation_path = str(Path(args.validation_csv_path)) if args.validation_csv_path else None
         eval_path = str(Path(args.eval_csv_path))
-        for source in (train_path, eval_path):
+        for source in (train_path, validation_path, eval_path):
+            if source is None:
+                continue
             if not Path(source).is_file():
                 raise FileNotFoundError(f"CSV path does not exist or is not a file: {source}")
+        selected = (train_path, validation_path, eval_path) if validation_path else (train_path, eval_path)
         return MatrixDataSources(
             train_csv_path=train_path,
+            validation_csv_path=validation_path,
             eval_csv_path=eval_path,
-            selected_cleaned_csv_files=(train_path, eval_path),
+            selected_cleaned_csv_files=tuple(source for source in selected if source is not None),
         )
 
     if not args.csv_path:
@@ -386,7 +420,8 @@ def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
         selected = tuple(str(path) for path in files[:MIN_REALISTIC_CSV_DAYS])
         return MatrixDataSources(
             train_csv_path=selected[0],
-            eval_csv_path=selected[1],
+            validation_csv_path=selected[1],
+            eval_csv_path=selected[2],
             selected_cleaned_csv_files=selected,
         )
     if len(files) == 1:
@@ -410,6 +445,10 @@ def _profile_args(
         profile_args = [
             "--train_csv_path",
             data_sources.train_csv_path,
+        ]
+        if data_sources.validation_csv_path:
+            profile_args += ["--validation_csv_path", data_sources.validation_csv_path]
+        profile_args += [
             "--eval_csv_path",
             data_sources.eval_csv_path,
             *REAL_USECASE_PROFILE_ARGS,
@@ -417,7 +456,9 @@ def _profile_args(
     elif data_sources.csv_path:
         profile_args = ["--csv_path", data_sources.csv_path, *REAL_USECASE_PROFILE_ARGS]
     else:
-        raise ValueError(f"{DEFAULT_PROFILE} requires --csv_path or --train_csv_path/--eval_csv_path.")
+        raise ValueError(
+            f"{DEFAULT_PROFILE} requires --csv_path or --train_csv_path/--eval_csv_path."
+        )
 
     if data_sources.csv_sources:
         profile_args += ["--min_points_per_segment", str(args.min_points_per_segment)]
@@ -435,7 +476,7 @@ def _profile_args(
     return profile_args
 
 
-def _profile_settings(profile: str) -> dict[str, int | float | str | None]:
+def _profile_settings(profile: str) -> dict[str, ProfileSetting]:
     """Return compact profile settings recorded in run_config.json."""
     return benchmark_profile_settings(profile)
 
@@ -559,6 +600,8 @@ def _row_from_run(
     model_config = (run_json or {}).get("config", {}).get("model", {})
     oracle_diagnostic = (run_json or {}).get("oracle_diagnostic") or {}
     mlqds_f1 = mlqds.get("aggregate_f1")
+    mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds.get("pure_range_f1", mlqds_f1))
+    mlqds_range_usefulness = mlqds.get("range_usefulness_score")
     uniform_f1 = uniform.get("aggregate_f1")
     dp_f1 = dp.get("aggregate_f1")
     return {
@@ -574,8 +617,14 @@ def _row_from_run(
         "best_loss": (run_json or {}).get("best_loss"),
         "best_f1": (run_json or {}).get("best_f1"),
         "mlqds_f1": mlqds_f1,
+        "mlqds_range_point_f1": mlqds_range_point_f1,
+        "mlqds_range_usefulness_score": mlqds_range_usefulness,
         "mlqds_type_f1": (mlqds.get("per_type_f1") or {}).get(workload),
+        "mlqds_range_ship_f1": mlqds.get("range_ship_f1"),
+        "mlqds_range_entry_exit_f1": mlqds.get("range_entry_exit_f1", mlqds.get("range_boundary_f1")),
         "mlqds_range_boundary_f1": mlqds.get("range_boundary_f1"),
+        "mlqds_range_temporal_coverage": mlqds.get("range_temporal_coverage"),
+        "mlqds_range_shape_score": mlqds.get("range_shape_score"),
         "uniform_f1": uniform_f1,
         "douglas_peucker_f1": dp_f1,
         "mlqds_vs_uniform_f1": (
@@ -593,10 +642,15 @@ def _row_from_run(
         "combined_query_shape_score": mlqds.get("combined_query_shape_score"),
         "collapse_warning": _has_collapse_warning(run_json),
         "checkpoint_f1_variant": variant.checkpoint_f1_variant,
+        "loss_objective": model_config.get("loss_objective"),
+        "budget_loss_ratios": model_config.get("budget_loss_ratios"),
+        "budget_loss_temperature": model_config.get("budget_loss_temperature"),
         "mlqds_temporal_fraction": model_config.get("mlqds_temporal_fraction"),
         "mlqds_score_mode": model_config.get("mlqds_score_mode"),
         "mlqds_score_temperature": model_config.get("mlqds_score_temperature"),
         "mlqds_rank_confidence_weight": model_config.get("mlqds_rank_confidence_weight"),
+        "residual_label_mode": model_config.get("residual_label_mode"),
+        "range_label_mode": model_config.get("range_label_mode"),
         "range_boundary_prior_weight": model_config.get("range_boundary_prior_weight"),
         "range_boundary_prior_enabled": bool(float(model_config.get("range_boundary_prior_weight") or 0.0) > 0.0),
         "oracle_kind": oracle_diagnostic.get("kind"),
@@ -639,8 +693,12 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
         "epoch_mean_seconds",
         "peak_allocated_mb",
         "best_f1",
+        "loss_objective",
+        "residual_label_mode",
         "mlqds_f1",
-        "mlqds_range_boundary_f1",
+        "mlqds_range_point_f1",
+        "mlqds_range_usefulness_score",
+        "mlqds_range_entry_exit_f1",
         "uniform_f1",
         "douglas_peucker_f1",
         "mlqds_vs_uniform_f1",
@@ -752,6 +810,7 @@ def _run_config(
         "data_sources": {
             "csv_path": data_sources.csv_path,
             "train_csv_path": data_sources.train_csv_path,
+            "validation_csv_path": data_sources.validation_csv_path,
             "eval_csv_path": data_sources.eval_csv_path,
             "selected_cleaned_csv_files": list(data_sources.selected_cleaned_csv_files),
         },
@@ -784,6 +843,7 @@ RUN_INDEX_FIELDS = [
     "workloads",
     "variants",
     "train_csv_path",
+    "validation_csv_path",
     "eval_csv_path",
     "csv_path",
     "max_points_per_segment",
@@ -838,6 +898,7 @@ def _index_entry(
         "workloads": ",".join(workloads),
         "variants": ",".join(variant.name for variant in variants),
         "train_csv_path": data_sources.train_csv_path,
+        "validation_csv_path": data_sources.validation_csv_path,
         "eval_csv_path": data_sources.eval_csv_path,
         "csv_path": data_sources.csv_path,
         "max_points_per_segment": args.max_points_per_segment,
@@ -994,11 +1055,20 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Cleaned AIS CSV or directory. A directory selects the first two sorted "
-            "CSV files as train/eval days for the range real-usecase benchmark."
+            "Cleaned AIS CSV or directory. A directory selects the first three sorted "
+            "CSV files as train/validation/eval days for the range real-usecase benchmark."
         ),
     )
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--validation_csv_path",
+        "--validation_csv",
+        "--val_csv_path",
+        "--val_csv",
+        dest="validation_csv_path",
+        type=str,
+        default=None,
+    )
     parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
     parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--refresh_cache", action="store_true")
@@ -1212,6 +1282,7 @@ def main() -> None:
         "data_sources": {
             "csv_path": data_sources.csv_path,
             "train_csv_path": data_sources.train_csv_path,
+            "validation_csv_path": data_sources.validation_csv_path,
             "eval_csv_path": data_sources.eval_csv_path,
             "selected_cleaned_csv_files": list(data_sources.selected_cleaned_csv_files),
         },

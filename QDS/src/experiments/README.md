@@ -30,7 +30,7 @@ Use `--help` on each entry point for the full current argument list.
 
 Common argument groups:
 
-- Data: `--csv_path`, `--train_csv_path`, `--eval_csv_path`, segmentation caps, `--cache_dir`, `--refresh_cache`.
+- Data: `--csv_path`, `--train_csv_path`, `--validation_csv_path`, `--eval_csv_path`, segmentation caps, `--cache_dir`, `--refresh_cache`.
 - Query workload: `--workload`, `--n_queries`, `--query_coverage`, range footprint/acceptance controls.
 - Training: epochs, LR, ranking sampler, batch sizes, query chunking, checkpoint selection, early stopping.
 - Runtime: `--float32_matmul_precision`, `--allow_tf32`, `--amp_mode`, inference device/batch size.
@@ -42,9 +42,10 @@ documented in [`../queries/README.md`](../queries/README.md).
 
 ## Data Modes
 
-If `--train_csv_path` and `--eval_csv_path` are both supplied, the train CSV is
-used only for training/checkpoint selection and the eval CSV is used only for
-final evaluation and simplified-output CSVs. If only `--csv_path` is supplied,
+If `--train_csv_path`, `--validation_csv_path`, and `--eval_csv_path` are
+supplied, the three CSVs are used as training, checkpoint validation, and final
+evaluation days. If only train/eval CSVs are supplied, checkpoint validation is
+split out of the train CSV for compatibility. If only `--csv_path` is supplied,
 one dataset is split by trajectory. If all CSV paths are omitted, the CLI
 generates deterministic synthetic data.
 
@@ -55,7 +56,7 @@ Parquet data keyed by source file identity and segmentation config.
 
 ## Pipeline
 
-1. Resolve train/eval/selection trajectory sets.
+1. Resolve train/selection/eval trajectory sets.
 2. Generate independent typed workloads for train, eval, and checkpoint selection.
 3. Compute range diagnostics and reusable labels/query caches when applicable.
 4. Train MLQDS and restore the best checkpoint according to the active selection metric.
@@ -68,26 +69,36 @@ Experiment entrypoints train and evaluate one model per pure workload. Use
 ## Real-Usecase Range Profile
 
 `benchmark_matrix.py --profile range_real_usecase` is the current benchmark
-baseline. It selects the first two sorted cleaned CSV files from `--csv_path`
-as train/eval days unless explicit train/eval paths are provided.
+baseline. It selects the first three sorted cleaned CSV files from `--csv_path`
+as train/checkpoint-validation/eval days unless explicit paths are provided.
 
 Profile shape:
 
 | Setting | Value |
 | --- | --- |
 | Workload | pure `range` |
+| Data split | first sorted cleaned CSV = train, second = checkpoint validation, third = final eval |
 | Query generation | Start at `80`, continue until `0.20` coverage, cap at `max_queries=2048` |
 | Range footprint | `range_spatial_km=2.2`, `range_time_hours=5.0` fixed half-windows (`range_footprint_jitter=0.0`) |
 | Compression | `0.05` retained points |
 | Epoch budget | `20` with `early_stopping_patience=5` |
-| Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=answer` |
-| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.25`, `mlqds_score_temperature=1.0` |
+| Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=range_usefulness` by default |
+| Loss objective | `loss_objective=budget_topk`, `budget_loss_ratios=0.01,0.02,0.05,0.10`, `residual_label_mode=temporal` |
+| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.75`, `mlqds_score_temperature=1.0` |
 | Attention chunk | `query_chunk_size=2048`; the profile uses the same value for `max_queries` |
-| Range labels | pure point-F1 labels (`range_boundary_prior_weight=0.0`) |
+| Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
 | Diagnostics | `f1_diagnostic_every=1`, no smoothing (`checkpoint_smoothing_window=1`) |
 | Runtime variant | `tf32_bf16_bs32_inf32` by default |
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
+
+Use matrix variant `tf32_bf16_bs32_inf32_point_f1_labels` as the direct
+ablation for the old range point-F1 label target. Use
+`tf32_bf16_bs32_inf32_ranking_bce` as the legacy pairwise-loss ablation.
+Use `tf32_bf16_bs32_inf32_temporal000` and
+`tf32_bf16_bs32_inf32_temporal050` as temporal-spine ablations.
+Use `tf32_bf16_bs32_inf32_residual_none` to test whether training on all labels
+beats temporal-residual learned-fill training.
 
 `query_coverage` is a target used for workload generation and diagnostics.
 For the real-usecase profile, `n_queries` is only the minimum workload size;
@@ -165,8 +176,14 @@ kernel markers. If a launcher observes an abnormal exit, it marks stale
 
 For comparisons, start with `benchmark_matrix.md` or `benchmark_matrix.csv`.
 For model behavior, inspect the variant `example_run.json`,
-`matched_table.txt`, and `range_workload_diagnostics.json`. Artifact layout and
-cleanup rules live in [`../../artifacts/README.md`](../../artifacts/README.md).
+`matched_table.txt`, `range_usefulness_table.txt`, and
+`range_workload_diagnostics.json`. `RangePointF1` is the retained in-box point
+metric; `RangeUseful` is the current audit score for range-local usefulness.
+Use `--range_audit_compression_ratios 0.01,0.02,0.05,0.10` when you want the
+same range-usefulness components rerun across multiple retained-point budgets;
+it is disabled by default because it reruns method evaluation.
+Artifact layout and cleanup rules live in
+[`../../artifacts/README.md`](../../artifacts/README.md).
 
 Use `benchmark_runtime.py` only for targeted train/inference timing studies
 such as batch-size sweeps. Use `benchmark_matrix.py` for model-quality
@@ -176,7 +193,7 @@ benchmark runs.
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode train \
   --profile range_real_usecase \
-  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
+  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_real_usecase" \
   --train_batch_sizes 16,32,64 \
   --results_dir artifacts/benchmarks/runtime_range_real_usecase
 ```
