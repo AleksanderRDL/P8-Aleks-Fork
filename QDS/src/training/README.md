@@ -57,7 +57,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - `loss_objective="budget_topk"` is the default range objective. It trains the
   score stream to capture high label mass inside soft top-k retained budgets
   across `budget_loss_ratios` (`0.01,0.02,0.05,0.10` by default). This is closer
-  to the final simplification decision than the old local pair sampler.
+  to the final simplification decision than the old local pair sampler. The
+  budget-top-k loss is computed across padded batch rows in one batched tensor
+  path; scalar helpers remain as correctness references in tests.
 - With `residual_label_mode="temporal"`, budget-top-k does not globally delete
   temporal-spine labels once. It computes per-budget temporal-base masks and
   trains the learned fill only on the points still controlled by the model at

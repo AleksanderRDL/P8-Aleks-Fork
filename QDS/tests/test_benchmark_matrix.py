@@ -70,13 +70,15 @@ def _profile_core_args() -> list[str]:
         "--budget_loss_temperature",
         "0.10",
         "--mlqds_temporal_fraction",
-        "0.75",
+        "0.50",
         "--mlqds_score_mode",
         "rank",
         "--mlqds_score_temperature",
         "1.00",
         "--mlqds_rank_confidence_weight",
         "0.15",
+        "--mlqds_diversity_bonus",
+        "0.00",
         "--residual_label_mode",
         "temporal",
         "--range_label_mode",
@@ -117,8 +119,9 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
         "tf32_bf16_bs32_inf32_point_f1_labels,"
         "tf32_bf16_bs32_inf32_combined,"
         "tf32_bf16_bs32_inf32_temporal000,tf32_bf16_bs32_inf32_temporal050,"
+        "tf32_bf16_bs32_inf32_temporal075,"
         "tf32_bf16_bs32_inf32_residual_none,"
-        "tf32_bf16_bs32_inf32_diversity000,"
+        "tf32_bf16_bs32_inf32_diversity000,tf32_bf16_bs32_inf32_diversity005,"
         "tf32_bf16_bs32_inf32_score_rank_tie,"
         "tf32_bf16_bs32_inf32_score_zscore,tf32_bf16_bs32_inf32_score_rank_confidence,"
         "tf32_bf16_bs32_inf32_score_temp_sigmoid"
@@ -132,8 +135,10 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
         "tf32_bf16_bs32_inf32_combined",
         "tf32_bf16_bs32_inf32_temporal000",
         "tf32_bf16_bs32_inf32_temporal050",
+        "tf32_bf16_bs32_inf32_temporal075",
         "tf32_bf16_bs32_inf32_residual_none",
         "tf32_bf16_bs32_inf32_diversity000",
+        "tf32_bf16_bs32_inf32_diversity005",
         "tf32_bf16_bs32_inf32_score_rank_tie",
         "tf32_bf16_bs32_inf32_score_zscore",
         "tf32_bf16_bs32_inf32_score_rank_confidence",
@@ -153,19 +158,23 @@ def test_selected_variants_can_run_explicit_sweeps() -> None:
     assert variants[6].checkpoint_f1_variant == "range_usefulness"
     assert variants[6].extra_args == ("--mlqds_temporal_fraction", "0.50")
     assert variants[7].checkpoint_f1_variant == "range_usefulness"
-    assert variants[7].extra_args == ("--residual_label_mode", "none")
+    assert variants[7].extra_args == ("--mlqds_temporal_fraction", "0.75")
     assert variants[8].checkpoint_f1_variant == "range_usefulness"
-    assert variants[8].extra_args == ("--mlqds_diversity_bonus", "0.0")
+    assert variants[8].extra_args == ("--residual_label_mode", "none")
     assert variants[9].checkpoint_f1_variant == "range_usefulness"
-    assert variants[9].extra_args == ("--mlqds_score_mode", "rank_tie")
-    assert variants[10].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
-    assert variants[11].extra_args == (
+    assert variants[9].extra_args == ("--mlqds_diversity_bonus", "0.0")
+    assert variants[10].checkpoint_f1_variant == "range_usefulness"
+    assert variants[10].extra_args == ("--mlqds_diversity_bonus", "0.05")
+    assert variants[11].checkpoint_f1_variant == "range_usefulness"
+    assert variants[11].extra_args == ("--mlqds_score_mode", "rank_tie")
+    assert variants[12].extra_args == ("--mlqds_score_mode", "zscore_sigmoid")
+    assert variants[13].extra_args == (
         "--mlqds_score_mode",
         "rank_confidence",
         "--mlqds_rank_confidence_weight",
         "0.15",
     )
-    assert variants[12].extra_args == (
+    assert variants[14].extra_args == (
         "--mlqds_score_mode",
         "temperature_sigmoid",
         "--mlqds_score_temperature",

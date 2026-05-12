@@ -20,6 +20,9 @@ from src.training.train_model import (
     _balanced_pointwise_loss,
     _effective_budget_loss_ratios,
     _budget_topk_recall_loss,
+    _budget_topk_recall_loss_rows,
+    _budget_topk_temporal_residual_loss,
+    _budget_topk_temporal_residual_loss_rows,
     _filter_supervised_windows,
     _f1_selection_score,
     _ranking_loss_for_type,
@@ -193,6 +196,101 @@ def test_budget_topk_recall_loss_has_useful_gradients() -> None:
     assert pred.grad is not None
     assert float(pred.grad[:2].sum().item()) < 0.0
     assert float(pred.grad[3:].sum().item()) > 0.0
+
+
+def test_budget_topk_recall_loss_rows_match_scalar_helper() -> None:
+    pred = torch.tensor(
+        [
+            [3.0, 2.0, 0.5, -1.0, -2.0, -3.0],
+            [-2.0, 1.5, 0.2, 0.1, -0.5, -9.0],
+        ],
+        dtype=torch.float32,
+    )
+    target = torch.tensor(
+        [
+            [1.0, 0.9, 0.1, 0.0, 0.0, 0.0],
+            [0.0, 0.7, 0.4, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    valid_mask = torch.tensor(
+        [
+            [True, True, True, True, True, True],
+            [True, True, True, True, True, False],
+        ]
+    )
+
+    row_loss, active_rows = _budget_topk_recall_loss_rows(
+        pred=pred,
+        target=target,
+        valid_mask=valid_mask,
+        budget_ratios=(0.20, 0.40),
+        temperature=0.10,
+    )
+
+    assert active_rows.tolist() == [True, True]
+    for row in range(pred.shape[0]):
+        scalar = _budget_topk_recall_loss(
+            pred=pred[row],
+            target=target[row],
+            valid_mask=valid_mask[row],
+            budget_ratios=(0.20, 0.40),
+            temperature=0.10,
+        )
+        assert row_loss[row].item() == pytest.approx(scalar.item(), abs=1e-6)
+
+
+def test_budget_topk_temporal_residual_loss_rows_match_scalar_helper() -> None:
+    pred = torch.tensor(
+        [
+            [3.0, 2.0, 0.5, -1.0, -2.0, -3.0],
+            [-2.0, 1.5, 0.2, 0.1, -0.5, -9.0],
+        ],
+        dtype=torch.float32,
+    )
+    target = torch.tensor(
+        [
+            [1.0, 0.9, 0.1, 0.0, 0.0, 0.0],
+            [0.0, 0.7, 0.4, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    valid_mask = torch.tensor(
+        [
+            [True, True, True, True, True, True],
+            [True, True, True, True, True, False],
+        ]
+    )
+    global_idx = torch.tensor([[0, 1, 2, 3, 4, 5], [5, 6, 7, 8, 9, -1]])
+    base_mask_a = torch.zeros((10,), dtype=torch.bool)
+    base_mask_a[[0, 5, 9]] = True
+    base_mask_b = torch.zeros((10,), dtype=torch.bool)
+    base_mask_b[[0, 1, 5, 9]] = True
+    temporal_base_masks = (
+        (0.05, 0.02, base_mask_a),
+        (0.10, 0.05, base_mask_b),
+    )
+
+    row_loss, active_rows = _budget_topk_temporal_residual_loss_rows(
+        pred=pred,
+        target=target,
+        valid_mask=valid_mask,
+        global_idx=global_idx.clamp(min=0),
+        temporal_base_masks=temporal_base_masks,
+        temperature=0.10,
+    )
+
+    assert active_rows.tolist() == [True, True]
+    for row in range(pred.shape[0]):
+        scalar = _budget_topk_temporal_residual_loss(
+            pred=pred[row][valid_mask[row]],
+            target=target[row][valid_mask[row]],
+            valid_mask=torch.ones((int(valid_mask[row].sum().item()),), dtype=torch.bool),
+            global_idx=global_idx[row][valid_mask[row]],
+            temporal_base_masks=temporal_base_masks,
+            temperature=0.10,
+        )
+        assert row_loss[row].item() == pytest.approx(scalar.item(), abs=1e-6)
 
 
 def test_temporal_residual_labels_drop_base_points() -> None:

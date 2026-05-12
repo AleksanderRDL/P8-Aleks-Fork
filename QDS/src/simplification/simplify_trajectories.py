@@ -63,8 +63,8 @@ def simplify_with_temporal_score_hybrid(
     scores: torch.Tensor,
     boundaries: list[tuple[int, int]],
     compression_ratio: float,
-    temporal_fraction: float = 0.75,
-    diversity_bonus: float = 0.05,
+    temporal_fraction: float = 0.50,
+    diversity_bonus: float = 0.0,
 ) -> torch.Tensor:
     """Retain a temporal coverage base, then fill remaining slots by learned score.
 

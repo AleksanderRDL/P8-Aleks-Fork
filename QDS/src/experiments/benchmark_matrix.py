@@ -125,6 +125,15 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         inference_batch_size=32,
         extra_args=("--mlqds_temporal_fraction", "0.50"),
     ),
+    "tf32_bf16_bs32_inf32_temporal075": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_temporal075",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_temporal_fraction", "0.75"),
+    ),
     "tf32_bf16_bs32_inf32_residual_none": MatrixVariant(
         name="tf32_bf16_bs32_inf32_residual_none",
         float32_matmul_precision="high",
@@ -142,6 +151,15 @@ MATRIX_VARIANTS: dict[str, MatrixVariant] = {
         train_batch_size=32,
         inference_batch_size=32,
         extra_args=("--mlqds_diversity_bonus", "0.0"),
+    ),
+    "tf32_bf16_bs32_inf32_diversity005": MatrixVariant(
+        name="tf32_bf16_bs32_inf32_diversity005",
+        float32_matmul_precision="high",
+        allow_tf32=True,
+        amp_mode="bf16",
+        train_batch_size=32,
+        inference_batch_size=32,
+        extra_args=("--mlqds_diversity_bonus", "0.05"),
     ),
     "tf32_bf16_bs32_inf32_score_rank_tie": MatrixVariant(
         name="tf32_bf16_bs32_inf32_score_rank_tie",

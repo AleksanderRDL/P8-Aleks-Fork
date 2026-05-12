@@ -84,7 +84,7 @@ Profile shape:
 | Epoch budget | `20` with `early_stopping_patience=5` |
 | Checkpoint selection | `checkpoint_selection_metric=f1`, `checkpoint_f1_variant=range_usefulness` by default |
 | Loss objective | `loss_objective=budget_topk`, `budget_loss_ratios=0.01,0.02,0.05,0.10`, `residual_label_mode=temporal` |
-| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.75`, `mlqds_score_temperature=1.0` |
+| MLQDS scoring | pure workload `rank` mode, `mlqds_temporal_fraction=0.50`, `mlqds_diversity_bonus=0.0`, `mlqds_score_temperature=1.0` |
 | Attention chunk | `query_chunk_size=2048`; the profile uses the same value for `max_queries` |
 | Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
 | Diagnostics | `f1_diagnostic_every=1`, no smoothing (`checkpoint_smoothing_window=1`) |
@@ -95,18 +95,22 @@ Profile shape:
 Use matrix variant `tf32_bf16_bs32_inf32_point_f1_labels` as the direct
 ablation for the old range point-F1 label target. Use
 `tf32_bf16_bs32_inf32_ranking_bce` as the legacy pairwise-loss ablation.
-Use `tf32_bf16_bs32_inf32_temporal000` and
-`tf32_bf16_bs32_inf32_temporal050` as temporal-spine ablations.
+Use `tf32_bf16_bs32_inf32_temporal000`,
+`tf32_bf16_bs32_inf32_temporal050`, and
+`tf32_bf16_bs32_inf32_temporal075` as temporal-spine ablations. The default is
+`0.50`; `0.75` is an explicit high-scaffold comparison rather than the
+baseline.
 Use `tf32_bf16_bs32_inf32_residual_none` to test whether training on all labels
 beats temporal-residual learned-fill training.
-Use `tf32_bf16_bs32_inf32_diversity000` to isolate the spacing bonus from the
-learned score fill.
+Use `tf32_bf16_bs32_inf32_diversity005` to test the old spacing bonus against
+the no-diversity default.
 
 `query_coverage` is a target used for workload generation and diagnostics.
 For the real-usecase profile, `n_queries` is only the minimum workload size;
 generation continues until the target is reached or `max_queries` is hit.
 `query_generation_diagnostics` records the minimum query count, max query cap,
-final generated query count, final coverage, and stop reason for each split.
+final generated query count, per-type query counts, final coverage, and stop
+reason for each split.
 When `--cache_dir` is set, generated workloads are cached under
 `<cache_dir>/workloads/` by data fingerprint, query config, seed, and workload
 map. Use `--refresh_cache` to force regeneration.

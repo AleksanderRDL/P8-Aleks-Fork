@@ -364,7 +364,7 @@ def main() -> None:
             score_temperature=float(getattr(saved_cfg.model, "mlqds_score_temperature", 1.0)),
             rank_confidence_weight=float(getattr(saved_cfg.model, "mlqds_rank_confidence_weight", 0.15)),
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
-            diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
+            diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.0)),
             inference_device=None if args.inference_device == "auto" else args.inference_device,
             inference_batch_size=inference_batch_size,
             amp_mode=amp_mode,

@@ -164,6 +164,62 @@ def _budget_topk_recall_loss(
     return torch.stack(losses).mean()
 
 
+def _budget_topk_recall_loss_rows(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    budget_ratios: tuple[float, ...],
+    temperature: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return budget-top-k loss for each row in a padded prediction batch."""
+    if pred.ndim != 2 or target.shape != pred.shape or valid_mask.shape != pred.shape:
+        raise ValueError("pred, target, and valid_mask must have matching shape [B, L].")
+
+    B, L = pred.shape
+    y = target.clamp(min=0.0)
+    valid_counts = valid_mask.sum(dim=1)
+    has_positive = (valid_mask & (y > 0.0)).any(dim=1)
+    row_loss_sum = pred.new_zeros((B,))
+    row_loss_count = torch.zeros((B,), dtype=torch.long, device=pred.device)
+    tau = max(float(temperature), 1e-4)
+
+    y_sortable = y.masked_fill(~valid_mask, float("-inf"))
+    x_sortable = pred.masked_fill(~valid_mask, float("-inf"))
+    sorted_y = torch.sort(y_sortable, dim=1, descending=True).values
+    sorted_x = torch.sort(x_sortable, dim=1, descending=True).values
+    y_cumsum = sorted_y.clamp(min=0.0).cumsum(dim=1)
+
+    for raw_ratio in budget_ratios:
+        ratio = min(1.0, max(0.0, float(raw_ratio)))
+        if ratio <= 0.0:
+            continue
+        k_float = torch.ceil(valid_counts.float() * ratio)
+        k = k_float.to(dtype=torch.long).clamp(min=1, max=L)
+        active = (valid_counts >= 2) & has_positive
+        if not bool(active.any().item()):
+            continue
+
+        gather_idx = (k - 1).unsqueeze(1)
+        ideal_mass = y_cumsum.gather(1, gather_idx).squeeze(1).detach()
+        threshold = sorted_x.gather(1, gather_idx).squeeze(1).detach()
+        active = active & (ideal_mass > 1e-12)
+        if not bool(active.any().item()):
+            continue
+
+        soft_keep = torch.sigmoid((pred - threshold.unsqueeze(1)) / tau) * valid_mask.float()
+        soft_keep = soft_keep * (k.float() / soft_keep.sum(dim=1).clamp(min=1e-6)).unsqueeze(1)
+        soft_keep = soft_keep.clamp(max=1.0)
+        captured_mass = (soft_keep * y).sum(dim=1)
+        recall = (captured_mass / ideal_mass.clamp(min=1e-6)).clamp(0.0, 1.0)
+        ratio_loss = 1.0 - recall
+        row_loss_sum = torch.where(active, row_loss_sum + ratio_loss, row_loss_sum)
+        row_loss_count = torch.where(active, row_loss_count + 1, row_loss_count)
+
+    active_rows = row_loss_count > 0
+    row_loss = row_loss_sum / row_loss_count.clamp(min=1).float()
+    return row_loss, active_rows
+
+
 def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
     """Return configured retained-budget ratios for budget-aware loss."""
     raw = getattr(model_config, "budget_loss_ratios", None) or []
@@ -260,6 +316,39 @@ def _budget_topk_temporal_residual_loss(
     if not losses:
         return pred.new_tensor(0.0)
     return torch.stack(losses).mean()
+
+
+def _budget_topk_temporal_residual_loss_rows(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    global_idx: torch.Tensor,
+    temporal_base_masks: tuple[tuple[float, float, torch.Tensor], ...],
+    temperature: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return per-row budget-top-k loss over learned-fill candidate points."""
+    if global_idx.shape != pred.shape:
+        raise ValueError("global_idx must match pred shape [B, L].")
+
+    row_loss_sum = pred.new_zeros((pred.shape[0],))
+    row_loss_count = torch.zeros((pred.shape[0],), dtype=torch.long, device=pred.device)
+    safe_idx = global_idx.clamp(min=0)
+    for _total_ratio, effective_ratio, base_mask in temporal_base_masks:
+        base_for_window = base_mask[safe_idx] & valid_mask
+        residual_mask = valid_mask & (~base_for_window)
+        ratio_loss, active_rows = _budget_topk_recall_loss_rows(
+            pred=pred,
+            target=target,
+            valid_mask=residual_mask,
+            budget_ratios=(effective_ratio,),
+            temperature=temperature,
+        )
+        row_loss_sum = torch.where(active_rows, row_loss_sum + ratio_loss, row_loss_sum)
+        row_loss_count = torch.where(active_rows, row_loss_count + 1, row_loss_count)
+
+    active_rows = row_loss_count > 0
+    row_loss = row_loss_sum / row_loss_count.clamp(min=1).float()
+    return row_loss, active_rows
 
 
 def _training_target_diagnostics(
@@ -676,7 +765,7 @@ def _validation_checkpoint_scores(
         single_workload_type(workload_map),
         model_config.compression_ratio,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
-        diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
+        diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.0)),
         score_mode=str(getattr(model_config, "mlqds_score_mode", "rank")),
         score_temperature=float(getattr(model_config, "mlqds_score_temperature", 1.0)),
         rank_confidence_weight=float(getattr(model_config, "mlqds_rank_confidence_weight", 0.15)),
@@ -1098,38 +1187,56 @@ def train_model(
             # GPU actually saturated compared to the old batch=1 loop.
             loss_terms: list[torch.Tensor] = []
             B = pred_batch.shape[0]
-            for b in range(B):
-                idx = w.global_indices[b]
-                valid_window = idx >= 0
-                global_idx = idx[valid_window]
-                pred_valid = pred_batch[b][valid_window]
+            batch_global_idx = w.global_indices.to(device=device)
+            valid_batch = batch_global_idx >= 0
+            safe_global_idx = batch_global_idx.clamp(min=0)
+            batch_labels = training_target_dev[safe_global_idx]
+            batch_label_mask = labelled_mask_dev[safe_global_idx] & valid_batch
+            positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
+            positive_windows[active_type_id] += int(positive_row_mask.sum().item())
+            skipped_zero_windows[active_type_id] += int((~positive_row_mask).sum().item())
 
-                t_labels = training_target_dev[global_idx]
-                t_mask = labelled_mask_dev[global_idx]
-                if not bool((t_mask & (t_labels > 0)).any().item()):
-                    skipped_zero_windows[active_type_id] += 1
-                    continue
-                positive_windows[active_type_id] += 1
-                if loss_objective == "budget_topk":
-                    if temporal_residual_budget_masks:
-                        rank_loss = _budget_topk_temporal_residual_loss(
-                            pred=pred_valid,
-                            target=t_labels,
-                            valid_mask=t_mask,
-                            global_idx=global_idx,
-                            temporal_base_masks=temporal_residual_budget_masks,
-                            temperature=budget_loss_temperature,
-                        )
-                    else:
-                        rank_loss = _budget_topk_recall_loss(
-                            pred=pred_valid,
-                            target=t_labels,
-                            valid_mask=t_mask,
-                            budget_ratios=budget_ratios,
-                            temperature=budget_loss_temperature,
-                        )
-                    pair_count = 0
+            if loss_objective == "budget_topk":
+                if temporal_residual_budget_masks:
+                    rank_loss_rows, _rank_active_rows = _budget_topk_temporal_residual_loss_rows(
+                        pred=pred_batch,
+                        target=batch_labels,
+                        valid_mask=batch_label_mask,
+                        global_idx=safe_global_idx,
+                        temporal_base_masks=temporal_residual_budget_masks,
+                        temperature=budget_loss_temperature,
+                    )
                 else:
+                    rank_loss_rows, _rank_active_rows = _budget_topk_recall_loss_rows(
+                        pred=pred_batch,
+                        target=batch_labels,
+                        valid_mask=batch_label_mask,
+                        budget_ratios=budget_ratios,
+                        temperature=budget_loss_temperature,
+                    )
+
+                for b in torch.where(positive_row_mask.detach().cpu())[0].tolist():
+                    row = int(b)
+                    idx = batch_global_idx[row]
+                    valid_window = idx >= 0
+                    global_idx = idx[valid_window]
+                    pred_valid = pred_batch[row][valid_window]
+                    t_labels = training_target_dev[global_idx]
+                    t_mask = labelled_mask_dev[global_idx]
+                    pointwise_mask = t_mask
+                    if temporal_residual_union_mask is not None:
+                        pointwise_mask = t_mask & (~temporal_residual_union_mask[global_idx])
+                    pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, pointwise_mask, generator=g)
+                    loss_terms.append(rank_loss_rows[row] + model_config.pointwise_loss_weight * pointwise_term)
+            else:
+                for b in torch.where(positive_row_mask.detach().cpu())[0].tolist():
+                    row = int(b)
+                    idx = batch_global_idx[row]
+                    valid_window = idx >= 0
+                    global_idx = idx[valid_window]
+                    pred_valid = pred_batch[row][valid_window]
+                    t_labels = training_target_dev[global_idx]
+                    t_mask = labelled_mask_dev[global_idx]
                     rank_loss, pair_count = _ranking_loss_for_type(
                         pred=pred_valid,
                         target=t_labels,
@@ -1140,11 +1247,11 @@ def train_model(
                         generator=g,
                     )
                     ranking_pair_counts[active_type_id] += int(pair_count)
-                pointwise_mask = t_mask
-                if temporal_residual_union_mask is not None:
-                    pointwise_mask = t_mask & (~temporal_residual_union_mask[global_idx])
-                pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, pointwise_mask, generator=g)
-                loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_term)
+                    pointwise_mask = t_mask
+                    if temporal_residual_union_mask is not None:
+                        pointwise_mask = t_mask & (~temporal_residual_union_mask[global_idx])
+                    pointwise_term = _balanced_pointwise_loss(pred_valid, t_labels, pointwise_mask, generator=g)
+                    loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_term)
             epoch_timing["loss_s"] += time.perf_counter() - loss_t0
 
             if loss_terms:

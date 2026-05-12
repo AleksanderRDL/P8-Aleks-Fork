@@ -47,8 +47,8 @@ class MLQDSMethod:
     score_mode: str = "rank"
     score_temperature: float = 1.0
     rank_confidence_weight: float = 0.15
-    temporal_fraction: float = 0.75
-    diversity_bonus: float = 0.05
+    temporal_fraction: float = 0.50
+    diversity_bonus: float = 0.0
     inference_device: str | torch.device | None = None
     amp_mode: str = "off"
     inference_batch_size: int = 16
@@ -119,8 +119,8 @@ class ScoreHybridMethod:
 
     name: str
     scores: torch.Tensor
-    temporal_fraction: float = 0.75
-    diversity_bonus: float = 0.05
+    temporal_fraction: float = 0.50
+    diversity_bonus: float = 0.0
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Retain temporal base points, then fill with supplied per-point scores."""

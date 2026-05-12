@@ -70,6 +70,7 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
     assert generation["minimum_queries"] == 25
     assert generation["max_queries"] == 200
     assert generation["final_query_count"] == 25
+    assert generation["type_counts"] == {"range": 25}
     assert generation["stop_reason"] == "target_coverage_reached"
 
 
@@ -219,6 +220,7 @@ def test_configured_workload_expands_to_max_queries_when_target_needs_more_queri
     assert generation["minimum_queries"] == 4
     assert generation["max_queries"] == 12
     assert generation["final_query_count"] == 12
+    assert generation["type_counts"] == {"range": 12}
     assert generation["stop_reason"] == "max_queries_reached"
 
 

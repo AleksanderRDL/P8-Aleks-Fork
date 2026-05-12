@@ -467,9 +467,14 @@ def _finalize_workload(
     coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
     diagnostics = dict(generation_diagnostics or {})
     query_generation = dict(diagnostics.get("query_generation") or {})
+    type_counts: dict[str, int] = {}
+    for query in typed:
+        query_type = str(query.get("type", "unknown"))
+        type_counts[query_type] = int(type_counts.get(query_type, 0)) + 1
     query_generation.update(
         {
             "final_query_count": int(len(typed)),
+            "type_counts": type_counts,
             "covered_points": covered_points,
             "total_points": total_points,
             "final_coverage": coverage_fraction,

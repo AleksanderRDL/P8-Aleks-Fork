@@ -841,7 +841,8 @@ cd QDS
   half-windows, 5% retained-point compression, `query_chunk_size=2048`,
   20 epochs with early stopping, range-usefulness checkpointing,
   `checkpoint_smoothing_window=1` (no rolling smoothing), vectorized
-  ranking-pair sampling, `mlqds_temporal_fraction=0.75`,
+  ranking-pair sampling, `mlqds_temporal_fraction=0.50`,
+  `mlqds_diversity_bonus=0.0`,
   `residual_label_mode=temporal`, and F1 diagnostics every epoch. Budget-top-k
   training now applies temporal residual masking per retained-point budget
   instead of globally removing one fixed temporal-base mask.

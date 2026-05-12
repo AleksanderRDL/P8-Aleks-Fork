@@ -117,7 +117,7 @@ class ModelConfig:
     checkpoint_smoothing_window: int = 1
     checkpoint_f1_variant: str = "range_usefulness"
     mlqds_temporal_fraction: float = 0.0
-    mlqds_diversity_bonus: float = 0.05
+    mlqds_diversity_bonus: float = 0.0
     mlqds_score_mode: str = "rank"
     mlqds_score_temperature: float = 1.0
     mlqds_rank_confidence_weight: float = 0.15
@@ -288,7 +288,7 @@ def build_experiment_config(
     checkpoint_f1_variant: str = "range_usefulness",
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
-    mlqds_diversity_bonus: float = 0.05,
+    mlqds_diversity_bonus: float = 0.0,
     mlqds_score_mode: str = "rank",
     mlqds_score_temperature: float = 1.0,
     mlqds_rank_confidence_weight: float = 0.15,

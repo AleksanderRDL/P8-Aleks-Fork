@@ -36,6 +36,7 @@ class BenchmarkProfile:
     mlqds_score_mode: str
     mlqds_score_temperature: float
     mlqds_rank_confidence_weight: float
+    mlqds_diversity_bonus: float
     residual_label_mode: str
     f1_diagnostic_every: int
     range_label_mode: str
@@ -56,7 +57,7 @@ RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
     epochs=20,
     early_stopping_patience=5,
     checkpoint_smoothing_window=1,
-    mlqds_temporal_fraction=0.75,
+    mlqds_temporal_fraction=0.50,
     workload="range",
     checkpoint_selection_metric="f1",
     loss_objective="budget_topk",
@@ -65,6 +66,7 @@ RANGE_REAL_USECASE_PROFILE = BenchmarkProfile(
     mlqds_score_mode="rank",
     mlqds_score_temperature=1.0,
     mlqds_rank_confidence_weight=0.15,
+    mlqds_diversity_bonus=0.0,
     residual_label_mode="temporal",
     f1_diagnostic_every=1,
     range_label_mode="usefulness",
@@ -134,6 +136,8 @@ def benchmark_profile_args(
         f"{profile.mlqds_score_temperature:.2f}",
         "--mlqds_rank_confidence_weight",
         f"{profile.mlqds_rank_confidence_weight:.2f}",
+        "--mlqds_diversity_bonus",
+        f"{profile.mlqds_diversity_bonus:.2f}",
         "--residual_label_mode",
         profile.residual_label_mode,
         "--range_label_mode",
@@ -178,6 +182,7 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "mlqds_score_mode": profile.mlqds_score_mode,
         "mlqds_score_temperature": profile.mlqds_score_temperature,
         "mlqds_rank_confidence_weight": profile.mlqds_rank_confidence_weight,
+        "mlqds_diversity_bonus": profile.mlqds_diversity_bonus,
         "residual_label_mode": profile.residual_label_mode,
         "f1_diagnostic_every": profile.f1_diagnostic_every,
         "range_label_mode": profile.range_label_mode,

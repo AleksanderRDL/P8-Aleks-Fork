@@ -113,12 +113,14 @@ compression ratio (`1%`, `2%`, `5%`, `10%`) and removed the collapse warning in
 that run. It slightly beat Douglas-Peucker on `RangeUseful` at all audited
 ratios, but still trailed the uniform temporal baseline.
 
-Project consequence: the real-usecase profile now uses
-`mlqds_temporal_fraction=0.75` as the provisional default, pending seed-repeat
-confirmation. This is an objective-design signal too: a large temporal spine is
-currently carrying most of the useful range-local shape/coverage behavior, so
-future objective work should measure whether the learned score fill adds value
-beyond the temporal baseline instead of only comparing against Douglas-Peucker.
+Project consequence: `mlqds_temporal_fraction=0.75` is a useful high-scaffold
+comparison, but it is no longer the real-usecase default. The baseline profile
+uses `0.50` and `mlqds_diversity_bonus=0.0` so future runs leave more
+retained-point budget under learned model control and do not add a second
+spacing prior by default. A large temporal spine is currently carrying much of
+the useful range-local shape/coverage behavior, so future objective work should
+measure whether the learned score fill adds value beyond the temporal baseline
+instead of only comparing against Douglas-Peucker.
 
 ### Temporal Fraction Interpretation
 
@@ -332,7 +334,7 @@ runtime work should focus on removing Python/window-loop overhead, reducing
 repeated exact diagnostics during sweeps, and then increasing batch size to
 consume available VRAM.
 
-### 1. Vectorize Budget-Top-K Loss
+### 1. Vectorize Budget-Top-K Loss - First Pass Implemented
 
 Code targets:
 
@@ -341,7 +343,7 @@ Code targets:
 - `_budget_topk_temporal_residual_loss`
 - the inner `for b in range(B)` loop in `train_model`
 
-Current issue:
+Original issue:
 
 - training batches already contain multiple windows, but loss construction
   still iterates over each window
@@ -350,28 +352,34 @@ Current issue:
 - this creates many small GPU launches and CPU-side orchestration overhead,
   so GPU utilization remains low even with BF16/TF32 enabled
 
-Prepared implementation direction:
+Implemented first pass:
 
-- build batched tensors shaped approximately `[B, L]` for predictions, labels,
-  valid masks, and global indices
-- create one residual candidate mask per budget ratio with shape `[R, B, L]`
-  where `R = len(budget_loss_ratios)`
+- budget-top-k row losses now operate on batched `[B, L]` tensors for
+  predictions, labels, valid masks, and global indices
 - compute per-row valid counts and per-row `k` values for each ratio
-- perform batched top-k/threshold selection across flattened `(R * B)` rows
-  instead of calling the scalar helper for every window
+- perform batched sort/top-k threshold selection per budget ratio instead of
+  calling the scalar helper for every active window
 - compute ideal label mass and captured soft mass in one tensor expression
-- return both loss and useful diagnostics such as active row count and skipped
-  no-positive rows
-- keep the existing scalar helpers temporarily for unit tests and correctness
-  comparison, then remove them once the vectorized path is trusted
+- handle temporal-residual masks per budget with batched residual candidate
+  masks
+- keep scalar helpers as correctness references in unit tests
+
+Remaining scalar work:
+
+- auxiliary pointwise BCE still samples negatives per active row
+- legacy `loss_objective=ranking_bce` remains scalar because it is now an
+  ablation path
+- runtime impact still needs a focused before/after benchmark because the
+  backward pass and pointwise term may now dominate more visibly
 
 Correctness requirements:
 
-- must match current scalar behavior on small deterministic examples
-- must handle padded windows and windows with no residual positives
-- must handle temporal residual masks for each budget independently
-- must preserve the configured `budget_loss_temperature`
-- must leave final evaluation semantics unchanged
+- scalar-vs-batched deterministic tests are in place for normal and
+  temporal-residual budget-top-k loss
+- padded windows and windows with no residual positives are skipped
+- temporal residual masks are handled independently for each budget ratio
+- the configured `budget_loss_temperature` is preserved
+- final evaluation semantics are unchanged
 
 Expected impact:
 
@@ -525,15 +533,14 @@ Expected impact:
 After the current corrected queue finishes:
 
 1. analyze fixed queue quality and timing
-2. implement vectorized budget-top-k loss
-3. run one A/B runtime+quality comparison against the current scalar loss
-4. implement cached/minimal range diagnostics for repeated model sweeps
-5. implement candidate-checkpoint tournament
-6. benchmark `train_batch_size=64` and `128`
+2. run one runtime+quality comparison against the previous scalar-loss baseline
+3. implement cached/minimal range diagnostics for repeated model sweeps
+4. implement candidate-checkpoint tournament
+5. benchmark `train_batch_size=64` and `128`
 
 Do not change all optimization knobs at once. The first comparison should
-answer whether the vectorized loss is numerically equivalent enough and faster.
-The second should answer how much repeated diagnostics cost can be removed. The
+answer whether the batched loss path is faster without changing quality. The
+second should answer how much repeated diagnostics cost can be removed. The
 third should tune checkpoint cadence and batch size.
 
 ## Current Benchmark Evidence

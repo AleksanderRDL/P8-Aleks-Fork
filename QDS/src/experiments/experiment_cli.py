@@ -328,8 +328,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mlqds_diversity_bonus",
         type=float,
-        default=0.05,
-        help="Small spacing bonus for MLQDS fill candidates away from temporal base points.",
+        default=0.0,
+        help="Spacing bonus for MLQDS fill candidates away from temporal base points. Default 0.0 keeps learned score fill isolated.",
     )
     parser.add_argument(
         "--mlqds_score_mode",
