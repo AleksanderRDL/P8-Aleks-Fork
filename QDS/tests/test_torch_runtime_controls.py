@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from src.experiments.benchmark_runtime import (
@@ -241,27 +242,23 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.baselines.final_metrics_mode == "diagnostic"
 
 
-def test_legacy_validation_score_config_names_still_load() -> None:
-    payload = build_experiment_config().to_dict()
-    payload["model"].pop("validation_score_every")
-    payload["model"].pop("checkpoint_full_score_every")
-    payload["model"].pop("checkpoint_score_variant")
-    payload["model"].pop("temporal_residual_label_mode")
-    payload["model"]["f1_diagnostic_every"] = 2
-    payload["model"]["checkpoint_full_f1_every"] = 4
-    payload["model"]["checkpoint_f1_variant"] = "answer"
-    payload["model"]["residual_label_mode"] = "none"
-
+def test_validation_score_config_uses_current_names() -> None:
+    payload = build_experiment_config(
+        validation_score_every=2,
+        checkpoint_full_score_every=4,
+        checkpoint_score_variant="answer",
+        temporal_residual_label_mode="none",
+    ).to_dict()
     restored = ExperimentConfig.from_dict(payload)
     args = build_parser().parse_args(
         [
-            "--f1_diagnostic_every",
+            "--validation_score_every",
             "3",
-            "--checkpoint_full_f1_every",
+            "--checkpoint_full_score_every",
             "5",
-            "--checkpoint_f1_variant",
+            "--checkpoint_score_variant",
             "combined",
-            "--residual_label_mode",
+            "--temporal_residual_label_mode",
             "none",
         ]
     )
@@ -270,12 +267,20 @@ def test_legacy_validation_score_config_names_still_load() -> None:
     assert restored.model.checkpoint_full_score_every == 4
     assert restored.model.checkpoint_score_variant == "answer"
     assert restored.model.temporal_residual_label_mode == "none"
-    assert restored.model.f1_diagnostic_every == 2
-    assert restored.model.residual_label_mode == "none"
+    assert not hasattr(restored.model, "f1_diagnostic_every")
+    assert not hasattr(restored.model, "residual_label_mode")
     assert args.validation_score_every == 3
     assert args.checkpoint_full_score_every == 5
     assert args.checkpoint_score_variant == "combined"
     assert args.temporal_residual_label_mode == "none"
+
+
+def test_experiment_config_rejects_unknown_model_keys() -> None:
+    payload = build_experiment_config().to_dict()
+    payload["model"]["f1_diagnostic_every"] = 1
+
+    with pytest.raises(TypeError, match="f1_diagnostic_every"):
+        ExperimentConfig.from_dict(payload)
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:
@@ -358,7 +363,7 @@ def test_runtime_profile_requires_real_training_data_source() -> None:
     assert not _extra_args_include_training_data_source("--validation_csv_path validation.csv")
 
 
-def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
+def test_batch_size_sweep_summary_extracts_timing_memory_and_score() -> None:
     rows = _batch_size_sweep_summary(
         [
             {
@@ -368,7 +373,7 @@ def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
                 "elapsed_seconds": 12.5,
                 "timings": {"epoch_timings": [{"seconds": 2.0}, {"seconds": 3.0}]},
                 "metrics": {
-                    "best_f1": 0.4,
+                    "best_selection_score": 0.4,
                     "batch_size": {"train_batch_size": 32},
                     "cuda_memory": {
                         "training": {
@@ -393,7 +398,6 @@ def test_batch_size_sweep_summary_extracts_timing_memory_and_f1() -> None:
             "peak_allocated_mb": 123.0,
             "peak_reserved_mb": 256.0,
             "best_selection_score": 0.4,
-            "best_f1": 0.4,
             "mlqds_aggregate_f1": 0.5,
             "mlqds_range_usefulness_score": None,
             "mlqds_range_ship_coverage": None,

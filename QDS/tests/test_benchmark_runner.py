@@ -297,7 +297,6 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
         },
         "best_epoch": 2,
         "best_selection_score": 0.42,
-        "best_f1": 0.42,
         "training_history": [
             {"epoch": 0.0, "pred_std": 0.0, "collapse_warning": 1.0},
             {"epoch": 1.0, "pred_std": 0.2},
@@ -347,7 +346,6 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["checkpoint_full_score_every"] == 3
     assert row["checkpoint_candidate_pool_size"] == 2
     assert row["best_selection_score"] == 0.42
-    assert row["best_f1"] == 0.42
     assert row["range_boundary_prior_weight"] == 0.0
     assert row["range_boundary_prior_enabled"] is False
     assert row["train_positive_label_mass"] == 12.5
@@ -370,7 +368,6 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_primary_metric"] == "range_usefulness"
     assert row["mlqds_primary_score"] == 0.42
     assert row["mlqds_aggregate_f1"] == 0.40
-    assert row["mlqds_answer_f1"] == 0.40
     assert row["mlqds_range_point_f1"] == 0.40
     assert row["mlqds_range_usefulness"] == 0.42
     assert row["mlqds_range_usefulness_score"] == 0.42
@@ -397,8 +394,6 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["best_epoch_pred_std"] == 0.2
     assert row["oracle_kind"] == "additive_label_greedy"
     assert row["oracle_exact_optimum"] is False
-    assert row["mlqds_vs_uniform_f1"] == pytest.approx(0.05)
-    assert row["mlqds_vs_douglas_peucker_f1"] == pytest.approx(0.04)
     assert row["mlqds_vs_uniform_range_point_f1"] == pytest.approx(0.05)
     assert row["mlqds_vs_douglas_peucker_range_point_f1"] == pytest.approx(0.04)
     assert row["mlqds_vs_uniform_range_usefulness"] == pytest.approx(0.05)
@@ -608,7 +603,6 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
     assert index_rows[0]["best_mlqds_aggregate_f1"] == "0.4"
     assert index_rows[0]["best_mlqds_range_point_f1"] == "0.4"
     assert index_rows[0]["best_mlqds_range_usefulness"] == "0.42"
-    assert index_rows[0]["best_mlqds_f1"] == "0.4"
     assert index_rows[0]["best_mlqds_run_label"] == "custom_run"
     assert events_text.count('"run_id": "run-a"') == 2
 
@@ -660,23 +654,18 @@ def test_benchmark_markdown_table_is_compact() -> None:
                 "elapsed_seconds": 12.34567,
                 "epoch_mean_seconds": 1.25,
                 "peak_allocated_mb": 123.0,
-                "best_f1": 0.5,
+                "best_selection_score": 0.5,
                 "mlqds_primary_metric": "range_usefulness",
                 "mlqds_primary_score": 0.41,
                 "mlqds_aggregate_f1": 0.4,
-                "mlqds_f1": 0.4,
                 "mlqds_range_point_f1": 0.4,
                 "mlqds_range_usefulness": 0.41,
-                "uniform_f1": 0.3,
                 "uniform_range_point_f1": 0.3,
                 "uniform_range_usefulness": 0.32,
-                "douglas_peucker_f1": 0.2,
                 "douglas_peucker_range_point_f1": 0.2,
                 "douglas_peucker_range_usefulness": 0.22,
-                "mlqds_vs_uniform_f1": 0.1,
                 "mlqds_vs_uniform_range_point_f1": 0.1,
                 "mlqds_vs_uniform_range_usefulness": 0.09,
-                "mlqds_vs_douglas_peucker_f1": 0.2,
                 "mlqds_vs_douglas_peucker_range_point_f1": 0.2,
                 "mlqds_vs_douglas_peucker_range_usefulness": 0.19,
                 "mlqds_latency_ms": 10.0,

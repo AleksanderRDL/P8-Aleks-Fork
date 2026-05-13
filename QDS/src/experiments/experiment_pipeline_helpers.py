@@ -70,7 +70,6 @@ from src.queries.workload_diagnostics import (
     range_box_mask,
 )
 from src.simplification.mlqds_scoring import workload_type_head
-from src.training.checkpoint_selection import normalize_checkpoint_selection_metric
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.checkpoints import ModelArtifacts, save_checkpoint
@@ -453,7 +452,6 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "avg_length_preserved": metrics.avg_length_preserved,
         "combined_query_shape_score": metrics.combined_query_shape_score,
         "range_point_f1": metrics.range_point_f1,
-        "pure_range_f1": metrics.range_point_f1,
         "range_ship_f1": metrics.range_ship_f1,
         "range_ship_coverage": metrics.range_ship_coverage,
         "range_entry_exit_f1": metrics.range_entry_exit_f1,
@@ -616,9 +614,7 @@ def run_experiment_pipeline(
         )
 
     seeds = derive_seed_bundle(config.data.seed)
-    selection_metric = normalize_checkpoint_selection_metric(
-        getattr(config.model, "checkpoint_selection_metric", "score")
-    )
+    selection_metric = str(getattr(config.model, "checkpoint_selection_metric", "score")).lower()
     validation_score_every = int(getattr(config.model, "validation_score_every", 0) or 0)
     needs_validation_score = selection_metric in {"score", "uniform_gap"} or validation_score_every > 0
     with _phase("split"):
@@ -1177,11 +1173,9 @@ def run_experiment_pipeline(
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
         "best_selection_score": trained.best_selection_score,
-        "best_f1": trained.best_f1,
         "checkpoint_selection_metric": selection_metric,
         "checkpoint_selection_metric_requested": config.model.checkpoint_selection_metric,
         "checkpoint_score_variant": config.model.checkpoint_score_variant,
-        "checkpoint_f1_variant": config.model.checkpoint_score_variant,
         "final_metrics_mode": config.baselines.final_metrics_mode,
         "range_usefulness_weight_summary": range_usefulness_weight_summary(),
         "checkpoint_smoothing_window": config.model.checkpoint_smoothing_window,

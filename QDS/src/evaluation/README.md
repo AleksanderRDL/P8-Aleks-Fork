@@ -45,7 +45,7 @@ Range audit components:
 | `ShapeScore` | Range-local route fidelity. |
 
 Non-range workloads still report answer-set `AnswerF1` and `CombinedF1` for
-legacy ablations. Current benchmark work is range-only.
+diagnostic ablations. Current benchmark work is range-only.
 
 ## Reporting Rules
 

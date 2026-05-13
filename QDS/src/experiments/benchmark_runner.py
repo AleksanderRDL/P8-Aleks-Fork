@@ -545,17 +545,17 @@ def _row_from_run(
     target_diagnostics = (run_json or {}).get("training_target_diagnostics") or {}
     target_budget_row = _target_budget_row(target_diagnostics, model_config.get("compression_ratio"))
     mlqds_aggregate_f1 = mlqds.get("aggregate_f1")
-    mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds.get("pure_range_f1", mlqds_aggregate_f1))
+    mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds_aggregate_f1)
     mlqds_range_usefulness = mlqds.get("range_usefulness_score")
     mlqds_primary_score = mlqds_range_usefulness if mlqds_range_usefulness is not None else mlqds_range_point_f1
     mlqds_primary_metric = "range_usefulness" if mlqds_range_usefulness is not None else "range_point_f1"
     random_fill_range_usefulness = temporal_random_fill.get("range_usefulness_score")
     oracle_fill_range_usefulness = temporal_oracle_fill.get("range_usefulness_score")
     uniform_aggregate_f1 = uniform.get("aggregate_f1")
-    uniform_range_point_f1 = uniform.get("range_point_f1", uniform.get("pure_range_f1", uniform_aggregate_f1))
+    uniform_range_point_f1 = uniform.get("range_point_f1", uniform_aggregate_f1)
     uniform_range_usefulness = uniform.get("range_usefulness_score")
     dp_aggregate_f1 = dp.get("aggregate_f1")
-    dp_range_point_f1 = dp.get("range_point_f1", dp.get("pure_range_f1", dp_aggregate_f1))
+    dp_range_point_f1 = dp.get("range_point_f1", dp_aggregate_f1)
     dp_range_usefulness = dp.get("range_usefulness_score")
     return {
         "workload": workload,
@@ -568,13 +568,10 @@ def _row_from_run(
         "peak_allocated_mb": cuda_memory.get("max_allocated_mb"),
         "best_epoch": (run_json or {}).get("best_epoch"),
         "best_loss": (run_json or {}).get("best_loss"),
-        "best_selection_score": (run_json or {}).get("best_selection_score", (run_json or {}).get("best_f1")),
-        "best_f1": (run_json or {}).get("best_f1"),
+        "best_selection_score": (run_json or {}).get("best_selection_score"),
         "mlqds_primary_metric": mlqds_primary_metric,
         "mlqds_primary_score": mlqds_primary_score,
         "mlqds_aggregate_f1": mlqds_aggregate_f1,
-        "mlqds_answer_f1": mlqds_aggregate_f1,
-        "mlqds_f1": mlqds_aggregate_f1,
         "mlqds_range_point_f1": mlqds_range_point_f1,
         "mlqds_range_usefulness": mlqds_range_usefulness,
         "mlqds_range_usefulness_score": mlqds_range_usefulness,
@@ -590,27 +587,13 @@ def _row_from_run(
         "range_usefulness_schema_version": mlqds.get("range_usefulness_schema_version"),
         "final_metrics_mode": (run_json or {}).get("final_metrics_mode", baseline_config.get("final_metrics_mode")),
         "uniform_aggregate_f1": uniform_aggregate_f1,
-        "uniform_answer_f1": uniform_aggregate_f1,
-        "uniform_f1": uniform_aggregate_f1,
         "uniform_range_point_f1": uniform_range_point_f1,
         "uniform_range_usefulness": uniform_range_usefulness,
         "uniform_range_usefulness_score": uniform_range_usefulness,
         "douglas_peucker_aggregate_f1": dp_aggregate_f1,
-        "douglas_peucker_answer_f1": dp_aggregate_f1,
-        "douglas_peucker_f1": dp_aggregate_f1,
         "douglas_peucker_range_point_f1": dp_range_point_f1,
         "douglas_peucker_range_usefulness": dp_range_usefulness,
         "douglas_peucker_range_usefulness_score": dp_range_usefulness,
-        "mlqds_vs_uniform_f1": (
-            float(mlqds_aggregate_f1) - float(uniform_aggregate_f1)
-            if mlqds_aggregate_f1 is not None and uniform_aggregate_f1 is not None
-            else None
-        ),
-        "mlqds_vs_douglas_peucker_f1": (
-            float(mlqds_aggregate_f1) - float(dp_aggregate_f1)
-            if mlqds_aggregate_f1 is not None and dp_aggregate_f1 is not None
-            else None
-        ),
         "mlqds_vs_uniform_range_point_f1": (
             float(mlqds_range_point_f1) - float(uniform_range_point_f1)
             if mlqds_range_point_f1 is not None and uniform_range_point_f1 is not None
@@ -655,26 +638,12 @@ def _row_from_run(
         "min_pred_std": collapse_summary["min_pred_std"],
         "best_epoch_pred_std": collapse_summary["best_epoch_pred_std"],
         "model_type": model_config.get("model_type"),
-        "checkpoint_score_variant": model_config.get(
-            "checkpoint_score_variant",
-            model_config.get("checkpoint_f1_variant"),
-        ),
-        "checkpoint_f1_variant": model_config.get(
-            "checkpoint_score_variant",
-            model_config.get("checkpoint_f1_variant"),
-        ),
+        "checkpoint_score_variant": model_config.get("checkpoint_score_variant"),
         "compression_ratio": model_config.get("compression_ratio"),
         "loss_objective": model_config.get("loss_objective"),
         "budget_loss_ratios": model_config.get("budget_loss_ratios"),
         "budget_loss_temperature": model_config.get("budget_loss_temperature"),
-        "checkpoint_full_score_every": model_config.get(
-            "checkpoint_full_score_every",
-            model_config.get("checkpoint_full_f1_every"),
-        ),
-        "checkpoint_full_f1_every": model_config.get(
-            "checkpoint_full_score_every",
-            model_config.get("checkpoint_full_f1_every"),
-        ),
+        "checkpoint_full_score_every": model_config.get("checkpoint_full_score_every"),
         "checkpoint_candidate_pool_size": model_config.get("checkpoint_candidate_pool_size"),
         "mlqds_temporal_fraction": model_config.get("mlqds_temporal_fraction"),
         "mlqds_diversity_bonus": model_config.get("mlqds_diversity_bonus"),
@@ -683,14 +652,7 @@ def _row_from_run(
         "mlqds_score_temperature": model_config.get("mlqds_score_temperature"),
         "mlqds_rank_confidence_weight": model_config.get("mlqds_rank_confidence_weight"),
         "mlqds_range_geometry_blend": model_config.get("mlqds_range_geometry_blend"),
-        "temporal_residual_label_mode": model_config.get(
-            "temporal_residual_label_mode",
-            model_config.get("residual_label_mode"),
-        ),
-        "residual_label_mode": model_config.get(
-            "temporal_residual_label_mode",
-            model_config.get("residual_label_mode"),
-        ),
+        "temporal_residual_label_mode": model_config.get("temporal_residual_label_mode"),
         "range_label_mode": model_config.get("range_label_mode"),
         "range_boundary_prior_weight": model_config.get("range_boundary_prior_weight"),
         "range_boundary_prior_enabled": bool(float(model_config.get("range_boundary_prior_weight") or 0.0) > 0.0),
@@ -753,7 +715,6 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "epoch_mean_seconds",
         "peak_allocated_mb",
         "best_selection_score",
-        "best_f1",
         "compression_ratio",
         "loss_objective",
         "model_type",
@@ -845,7 +806,6 @@ def _run_config(
         },
         "checkpoint_selection_metric": _profile_settings(args.profile).get("checkpoint_selection_metric"),
         "validation_score_every": int(args.validation_score_every),
-        "f1_diagnostic_every": int(args.validation_score_every),
         "extra_args": _split_extra_args(args.extra_args),
         "continue_on_failure": bool(args.continue_on_failure),
     }
@@ -910,8 +870,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_trajectories", type=int, default=None)
     parser.add_argument(
         "--validation_score_every",
-        "--f1_diagnostic_every",
-        dest="validation_score_every",
         type=int,
         default=1,
         help="Held-out validation-score cadence passed to each child run.",

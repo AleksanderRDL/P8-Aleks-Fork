@@ -38,7 +38,6 @@ DEFAULT_INDEX_FIELDS: list[str] = [
     "best_mlqds_aggregate_f1",
     "best_mlqds_range_point_f1",
     "best_mlqds_range_usefulness",
-    "best_mlqds_f1",
     "best_mlqds_run_label",
     "git_commit",
     "git_dirty",

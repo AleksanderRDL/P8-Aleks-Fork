@@ -31,23 +31,10 @@ def selection_score(avg_tau: float, pred_std: float, loss: float | None = None) 
     return float(-float(loss) + 1e-3 * avg_tau - collapse_penalty)
 
 
-def normalize_checkpoint_selection_metric(selection_metric: str) -> str:
-    """Normalize checkpoint selection metric names, including legacy aliases."""
-    metric = str(selection_metric).lower()
-    if metric == "f1":
-        return "score"
-    return metric
-
-
 def validation_score_selection_score(validation_score: float, pred_std: float) -> float:
     """Score checkpoints by active validation score while rejecting collapsed predictions."""
     collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
     return float(validation_score - collapse_penalty)
-
-
-def f1_selection_score(query_f1: float, pred_std: float) -> float:
-    """Legacy alias for validation_score_selection_score."""
-    return validation_score_selection_score(query_f1, pred_std)
 
 
 def _normalized_workload_map(workload_map: dict[str, float]) -> dict[str, float]:
@@ -116,18 +103,14 @@ def record_validation_stats(
     if validation_uniform_result is not None:
         uniform_score, uniform_per_type_score = validation_uniform_result
         stats["val_uniform_score"] = float(uniform_score)
-        stats["val_uniform_f1"] = stats["val_uniform_score"]
         stats["val_selection_uniform_gap"] = float(validation_score - uniform_score)
-        stats["val_query_uniform_gap"] = stats["val_selection_uniform_gap"]
         stats["val_selection_type_deficit"] = uniform_type_deficit(
             per_type_score,
             uniform_per_type_score,
             validation_workload_map or {},
         )
-        stats["val_query_type_deficit"] = stats["val_selection_type_deficit"]
         for type_name, value in uniform_per_type_score.items():
             stats[f"val_uniform_score_{type_name}"] = float(value)
-            stats[f"val_uniform_f1_{type_name}"] = stats[f"val_uniform_score_{type_name}"]
             stats[f"val_selection_score_gap_{type_name}"] = float(per_type_score.get(type_name, 0.0) - value)
 
 
@@ -141,7 +124,7 @@ def selection_from_stats(
     model_config: ModelConfig,
 ) -> float | None:
     """Return the active checkpoint selection score for one stats row."""
-    selection_metric = normalize_checkpoint_selection_metric(selection_metric)
+    selection_metric = str(selection_metric).lower()
     if (
         selection_metric == "uniform_gap"
         and "val_selection_score" in stats

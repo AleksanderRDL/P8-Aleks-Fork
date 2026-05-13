@@ -291,8 +291,7 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "best_epoch": run_json.get("best_epoch"),
         "best_loss": run_json.get("best_loss"),
-        "best_selection_score": run_json.get("best_selection_score", run_json.get("best_f1")),
-        "best_f1": run_json.get("best_f1"),
+        "best_selection_score": run_json.get("best_selection_score"),
         "workload": run_json.get("workload"),
         "train_query_count": run_json.get("train_query_count"),
         "eval_query_count": run_json.get("eval_query_count"),
@@ -405,8 +404,7 @@ def _batch_size_sweep_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any
                 "epoch_time_max_seconds": max(epoch_times) if epoch_times else None,
                 "peak_allocated_mb": training_memory.get("max_allocated_mb"),
                 "peak_reserved_mb": training_memory.get("max_reserved_mb"),
-                "best_selection_score": metrics.get("best_selection_score", metrics.get("best_f1")),
-                "best_f1": metrics.get("best_f1"),
+                "best_selection_score": metrics.get("best_selection_score"),
                 "mlqds_aggregate_f1": mlqds.get("aggregate_f1") if isinstance(mlqds, dict) else None,
                 "mlqds_range_usefulness_score": (
                     mlqds.get("range_usefulness_score") if isinstance(mlqds, dict) else None

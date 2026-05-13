@@ -25,7 +25,6 @@ from src.simplification.mlqds_scoring import simplify_mlqds_predictions
 from src.simplification.simplify_trajectories import evenly_spaced_indices
 from src.training.checkpoint_selection import (
     CheckpointCandidate,
-    normalize_checkpoint_selection_metric,
     record_validation_stats,
     selection_from_stats,
     selection_score,
@@ -422,7 +421,6 @@ def _training_target_diagnostics(
     diagnostics: dict[str, Any] = {
         "workload_type_id": int(workload_type_id),
         "temporal_residual_label_mode": str(temporal_residual_label_mode),
-        "residual_label_mode": str(temporal_residual_label_mode),
         "loss_objective": str(loss_objective),
         "mlqds_temporal_fraction": float(temporal_fraction),
         "configured_budget_loss_ratios": [float(value) for value in configured_budget_ratios],
@@ -519,15 +517,7 @@ class TrainingOutputs:
     best_epoch: int = 0
     best_loss: float = float("inf")
     best_selection_score: float = 0.0
-    best_f1: float = 0.0
     target_diagnostics: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        """Keep legacy best_f1 and explicit best_selection_score in sync."""
-        if self.best_selection_score == 0.0 and self.best_f1 != 0.0:
-            self.best_selection_score = float(self.best_f1)
-        elif self.best_f1 == 0.0 and self.best_selection_score != 0.0:
-            self.best_f1 = float(self.best_selection_score)
 
 
 def _kendall_tau(predictions: torch.Tensor, targets: torch.Tensor) -> float:
@@ -859,35 +849,6 @@ def _validation_query_score(
     return score, per_type
 
 
-def _validation_query_f1(
-    model: TrajectoryQDSModel,
-    scaler: FeatureScaler,
-    trajectories: list[torch.Tensor],
-    boundaries: list[tuple[int, int]],
-    workload: TypedQueryWorkload,
-    workload_map: dict[str, float],
-    model_config: ModelConfig,
-    device: torch.device,
-    validation_points: torch.Tensor | None = None,
-    query_cache: Any | None = None,
-    range_geometry_scores: torch.Tensor | None = None,
-) -> tuple[float, dict[str, float]]:
-    """Legacy alias for _validation_query_score."""
-    return _validation_query_score(
-        model=model,
-        scaler=scaler,
-        trajectories=trajectories,
-        boundaries=boundaries,
-        workload=workload,
-        workload_map=workload_map,
-        model_config=model_config,
-        device=device,
-        validation_points=validation_points,
-        query_cache=query_cache,
-        range_geometry_scores=range_geometry_scores,
-    )
-
-
 def _validation_uniform_score(
     trajectories: list[torch.Tensor],
     boundaries: list[tuple[int, int]],
@@ -1111,11 +1072,9 @@ def train_model(
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
-    selection_metric = normalize_checkpoint_selection_metric(
-        getattr(model_config, "checkpoint_selection_metric", "score")
-    )
+    selection_metric = str(getattr(model_config, "checkpoint_selection_metric", "score")).lower()
     if selection_metric not in {"loss", "score", "uniform_gap"}:
-        raise ValueError("checkpoint_selection_metric must be 'loss', 'score', 'f1', or 'uniform_gap'.")
+        raise ValueError("checkpoint_selection_metric must be 'loss', 'score', or 'uniform_gap'.")
     validation_score_every = int(getattr(model_config, "validation_score_every", 0) or 0)
     has_validation_score = (
         validation_trajectories is not None
@@ -1480,14 +1439,12 @@ def train_model(
                 )
             if has_validation_score and validation_score_due and selection_metric in {"score", "uniform_gap"}:
                 stats["checkpoint_score_candidate"] = 1.0
-                stats["checkpoint_f1_candidate"] = 1.0
                 stats["checkpoint_candidate_cheap_score"] = selection_score(
                     candidate_avg_tau,
                     stats["pred_std"],
                     stats["loss"],
                 )
                 stats["checkpoint_full_score_due"] = 1.0 if full_score_due else 0.0
-                stats["checkpoint_full_f1_due"] = stats["checkpoint_full_score_due"]
                 if use_checkpoint_candidate_pool:
                     checkpoint_candidates.append(
                         CheckpointCandidate(
@@ -1534,7 +1491,6 @@ def train_model(
                             )
                             candidate.stats["checkpoint_candidate_evaluated"] = 1.0
                             candidate.stats["checkpoint_full_score_round_epoch"] = float(epoch + 1)
-                            candidate.stats["checkpoint_full_f1_round_epoch"] = float(epoch + 1)
                             candidate.stats["checkpoint_validation_seconds"] = float(time.perf_counter() - candidate_t0)
                             evaluated_checkpoint_candidates.append(candidate)
                         model.load_state_dict(current_state_dict)
@@ -1761,6 +1717,5 @@ def train_model(
         best_epoch=best_epoch,
         best_loss=best_loss,
         best_selection_score=best_selection_score,
-        best_f1=best_selection_score,
         target_diagnostics=target_diagnostics,
     )

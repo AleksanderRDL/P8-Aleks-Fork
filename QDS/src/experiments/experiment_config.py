@@ -2,27 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from src.queries.workload import TypedQueryWorkload
 
 LCG_MULTIPLIER = 6364136223846793005
-
-
-def _known_dataclass_values(cls: type, data: dict[str, Any]) -> dict[str, Any]:
-    """Drop stale serialized keys that are no longer part of a config dataclass."""
-    allowed = {config_field.name for config_field in fields(cls)}
-    return {key: value for key, value in data.items() if key in allowed}
-
-
-def _apply_key_aliases(data: dict[str, Any], aliases: dict[str, str]) -> dict[str, Any]:
-    """Copy legacy serialized keys to their current names when the current key is absent."""
-    values = dict(data)
-    for old_key, new_key in aliases.items():
-        if old_key in values and new_key not in values:
-            values[new_key] = values[old_key]
-    return values
 
 
 @dataclass
@@ -54,7 +39,7 @@ class DataConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DataConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**_known_dataclass_values(cls, data))
+        return cls(**data)
 
 
 @dataclass
@@ -87,7 +72,7 @@ class QueryConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueryConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**_known_dataclass_values(cls, data))
+        return cls(**data)
 
 
 @dataclass
@@ -150,56 +135,7 @@ class ModelConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModelConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(
-            **_known_dataclass_values(
-                cls,
-                _apply_key_aliases(
-                    data,
-                    {
-                        "f1_diagnostic_every": "validation_score_every",
-                        "checkpoint_full_f1_every": "checkpoint_full_score_every",
-                        "checkpoint_f1_variant": "checkpoint_score_variant",
-                        "residual_label_mode": "temporal_residual_label_mode",
-                    },
-                ),
-            )
-        )
-
-    @property
-    def f1_diagnostic_every(self) -> int:
-        """Legacy alias for validation_score_every."""
-        return self.validation_score_every
-
-    @f1_diagnostic_every.setter
-    def f1_diagnostic_every(self, value: int) -> None:
-        self.validation_score_every = value
-
-    @property
-    def checkpoint_full_f1_every(self) -> int:
-        """Legacy alias for checkpoint_full_score_every."""
-        return self.checkpoint_full_score_every
-
-    @checkpoint_full_f1_every.setter
-    def checkpoint_full_f1_every(self, value: int) -> None:
-        self.checkpoint_full_score_every = value
-
-    @property
-    def checkpoint_f1_variant(self) -> str:
-        """Legacy alias for checkpoint_score_variant."""
-        return self.checkpoint_score_variant
-
-    @checkpoint_f1_variant.setter
-    def checkpoint_f1_variant(self, value: str) -> None:
-        self.checkpoint_score_variant = value
-
-    @property
-    def residual_label_mode(self) -> str:
-        """Legacy alias for temporal_residual_label_mode."""
-        return self.temporal_residual_label_mode
-
-    @residual_label_mode.setter
-    def residual_label_mode(self, value: str) -> None:
-        self.temporal_residual_label_mode = value
+        return cls(**data)
 
 
 @dataclass
@@ -216,7 +152,7 @@ class BaselineConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BaselineConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**_known_dataclass_values(cls, data))
+        return cls(**data)
 
 
 @dataclass
@@ -240,6 +176,10 @@ class ExperimentConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExperimentConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
+        expected_keys = {"data", "query", "model", "baselines"}
+        unknown_keys = set(data) - expected_keys
+        if unknown_keys:
+            raise TypeError(f"Unknown ExperimentConfig keys: {sorted(unknown_keys)}")
         return cls(
             data=DataConfig.from_dict(data["data"]),
             query=QueryConfig.from_dict(data["query"]),
@@ -331,29 +271,9 @@ def build_experiment_config(
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
     amp_mode: str = "off",
-    f1_diagnostic_every: int | None = None,
-    checkpoint_full_f1_every: int | None = None,
-    checkpoint_f1_variant: str | None = None,
-    residual_label_mode: str | None = None,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
     uses_csv = bool(csv_path or train_csv_path or validation_csv_path or eval_csv_path)
-    resolved_validation_score_every = (
-        validation_score_every if validation_score_every is not None
-        else (f1_diagnostic_every if f1_diagnostic_every is not None else 0)
-    )
-    resolved_checkpoint_full_score_every = (
-        checkpoint_full_score_every if checkpoint_full_score_every is not None
-        else (checkpoint_full_f1_every if checkpoint_full_f1_every is not None else 1)
-    )
-    resolved_checkpoint_score_variant = (
-        checkpoint_score_variant if checkpoint_score_variant is not None
-        else (checkpoint_f1_variant if checkpoint_f1_variant is not None else "range_usefulness")
-    )
-    resolved_temporal_residual_label_mode = (
-        temporal_residual_label_mode if temporal_residual_label_mode is not None
-        else (residual_label_mode if residual_label_mode is not None else "temporal")
-    )
     return ExperimentConfig(
         data=DataConfig(
             n_ships=None if uses_csv else n_ships,
@@ -410,13 +330,13 @@ def build_experiment_config(
             diagnostic_every=diagnostic_every,
             diagnostic_window_fraction=diagnostic_window_fraction,
             checkpoint_selection_metric=checkpoint_selection_metric,
-            validation_score_every=resolved_validation_score_every,
+            validation_score_every=0 if validation_score_every is None else validation_score_every,
             checkpoint_uniform_gap_weight=checkpoint_uniform_gap_weight,
             checkpoint_type_penalty_weight=checkpoint_type_penalty_weight,
             checkpoint_smoothing_window=checkpoint_smoothing_window,
-            checkpoint_full_score_every=resolved_checkpoint_full_score_every,
+            checkpoint_full_score_every=1 if checkpoint_full_score_every is None else checkpoint_full_score_every,
             checkpoint_candidate_pool_size=checkpoint_candidate_pool_size,
-            checkpoint_score_variant=resolved_checkpoint_score_variant,
+            checkpoint_score_variant=checkpoint_score_variant or "range_usefulness",
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             mlqds_hybrid_mode=mlqds_hybrid_mode,
@@ -424,7 +344,7 @@ def build_experiment_config(
             mlqds_score_temperature=mlqds_score_temperature,
             mlqds_rank_confidence_weight=mlqds_rank_confidence_weight,
             mlqds_range_geometry_blend=mlqds_range_geometry_blend,
-            temporal_residual_label_mode=resolved_temporal_residual_label_mode,
+            temporal_residual_label_mode=temporal_residual_label_mode or "temporal",
             range_label_mode=range_label_mode,
             range_boundary_prior_weight=range_boundary_prior_weight,
             range_audit_compression_ratios=list(range_audit_compression_ratios or []),

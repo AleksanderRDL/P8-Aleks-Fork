@@ -47,7 +47,7 @@ Labels are additive training targets. They are not exact retained-set optimizers
   top-k budgets from `budget_loss_ratios`.
 - `temporal_residual_label_mode="temporal"`: trains only the learned fill left
   after the temporal base selected by `mlqds_temporal_fraction`.
-- `loss_objective="ranking_bce"`: legacy ablation.
+- `loss_objective="ranking_bce"`: pairwise-ranking ablation.
 - `pointwise_loss_weight`: auxiliary BCE term.
 - `mlqds_hybrid_mode="fill"`: temporal base plus learned score fill.
 - `mlqds_hybrid_mode="swap"`: start from uniform temporal sampling and replace

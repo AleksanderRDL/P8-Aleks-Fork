@@ -33,7 +33,6 @@ RUN_INDEX_FIELDS = [
     "best_mlqds_aggregate_f1",
     "best_mlqds_range_point_f1",
     "best_mlqds_range_usefulness",
-    "best_mlqds_f1",
     "best_mlqds_run_label",
     "git_commit",
     "git_dirty",
@@ -115,20 +114,11 @@ def _first_float(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
     return None
 
 
-def _inferred_primary_metric(row: dict[str, Any]) -> str | None:
-    """Infer the primary metric label for old rows that predate explicit schema fields."""
+def _primary_metric(row: dict[str, Any]) -> str | None:
+    """Return the explicit primary metric label for one current benchmark row."""
     metric = row.get("mlqds_primary_metric")
     if metric not in (None, ""):
         return str(metric)
-    if (
-        row.get("mlqds_range_usefulness") not in (None, "")
-        or row.get("mlqds_range_usefulness_score") not in (None, "")
-    ):
-        return "range_usefulness"
-    if row.get("mlqds_range_point_f1") not in (None, ""):
-        return "range_point_f1"
-    if row.get("mlqds_aggregate_f1") not in (None, "") or row.get("mlqds_f1") not in (None, ""):
-        return "aggregate_f1"
     return None
 
 
@@ -145,7 +135,6 @@ def _best_mlqds(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "mlqds_range_usefulness_score",
                 "mlqds_range_point_f1",
                 "mlqds_aggregate_f1",
-                "mlqds_f1",
             ),
         )
         if score is None:
@@ -162,9 +151,9 @@ def _best_mlqds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "range_usefulness": None,
             "run_label": None,
         }
-    aggregate_f1 = _first_float(best_row, ("mlqds_aggregate_f1", "mlqds_f1"))
+    aggregate_f1 = _first_float(best_row, ("mlqds_aggregate_f1",))
     return {
-        "primary_metric": _inferred_primary_metric(best_row),
+        "primary_metric": _primary_metric(best_row),
         "primary_score": best_score,
         "aggregate_f1": aggregate_f1,
         "range_point_f1": _first_float(best_row, ("mlqds_range_point_f1",)),
@@ -214,7 +203,6 @@ def index_entry(
         "best_mlqds_aggregate_f1": best["aggregate_f1"],
         "best_mlqds_range_point_f1": best["range_point_f1"],
         "best_mlqds_range_usefulness": best["range_usefulness"],
-        "best_mlqds_f1": best["aggregate_f1"],
         "best_mlqds_run_label": best["run_label"],
         "git_commit": git.get("commit"),
         "git_dirty": git.get("dirty"),

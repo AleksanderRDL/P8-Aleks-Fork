@@ -374,28 +374,12 @@ def prepare_range_label_cache(
         range_boundary_prior_weight=range_boundary_prior_weight,
     )
     cache_key = range_diagnostics_cache_key(range_label_cache_payload(cache_payload))
-    legacy_cache_key = range_diagnostics_cache_key(cache_payload)
     if _load_range_label_tensor_cache(
         config=config,
         label=cache_label,
         key=cache_key,
         runtime_cache=runtime_cache,
     ):
-        assert runtime_cache.labels is not None
-        assert runtime_cache.labelled_mask is not None
-        return runtime_cache.labels, runtime_cache.labelled_mask
-    if legacy_cache_key != cache_key and _load_range_label_tensor_cache(
-        config=config,
-        label=cache_label,
-        key=legacy_cache_key,
-        runtime_cache=runtime_cache,
-    ):
-        _write_range_label_tensor_cache(
-            config=config,
-            label=cache_label,
-            key=cache_key,
-            runtime_cache=runtime_cache,
-        )
         assert runtime_cache.labels is not None
         assert runtime_cache.labelled_mask is not None
         return runtime_cache.labels, runtime_cache.labelled_mask

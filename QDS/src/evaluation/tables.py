@@ -90,7 +90,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
     mlqds = results.get("MLQDS")
     diff_references = [
-        ("uniform", results.get("uniform") or results.get("newUniformTemporal")),
+        ("uniform", results.get("uniform")),
         ("DouglasPeucker", results.get("DouglasPeucker")),
     ]
     if mlqds is not None and any(ref is not None for _, ref in diff_references):

@@ -525,7 +525,6 @@ def score_range_usefulness(
         "range_usefulness_schema_version": int(RANGE_USEFULNESS_SCHEMA_VERSION),
         "range_query_count": int(query_count),
         "range_point_f1": float(range_point_f1),
-        "pure_range_f1": float(range_point_f1),
         "range_ship_f1": float(range_ship_f1),
         "range_ship_coverage": float(range_ship_coverage),
         "range_entry_exit_f1": float(range_entry_exit_f1),
@@ -629,9 +628,9 @@ def score_retained_mask(
     Returns (aggregate_answer_f1, per_type_answer_f1, aggregate_combined,
     per_type_combined). The "answer" variant uses pure set/cluster F1 between
     queries on the full vs simplified data (the natural, defensible metric).
-    The "combined" variant is the legacy answer_f1 * point_subset_f1 product
-    kept for diagnostic comparison; it double-penalizes a method that returns
-    the right answer set via different points than ground truth's "support".
+    The "combined" variant is answer_f1 * point_subset_f1, kept as a
+    diagnostic ablation; it double-penalizes a method that returns the right
+    answer set via different points than ground truth's "support".
     """
     if query_cache is not None:
         query_cache.validate(points, boundaries, typed_queries)

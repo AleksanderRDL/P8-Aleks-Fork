@@ -218,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="budget_topk",
         choices=["ranking_bce", "budget_topk"],
         help=(
-            "Training objective. 'ranking_bce' is the legacy pairwise ranking plus BCE loss; "
+            "Training objective. 'ranking_bce' is the pairwise ranking plus BCE ablation; "
             "'budget_topk' optimizes soft retained-budget target mass across budget ratios."
         ),
     )
@@ -250,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--inference_batch_size",
         type=int,
         default=16,
-        help="Number of trajectory windows per MLQDS inference or validation-F1 diagnostic batch.",
+        help="Number of trajectory windows per MLQDS inference or validation-score diagnostic batch.",
     )
     parser.add_argument(
         "--query_chunk_size",
@@ -298,16 +298,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint_selection_metric",
         type=str,
         default="score",
-        choices=["loss", "score", "f1", "uniform_gap"],
+        choices=["loss", "score", "uniform_gap"],
         help=(
             "Select restored checkpoints by held-out validation score, training loss, or validation score "
-            "with fair-uniform gap penalties. 'f1' is a legacy alias for 'score'."
+            "with fair-uniform gap penalties."
         ),
     )
     parser.add_argument(
         "--validation_score_every",
-        "--f1_diagnostic_every",
-        dest="validation_score_every",
         type=int,
         default=0,
         help="Run held-out validation scoring every N epochs. 0 disables unless checkpoint selection metric is score/uniform_gap.",
@@ -332,8 +330,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--checkpoint_full_score_every",
-        "--checkpoint_full_f1_every",
-        dest="checkpoint_full_score_every",
         type=int,
         default=1,
         help="Run exact validation scoring every N eligible validation-score epochs. 1 keeps exact validation every eligible epoch.",
@@ -346,15 +342,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--checkpoint_score_variant",
-        "--checkpoint_f1_variant",
-        dest="checkpoint_score_variant",
         type=str,
         default="range_usefulness",
         choices=["answer", "combined", "range_usefulness"],
         help=(
             "Which validation score to use for checkpoint selection. "
             "'range_usefulness' = range-local audit score for range workloads (default), "
-            "'answer' = legacy point/query F1, 'combined' = legacy answer_f1 * point_subset_f1."
+            "'answer' = point/query F1, 'combined' = answer_f1 * point_subset_f1."
         ),
     )
     parser.add_argument(
@@ -410,8 +404,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--temporal_residual_label_mode",
-        "--residual_label_mode",
-        dest="temporal_residual_label_mode",
         type=str,
         default="temporal",
         choices=["none", "temporal"],

@@ -462,7 +462,6 @@ def main() -> None:
                 "avg_length_preserved": m.avg_length_preserved,
                 "combined_query_shape_score": m.combined_query_shape_score,
                 "range_point_f1": m.range_point_f1,
-                "pure_range_f1": m.range_point_f1,
                 "range_ship_f1": m.range_ship_f1,
                 "range_ship_coverage": m.range_ship_coverage,
                 "range_entry_exit_f1": m.range_entry_exit_f1,

@@ -17,7 +17,7 @@ PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
 | File | Purpose |
 | --- | --- |
 | `experiment_cli.py` | Shared CLI parser. |
-| `experiment_config.py` | Structured config dataclasses and legacy aliases. |
+| `experiment_config.py` | Structured config dataclasses. |
 | `experiment_pipeline_helpers.py` | End-to-end train/eval pipeline. |
 | `benchmark_profiles.py` | Durable benchmark profile defaults. |
 | `benchmark_runner.py` | Profile runner, queue runner, and compact reports. |

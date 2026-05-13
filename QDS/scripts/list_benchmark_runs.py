@@ -89,8 +89,6 @@ def main() -> int:
     table_rows = []
     for row in rows:
         best_metric = _first(row, "best_mlqds_primary_metric")
-        if not best_metric and _first(row, "best_mlqds_f1"):
-            best_metric = "aggregate_f1"
         table_rows.append(
             [
                 _short(row.get("status"), 11),
@@ -98,8 +96,8 @@ def main() -> int:
                 _short(row.get("run_id"), 40),
                 _short(row.get("profile"), 8),
                 _short(best_metric, 16),
-                _format_score(_first(row, "best_mlqds_primary_score", "best_mlqds_range_usefulness", "best_mlqds_f1")),
-                _format_score(_first(row, "best_mlqds_range_point_f1", "best_mlqds_f1")),
+                _format_score(_first(row, "best_mlqds_primary_score", "best_mlqds_range_usefulness")),
+                _format_score(_first(row, "best_mlqds_range_point_f1")),
                 _format_score(_first(row, "best_mlqds_range_usefulness")),
                 _short(row.get("best_mlqds_run_label"), 16),
                 _short(row.get("results_dir"), 72),
