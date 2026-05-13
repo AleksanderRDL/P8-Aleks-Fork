@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
-from src.queries.range_geometry import segment_box_bracket_mask, segment_box_crossings
+from src.queries.range_geometry import (
+    haversine_km_to_point,
+    points_in_range_box,
+    segment_box_bracket_mask,
+    segment_box_crossings,
+)
 
 
 def _range_params() -> dict[str, float]:
@@ -72,3 +78,28 @@ def test_segment_box_brackets_do_not_cross_trajectory_boundaries() -> None:
 
     assert separated.tolist() == [False, False, False, False]
     assert combined.tolist() == [False, True, True, False]
+
+
+def test_points_in_range_box_uses_time_lat_lon_columns() -> None:
+    points = torch.tensor(
+        [
+            [5.0, 0.0, 0.0],
+            [11.0, 0.0, 0.0],
+            [5.0, 2.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    assert points_in_range_box(points, _range_params()).tolist() == [True, False, False]
+
+
+def test_haversine_km_to_point_matches_equator_degree_scale() -> None:
+    distances = haversine_km_to_point(
+        torch.tensor([0.0, 0.0], dtype=torch.float32),
+        torch.tensor([0.0, 1.0], dtype=torch.float32),
+        0.0,
+        0.0,
+    )
+
+    assert distances[0].item() == pytest.approx(0.0, abs=1e-6)
+    assert distances[1].item() == pytest.approx(111.19, abs=0.05)

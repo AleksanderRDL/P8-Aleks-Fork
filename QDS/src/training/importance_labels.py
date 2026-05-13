@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any, Mapping, Sequence, cast
 
 import torch
 
+from src.data.trajectory_index import split_by_boundaries, trajectory_ids_for_points
 from src.evaluation.range_usefulness import RANGE_USEFULNESS_WEIGHTS
 from src.queries.query_executor import execute_typed_query
-from src.queries.range_geometry import segment_box_bracket_mask
+from src.queries.range_geometry import (
+    haversine_km_to_point,
+    points_in_range_box,
+    segment_box_bracket_mask,
+)
 from src.queries.query_types import QUERY_NAME_TO_ID, QUERY_TYPE_ID_RANGE, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
@@ -30,62 +34,11 @@ def _label_targets(
     return (labels, component_labels[component_name])
 
 
-def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
-    """Build spatiotemporal box mask. See src/training/README.md for details."""
-    return (
-        (points[:, 1] >= params["lat_min"])
-        & (points[:, 1] <= params["lat_max"])
-        & (points[:, 2] >= params["lon_min"])
-        & (points[:, 2] <= params["lon_max"])
-        & (points[:, 0] >= params["t_start"])
-        & (points[:, 0] <= params["t_end"])
-    )
-
-
-def _trajectory_id_per_point(n_points: int, boundaries: list[tuple[int, int]], device: torch.device) -> torch.Tensor:
-    """Build a point-index to trajectory-ID lookup."""
-    trajectory_ids = torch.full((n_points,), -1, dtype=torch.long, device=device)
-    for trajectory_id, (start, end) in enumerate(boundaries):
-        if end > start:
-            trajectory_ids[start:end] = int(trajectory_id)
-    return trajectory_ids
-
-
-def _trajectories_from_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
-    """Slice flattened points into trajectories for query execution."""
-    return [points[start:end] for start, end in boundaries]
-
-
-def _ids_mask(point_trajectory_ids: torch.Tensor, trajectory_ids: set[int]) -> torch.Tensor:
-    """Return points whose trajectory ID belongs to the supplied set."""
-    mask = torch.zeros_like(point_trajectory_ids, dtype=torch.bool)
-    for trajectory_id in trajectory_ids:
-        mask |= point_trajectory_ids == int(trajectory_id)
-    return mask
-
-
 def _set_query_singleton_gain(original_ids: set[int]) -> float:
     """F1 gained when one true-positive trajectory ID is recovered from an empty answer."""
     if not original_ids:
         return 0.0
     return float(2.0 / (len(original_ids) + 1.0))
-
-
-def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: float) -> torch.Tensor:
-    """Compute haversine distance in km to one anchor point."""
-    radius_km = 6371.0
-    lat1_rad = torch.deg2rad(lat1)
-    lon1_rad = torch.deg2rad(lon1)
-    lat2_rad = math.radians(lat2)
-    lon2_rad = math.radians(lon2)
-    delta_lat = lat1_rad - lat2_rad
-    delta_lon = lon1_rad - lon2_rad
-    haversine = (
-        torch.sin(delta_lat / 2.0) ** 2
-        + torch.cos(lat1_rad) * math.cos(lat2_rad) * torch.sin(delta_lon / 2.0) ** 2
-    )
-    central_angle = 2.0 * torch.atan2(torch.sqrt(haversine), torch.sqrt(torch.clamp(1.0 - haversine, min=1e-9)))
-    return radius_km * central_angle
 
 
 def _add_distributed_hit_label(labels: torch.Tensor, support: torch.Tensor, type_idx: int, gain: float) -> None:
@@ -496,7 +449,12 @@ def _knn_representative_support(
             continue
         if limit > 0 and candidate_offsets.numel() > limit:
             candidates = trajectory_points[candidate_offsets]
-            distance = _haversine_km(candidates[:, 1], candidates[:, 2], float(params["lat"]), float(params["lon"]))
+            distance = haversine_km_to_point(
+                candidates[:, 1],
+                candidates[:, 2],
+                float(params["lat"]),
+                float(params["lon"]),
+            )
             distance = distance + 0.001 * torch.abs(candidates[:, 0] - float(params["t_center"]))
             nearest = torch.topk(-distance, k=limit).indices
             candidate_offsets = candidate_offsets[nearest]
@@ -583,8 +541,8 @@ def _compute_typed_importance_labels(
     )
     labelled_mask = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.bool, device=points.device)
     query_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.float32, device=points.device)
-    point_trajectory_ids = _trajectory_id_per_point(n, boundaries, points.device)
-    trajectories = _trajectories_from_boundaries(points, boundaries)
+    point_trajectory_ids = trajectory_ids_for_points(n, boundaries, points.device)
+    trajectories = split_by_boundaries(points, boundaries)
 
     # Column 7 of the trajectory feature tensor is turn_score in [0,1] = normalized |Δheading|.
     # It acts as a local route-change prior for usefulness labels and non-range representatives.
@@ -598,7 +556,7 @@ def _compute_typed_importance_labels(
         query_counts[t_idx] += 1.0
 
         if qtype == "range":
-            box_support = _box_mask(points, params)
+            box_support = points_in_range_box(points, params)
             if range_label_mode in {"usefulness", "usefulness_balanced"}:
                 _add_range_usefulness_labels(
                     labels=labels,
@@ -647,7 +605,7 @@ def _compute_typed_importance_labels(
             pair_count = sum(len(members) * (len(members) - 1) // 2 for members in clusters.values())
             if pair_count <= 0:
                 continue
-            box_support = _box_mask(points, params)
+            box_support = points_in_range_box(points, params)
             centroid_weights = _within_box_centroid_weights(points, box_support, point_trajectory_ids)
             clustered_traj_mask = torch.zeros_like(box_support)
             for members in clusters.values():

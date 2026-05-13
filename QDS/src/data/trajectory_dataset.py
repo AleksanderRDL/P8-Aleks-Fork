@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import torch
 
+from src.data.trajectory_index import boundaries_from_trajectories
+
 
 @dataclass
 class TrajectoryDataset:
@@ -21,10 +23,4 @@ class TrajectoryDataset:
 
     def get_trajectory_boundaries(self) -> list[tuple[int, int]]:
         """Return start/end index ranges per trajectory in flattened order. See src/data/README.md for details."""
-        boundaries: list[tuple[int, int]] = []
-        offset = 0
-        for traj in self.trajectories:
-            end = offset + int(traj.shape[0])
-            boundaries.append((offset, end))
-            offset = end
-        return boundaries
+        return boundaries_from_trajectories(self.trajectories)

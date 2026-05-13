@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from src.data.trajectory_index import boundaries_from_trajectories
+from src.queries.range_geometry import haversine_km_to_point, points_in_range_box
 from src.queries.query_types import normalize_pure_workload_map, pad_query_features
 from src.queries.workload import TypedQueryWorkload
 from src.queries.workload_diagnostics import range_query_diagnostic
@@ -19,17 +21,6 @@ DEFAULT_RANGE_FOOTPRINT_JITTER = 0.5
 DEFAULT_SIMILARITY_RADIUS_FRACTION = 0.04
 DEFAULT_SIMILARITY_TIME_FRACTION = 0.04
 DEFAULT_KNN_K = 12
-
-
-def _trajectory_boundaries(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
-    """Return flattened boundaries for generated trajectory lists."""
-    boundaries: list[tuple[int, int]] = []
-    cursor = 0
-    for trajectory in trajectories:
-        end = cursor + int(trajectory.shape[0])
-        boundaries.append((cursor, end))
-        cursor = end
-    return boundaries
 
 
 def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
@@ -291,40 +282,6 @@ def _make_clustering_query(
     return {"type": "clustering", "params": range_params}
 
 
-def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
-    """Return the point mask inside a spatiotemporal query box."""
-    return (
-        (points[:, 1] >= params["lat_min"])
-        & (points[:, 1] <= params["lat_max"])
-        & (points[:, 2] >= params["lon_min"])
-        & (points[:, 2] <= params["lon_max"])
-        & (points[:, 0] >= params["t_start"])
-        & (points[:, 0] <= params["t_end"])
-    )
-
-
-def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: float) -> torch.Tensor:
-    """Compute haversine distances in km to one anchor point."""
-    import math
-
-    earth_radius_km = 6371.0
-    lat1_rad = torch.deg2rad(lat1)
-    lon1_rad = torch.deg2rad(lon1)
-    lat2_rad = math.radians(lat2)
-    lon2_rad = math.radians(lon2)
-    delta_lat = lat1_rad - lat2_rad
-    delta_lon = lon1_rad - lon2_rad
-    haversine_term = (
-        torch.sin(delta_lat / 2.0) ** 2
-        + torch.cos(lat1_rad) * math.cos(lat2_rad) * torch.sin(delta_lon / 2.0) ** 2
-    )
-    angular_distance = 2.0 * torch.atan2(
-        torch.sqrt(haversine_term),
-        torch.sqrt(torch.clamp(1.0 - haversine_term, min=1e-9)),
-    )
-    return earth_radius_km * angular_distance
-
-
 def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -> torch.Tensor:
     """Return the point-level dataset coverage induced by one query.
 
@@ -340,7 +297,7 @@ def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -
     query_type = str(query["type"]).lower()
     params = query["params"]
     if query_type in {"range", "clustering"}:
-        return _box_mask(points, params)
+        return points_in_range_box(points, params)
 
     if query_type == "knn":
         t0 = float(params["t_center"] - params["t_half_window"])
@@ -350,7 +307,7 @@ def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -
         if candidate_indices.numel() == 0:
             return mask
         candidate_points = points[candidate_indices]
-        spatial_distance = _haversine_km(
+        spatial_distance = haversine_km_to_point(
             candidate_points[:, 1],
             candidate_points[:, 2],
             float(params["lat"]),
@@ -622,7 +579,7 @@ def generate_typed_query_workload(
     """
     points = torch.cat(trajectories, dim=0)
     bounds = _dataset_bounds(points)
-    boundaries = _trajectory_boundaries(trajectories)
+    boundaries = boundaries_from_trajectories(trajectories)
 
     normalized_workload = normalize_pure_workload_map(workload_map)
     generator = torch.Generator().manual_seed(int(seed))

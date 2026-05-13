@@ -2,71 +2,14 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 
-
-def _boundaries_from_trajectories(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
-    """Build flattened point boundaries from trajectory order."""
-    boundaries: list[tuple[int, int]] = []
-    cursor = 0
-    for trajectory in trajectories:
-        point_count = int(trajectory.shape[0])
-        boundaries.append((cursor, cursor + point_count))
-        cursor += point_count
-    return boundaries
-
-
-def _default_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]] | None) -> list[tuple[int, int]]:
-    """Use explicit boundaries when supplied, otherwise treat all points as one trajectory."""
-    return boundaries if boundaries is not None else [(0, int(points.shape[0]))]
-
-
-def _indices_to_trajectory_ids(indices: torch.Tensor, boundaries: list[tuple[int, int]]) -> set[int]:
-    """Map flattened point indices to stable trajectory IDs derived from boundaries."""
-    if indices.numel() == 0:
-        return set()
-    trajectory_ids: set[int] = set()
-    for trajectory_id, (start, end) in enumerate(boundaries):
-        if end <= start:
-            continue
-        if bool(((indices >= start) & (indices < end)).any().item()):
-            trajectory_ids.add(trajectory_id)
-    return trajectory_ids
-
-
-def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: float) -> torch.Tensor:
-    """Compute haversine distances in km to one anchor point. See src/queries/README.md for details."""
-    earth_radius_km = 6371.0
-    lat1_rad = torch.deg2rad(lat1)
-    lon1_rad = torch.deg2rad(lon1)
-    lat2_rad = math.radians(lat2)
-    lon2_rad = math.radians(lon2)
-    delta_lat = lat1_rad - lat2_rad
-    delta_lon = lon1_rad - lon2_rad
-    haversine_term = (
-        torch.sin(delta_lat / 2.0) ** 2
-        + torch.cos(lat1_rad) * math.cos(lat2_rad) * torch.sin(delta_lon / 2.0) ** 2
-    )
-    angular_distance = 2.0 * torch.atan2(
-        torch.sqrt(haversine_term),
-        torch.sqrt(torch.clamp(1.0 - haversine_term, min=1e-9)),
-    )
-    return earth_radius_km * angular_distance
-
-
-def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
-    """Return the point mask inside a spatiotemporal query box."""
-    mask = (
-        (points[:, 1] >= params["lat_min"])
-        & (points[:, 1] <= params["lat_max"])
-        & (points[:, 2] >= params["lon_min"])
-        & (points[:, 2] <= params["lon_max"])
-        & (points[:, 0] >= params["t_start"])
-        & (points[:, 0] <= params["t_end"])
-    )
-    return mask
+from src.data.trajectory_index import (
+    boundaries_from_trajectories,
+    default_boundaries,
+    trajectory_ids_intersecting_indices,
+)
+from src.queries.range_geometry import haversine_km_to_point, points_in_range_box
 
 
 def execute_range_query(
@@ -75,10 +18,10 @@ def execute_range_query(
     boundaries: list[tuple[int, int]] | None = None,
 ) -> set[int]:
     """Execute a range query returning matching trajectory IDs. See src/queries/README.md for details."""
-    mask = _box_mask(points, params)
+    mask = points_in_range_box(points, params)
     if not mask.any():
         return set()
-    return _indices_to_trajectory_ids(torch.where(mask)[0], _default_boundaries(points, boundaries))
+    return trajectory_ids_intersecting_indices(torch.where(mask)[0], default_boundaries(points, boundaries))
 
 
 def execute_knn_query(
@@ -96,7 +39,7 @@ def execute_knn_query(
         return set()
 
     candidate_points = points[candidate_indices]
-    spatial_distance = _haversine_km(
+    spatial_distance = haversine_km_to_point(
         candidate_points[:, 1],
         candidate_points[:, 2],
         float(params["lat"]),
@@ -105,7 +48,7 @@ def execute_knn_query(
     temporal_distance = torch.abs(candidate_points[:, 0] - float(params["t_center"]))
     distance = spatial_distance + 0.001 * temporal_distance
 
-    query_boundaries = _default_boundaries(points, boundaries)
+    query_boundaries = default_boundaries(points, boundaries)
     boundary_ends = torch.tensor(
         [end for _, end in query_boundaries],
         dtype=torch.long,
@@ -208,7 +151,7 @@ def execute_clustering_query(
     boundaries: list[tuple[int, int]] | None = None,
 ) -> list[int]:
     """Execute clustering over trajectory centroids and return per-trajectory labels."""
-    query_boundaries = _default_boundaries(points, boundaries)
+    query_boundaries = default_boundaries(points, boundaries)
     cluster_labels = [-1 for _ in query_boundaries]
     representatives: list[torch.Tensor] = []
     represented_trajectory_ids: list[int] = []
@@ -217,7 +160,7 @@ def execute_clustering_query(
         if end <= start:
             continue
         trajectory_points = points[start:end]
-        query_mask = _box_mask(trajectory_points, params)
+        query_mask = points_in_range_box(trajectory_points, params)
         if not bool(query_mask.any().item()):
             continue
         representatives.append(trajectory_points[query_mask, 1:3].mean(dim=0))
@@ -246,7 +189,7 @@ def execute_typed_query(
     """Execute one typed query and return type-specific result object. See src/queries/README.md for details."""
     query_type = query["type"]
     params = query["params"]
-    query_boundaries = boundaries if boundaries is not None else _boundaries_from_trajectories(trajectories)
+    query_boundaries = boundaries if boundaries is not None else boundaries_from_trajectories(trajectories)
     if query_type == "range":
         return execute_range_query(points, params, query_boundaries)
     if query_type == "knn":

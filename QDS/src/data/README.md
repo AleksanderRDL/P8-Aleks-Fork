@@ -11,6 +11,7 @@ trajectory boundaries.
 | `combine_days.py` | Concatenate preprocessed CSVs while preserving MMSIs. |
 | `trajectory_cache.py` | Parquet cache for segmented trajectory tensors. |
 | `trajectory_dataset.py` | Flattened points and trajectory boundary helper. |
+| `trajectory_index.py` | Shared boundary, split, and trajectory-id helpers for flattened tensors. |
 
 ## Tensor Schema
 

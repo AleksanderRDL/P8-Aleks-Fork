@@ -2,9 +2,31 @@
 
 from __future__ import annotations
 
+import math
 from typing import Mapping
 
 import torch
+
+EARTH_RADIUS_KM = 6371.0
+
+
+def haversine_km_to_point(lat: torch.Tensor, lon: torch.Tensor, anchor_lat: float, anchor_lon: float) -> torch.Tensor:
+    """Return haversine distance in km from each ``lat``/``lon`` pair to one anchor."""
+    lat_rad = torch.deg2rad(lat)
+    lon_rad = torch.deg2rad(lon)
+    anchor_lat_rad = math.radians(float(anchor_lat))
+    anchor_lon_rad = math.radians(float(anchor_lon))
+    delta_lat = lat_rad - anchor_lat_rad
+    delta_lon = lon_rad - anchor_lon_rad
+    haversine = (
+        torch.sin(delta_lat / 2.0) ** 2
+        + torch.cos(lat_rad) * math.cos(anchor_lat_rad) * torch.sin(delta_lon / 2.0) ** 2
+    )
+    central_angle = 2.0 * torch.atan2(
+        torch.sqrt(haversine),
+        torch.sqrt(torch.clamp(1.0 - haversine, min=1e-9)),
+    )
+    return EARTH_RADIUS_KM * central_angle
 
 
 def _range_box_bounds(params: Mapping[str, float], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:

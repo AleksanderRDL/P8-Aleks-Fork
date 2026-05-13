@@ -10,6 +10,8 @@ Defines typed query formats, workload generation, and query execution.
 | `query_types.py` | Query IDs, pure workload validation, feature padding. |
 | `query_generator.py` | Deterministic workload generation. |
 | `query_executor.py` | Range, kNN, similarity, and clustering execution. |
+| `range_geometry.py` | Shared range-box and geographic distance helpers. |
+| `workload_diagnostics.py` | Range workload quality and label diagnostics. |
 
 ## Query Types
 

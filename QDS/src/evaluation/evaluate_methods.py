@@ -8,6 +8,11 @@ from typing import Any, cast
 
 import torch
 
+from src.data.trajectory_index import (
+    trajectory_id_mask,
+    trajectory_ids_for_points,
+    trajectory_ids_from_mask,
+)
 from src.evaluation.baselines import Method
 from src.evaluation.metrics import (
     MethodEvaluation,
@@ -37,23 +42,16 @@ from src.evaluation.tables import (
     print_shift_table,
 )
 from src.queries.query_executor import execute_typed_query
-from src.queries.range_geometry import segment_box_bracket_indices, segment_pairs_box_crossings
+from src.queries.range_geometry import (
+    haversine_km_to_point,
+    points_in_range_box,
+    segment_box_bracket_indices,
+    segment_pairs_box_crossings,
+)
 from src.queries.query_types import normalize_pure_workload_map
 
 POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 POINT_AWARE_SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
-
-
-def _range_box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
-    """Return point-level hits inside a range query box."""
-    return (
-        (points[:, 1] >= params["lat_min"])
-        & (points[:, 1] <= params["lat_max"])
-        & (points[:, 2] >= params["lon_min"])
-        & (points[:, 2] <= params["lon_max"])
-        & (points[:, 0] >= params["t_start"])
-        & (points[:, 0] <= params["t_end"])
-    )
 
 
 def _range_point_f1(retained_mask: torch.Tensor, range_mask: torch.Tensor) -> float:
@@ -77,37 +75,6 @@ def score_range_boundary_preservation(
         query_cache=query_cache,
     )
     return float(audit.get("range_entry_exit_f1", 0.0))
-
-
-def _trajectory_id_per_point(n_points: int, boundaries: list[tuple[int, int]], device: torch.device) -> torch.Tensor:
-    trajectory_ids = torch.full((n_points,), -1, dtype=torch.long, device=device)
-    for trajectory_id, (start, end) in enumerate(boundaries):
-        if end > start:
-            trajectory_ids[start:end] = int(trajectory_id)
-    return trajectory_ids
-
-
-def _ids_mask(point_trajectory_ids: torch.Tensor, trajectory_ids: set[int]) -> torch.Tensor:
-    mask = torch.zeros_like(point_trajectory_ids, dtype=torch.bool)
-    for trajectory_id in trajectory_ids:
-        mask |= point_trajectory_ids == int(trajectory_id)
-    return mask
-
-
-def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: float) -> torch.Tensor:
-    radius_km = 6371.0
-    lat1_rad = torch.deg2rad(lat1)
-    lon1_rad = torch.deg2rad(lon1)
-    lat2_rad = torch.deg2rad(torch.tensor(lat2, dtype=lat1.dtype, device=lat1.device))
-    lon2_rad = torch.deg2rad(torch.tensor(lon2, dtype=lon1.dtype, device=lon1.device))
-    delta_lat = lat1_rad - lat2_rad
-    delta_lon = lon1_rad - lon2_rad
-    haversine = (
-        torch.sin(delta_lat / 2.0) ** 2
-        + torch.cos(lat1_rad) * torch.cos(lat2_rad) * torch.sin(delta_lon / 2.0) ** 2
-    )
-    central_angle = 2.0 * torch.atan2(torch.sqrt(haversine), torch.sqrt(torch.clamp(1.0 - haversine, min=1e-9)))
-    return radius_km * central_angle
 
 
 def _point_subset_f1(retained_mask: torch.Tensor, support_mask: torch.Tensor) -> float:
@@ -137,14 +104,6 @@ def _point_index_subset_f1(retained_mask: torch.Tensor, support_indices_cpu: tor
 def _mean(values: list[float], default: float = 0.0) -> float:
     """Return a float mean with an explicit empty-list default."""
     return float(sum(values) / len(values)) if values else float(default)
-
-
-def _trajectory_ids_for_mask(mask: torch.Tensor, point_trajectory_ids: torch.Tensor) -> list[int]:
-    """Return sorted trajectory IDs with at least one true point in a mask."""
-    if not bool(mask.any().item()):
-        return []
-    ids = torch.unique(point_trajectory_ids[mask])
-    return sorted(int(value) for value in ids.detach().cpu().tolist() if int(value) >= 0)
 
 
 def _range_boundary_indices_for_trajectories(
@@ -237,7 +196,7 @@ def _build_range_query_audit_support(
 ) -> RangeQueryAuditSupport:
     """Build retained-independent support for one range query."""
     range_mask = range_mask.bool()
-    full_ids = tuple(_trajectory_ids_for_mask(range_mask, point_trajectory_ids))
+    full_ids = tuple(trajectory_ids_from_mask(range_mask, point_trajectory_ids))
     boundary_indices_cpu = _range_boundary_indices_for_trajectories(range_mask, boundaries, list(full_ids))
     crossing_bracket_indices_cpu = _range_crossing_bracket_indices_for_trajectories(
         points_cpu,
@@ -294,7 +253,7 @@ def _range_query_audit_support(
 ) -> RangeQueryAuditSupport:
     """Return retained-independent audit support, using caller cache when available."""
     def build_range_mask() -> torch.Tensor:
-        return _range_box_mask(points, query["params"])
+        return points_in_range_box(points, query["params"])
 
     def build_support() -> RangeQueryAuditSupport:
         if query_cache is not None:
@@ -450,7 +409,7 @@ def score_range_usefulness(
         query_cache.validate(points, boundaries, typed_queries)
 
     retained_bool = retained_mask.to(device=points.device, dtype=torch.bool)
-    point_trajectory_ids = _trajectory_id_per_point(points.shape[0], boundaries, points.device)
+    point_trajectory_ids = trajectory_ids_for_points(points.shape[0], boundaries, points.device)
     points_cpu = points.detach().cpu()
     retained_cpu = retained_bool.detach().cpu()
 
@@ -480,7 +439,7 @@ def score_range_usefulness(
         retained_in_range = retained_bool & range_mask
         point_scores.append(_range_point_f1(retained_bool, range_mask))
 
-        retained_ids = _trajectory_ids_for_mask(retained_in_range, point_trajectory_ids)
+        retained_ids = trajectory_ids_from_mask(retained_in_range, point_trajectory_ids)
         ship_scores.append(f1_score(set(support.full_trajectory_ids), set(retained_ids)))
 
         entry_exit_scores.append(_point_index_subset_f1(retained_bool, support.boundary_indices_cpu))
@@ -561,7 +520,12 @@ def _knn_representative_mask(
             continue
         if limit > 0 and candidate_offsets.numel() > limit:
             candidates = trajectory_points[candidate_offsets]
-            distance = _haversine_km(candidates[:, 1], candidates[:, 2], float(params["lat"]), float(params["lon"]))
+            distance = haversine_km_to_point(
+                candidates[:, 1],
+                candidates[:, 2],
+                float(params["lat"]),
+                float(params["lon"]),
+            )
             distance = distance + 0.001 * torch.abs(candidates[:, 0] - float(params["t_center"]))
             candidate_offsets = candidate_offsets[torch.topk(-distance, k=limit).indices]
         support[start + candidate_offsets] = True
@@ -611,8 +575,8 @@ def _clustering_support_mask(
     clustered_ids = {trajectory_id for trajectory_id, label in enumerate(labels) if int(label) != -1}
     if not clustered_ids:
         return torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    point_trajectory_ids = _trajectory_id_per_point(points.shape[0], boundaries, points.device)
-    return _range_box_mask(points, params) & _ids_mask(point_trajectory_ids, clustered_ids)
+    point_trajectory_ids = trajectory_ids_for_points(points.shape[0], boundaries, points.device)
+    return points_in_range_box(points, params) & trajectory_id_mask(point_trajectory_ids, clustered_ids)
 
 
 def score_retained_mask(
@@ -679,7 +643,7 @@ def score_retained_mask(
     for query_index, query in enumerate(typed_queries):
         qtype = query["type"]
         if qtype == "range":
-            range_mask = support_mask(query_index, lambda query=query: _range_box_mask(points, query["params"]))
+            range_mask = support_mask(query_index, lambda query=query: points_in_range_box(points, query["params"]))
             point_f1 = _range_point_f1(retained_mask, range_mask)
             answer_scores[qtype].append(point_f1)
             combined_scores[qtype].append(point_f1)

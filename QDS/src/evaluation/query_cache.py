@@ -8,6 +8,8 @@ from typing import Any
 
 import torch
 
+from src.data.trajectory_index import split_by_boundaries as split_points_by_boundaries
+
 
 @dataclass(frozen=True)
 class RangeTrajectoryAuditSupport:
@@ -47,7 +49,7 @@ class RangeSegmentAuditGeometry:
 
 def split_by_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
     """Split flattened points into trajectory list by boundaries."""
-    return [points[s:e] for s, e in boundaries]
+    return split_points_by_boundaries(points, boundaries)
 
 
 def _points_cache_token(points: torch.Tensor) -> tuple[int, int, tuple[int, ...], str, str]:

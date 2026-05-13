@@ -6,6 +6,8 @@ from typing import Any, Callable, Mapping
 
 import torch
 
+from src.data.trajectory_index import trajectory_ids_for_points
+from src.queries.range_geometry import points_in_range_box
 from src.queries.query_types import QUERY_TYPE_ID_RANGE
 
 
@@ -32,16 +34,7 @@ def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
 
 def range_box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
     """Return point mask for one range-query box."""
-    if points.numel() == 0:
-        return torch.zeros((0,), dtype=torch.bool, device=points.device)
-    return (
-        (points[:, 1] >= float(params["lat_min"]))
-        & (points[:, 1] <= float(params["lat_max"]))
-        & (points[:, 2] >= float(params["lon_min"]))
-        & (points[:, 2] <= float(params["lon_max"]))
-        & (points[:, 0] >= float(params["t_start"]))
-        & (points[:, 0] <= float(params["t_end"]))
-    )
+    return points_in_range_box(points, params)
 
 
 def _trajectory_hits(mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> int:
@@ -51,19 +44,6 @@ def _trajectory_hits(mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> i
         if end > start and bool(mask[start:end].any().item()):
             hits += 1
     return hits
-
-
-def _trajectory_ids_for_boundaries(
-    n_points: int,
-    boundaries: list[tuple[int, int]],
-    device: torch.device,
-) -> torch.Tensor:
-    """Return per-point trajectory ids for vectorized hit counting."""
-    trajectory_ids = torch.full((n_points,), -1, dtype=torch.long, device=device)
-    for trajectory_id, (start, end) in enumerate(boundaries):
-        if end > start:
-            trajectory_ids[start:end] = int(trajectory_id)
-    return trajectory_ids
 
 
 def _trajectory_hits_from_ids(mask: torch.Tensor, trajectory_ids: torch.Tensor) -> int:
@@ -248,7 +228,7 @@ def compute_range_workload_diagnostics(
 ) -> dict[str, Any]:
     """Compute range-query workload quality diagnostics."""
     bounds = _dataset_bounds(points)
-    trajectory_ids = _trajectory_ids_for_boundaries(points.shape[0], boundaries, points.device)
+    trajectory_ids = trajectory_ids_for_points(points.shape[0], boundaries, points.device)
     previous: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     covered = (
