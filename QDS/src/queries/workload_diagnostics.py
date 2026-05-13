@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import torch
 
@@ -244,6 +244,7 @@ def compute_range_workload_diagnostics(
     max_box_volume_fraction: float | None = None,
     duplicate_iou_threshold: float | None = 0.85,
     coverage_fraction: float | None = None,
+    mask_provider: Callable[[int, dict[str, Any]], torch.Tensor] | None = None,
 ) -> dict[str, Any]:
     """Compute range-query workload quality diagnostics."""
     bounds = _dataset_bounds(points)
@@ -258,7 +259,11 @@ def compute_range_workload_diagnostics(
     for query_index, query in enumerate(typed_queries):
         if str(query.get("type", "")).lower() != "range":
             continue
-        mask = range_box_mask(points, query["params"])
+        mask = (
+            mask_provider(query_index, query).to(device=points.device, dtype=torch.bool)
+            if mask_provider is not None
+            else range_box_mask(points, query["params"])
+        )
         row = range_query_diagnostic(
             points,
             boundaries,

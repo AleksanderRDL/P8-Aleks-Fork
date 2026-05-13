@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -48,7 +48,11 @@ from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorklo
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import single_workload_type
-from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
+from src.queries.workload_diagnostics import (
+    compute_range_label_diagnostics,
+    compute_range_workload_diagnostics,
+    range_box_mask,
+)
 from src.simplification.mlqds_scoring import workload_type_head
 from src.training.importance_labels import (
     compute_typed_importance_labels,
@@ -84,6 +88,66 @@ class RangeRuntimeCache:
     labelled_mask: torch.Tensor | None = None
     component_labels: dict[str, torch.Tensor] | None = None
     query_cache: EvaluationQueryCache | None = None
+
+
+def _runtime_evaluation_query_cache(
+    runtime_cache: RangeRuntimeCache | None,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict[str, Any]],
+) -> EvaluationQueryCache:
+    """Return a reusable query cache for one runtime split."""
+    if runtime_cache is not None and runtime_cache.query_cache is not None:
+        try:
+            runtime_cache.query_cache.validate(points, boundaries, typed_queries)
+            return runtime_cache.query_cache
+        except ValueError:
+            runtime_cache.query_cache = None
+
+    query_cache = EvaluationQueryCache.for_workload(points, boundaries, typed_queries)
+    if runtime_cache is not None:
+        runtime_cache.query_cache = query_cache
+    return query_cache
+
+
+def _ensure_range_runtime_labels(
+    *,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    range_queries: list[dict[str, Any]],
+    seed: int,
+    range_label_mode: str,
+    range_boundary_prior_weight: float,
+    runtime_cache: RangeRuntimeCache | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return range labels, populating the runtime cache once per split."""
+    if runtime_cache is not None and runtime_cache.labels is not None and runtime_cache.labelled_mask is not None:
+        return runtime_cache.labels, runtime_cache.labelled_mask
+
+    if str(range_label_mode).lower() == "usefulness":
+        labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+        )
+    else:
+        labels, labelled_mask = compute_typed_importance_labels(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_label_mode=range_label_mode,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+        )
+        component_labels = None
+
+    if runtime_cache is not None:
+        runtime_cache.labels = labels
+        runtime_cache.labelled_mask = labelled_mask
+        runtime_cache.component_labels = component_labels
+    return labels, labelled_mask
 
 
 WORKLOAD_CACHE_SCHEMA_VERSION = 1
@@ -569,27 +633,16 @@ def _range_signal_diagnostics(
         labelled_mask = runtime_cache.labelled_mask
         component_labels = runtime_cache.component_labels
     else:
-        if str(range_label_mode).lower() == "usefulness":
-            labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
-                points=points,
-                boundaries=boundaries,
-                typed_queries=range_queries,
-                seed=seed,
-                range_boundary_prior_weight=range_boundary_prior_weight,
-            )
-        else:
-            labels, labelled_mask = compute_typed_importance_labels(
-                points=points,
-                boundaries=boundaries,
-                typed_queries=range_queries,
-                seed=seed,
-                range_label_mode=range_label_mode,
-                range_boundary_prior_weight=range_boundary_prior_weight,
-            )
-        if runtime_cache is not None:
-            runtime_cache.labels = labels
-            runtime_cache.labelled_mask = labelled_mask
-            runtime_cache.component_labels = component_labels
+        labels, labelled_mask = _ensure_range_runtime_labels(
+            points=points,
+            boundaries=boundaries,
+            range_queries=range_queries,
+            seed=seed,
+            range_label_mode=range_label_mode,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+            runtime_cache=runtime_cache,
+        )
+        component_labels = runtime_cache.component_labels if runtime_cache is not None else None
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask, component_labels)
     oracle_labels = labels
     methods: list[Method] = [
@@ -599,13 +652,12 @@ def _range_signal_diagnostics(
     ]
     method_scores: dict[str, dict[str, float]] = {}
     scored_queries = cache_typed_queries if cache_typed_queries is not None else range_queries
-    query_cache = EvaluationQueryCache.for_workload(
+    query_cache = _runtime_evaluation_query_cache(
+        runtime_cache,
         points,
         boundaries,
         scored_queries,
     )
-    if runtime_cache is not None:
-        runtime_cache.query_cache = query_cache
     for method in methods:
         retained_mask = method.simplify(points, boundaries, compression_ratio)
         aggregate, per_type, _, _ = score_retained_mask(
@@ -659,6 +711,25 @@ def _range_workload_diagnostics(
     range_queries = _range_only_queries(workload.typed_queries)
     is_pure_range_workload = len(range_queries) == len(workload.typed_queries)
     scored_queries = workload.typed_queries if is_pure_range_workload else range_queries
+    query_cache: EvaluationQueryCache | None = None
+    mask_provider: Callable[[int, dict[str, Any]], torch.Tensor] | None = None
+    if is_pure_range_workload:
+        query_cache = _runtime_evaluation_query_cache(
+            runtime_cache,
+            points,
+            boundaries,
+            scored_queries,
+        )
+
+        def _mask_provider(query_index: int, query: dict[str, Any]) -> torch.Tensor:
+            assert query_cache is not None
+            return query_cache.get_support_mask(
+                query_index,
+                lambda query=query: range_box_mask(points, query["params"]),
+            )
+
+        mask_provider = _mask_provider
+
     cache_payload = _range_diagnostics_cache_payload(
         points=points,
         boundaries=boundaries,
@@ -689,6 +760,7 @@ def _range_workload_diagnostics(
         max_box_volume_fraction=config.query.range_max_box_volume_fraction,
         duplicate_iou_threshold=_range_diagnostic_duplicate_threshold(config),
         coverage_fraction=workload.coverage_fraction,
+        mask_provider=mask_provider,
     )
     signal = _range_signal_diagnostics(
         points=points,
@@ -1341,14 +1413,25 @@ def run_experiment_pipeline(
 
         if config.baselines.include_oracle:
             if eval_labels is None:
-                eval_labels, _ = compute_typed_importance_labels(
-                    points=test_points,
-                    boundaries=test_boundaries,
-                    typed_queries=eval_workload.typed_queries,
-                    seed=seeds.eval_query_seed,
-                    range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                    range_boundary_prior_weight=0.0,
-                )
+                if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
+                    eval_labels, _ = _ensure_range_runtime_labels(
+                        points=test_points,
+                        boundaries=test_boundaries,
+                        range_queries=eval_workload.typed_queries,
+                        seed=seeds.eval_query_seed,
+                        range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
+                        range_boundary_prior_weight=0.0,
+                        runtime_cache=range_runtime_caches["eval"],
+                    )
+                else:
+                    eval_labels, _ = compute_typed_importance_labels(
+                        points=test_points,
+                        boundaries=test_boundaries,
+                        typed_queries=eval_workload.typed_queries,
+                        seed=seeds.eval_query_seed,
+                        range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
+                        range_boundary_prior_weight=0.0,
+                    )
             oracle_method = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_workload_map))
             with _phase(f"  eval {oracle_method.name}"):
                 matched[oracle_method.name] = evaluate_method(
@@ -1366,13 +1449,14 @@ def run_experiment_pipeline(
     diagnostic_methods: list[Method] = []
     if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
         if eval_labels is None:
-            eval_labels, _ = compute_typed_importance_labels(
+            eval_labels, _ = _ensure_range_runtime_labels(
                 points=test_points,
                 boundaries=test_boundaries,
-                typed_queries=eval_workload.typed_queries,
+                range_queries=eval_workload.typed_queries,
                 seed=seeds.eval_query_seed,
                 range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
                 range_boundary_prior_weight=0.0,
+                runtime_cache=range_runtime_caches["eval"],
             )
         assert eval_labels is not None
         _, eval_type_id = workload_type_head(single_workload_type(eval_workload_map))

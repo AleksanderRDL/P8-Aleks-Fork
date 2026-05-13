@@ -927,26 +927,43 @@ def evaluate_method(
     retained_mask = method.simplify(points, boundaries, compression_ratio)
     latency_ms = (time.time() - t0) * 1000.0
 
-    aggregate, per_type, aggregate_combined, per_type_combined = score_retained_mask(
-        points=points,
-        boundaries=boundaries,
-        retained_mask=retained_mask,
-        typed_queries=typed_queries,
-        workload_map=workload_map,
-        query_cache=query_cache,
-    )
+    range_only = bool(typed_queries) and all(str(query.get("type", "")).lower() == "range" for query in typed_queries)
+    range_audit: dict[str, Any] | None = None
+    if range_only:
+        range_audit = score_range_usefulness(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            typed_queries=typed_queries,
+            query_cache=query_cache,
+        )
+        range_point = float(range_audit.get("range_point_f1", 0.0))
+        aggregate = range_point
+        aggregate_combined = range_point
+        per_type = {"range": range_point, "knn": 0.0, "similarity": 0.0, "clustering": 0.0}
+        per_type_combined = dict(per_type)
+    else:
+        aggregate, per_type, aggregate_combined, per_type_combined = score_retained_mask(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            typed_queries=typed_queries,
+            workload_map=workload_map,
+            query_cache=query_cache,
+        )
     comp = float(retained_mask.float().mean().item())
     avg_gap, avg_norm_gap, max_gap = _retained_point_gap_stats(retained_mask, boundaries)
     geometric = compute_geometric_distortion(points, boundaries, retained_mask)
     avg_length_preserved = compute_length_preservation(points, boundaries, retained_mask)
     combined = float(aggregate) * max(0.0, min(1.0, avg_length_preserved))
-    range_audit = score_range_usefulness(
-        points=points,
-        boundaries=boundaries,
-        retained_mask=retained_mask,
-        typed_queries=typed_queries,
-        query_cache=query_cache,
-    )
+    if range_audit is None:
+        range_audit = score_range_usefulness(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            typed_queries=typed_queries,
+            query_cache=query_cache,
+        )
     boundary_f1 = float(range_audit.get("range_entry_exit_f1", 0.0))
 
     return MethodEvaluation(

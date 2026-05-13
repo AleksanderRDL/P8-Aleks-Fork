@@ -89,6 +89,35 @@ def test_range_workload_diagnostics_can_reuse_known_coverage_fraction() -> None:
     assert diagnostics["queries"][1]["trajectory_hits"] == 1
 
 
+def test_range_workload_diagnostics_uses_supplied_masks() -> None:
+    points, boundaries = _points_and_boundaries()
+    queries = [
+        _range_query(-100.0, -99.0, -100.0, -99.0, -100.0, -99.0),
+        _range_query(-100.0, -99.0, -100.0, -99.0, -100.0, -99.0),
+    ]
+    supplied_masks = {
+        0: torch.tensor([True, True, True, False, False]),
+        1: torch.tensor([False, False, False, True, True]),
+    }
+    calls: list[int] = []
+
+    def mask_provider(query_index: int, _query: dict) -> torch.Tensor:
+        calls.append(query_index)
+        return supplied_masks[query_index]
+
+    diagnostics = compute_range_workload_diagnostics(
+        points,
+        boundaries,
+        queries,
+        mask_provider=mask_provider,
+    )
+
+    assert calls == [0, 1]
+    assert diagnostics["queries"][0]["point_hits"] == 3
+    assert diagnostics["queries"][1]["point_hits"] == 2
+    assert diagnostics["summary"]["coverage_fraction"] == pytest.approx(1.0)
+
+
 def test_range_diagnostics_marks_broad_queries() -> None:
     points, boundaries = _points_and_boundaries()
     queries = [_range_query(-1.0, 6.0, -1.0, 6.0, -1.0, 10.0)]
@@ -263,3 +292,41 @@ def test_range_workload_diagnostics_cache_reuses_labels(tmp_path: Path) -> None:
     assert second_cache.labels is not None
     assert torch.equal(second_cache.labels, first_labels)
     assert second_cache.query_cache is not None
+
+
+def test_range_workload_diagnostics_populates_runtime_query_cache_masks(tmp_path: Path) -> None:
+    points, boundaries = _points_and_boundaries()
+    queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 2.5)]
+    features, type_ids = pad_query_features(queries)
+    workload = TypedQueryWorkload(
+        query_features=features,
+        typed_queries=queries,
+        type_ids=type_ids,
+        coverage_fraction=0.60,
+        covered_points=3,
+        total_points=5,
+    )
+    cfg = build_experiment_config(
+        cache_dir=str(tmp_path / "cache"),
+        range_diagnostics_mode="full",
+        compression_ratio=0.4,
+        workload="range",
+    )
+
+    runtime_cache = RangeRuntimeCache()
+    _summary, _rows = _range_workload_diagnostics(
+        "eval",
+        points,
+        boundaries,
+        workload,
+        {"range": 1.0},
+        cfg,
+        seed=123,
+        runtime_cache=runtime_cache,
+    )
+
+    assert runtime_cache.query_cache is not None
+    assert set(runtime_cache.query_cache.support_masks) == {0}
+    assert runtime_cache.labels is not None
+    assert runtime_cache.labelled_mask is not None
+    assert runtime_cache.component_labels is not None
