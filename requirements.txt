@@ -1,28 +1,17 @@
 # Single repository dependency entry point.
-# This tracks the current QDS CUDA reference stack. It is intentionally not a
-# CPU-minimal profile.
---extra-index-url https://download.pytorch.org/whl/cu130
+# Keep this file to direct project dependencies. Transitive packages should be
+# installed through their parent dependency unless there is a concrete reason
+# to pin them here.
 
-click==8.3.3
-cloudpickle==3.1.2
-fsspec==2026.4.0
-locket==1.0.0
-matplotlib==3.10.9
+# Runtime
 numpy==2.4.4
-packaging==26.2
 pandas==3.0.2
-partd==1.4.2
-psycopg==3.3.4
-py4j==0.10.9.9
+psycopg[binary]==3.3.4
 pyarrow==24.0.0
-pyright==1.1.409
 pyspark==4.1.1
-pytest==9.0.3
-python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
-PyYAML==6.0.3
-six==1.17.0
-torch==2.11.0+cu130
-toolz==1.1.0
-tqdm==4.67.3
-triton==3.6.0; platform_system == "Linux"
+torch==2.11.0
+
+# Dev/test
+pyright==1.1.409
+pytest==9.0.3

@@ -58,7 +58,7 @@ help:
 check-env:
 	$(PYTHON) -V
 	$(PYTHON) -m pip check
-	$(PYTHON) -c 'import matplotlib, numpy, pandas, pyright, pytest, torch, tqdm; print("torch", torch.__version__); print("numpy", numpy.__version__); print("pandas", pandas.__version__); print("matplotlib", matplotlib.__version__); print("pytest", pytest.__version__); print("pyright", pyright.__version__); print("tqdm", tqdm.__version__)'
+	$(PYTHON) -c 'from importlib.metadata import version; import numpy, pandas, pyarrow, pyright, pyspark, pytest, torch; print("torch", torch.__version__); print("numpy", numpy.__version__); print("pandas", pandas.__version__); print("pyarrow", pyarrow.__version__); print("pyspark", pyspark.__version__); print("python-dotenv", version("python-dotenv")); print("psycopg", version("psycopg")); print("pytest", pytest.__version__); print("pyright", pyright.__version__)'
 
 install:
 	$(PYTHON) -m pip install -r $(REPO_ROOT)/requirements.txt
