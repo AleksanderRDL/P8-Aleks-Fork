@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
 from torch import Tensor
 
@@ -12,7 +11,6 @@ def chunked_cross_attention_context(
     point_features: Tensor,
     query_features: Tensor,
     query_chunk_size: int,
-    point_padding_mask: Tensor | None = None,
 ) -> Tensor:
     """Compute per-point query context with points attending to queries. See models/README.md for details.
 
@@ -48,9 +46,8 @@ def chunked_cross_attention_context(
         end = min(n_queries, start + step)
         q_chunk = query_features[:, start:end, :]
         # Points (Q) attend to the current query chunk (K, V).
-        # Padded point positions (padding_mask True) are still allowed to
-        # produce output here; their predictions are excluded from the loss
-        # via the valid_mask in the training loop.
+        # Padded point positions still produce output here; their predictions
+        # are excluded from loss/scoring by downstream valid masks.
         attn_out, _ = cross_attention(
             query=point_features,
             key=q_chunk,

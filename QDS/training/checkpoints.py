@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from experiments.experiment_config import ExperimentConfig
 from models.trajectory_qds_model import TrajectoryQDSModel
 from models.turn_aware_qds_model import TurnAwareQDSModel
 from training.scaler import FeatureScaler
-from training.training_outputs import TrainingOutputs
 
 
 @dataclass
@@ -69,10 +67,3 @@ def load_checkpoint(path: str) -> ModelArtifacts:
         epochs_trained=int(payload.get("epochs_trained", 0)),
         workload_type=str(payload.get("workload_type") or cfg.query.workload),
     )
-
-
-def save_training_summary(path: str, outputs: TrainingOutputs) -> None:
-    """Save training diagnostics history to JSON."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(outputs.history, f, indent=2)

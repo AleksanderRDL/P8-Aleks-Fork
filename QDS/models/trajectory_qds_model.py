@@ -133,7 +133,6 @@ class TrajectoryQDSModel(nn.Module):
             point_features=h,
             query_features=q_emb,
             query_chunk_size=self.query_chunk_size,
-            point_padding_mask=padding_mask,
         )
 
         return self.score_head(h + context).squeeze(-1)

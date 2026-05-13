@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from queries.workload import TypedQueryWorkload
-
 LCG_MULTIPLIER = 6364136223846793005
 
 

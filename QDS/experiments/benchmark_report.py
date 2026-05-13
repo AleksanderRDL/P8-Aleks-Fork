@@ -31,12 +31,6 @@ def _mean_epoch_seconds(timings: dict[str, Any]) -> float | None:
     values = [float(row["seconds"]) for row in timings.get("epoch_timings", [])]
     return float(sum(values) / len(values)) if values else None
 
-def _has_collapse_warning(run_json: dict[str, Any] | None) -> bool | None:
-    """Return whether training history contains a collapse warning."""
-    if not run_json:
-        return None
-    return bool(_collapse_warning_summary(run_json)["collapse_warning_any"])
-
 def _collapse_warning_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
     """Summarize collapse diagnostics without conflating any epoch with the selected checkpoint."""
     if not run_json:

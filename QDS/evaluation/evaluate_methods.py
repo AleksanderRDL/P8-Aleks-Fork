@@ -35,12 +35,6 @@ from evaluation.range_usefulness import (
     RANGE_USEFULNESS_WEIGHTS,
     range_usefulness_weight_summary,
 )
-from evaluation.tables import (
-    print_geometric_distortion_table,
-    print_method_comparison_table,
-    print_range_usefulness_table,
-    print_shift_table,
-)
 from queries.query_executor import execute_typed_query
 from queries.range_geometry import (
     haversine_km_to_point,

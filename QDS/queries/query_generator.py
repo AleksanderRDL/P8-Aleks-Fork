@@ -346,13 +346,6 @@ def query_coverage_mask(points: torch.Tensor, typed_queries: list[dict[str, Any]
     return covered
 
 
-def query_coverage_fraction(points: torch.Tensor, typed_queries: list[dict[str, Any]]) -> float:
-    """Return the fraction of points covered by a workload."""
-    if points.shape[0] == 0:
-        return 0.0
-    return float(query_coverage_mask(points, typed_queries).float().mean().item())
-
-
 def _normalize_target_coverage(target_coverage: float | None) -> float | None:
     """Normalize coverage targets supplied as fractions or percentages."""
     if target_coverage is None:

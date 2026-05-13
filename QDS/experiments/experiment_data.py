@@ -33,31 +33,6 @@ class ExperimentDatasets:
     selection_boundaries: list[tuple[int, int]] | None
 
 
-def split_trajectories(
-    trajectories: list[torch.Tensor],
-    train_fraction: float,
-    val_fraction: float,
-    seed: int,
-) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
-    """Deterministically split trajectories at trajectory level."""
-    trajectory_count = len(trajectories)
-    generator = torch.Generator().manual_seed(int(seed))
-    permutation = torch.randperm(trajectory_count, generator=generator).tolist()
-
-    train_count = max(1, int(trajectory_count * train_fraction))
-    val_count = max(1, int(trajectory_count * val_fraction)) if trajectory_count - train_count > 1 else 0
-    test_count = max(1, trajectory_count - train_count - val_count)
-    if train_count + val_count + test_count > trajectory_count:
-        test_count = trajectory_count - train_count - val_count
-
-    train = [trajectories[i] for i in permutation[:train_count]]
-    val = [trajectories[i] for i in permutation[train_count : train_count + val_count]]
-    test = [trajectories[i] for i in permutation[train_count + val_count : train_count + val_count + test_count]]
-    if not test:
-        test = val if val else train
-    return train, val, test
-
-
 def prepare_experiment_split(
     *,
     config: ExperimentConfig,
