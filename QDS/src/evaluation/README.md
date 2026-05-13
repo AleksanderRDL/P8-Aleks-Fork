@@ -99,7 +99,9 @@ This module compares query-aware ML simplification against temporal, geometric, 
 Keep final benchmark audits exact. `EvaluationQueryCache` precomputes
 retained-independent per-query range support: full ship IDs, compact entry/exit
 indices, crossing brackets, in-query offsets, turn weights, full local time
-spans, and full local path lengths.
+spans, and full local path lengths. It also caches adjacent-segment min/max
+geometry so crossing-bracket detection can filter candidate segments by query
+box before the exact intersection test.
 Reuse that cache across MLQDS, baselines, Oracle, and compression ratios. Only
 use sampled approximations for checkpoint-selection diagnostics when needed;
 final reported audit metrics should stay exact.

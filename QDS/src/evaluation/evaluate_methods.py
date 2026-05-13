@@ -25,7 +25,7 @@ from src.evaluation.range_usefulness import (
     range_usefulness_weight_summary,
 )
 from src.queries.query_executor import execute_typed_query
-from src.queries.range_geometry import segment_box_bracket_indices
+from src.queries.range_geometry import segment_box_bracket_indices, segment_pairs_box_crossings
 from src.queries.query_types import normalize_pure_workload_map
 
 POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
@@ -55,6 +55,19 @@ class RangeQueryAuditSupport:
     trajectories: tuple[RangeTrajectoryAuditSupport, ...]
 
 
+@dataclass(frozen=True)
+class RangeSegmentAuditGeometry:
+    """Retained-independent segment geometry for fast range crossing checks."""
+
+    start_indices_cpu: torch.Tensor
+    time_min_cpu: torch.Tensor
+    time_max_cpu: torch.Tensor
+    lat_min_cpu: torch.Tensor
+    lat_max_cpu: torch.Tensor
+    lon_min_cpu: torch.Tensor
+    lon_max_cpu: torch.Tensor
+
+
 def _points_cache_token(points: torch.Tensor) -> tuple[int, int, tuple[int, ...], str, str]:
     """Return an identity token for caller-owned evaluation caches."""
     data_ptr = int(points.data_ptr()) if points.numel() > 0 else 0
@@ -77,6 +90,7 @@ class EvaluationQueryCache:
     full_results: dict[int, Any] = field(default_factory=dict)
     support_masks: dict[int, torch.Tensor] = field(default_factory=dict)
     range_audit_supports: dict[int, RangeQueryAuditSupport] = field(default_factory=dict)
+    range_segment_geometry: RangeSegmentAuditGeometry | None = None
 
     @classmethod
     def for_workload(
@@ -133,6 +147,44 @@ class EvaluationQueryCache:
         if query_index not in self.range_audit_supports:
             self.range_audit_supports[query_index] = builder()
         return self.range_audit_supports[query_index]
+
+    def get_range_segment_geometry(
+        self,
+        points_cpu: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+    ) -> RangeSegmentAuditGeometry:
+        """Return retained-independent adjacent-segment geometry for range audits."""
+        if self.range_segment_geometry is None:
+            start_parts = [
+                torch.arange(int(start), int(end) - 1, dtype=torch.long)
+                for start, end in boundaries
+                if int(end) - int(start) >= 2
+            ]
+            if start_parts:
+                starts = torch.cat(start_parts).to(dtype=torch.long)
+                p0 = points_cpu[starts]
+                p1 = points_cpu[starts + 1]
+                self.range_segment_geometry = RangeSegmentAuditGeometry(
+                    start_indices_cpu=starts,
+                    time_min_cpu=torch.minimum(p0[:, 0], p1[:, 0]).contiguous(),
+                    time_max_cpu=torch.maximum(p0[:, 0], p1[:, 0]).contiguous(),
+                    lat_min_cpu=torch.minimum(p0[:, 1], p1[:, 1]).contiguous(),
+                    lat_max_cpu=torch.maximum(p0[:, 1], p1[:, 1]).contiguous(),
+                    lon_min_cpu=torch.minimum(p0[:, 2], p1[:, 2]).contiguous(),
+                    lon_max_cpu=torch.maximum(p0[:, 2], p1[:, 2]).contiguous(),
+                )
+            else:
+                empty_float = torch.empty((0,), dtype=torch.float32)
+                self.range_segment_geometry = RangeSegmentAuditGeometry(
+                    start_indices_cpu=torch.empty((0,), dtype=torch.long),
+                    time_min_cpu=empty_float,
+                    time_max_cpu=empty_float,
+                    lat_min_cpu=empty_float,
+                    lat_max_cpu=empty_float,
+                    lon_min_cpu=empty_float,
+                    lon_max_cpu=empty_float,
+                )
+        return self.range_segment_geometry
 
 
 def _split_by_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
@@ -277,8 +329,33 @@ def _range_crossing_bracket_indices_for_trajectories(
     points_cpu: torch.Tensor,
     params: dict[str, float],
     boundaries: list[tuple[int, int]],
+    segment_geometry: RangeSegmentAuditGeometry | None = None,
 ) -> torch.Tensor:
     """Return point pairs bracketing range-box boundary/pass-through crossings."""
+    if segment_geometry is not None:
+        candidates = (
+            (segment_geometry.time_max_cpu >= float(params["t_start"]))
+            & (segment_geometry.time_min_cpu <= float(params["t_end"]))
+            & (segment_geometry.lat_max_cpu >= float(params["lat_min"]))
+            & (segment_geometry.lat_min_cpu <= float(params["lat_max"]))
+            & (segment_geometry.lon_max_cpu >= float(params["lon_min"]))
+            & (segment_geometry.lon_min_cpu <= float(params["lon_max"]))
+        )
+        candidate_starts = segment_geometry.start_indices_cpu[candidates]
+        if candidate_starts.numel() == 0:
+            return torch.empty((0,), dtype=torch.long)
+        crossing = segment_pairs_box_crossings(
+            points_cpu[candidate_starts],
+            points_cpu[candidate_starts + 1],
+            params,
+        )
+        crossing_starts = candidate_starts[crossing]
+        if crossing_starts.numel() == 0:
+            return torch.empty((0,), dtype=torch.long)
+        bracket_indices = torch.empty((crossing_starts.numel() * 2,), dtype=torch.long)
+        bracket_indices[0::2] = crossing_starts
+        bracket_indices[1::2] = crossing_starts + 1
+        return torch.unique(bracket_indices, sorted=True).to(dtype=torch.long)
     return segment_box_bracket_indices(points_cpu, boundaries, params).detach().cpu()
 
 
@@ -304,6 +381,7 @@ def _build_range_query_audit_support(
     range_mask: torch.Tensor,
     point_trajectory_ids: torch.Tensor,
     params: dict[str, float],
+    segment_geometry: RangeSegmentAuditGeometry | None = None,
 ) -> RangeQueryAuditSupport:
     """Build retained-independent support for one range query."""
     range_mask = range_mask.bool()
@@ -313,6 +391,7 @@ def _build_range_query_audit_support(
         points_cpu,
         params,
         boundaries,
+        segment_geometry,
     )
     range_mask_cpu = range_mask.detach().cpu()
     trajectory_support: list[RangeTrajectoryAuditSupport] = []
@@ -368,14 +447,17 @@ def _range_query_audit_support(
     def build_support() -> RangeQueryAuditSupport:
         if query_cache is not None:
             range_mask = query_cache.get_support_mask(query_index, build_range_mask)
+            segment_geometry = query_cache.get_range_segment_geometry(points_cpu, boundaries)
         else:
             range_mask = build_range_mask()
+            segment_geometry = None
         return _build_range_query_audit_support(
             points_cpu=points_cpu,
             boundaries=boundaries,
             range_mask=range_mask,
             point_trajectory_ids=point_trajectory_ids,
             params=query["params"],
+            segment_geometry=segment_geometry,
         )
 
     if query_cache is not None:

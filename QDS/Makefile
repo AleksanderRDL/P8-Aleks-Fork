@@ -38,7 +38,7 @@ help:
 	@echo "  benchmark-queue-preflight  Check prerequisites using BENCHMARK_QUEUE_SESSION"
 	@echo "  list-runs   List benchmark runs from BENCHMARK_FAMILY"
 	@echo "  clean-smoke-artifacts  Dry-run smoke artifact cleanup; set CONFIRM=1 to delete"
-	@echo "  range-benchmark-tmux  Launch the two-day range baseline benchmark in tmux with monitoring"
+	@echo "  range-benchmark-tmux  Launch the range testing-baseline benchmark in tmux with monitoring"
 	@echo "  range-benchmark-queue-tmux  Launch a sequential multi-seed range benchmark queue in tmux"
 	@echo ""
 	@echo "Variables:"

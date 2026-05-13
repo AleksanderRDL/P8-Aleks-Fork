@@ -58,10 +58,11 @@ Parquet data keyed by source file identity and segmentation config.
 
 1. Resolve train/selection/eval trajectory sets.
 2. Generate independent typed workloads for train, eval, and checkpoint selection.
-3. Compute range diagnostics and reusable labels/query caches when applicable.
+3. Prepare only training-critical range labels/query caches before model training.
 4. Train MLQDS and restore the best checkpoint according to the active selection metric.
 5. Evaluate MLQDS, uniform, Douglas-Peucker, and label Oracle on the eval workload.
-6. Write tables, JSON diagnostics, optional GeoJSON queries, and optional simplified CSVs.
+6. Compute full range diagnostics and write tables, JSON diagnostics, optional
+   GeoJSON queries, and optional simplified CSVs.
 
 Experiment entrypoints train and evaluate one model per pure workload. Use
 `--workload {range,knn,similarity,clustering}`.
@@ -126,6 +127,8 @@ which stores range workload summaries, per-query diagnostic rows, and training
 label tensors under `<cache_dir>/range_diagnostics/`. Final matched evaluation
 remains exact; stale or incomplete diagnostics cache entries are ignored and
 recomputed. Use `--refresh_cache` to force regeneration.
+Full range diagnostics run after model evaluation so expensive diagnostics do
+not block training startup on cold caches.
 For `range_label_mode=usefulness`, label diagnostics also include
 `component_positive_label_mass_fraction`, which shows whether the local proxy
 is mostly driven by point, ship, crossing, temporal, gap, turn, or shape

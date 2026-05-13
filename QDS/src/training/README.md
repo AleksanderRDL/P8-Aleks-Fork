@@ -93,7 +93,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
   `checkpoint_candidate_pool_size`, and `early_stopping_patience` are explicit
   selection stabilizers. `checkpoint_full_f1_every=1` keeps exact validation
   every eligible epoch. Higher values keep cheap-diagnostic candidate snapshots
-  and run exact validation only on the best candidates in each validation round.
+  and run exact validation only on the best candidates in each validation round;
+  the first epoch is not forced through full validation unless it lands on that
+  cadence.
 - Validation selection uses the same canonical MLQDS score conversion as final
   evaluation: one explicit workload score stream, `mlqds_score_mode`, and the
   temporal/diversity retained-mask simplifier. History rows report

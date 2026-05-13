@@ -82,6 +82,7 @@ class RangeRuntimeCache:
 
     labels: torch.Tensor | None = None
     labelled_mask: torch.Tensor | None = None
+    component_labels: dict[str, torch.Tensor] | None = None
     query_cache: EvaluationQueryCache | None = None
 
 
@@ -426,6 +427,61 @@ def _load_range_diagnostics_cache(
         return None
 
 
+def _load_range_label_tensor_cache(
+    *,
+    config: ExperimentConfig,
+    label: str,
+    key: str,
+    runtime_cache: RangeRuntimeCache,
+) -> bool:
+    """Load early-written range label tensors when full diagnostics JSON is not available yet."""
+    paths = _range_diagnostics_cache_paths(config, label, key)
+    if paths is None or config.data.refresh_cache:
+        return False
+    _json_path, tensor_path = paths
+    if not tensor_path.exists():
+        return False
+    try:
+        tensors = torch.load(tensor_path, map_location="cpu", weights_only=True)
+        if not isinstance(tensors, dict):
+            return False
+        labels = tensors.get("labels")
+        labelled_mask = tensors.get("labelled_mask")
+        if not isinstance(labels, torch.Tensor) or not isinstance(labelled_mask, torch.Tensor):
+            return False
+        runtime_cache.labels = labels
+        runtime_cache.labelled_mask = labelled_mask
+        runtime_cache.component_labels = None
+        print(f"  range label cache hit: {tensor_path}", flush=True)
+        return True
+    except (OSError, TypeError, RuntimeError) as exc:
+        print(f"  WARNING: ignoring unreadable range label cache {tensor_path}: {exc}", flush=True)
+        return False
+
+
+def _write_range_label_tensor_cache(
+    *,
+    config: ExperimentConfig,
+    label: str,
+    key: str,
+    runtime_cache: RangeRuntimeCache,
+) -> None:
+    """Persist range label tensors immediately after training prep."""
+    paths = _range_diagnostics_cache_paths(config, label, key)
+    if paths is None or runtime_cache.labels is None or runtime_cache.labelled_mask is None:
+        return
+    _json_path, tensor_path = paths
+    try:
+        tensor_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"labels": runtime_cache.labels.cpu(), "labelled_mask": runtime_cache.labelled_mask.cpu()},
+            tensor_path,
+        )
+        print(f"  range label cache wrote: {tensor_path}", flush=True)
+    except OSError as exc:
+        print(f"  WARNING: could not write range label cache {tensor_path}: {exc}", flush=True)
+
+
 def _write_range_diagnostics_cache(
     *,
     config: ExperimentConfig,
@@ -508,26 +564,32 @@ def _range_signal_diagnostics(
         }
 
     component_labels: dict[str, torch.Tensor] | None = None
-    if str(range_label_mode).lower() == "usefulness":
-        labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
-            points=points,
-            boundaries=boundaries,
-            typed_queries=range_queries,
-            seed=seed,
-            range_boundary_prior_weight=range_boundary_prior_weight,
-        )
+    if runtime_cache is not None and runtime_cache.labels is not None and runtime_cache.labelled_mask is not None:
+        labels = runtime_cache.labels
+        labelled_mask = runtime_cache.labelled_mask
+        component_labels = runtime_cache.component_labels
     else:
-        labels, labelled_mask = compute_typed_importance_labels(
-            points=points,
-            boundaries=boundaries,
-            typed_queries=range_queries,
-            seed=seed,
-            range_label_mode=range_label_mode,
-            range_boundary_prior_weight=range_boundary_prior_weight,
-        )
-    if runtime_cache is not None:
-        runtime_cache.labels = labels
-        runtime_cache.labelled_mask = labelled_mask
+        if str(range_label_mode).lower() == "usefulness":
+            labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+                points=points,
+                boundaries=boundaries,
+                typed_queries=range_queries,
+                seed=seed,
+                range_boundary_prior_weight=range_boundary_prior_weight,
+            )
+        else:
+            labels, labelled_mask = compute_typed_importance_labels(
+                points=points,
+                boundaries=boundaries,
+                typed_queries=range_queries,
+                seed=seed,
+                range_label_mode=range_label_mode,
+                range_boundary_prior_weight=range_boundary_prior_weight,
+            )
+        if runtime_cache is not None:
+            runtime_cache.labels = labels
+            runtime_cache.labelled_mask = labelled_mask
+            runtime_cache.component_labels = component_labels
     label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask, component_labels)
     oracle_labels = labels
     methods: list[Method] = [
@@ -655,6 +717,112 @@ def _range_workload_diagnostics(
         runtime_cache=runtime_cache,
     )
     return summary, rows
+
+
+def _prepare_range_training_cache(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_map: dict[str, float],
+    config: ExperimentConfig,
+    seed: int,
+    runtime_cache: RangeRuntimeCache,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Populate train-label tensors needed before model training starts."""
+    range_queries = _range_only_queries(workload.typed_queries)
+    if len(range_queries) != len(workload.typed_queries):
+        return None
+    if runtime_cache.labels is not None and runtime_cache.labelled_mask is not None:
+        return runtime_cache.labels, runtime_cache.labelled_mask
+
+    cache_payload = _range_diagnostics_cache_payload(
+        points=points,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map=workload_map,
+        config=config,
+        seed=seed,
+    )
+    cache_key = _range_diagnostics_cache_key(cache_payload)
+    if _load_range_label_tensor_cache(
+        config=config,
+        label="train",
+        key=cache_key,
+        runtime_cache=runtime_cache,
+    ):
+        assert runtime_cache.labels is not None
+        assert runtime_cache.labelled_mask is not None
+        return runtime_cache.labels, runtime_cache.labelled_mask
+
+    range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness"))
+    range_boundary_prior_weight = float(getattr(config.model, "range_boundary_prior_weight", 0.0))
+    if range_label_mode.lower() == "usefulness":
+        labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+        )
+        runtime_cache.component_labels = component_labels
+    else:
+        labels, labelled_mask = compute_typed_importance_labels(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=range_queries,
+            seed=seed,
+            range_label_mode=range_label_mode,
+            range_boundary_prior_weight=range_boundary_prior_weight,
+        )
+        runtime_cache.component_labels = None
+
+    runtime_cache.labels = labels
+    runtime_cache.labelled_mask = labelled_mask
+    _write_range_label_tensor_cache(
+        config=config,
+        label="train",
+        key=cache_key,
+        runtime_cache=runtime_cache,
+    )
+    return labels, labelled_mask
+
+
+def _print_range_diagnostics_summary(range_diagnostics_summary: dict[str, Any]) -> None:
+    """Print compact range diagnostics for each split."""
+    for label, summary in range_diagnostics_summary.items():
+        range_summary = summary["range"]
+        signal = summary["range_signal"]
+        diagnostics_cache = summary.get("range_diagnostics_cache") or {}
+        cache_text = "disabled"
+        if isinstance(diagnostics_cache, dict) and diagnostics_cache:
+            cache_text = "hit" if diagnostics_cache.get("hit") else "miss"
+        print(
+            f"  {label}: range_queries={range_summary['range_query_count']}  "
+            f"empty={range_summary['empty_query_rate']:.2%}  "
+            f"broad={range_summary['too_broad_query_rate']:.2%}  "
+            f"duplicates={range_summary['near_duplicate_query_rate']:.2%}  "
+            f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}  "
+            f"diag_cache={cache_text}",
+            flush=True,
+        )
+
+
+def _print_range_distribution_comparison(workload_distribution_comparison: dict[str, Any]) -> None:
+    """Print compact train/selection-vs-eval workload distribution deltas."""
+    for label, delta in workload_distribution_comparison["deltas_vs_eval"].items():
+        coverage_delta = delta.get("coverage_fraction_minus_eval")
+        point_p50_delta = delta.get("point_hit_count_p50_minus_eval")
+        traj_p50_delta = delta.get("trajectory_hit_count_p50_minus_eval")
+        coverage_text = f"{coverage_delta:+.4f}" if isinstance(coverage_delta, (int, float)) else "n/a"
+        point_text = f"{point_p50_delta:+.2f}" if isinstance(point_p50_delta, (int, float)) else "n/a"
+        traj_text = f"{traj_p50_delta:+.2f}" if isinstance(traj_p50_delta, (int, float)) else "n/a"
+        print(
+            f"  {label}_vs_eval: "
+            f"coverage_delta={coverage_text}  "
+            f"point_hit_p50_delta={point_text}  "
+            f"trajectory_hit_p50_delta={traj_text}",
+            flush=True,
+        )
 
 
 def _compact_range_workload_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -1041,97 +1209,44 @@ def run_experiment_pipeline(
         "eval": RangeRuntimeCache(),
         "selection": RangeRuntimeCache(),
     }
-    with _phase("range-diagnostics"):
-        train_summary, train_rows = _range_workload_diagnostics(
-            "train",
-            train_points,
-            train_boundaries,
-            train_workload,
-            train_workload_map,
-            config,
-            seeds.train_query_seed,
-            range_runtime_caches["train"],
-        )
-        eval_summary, eval_rows = _range_workload_diagnostics(
-            "eval",
-            test_points,
-            test_boundaries,
-            eval_workload,
-            eval_workload_map,
-            config,
-            seeds.eval_query_seed,
-            range_runtime_caches["eval"],
-        )
-        range_diagnostics_summary["train"] = train_summary
-        range_diagnostics_summary["eval"] = eval_summary
-        range_diagnostics_rows.extend(train_rows)
-        range_diagnostics_rows.extend(eval_rows)
-        if selection_workload is not None and selection_points is not None and selection_boundaries is not None:
-            selection_summary, selection_rows = _range_workload_diagnostics(
-                "selection",
-                selection_points,
-                selection_boundaries,
-                selection_workload,
-                eval_workload_map,
-                config,
-                seeds.eval_query_seed + 17,
-                range_runtime_caches["selection"],
-            )
-            range_diagnostics_summary["selection"] = selection_summary
-            range_diagnostics_rows.extend(selection_rows)
-        for label, summary in range_diagnostics_summary.items():
-            range_summary = summary["range"]
-            signal = summary["range_signal"]
-            diagnostics_cache = summary.get("range_diagnostics_cache") or {}
-            cache_text = "disabled"
-            if isinstance(diagnostics_cache, dict) and diagnostics_cache:
-                cache_text = "hit" if diagnostics_cache.get("hit") else "miss"
-            print(
-                f"  {label}: range_queries={range_summary['range_query_count']}  "
-                f"empty={range_summary['empty_query_rate']:.2%}  "
-                f"broad={range_summary['too_broad_query_rate']:.2%}  "
-                f"duplicates={range_summary['near_duplicate_query_rate']:.2%}  "
-                f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}  "
-                f"diag_cache={cache_text}",
-                flush=True,
-            )
-        workload_distribution_comparison = _range_workload_distribution_comparison(range_diagnostics_summary)
-        for label, delta in workload_distribution_comparison["deltas_vs_eval"].items():
-            coverage_delta = delta.get("coverage_fraction_minus_eval")
-            point_p50_delta = delta.get("point_hit_count_p50_minus_eval")
-            traj_p50_delta = delta.get("trajectory_hit_count_p50_minus_eval")
-            coverage_text = f"{coverage_delta:+.4f}" if isinstance(coverage_delta, (int, float)) else "n/a"
-            point_text = f"{point_p50_delta:+.2f}" if isinstance(point_p50_delta, (int, float)) else "n/a"
-            traj_text = f"{traj_p50_delta:+.2f}" if isinstance(traj_p50_delta, (int, float)) else "n/a"
-            print(
-                f"  {label}_vs_eval: "
-                f"coverage_delta={coverage_text}  "
-                f"point_hit_p50_delta={point_text}  "
-                f"trajectory_hit_p50_delta={traj_text}",
-                flush=True,
-            )
+    workload_distribution_comparison: dict[str, Any] = {"deltas_vs_eval": {}}
 
     if save_queries_dir:
         with _phase("write-queries-geojson"):
             write_queries_geojson(save_queries_dir, eval_workload.typed_queries)
 
     reset_cuda_peak_memory_stats()
-    train_cache = range_runtime_caches["train"]
     train_labels: tuple[torch.Tensor, torch.Tensor] | None = None
+    selection_query_cache: EvaluationQueryCache | None = None
+    with _phase("range-training-prep"):
+        train_labels = _prepare_range_training_cache(
+            points=train_points,
+            boundaries=train_boundaries,
+            workload=train_workload,
+            workload_map=train_workload_map,
+            config=config,
+            seed=seeds.train_query_seed,
+            runtime_cache=range_runtime_caches["train"],
+        )
+        if (
+            selection_workload is not None
+            and selection_points is not None
+            and selection_boundaries is not None
+            and len(_range_only_queries(selection_workload.typed_queries)) == len(selection_workload.typed_queries)
+        ):
+            selection_query_cache = EvaluationQueryCache.for_workload(
+                selection_points,
+                selection_boundaries,
+                selection_workload.typed_queries,
+            )
+            range_runtime_caches["selection"].query_cache = selection_query_cache
     if (
-        train_cache.labels is not None
-        and train_cache.labelled_mask is not None
+        train_labels is not None
         and len(_range_only_queries(train_workload.typed_queries)) == len(train_workload.typed_queries)
     ):
-        train_labels = (train_cache.labels, train_cache.labelled_mask)
-    selection_cache = range_runtime_caches["selection"]
-    selection_query_cache: EvaluationQueryCache | None = None
-    if (
-        selection_workload is not None
-        and selection_cache.query_cache is not None
-        and len(_range_only_queries(selection_workload.typed_queries)) == len(selection_workload.typed_queries)
-    ):
-        selection_query_cache = selection_cache.query_cache
+        print("  prepared train range labels for precomputed training target", flush=True)
+    if selection_query_cache is not None:
+        print("  prepared checkpoint-validation range query cache", flush=True)
     with _phase(f"train-model ({config.model.epochs} epochs)"):
         trained = train_model(
             train_trajectories=train_traj,
@@ -1207,6 +1322,8 @@ def run_experiment_pipeline(
                 test_boundaries,
                 eval_workload.typed_queries,
             )
+            if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
+                range_runtime_caches["eval"].query_cache = eval_query_cache
         else:
             eval_query_cache.validate(test_points, test_boundaries, eval_workload.typed_queries)
         for method in methods:
@@ -1367,6 +1484,49 @@ def run_experiment_pipeline(
                 ).aggregate_f1
             )
     shift_table = print_shift_table(shift_pairs)
+
+    with _phase("range-diagnostics"):
+        train_summary, train_rows = _range_workload_diagnostics(
+            "train",
+            train_points,
+            train_boundaries,
+            train_workload,
+            train_workload_map,
+            config,
+            seeds.train_query_seed,
+            range_runtime_caches["train"],
+        )
+        eval_summary, eval_rows = _range_workload_diagnostics(
+            "eval",
+            test_points,
+            test_boundaries,
+            eval_workload,
+            eval_workload_map,
+            config,
+            seeds.eval_query_seed,
+            range_runtime_caches["eval"],
+        )
+        range_diagnostics_summary["train"] = train_summary
+        range_diagnostics_summary["eval"] = eval_summary
+        range_diagnostics_rows.extend(train_rows)
+        range_diagnostics_rows.extend(eval_rows)
+        if selection_workload is not None and selection_points is not None and selection_boundaries is not None:
+            selection_summary, selection_rows = _range_workload_diagnostics(
+                "selection",
+                selection_points,
+                selection_boundaries,
+                selection_workload,
+                eval_workload_map,
+                config,
+                seeds.eval_query_seed + 17,
+                range_runtime_caches["selection"],
+            )
+            range_diagnostics_summary["selection"] = selection_summary
+            range_diagnostics_rows.extend(selection_rows)
+        _print_range_diagnostics_summary(range_diagnostics_summary)
+        workload_distribution_comparison = _range_workload_distribution_comparison(range_diagnostics_summary)
+        _print_range_distribution_comparison(workload_distribution_comparison)
+
     range_residual_objective_summary = _range_residual_objective_summary(
         learned_fill_diagnostics=learned_fill_diagnostics,
         training_target_diagnostics=trained.target_diagnostics,

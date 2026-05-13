@@ -794,6 +794,16 @@ def _filter_supervised_windows(
     return kept, filtered_zero_windows
 
 
+def _trajectory_batch_to_device(batch: TrajectoryBatch, device: torch.device) -> TrajectoryBatch:
+    """Move one already-batched trajectory window group to the model device."""
+    return TrajectoryBatch(
+        points=batch.points.to(device=device, non_blocking=True),
+        padding_mask=batch.padding_mask.to(device=device, non_blocking=True),
+        trajectory_ids=batch.trajectory_ids,
+        global_indices=batch.global_indices.to(device=device, non_blocking=True),
+    )
+
+
 def _predict_workload_logits(
     model: TrajectoryQDSModel,
     scaler: FeatureScaler,
@@ -816,15 +826,6 @@ def _predict_workload_logits(
         window_length=model_config.window_length,
         stride=model_config.window_stride,
     )
-    windows = [
-        TrajectoryBatch(
-            points=window.points.to(device),
-            padding_mask=window.padding_mask.to(device),
-            trajectory_ids=window.trajectory_ids,
-            global_indices=window.global_indices.to(device),
-        )
-        for window in windows
-    ]
     inference_batch_size = max(1, int(getattr(model_config, "inference_batch_size", 16)))
     windows = batch_windows(windows, inference_batch_size)
     all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
@@ -833,7 +834,8 @@ def _predict_workload_logits(
 
     model.eval()
     with torch.no_grad():
-        for window in windows:
+        for window_cpu in windows:
+            window = _trajectory_batch_to_device(window_cpu, device)
             with torch_autocast_context(device, amp_mode):
                 pred = model(
                     points=window.points,
@@ -1172,21 +1174,12 @@ def train_model(
             f"zero-positive training windows before forward ({', '.join(filtered_parts)})",
             flush=True,
         )
-    single_windows = [
-        TrajectoryBatch(
-            points=w.points.to(device),
-            padding_mask=w.padding_mask.to(device),
-            trajectory_ids=w.trajectory_ids,
-            global_indices=w.global_indices.to(device),
-        )
-        for w in windows_cpu
-    ]
     train_batch_size = max(1, int(getattr(model_config, "train_batch_size", 1)))
-    windows = batch_windows(single_windows, train_batch_size)
-    trained_window_count = len(single_windows)
+    windows = batch_windows(windows_cpu, train_batch_size)
+    trained_window_count = len(windows_cpu)
     # Keep diagnostics as sampleable single windows, then batch the selected
     # subset before forward so sampled diagnostics still use useful GPU work.
-    diag_windows = single_windows
+    diag_windows = windows_cpu
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
@@ -1296,7 +1289,8 @@ def train_model(
         skipped_zero_windows = prefiltered_zero_windows.clone()
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
-        for w in windows:
+        for w_cpu in windows:
+            w = _trajectory_batch_to_device(w_cpu, device)
             forward_t0 = time.perf_counter()
             with torch_autocast_context(device, amp_mode):
                 pred_batch = model(
@@ -1424,7 +1418,8 @@ def train_model(
                 all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 diagnostic_batch_size = max(1, int(getattr(model_config, "inference_batch_size", train_batch_size)))
-                for w in batch_windows(sample_windows, diagnostic_batch_size):
+                for w_cpu in batch_windows(sample_windows, diagnostic_batch_size):
+                    w = _trajectory_batch_to_device(w_cpu, device)
                     with torch_autocast_context(device, amp_mode):
                         wp = model(
                             points=w.points,
@@ -1502,7 +1497,6 @@ def train_model(
                 checkpoint_full_f1_every <= 1
                 or (epoch + 1) % checkpoint_full_f1_every == 0
                 or is_last_epoch
-                or epoch == 0
             )
             use_checkpoint_candidate_pool = (
                 has_validation_f1
