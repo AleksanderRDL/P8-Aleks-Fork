@@ -215,6 +215,39 @@ Distillation variants to test:
 - top-k membership frequency across budgets
 - teacher score blended with explicit `RangeUseful` component labels
 
+Improving the teacher can improve the student, but only if the improvement is
+compressible into query-blind features. A better `range_aware` teacher should
+produce cleaner supervision on training workloads: better ranking, better
+budget calibration, and better boundary/crossing/shape scores. That can reduce
+target noise.
+
+The limit is the distillation gap:
+
+- teacher target: what is useful for this known workload
+- blind student target: what is generally likely to be useful for future
+  workloads
+
+The student can learn repeated priors such as dense traffic areas, common
+entry/exit zones, crossing-heavy routes, port approaches, trajectory endpoints,
+turns, gaps, and local route structure. It cannot learn exact future query-box
+membership unless that membership is statistically predictable from blind
+features.
+
+Practical sequence:
+
+1. Build the blind student pipeline with the current strong `range_aware`
+   teacher.
+2. Measure teacher quality, student quality, student-vs-teacher target fit, and
+   blind validation `RangeUseful`.
+3. Improve the teacher if the student tracks teacher quality and still has a
+   clear gap below it.
+4. Improve blind features, workload generation, aggregation, or label design if
+   the student cannot fit or transfer the teacher signal.
+
+Do not over-invest in teacher improvements before proving the student can use
+the teacher signal. A better teacher only matters if its information can be
+learned without future query inputs.
+
 ### Marginal-Gain Targets
 
 Later path if local labels are insufficient:
