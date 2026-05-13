@@ -522,6 +522,7 @@ def _row_from_run(
     child_torch_runtime = (run_json or {}).get("torch_runtime") or {}
     child_amp = child_torch_runtime.get("amp") or {}
     model_config = (run_json or {}).get("config", {}).get("model", {})
+    baseline_config = (run_json or {}).get("config", {}).get("baselines", {})
     oracle_diagnostic = (run_json or {}).get("oracle_diagnostic") or {}
     collapse_summary = _collapse_warning_summary(run_json)
     train_label_diagnostics = (
@@ -567,6 +568,7 @@ def _row_from_run(
         "mlqds_range_turn_coverage": mlqds.get("range_turn_coverage"),
         "mlqds_range_shape_score": mlqds.get("range_shape_score"),
         "range_usefulness_schema_version": mlqds.get("range_usefulness_schema_version"),
+        "final_metrics_mode": (run_json or {}).get("final_metrics_mode", baseline_config.get("final_metrics_mode")),
         "uniform_f1": uniform_f1,
         "douglas_peucker_f1": dp_f1,
         "mlqds_vs_uniform_f1": (
@@ -691,6 +693,7 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "train_target_effective_fill_budget_ratio",
         "checkpoint_full_f1_every",
         "checkpoint_candidate_pool_size",
+        "final_metrics_mode",
         "mlqds_f1",
         "mlqds_range_point_f1",
         "mlqds_range_usefulness_score",

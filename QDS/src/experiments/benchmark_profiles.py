@@ -23,6 +23,7 @@ class BenchmarkProfile:
     range_time_hours: float | None
     range_footprint_jitter: float
     range_diagnostics_mode: str
+    final_metrics_mode: str
     query_chunk_size: int
     train_batch_size: int
     inference_batch_size: int
@@ -61,6 +62,7 @@ RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
     range_time_hours=5.0,
     range_footprint_jitter=0.0,
     range_diagnostics_mode="cached",
+    final_metrics_mode="diagnostic",
     query_chunk_size=2048,
     train_batch_size=64,
     inference_batch_size=64,
@@ -131,6 +133,8 @@ def benchmark_profile_args(
         str(profile.range_footprint_jitter),
         "--range_diagnostics_mode",
         profile.range_diagnostics_mode,
+        "--final_metrics_mode",
+        profile.final_metrics_mode,
         "--float32_matmul_precision",
         profile.float32_matmul_precision,
         "--allow_tf32" if profile.allow_tf32 else "--no-allow_tf32",
@@ -210,6 +214,7 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "range_time_hours": profile.range_time_hours,
         "range_footprint_jitter": profile.range_footprint_jitter,
         "range_diagnostics_mode": profile.range_diagnostics_mode,
+        "final_metrics_mode": profile.final_metrics_mode,
         "query_chunk_size": profile.query_chunk_size,
         "train_batch_size": profile.train_batch_size,
         "inference_batch_size": profile.inference_batch_size,

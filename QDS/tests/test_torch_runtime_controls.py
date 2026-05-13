@@ -64,6 +64,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         checkpoint_full_f1_every=3,
         checkpoint_candidate_pool_size=2,
         range_diagnostics_mode="cached",
+        final_metrics_mode="core",
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
 
@@ -72,6 +73,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.data.validation_csv_path == "validation.csv"
     assert restored.data.eval_csv_path == "eval.csv"
     assert restored.data.range_diagnostics_mode == "cached"
+    assert restored.baselines.final_metrics_mode == "core"
     assert restored.model.allow_tf32 is True
     assert restored.model.train_batch_size == 64
     assert restored.model.inference_batch_size == 32
@@ -124,6 +126,8 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "2",
             "--range_diagnostics_mode",
             "cached",
+            "--final_metrics_mode",
+            "core",
             "--validation_csv_path",
             "validation.csv",
         ]
@@ -143,6 +147,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
         checkpoint_full_f1_every=args.checkpoint_full_f1_every,
         checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
         range_diagnostics_mode=args.range_diagnostics_mode,
+        final_metrics_mode=args.final_metrics_mode,
         validation_csv_path=args.validation_csv_path,
     )
 
@@ -159,6 +164,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.checkpoint_full_f1_every == 3
     assert args.checkpoint_candidate_pool_size == 2
     assert args.range_diagnostics_mode == "cached"
+    assert args.final_metrics_mode == "core"
     assert args.validation_csv_path == "validation.csv"
     assert cfg.model.ranking_pairs_per_type == 64
     assert cfg.model.ranking_top_quantile == 0.70
@@ -173,6 +179,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert cfg.model.checkpoint_full_f1_every == 3
     assert cfg.model.checkpoint_candidate_pool_size == 2
     assert cfg.data.range_diagnostics_mode == "cached"
+    assert cfg.baselines.final_metrics_mode == "core"
     assert cfg.data.validation_csv_path == "validation.csv"
 
 
@@ -194,6 +201,7 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     payload["model"].pop("checkpoint_full_f1_every")
     payload["model"].pop("checkpoint_candidate_pool_size")
     payload["data"].pop("range_diagnostics_mode")
+    payload["baselines"].pop("final_metrics_mode")
 
     restored = ExperimentConfig.from_dict(payload)
 
@@ -215,6 +223,7 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.model.checkpoint_full_f1_every == 1
     assert restored.model.checkpoint_candidate_pool_size == 1
     assert restored.data.range_diagnostics_mode == "full"
+    assert restored.baselines.final_metrics_mode == "diagnostic"
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:
@@ -264,6 +273,7 @@ def test_runtime_profile_uses_testing_baseline_shape(tmp_path) -> None:
     assert args[args.index("--range_time_hours") + 1] == "5.0"
     assert args[args.index("--range_footprint_jitter") + 1] == "0.0"
     assert args[args.index("--range_diagnostics_mode") + 1] == "cached"
+    assert args[args.index("--final_metrics_mode") + 1] == "diagnostic"
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"

@@ -147,6 +147,7 @@ class BaselineConfig:
     """Baseline methods configuration. See src/evaluation/README.md for details."""
 
     include_oracle: bool = True
+    final_metrics_mode: str = "diagnostic"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -155,7 +156,7 @@ class BaselineConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BaselineConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**data)
+        return cls(**_known_dataclass_values(cls, data))
 
 
 @dataclass
@@ -302,6 +303,7 @@ def build_experiment_config(
     range_label_mode: str = "usefulness",
     range_boundary_prior_weight: float = 0.0,
     range_audit_compression_ratios: list[float] | None = None,
+    final_metrics_mode: str = "diagnostic",
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
     amp_mode: str = "off",
@@ -383,6 +385,9 @@ def build_experiment_config(
             float32_matmul_precision=float32_matmul_precision,
             allow_tf32=allow_tf32,
             amp_mode=amp_mode,
+        ),
+        baselines=BaselineConfig(
+            final_metrics_mode=final_metrics_mode,
         ),
     )
 

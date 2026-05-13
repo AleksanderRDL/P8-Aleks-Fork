@@ -50,6 +50,8 @@ def _profile_core_args() -> list[str]:
         "0.0",
         "--range_diagnostics_mode",
         "cached",
+        "--final_metrics_mode",
+        "diagnostic",
         "--float32_matmul_precision",
         "high",
         "--allow_tf32",

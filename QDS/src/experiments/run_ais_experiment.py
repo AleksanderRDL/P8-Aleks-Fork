@@ -184,6 +184,7 @@ def main() -> None:
         range_label_mode=args.range_label_mode,
         range_boundary_prior_weight=args.range_boundary_prior_weight,
         range_audit_compression_ratios=args.range_audit_compression_ratios,
+        final_metrics_mode=args.final_metrics_mode,
         float32_matmul_precision=args.float32_matmul_precision,
         allow_tf32=args.allow_tf32,
         amp_mode=args.amp_mode,
@@ -212,6 +213,7 @@ def main() -> None:
         f"inference_batch_size={args.inference_batch_size}  "
         f"query_chunk_size={args.query_chunk_size}  "
         f"range_diagnostics_mode={args.range_diagnostics_mode}  "
+        f"final_metrics_mode={args.final_metrics_mode}  "
         f"diagnostic_every={args.diagnostic_every}  "
         f"checkpoint_selection_metric={args.checkpoint_selection_metric}  "
         f"f1_diagnostic_every={args.f1_diagnostic_every}  "

@@ -54,3 +54,19 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert (tmp_path / "range_residual_objective_summary.json").exists()
     assert not (tmp_path / "simplified" / "ML_simplified_train.csv").exists()
     assert not (tmp_path / "simplified" / "ML_simplified.csv").exists()
+
+
+def test_core_final_metrics_mode_skips_diagnostic_baselines(synthetic_dataset, tmp_path) -> None:
+    trajectories, _ = synthetic_dataset
+    cfg = build_experiment_config(n_queries=16, epochs=1, final_metrics_mode="core")
+
+    out = run_experiment_pipeline(
+        config=cfg,
+        trajectories=trajectories,
+        results_dir=str(tmp_path),
+    )
+
+    assert out.metrics_dump["final_metrics_mode"] == "core"
+    assert "Oracle" not in out.metrics_dump["matched"]
+    assert set(out.metrics_dump["learned_fill_diagnostics"]) == {"MLQDS"}
+    assert out.metrics_dump["oracle_diagnostic"]["enabled"] is False

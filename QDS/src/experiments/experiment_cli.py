@@ -59,6 +59,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["full", "cached"],
         help="Use full range diagnostics or reuse persistent range-diagnostics caches when --cache_dir is set.",
     )
+    parser.add_argument(
+        "--final_metrics_mode",
+        type=str,
+        default="diagnostic",
+        choices=["diagnostic", "core"],
+        help=(
+            "Final evaluation scope. 'diagnostic' keeps Oracle and learned-fill diagnostic baselines; "
+            "'core' reports exact MLQDS/uniform/DouglasPeucker metrics only."
+        ),
+    )
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
     parser.add_argument(

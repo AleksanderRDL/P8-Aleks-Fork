@@ -409,8 +409,16 @@ def _range_diagnostics_cache_payload(
     workload_map: dict[str, float],
     config: ExperimentConfig,
     seed: int,
+    range_label_mode: str | None = None,
+    range_boundary_prior_weight: float | None = None,
 ) -> dict[str, Any]:
     """Build the canonical cache key payload for range workload diagnostics."""
+    label_mode = str(range_label_mode if range_label_mode is not None else getattr(config.model, "range_label_mode", "usefulness"))
+    prior_weight = float(
+        range_boundary_prior_weight
+        if range_boundary_prior_weight is not None
+        else getattr(config.model, "range_boundary_prior_weight", 0.0)
+    )
     return {
         "schema_version": RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION,
         "points_sha256": _tensor_cache_digest(points),
@@ -421,8 +429,8 @@ def _range_diagnostics_cache_payload(
         "workload_map": {key: float(workload_map[key]) for key in sorted(workload_map)},
         "seed": int(seed),
         "compression_ratio": float(config.model.compression_ratio),
-        "range_label_mode": str(getattr(config.model, "range_label_mode", "usefulness")),
-        "range_boundary_prior_weight": float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
+        "range_label_mode": label_mode,
+        "range_boundary_prior_weight": prior_weight,
         "max_point_hit_fraction": config.query.range_max_point_hit_fraction,
         "max_trajectory_hit_fraction": config.query.range_max_trajectory_hit_fraction,
         "max_box_volume_fraction": config.query.range_max_box_volume_fraction,
@@ -476,6 +484,12 @@ def _load_range_diagnostics_cache(
         if runtime_cache is not None:
             runtime_cache.labels = labels
             runtime_cache.labelled_mask = labelled_mask
+            component_labels = tensors.get("component_labels")
+            runtime_cache.component_labels = (
+                {str(key): value for key, value in component_labels.items() if isinstance(value, torch.Tensor)}
+                if isinstance(component_labels, dict)
+                else None
+            )
             runtime_cache.query_cache = EvaluationQueryCache.for_workload(points, boundaries, scored_queries)
         summary = cached["summary"]
         rows = cached["rows"]
@@ -515,7 +529,12 @@ def _load_range_label_tensor_cache(
             return False
         runtime_cache.labels = labels
         runtime_cache.labelled_mask = labelled_mask
-        runtime_cache.component_labels = None
+        component_labels = tensors.get("component_labels")
+        runtime_cache.component_labels = (
+            {str(key): value for key, value in component_labels.items() if isinstance(value, torch.Tensor)}
+            if isinstance(component_labels, dict)
+            else None
+        )
         print(f"  range label cache hit: {tensor_path}", flush=True)
         return True
     except (OSError, TypeError, RuntimeError) as exc:
@@ -537,8 +556,16 @@ def _write_range_label_tensor_cache(
     _json_path, tensor_path = paths
     try:
         tensor_path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "labels": runtime_cache.labels.cpu(),
+            "labelled_mask": runtime_cache.labelled_mask.cpu(),
+        }
+        if runtime_cache.component_labels is not None:
+            payload["component_labels"] = {
+                key: value.cpu() for key, value in runtime_cache.component_labels.items()
+            }
         torch.save(
-            {"labels": runtime_cache.labels.cpu(), "labelled_mask": runtime_cache.labelled_mask.cpu()},
+            payload,
             tensor_path,
         )
         print(f"  range label cache wrote: {tensor_path}", flush=True)
@@ -562,8 +589,16 @@ def _write_range_diagnostics_cache(
     json_path, tensor_path = paths
     try:
         json_path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "labels": runtime_cache.labels.cpu(),
+            "labelled_mask": runtime_cache.labelled_mask.cpu(),
+        }
+        if runtime_cache.component_labels is not None:
+            payload["component_labels"] = {
+                key: value.cpu() for key, value in runtime_cache.component_labels.items()
+            }
         torch.save(
-            {"labels": runtime_cache.labels.cpu(), "labelled_mask": runtime_cache.labelled_mask.cpu()},
+            payload,
             tensor_path,
         )
         cache_summary = dict(summary)
@@ -791,7 +826,9 @@ def _range_workload_diagnostics(
     return summary, rows
 
 
-def _prepare_range_training_cache(
+def _prepare_range_label_cache(
+    *,
+    cache_label: str,
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     workload: TypedQueryWorkload,
@@ -799,8 +836,9 @@ def _prepare_range_training_cache(
     config: ExperimentConfig,
     seed: int,
     runtime_cache: RangeRuntimeCache,
+    range_boundary_prior_weight: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
-    """Populate train-label tensors needed before model training starts."""
+    """Populate range-label tensors, reusing persistent caches when available."""
     range_queries = _range_only_queries(workload.typed_queries)
     if len(range_queries) != len(workload.typed_queries):
         return None
@@ -814,11 +852,12 @@ def _prepare_range_training_cache(
         workload_map=workload_map,
         config=config,
         seed=seed,
+        range_boundary_prior_weight=range_boundary_prior_weight,
     )
     cache_key = _range_diagnostics_cache_key(cache_payload)
     if _load_range_label_tensor_cache(
         config=config,
-        label="train",
+        label=cache_label,
         key=cache_key,
         runtime_cache=runtime_cache,
     ):
@@ -827,14 +866,18 @@ def _prepare_range_training_cache(
         return runtime_cache.labels, runtime_cache.labelled_mask
 
     range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness"))
-    range_boundary_prior_weight = float(getattr(config.model, "range_boundary_prior_weight", 0.0))
+    prior_weight = float(
+        range_boundary_prior_weight
+        if range_boundary_prior_weight is not None
+        else getattr(config.model, "range_boundary_prior_weight", 0.0)
+    )
     if range_label_mode.lower() == "usefulness":
         labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
             seed=seed,
-            range_boundary_prior_weight=range_boundary_prior_weight,
+            range_boundary_prior_weight=prior_weight,
         )
         runtime_cache.component_labels = component_labels
     else:
@@ -844,7 +887,7 @@ def _prepare_range_training_cache(
             typed_queries=range_queries,
             seed=seed,
             range_label_mode=range_label_mode,
-            range_boundary_prior_weight=range_boundary_prior_weight,
+            range_boundary_prior_weight=prior_weight,
         )
         runtime_cache.component_labels = None
 
@@ -852,11 +895,33 @@ def _prepare_range_training_cache(
     runtime_cache.labelled_mask = labelled_mask
     _write_range_label_tensor_cache(
         config=config,
-        label="train",
+        label=cache_label,
         key=cache_key,
         runtime_cache=runtime_cache,
     )
     return labels, labelled_mask
+
+
+def _prepare_range_training_cache(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_map: dict[str, float],
+    config: ExperimentConfig,
+    seed: int,
+    runtime_cache: RangeRuntimeCache,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Populate train-label tensors needed before model training starts."""
+    return _prepare_range_label_cache(
+        cache_label="train",
+        points=points,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map=workload_map,
+        config=config,
+        seed=seed,
+        runtime_cache=runtime_cache,
+    )
 
 
 def _print_range_diagnostics_summary(range_diagnostics_summary: dict[str, Any]) -> None:
@@ -1380,10 +1445,17 @@ def run_experiment_pipeline(
     oracle_method: OracleMethod | None = None
     eval_labels: torch.Tensor | None = None
     save_masks = bool(save_simplified_dir)
-    with _phase("evaluate-matched"):
+    eval_is_range_only = len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries)
+    final_metrics_mode = str(getattr(config.baselines, "final_metrics_mode", "diagnostic")).lower()
+    if final_metrics_mode not in {"diagnostic", "core"}:
+        raise ValueError("final_metrics_mode must be either 'diagnostic' or 'core'.")
+    run_final_diagnostics = final_metrics_mode == "diagnostic"
+    run_oracle_baseline = bool(config.baselines.include_oracle and run_final_diagnostics)
+    run_learned_fill_diagnostics = bool(eval_is_range_only and run_final_diagnostics)
+    with _phase("eval-query-cache-prep"):
         eval_query_cache = (
             range_runtime_caches["eval"].query_cache
-            if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries)
+            if eval_is_range_only
             else None
         )
         if eval_query_cache is None:
@@ -1392,10 +1464,36 @@ def run_experiment_pipeline(
                 test_boundaries,
                 eval_workload.typed_queries,
             )
-            if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
+            if eval_is_range_only:
                 range_runtime_caches["eval"].query_cache = eval_query_cache
         else:
             eval_query_cache.validate(test_points, test_boundaries, eval_workload.typed_queries)
+    if run_oracle_baseline or run_learned_fill_diagnostics:
+        with _phase("eval-label-prep"):
+            if eval_is_range_only:
+                prepared_eval_labels = _prepare_range_label_cache(
+                    cache_label="eval",
+                    points=test_points,
+                    boundaries=test_boundaries,
+                    workload=eval_workload,
+                    workload_map=eval_workload_map,
+                    config=config,
+                    seed=seeds.eval_query_seed,
+                    runtime_cache=range_runtime_caches["eval"],
+                    range_boundary_prior_weight=0.0,
+                )
+                if prepared_eval_labels is not None:
+                    eval_labels, _ = prepared_eval_labels
+            elif run_oracle_baseline:
+                eval_labels, _ = compute_typed_importance_labels(
+                    points=test_points,
+                    boundaries=test_boundaries,
+                    typed_queries=eval_workload.typed_queries,
+                    seed=seeds.eval_query_seed,
+                    range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
+                    range_boundary_prior_weight=0.0,
+                )
+    with _phase("evaluate-matched"):
         for method in methods:
             with _phase(f"  eval {method.name}"):
                 matched[method.name] = evaluate_method(
@@ -1409,27 +1507,9 @@ def run_experiment_pipeline(
                     query_cache=eval_query_cache,
                 )
 
-        if config.baselines.include_oracle:
+        if run_oracle_baseline:
             if eval_labels is None:
-                if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
-                    eval_labels, _ = _ensure_range_runtime_labels(
-                        points=test_points,
-                        boundaries=test_boundaries,
-                        range_queries=eval_workload.typed_queries,
-                        seed=seeds.eval_query_seed,
-                        range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                        range_boundary_prior_weight=0.0,
-                        runtime_cache=range_runtime_caches["eval"],
-                    )
-                else:
-                    eval_labels, _ = compute_typed_importance_labels(
-                        points=test_points,
-                        boundaries=test_boundaries,
-                        typed_queries=eval_workload.typed_queries,
-                        seed=seeds.eval_query_seed,
-                        range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                        range_boundary_prior_weight=0.0,
-                    )
+                raise RuntimeError("Oracle baseline requested but eval labels were not prepared.")
             oracle_method = OracleMethod(labels=eval_labels, workload_type=single_workload_type(eval_workload_map))
             with _phase(f"  eval {oracle_method.name}"):
                 matched[oracle_method.name] = evaluate_method(
@@ -1445,17 +1525,9 @@ def run_experiment_pipeline(
     learned_fill_diagnostics: dict[str, MethodEvaluation] = {"MLQDS": matched["MLQDS"]}
     learned_fill_table = ""
     diagnostic_methods: list[Method] = []
-    if len(_range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries):
+    if run_learned_fill_diagnostics:
         if eval_labels is None:
-            eval_labels, _ = _ensure_range_runtime_labels(
-                points=test_points,
-                boundaries=test_boundaries,
-                range_queries=eval_workload.typed_queries,
-                seed=seeds.eval_query_seed,
-                range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                range_boundary_prior_weight=0.0,
-                runtime_cache=range_runtime_caches["eval"],
-            )
+            raise RuntimeError("Learned-fill diagnostics requested but eval labels were not prepared.")
         assert eval_labels is not None
         _, eval_type_id = workload_type_head(single_workload_type(eval_workload_map))
         random_generator = torch.Generator().manual_seed(int(seeds.eval_query_seed) + 404)
@@ -1645,6 +1717,7 @@ def run_experiment_pipeline(
         "best_f1": trained.best_f1,
         "checkpoint_selection_metric": config.model.checkpoint_selection_metric,
         "checkpoint_f1_variant": config.model.checkpoint_f1_variant,
+        "final_metrics_mode": config.baselines.final_metrics_mode,
         "range_usefulness_weight_summary": range_usefulness_weight_summary(),
         "checkpoint_smoothing_window": config.model.checkpoint_smoothing_window,
         "mlqds_score_mode": config.model.mlqds_score_mode,
@@ -1652,6 +1725,7 @@ def run_experiment_pipeline(
         "mlqds_rank_confidence_weight": config.model.mlqds_rank_confidence_weight,
         "oracle_diagnostic": {
             "kind": "additive_label_greedy",
+            "enabled": run_oracle_baseline,
             "exact_optimum": False,
             "retained_mask_constructor": "per_trajectory_topk_with_endpoints",
             "purpose": "diagnostic label-greedy reference, not exact retained-set RangeUseful optimum",
