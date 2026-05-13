@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import torch
+from torch.amp.grad_scaler import GradScaler
 
 from experiments.experiment_config import ModelConfig
 from queries.workload import TypedQueryWorkload
@@ -15,10 +16,7 @@ from models.turn_aware_qds_model import TurnAwareQDSModel
 from queries.query_types import (
     ID_TO_QUERY_NAME,
     NUM_QUERY_TYPES,
-    normalize_pure_workload_map,
-    single_workload_type,
 )
-from simplification.mlqds_scoring import simplify_mlqds_predictions
 from training.checkpoint_selection import (
     CheckpointCandidate,
     record_validation_stats,
@@ -26,331 +24,28 @@ from training.checkpoint_selection import (
     selection_score,
 )
 from training.importance_labels import compute_typed_importance_labels
-from training.model_features import build_model_point_features, build_model_point_features_for_dim
+from training.model_features import build_model_point_features
 from training.training_diagnostics import _discriminative_sample, _kendall_tau, _training_target_diagnostics
+from training.training_epoch import _train_one_epoch
 from training.training_losses import (
-    _balanced_pointwise_loss,
-    _balanced_pointwise_loss_rows,
     _budget_loss_ratios,
-    _budget_topk_recall_loss,
-    _budget_topk_recall_loss_rows,
-    _budget_topk_temporal_residual_loss,
-    _budget_topk_temporal_residual_loss_rows,
     _effective_budget_loss_ratios,
-    _ranking_loss_for_type,
     _safe_quantile,
     _temporal_base_masks_for_budget_ratios,
 )
 from training.training_outputs import TrainingOutputs
+from training.training_setup import (
+    _model_state_on_cpu,
+    _pure_query_type_id,
+    _query_frequency_workload_map,
+    _single_active_type_id,
+    _workload_map_tensor,
+)
 from training.training_targets import _apply_temporal_residual_labels, _scaled_training_target_for_type
+from training.training_validation import _validation_checkpoint_scores, _validation_uniform_score
+from training.training_windows import _filter_supervised_windows, _trajectory_batch_to_device
 from training.scaler import FeatureScaler
-from training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
-
-
-def _model_state_on_cpu(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    """Copy a model state dict to CPU tensors for best-epoch restoration."""
-    return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
-
-
-def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -> torch.Tensor:
-    """Return normalized pure-workload weights in query-type ID order."""
-    normalized = normalize_pure_workload_map(workload_map)
-    values = torch.tensor(
-        [
-            float(normalized.get("range", 0.0)),
-            float(normalized.get("knn", 0.0)),
-            float(normalized.get("similarity", 0.0)),
-            float(normalized.get("clustering", 0.0)),
-        ],
-        dtype=torch.float32,
-        device=device,
-    )
-    return values
-
-
-def _query_frequency_workload_map(workload: TypedQueryWorkload) -> dict[str, float]:
-    """Infer type weights from a workload when no explicit training workload map is provided."""
-    counts = torch.bincount(workload.type_ids.detach().cpu(), minlength=NUM_QUERY_TYPES).float()
-    return {
-        "range": float(counts[0].item()),
-        "knn": float(counts[1].item()),
-        "similarity": float(counts[2].item()),
-        "clustering": float(counts[3].item()),
-    }
-
-
-def _single_active_type_id(type_weights: torch.Tensor) -> int:
-    """Return the one active query type for pure-workload training."""
-    active = torch.where(type_weights.detach().cpu() > 0.0)[0]
-    if int(active.numel()) != 1:
-        raise ValueError("Pure-workload training requires exactly one active query type.")
-    return int(active[0].item())
-
-
-def _pure_query_type_id(type_ids: torch.Tensor) -> int:
-    """Return the only query type id in a pure workload."""
-    unique_ids = torch.unique(type_ids.detach().cpu())
-    if int(unique_ids.numel()) != 1:
-        raise ValueError("Pure-workload training/evaluation requires exactly one query type id.")
-    return int(unique_ids[0].item())
-
-
-def _window_has_positive_supervision(
-    window: TrajectoryBatch,
-    training_target: torch.Tensor,
-    labelled_mask: torch.Tensor,
-) -> bool:
-    """Return whether a pure-workload window has positive supervision."""
-    global_indices = window.global_indices.reshape(-1)
-    valid_points = global_indices >= 0
-    if not bool(valid_points.any().item()):
-        return False
-    valid_indices = global_indices[valid_points].to(device=training_target.device, dtype=torch.long)
-    return bool((labelled_mask[valid_indices] & (training_target[valid_indices] > 0)).any().item())
-
-
-def _filter_supervised_windows(
-    windows: list[TrajectoryBatch],
-    training_target: torch.Tensor,
-    labelled_mask: torch.Tensor,
-    active_type_id: int,
-) -> tuple[list[TrajectoryBatch], torch.Tensor]:
-    """Drop windows that cannot contribute loss for the active pure workload."""
-    if not windows:
-        return windows, torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
-
-    kept: list[TrajectoryBatch] = []
-    filtered_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
-    for window in windows:
-        if _window_has_positive_supervision(window, training_target, labelled_mask):
-            kept.append(window)
-            continue
-        filtered_zero_windows[active_type_id] += 1
-
-    if not kept:
-        return windows, torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
-    return kept, filtered_zero_windows
-
-
-def _trajectory_batch_to_device(batch: TrajectoryBatch, device: torch.device) -> TrajectoryBatch:
-    """Move one already-batched trajectory window group to the model device."""
-    return TrajectoryBatch(
-        points=batch.points.to(device=device, non_blocking=True),
-        padding_mask=batch.padding_mask.to(device=device, non_blocking=True),
-        trajectory_ids=batch.trajectory_ids,
-        global_indices=batch.global_indices.to(device=device, non_blocking=True),
-    )
-
-
-def _predict_workload_logits(
-    model: TrajectoryQDSModel,
-    scaler: FeatureScaler,
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    workload: TypedQueryWorkload,
-    model_config: ModelConfig,
-    device: torch.device,
-) -> torch.Tensor:
-    """Predict per-point pure-workload scores for exact validation-score diagnostics."""
-    model_points = build_model_point_features_for_dim(points, workload, model.point_dim)
-    norm_points, norm_queries = scaler.transform(model_points, workload.query_features)
-    norm_points_dev = norm_points.to(device)
-    norm_queries_dev = norm_queries.to(device)
-    type_ids_dev = workload.type_ids.to(device)
-    _pure_query_type_id(workload.type_ids)
-    windows = build_trajectory_windows(
-        points=norm_points,
-        boundaries=boundaries,
-        window_length=model_config.window_length,
-        stride=model_config.window_stride,
-    )
-    inference_batch_size = max(1, int(getattr(model_config, "inference_batch_size", 16)))
-    windows = batch_windows(windows, inference_batch_size)
-    point_score_sum = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
-    point_score_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
-    amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
-
-    model.eval()
-    with torch.no_grad():
-        for window_batch_cpu in windows:
-            window = _trajectory_batch_to_device(window_batch_cpu, device)
-            with torch_autocast_context(device, amp_mode):
-                window_scores = model(
-                    points=window.points,
-                    queries=norm_queries_dev,
-                    query_type_ids=type_ids_dev,
-                    padding_mask=window.padding_mask,
-                )
-            window_scores = window_scores.float()
-            for batch_idx in range(window_scores.shape[0]):
-                global_idx = window.global_indices[batch_idx]
-                valid = global_idx >= 0
-                point_score_sum[global_idx[valid]] = (
-                    point_score_sum[global_idx[valid]] + window_scores[batch_idx, valid]
-                )
-                point_score_count[global_idx[valid]] = point_score_count[global_idx[valid]] + 1.0
-
-    point_score_count = point_score_count.clamp(min=1.0)
-    return (point_score_sum / point_score_count).detach().cpu()
-
-
-def _validation_checkpoint_scores(
-    model: TrajectoryQDSModel,
-    scaler: FeatureScaler,
-    trajectories: list[torch.Tensor],
-    boundaries: list[tuple[int, int]],
-    workload: TypedQueryWorkload,
-    workload_map: dict[str, float],
-    model_config: ModelConfig,
-    device: torch.device,
-    validation_points: torch.Tensor | None = None,
-    query_cache: Any | None = None,
-    range_geometry_scores: torch.Tensor | None = None,
-) -> tuple[float, dict[str, float], dict[str, float]]:
-    """Evaluate a checkpoint and return selected score plus explicit validation metrics."""
-    from evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
-
-    points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
-    predictions = _predict_workload_logits(
-        model=model,
-        scaler=scaler,
-        points=points,
-        boundaries=boundaries,
-        workload=workload,
-        model_config=model_config,
-        device=device,
-    )
-    retained_mask = simplify_mlqds_predictions(
-        predictions,
-        boundaries,
-        single_workload_type(workload_map),
-        model_config.compression_ratio,
-        temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
-        diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.0)),
-        hybrid_mode=str(getattr(model_config, "mlqds_hybrid_mode", "fill")),
-        score_mode=str(getattr(model_config, "mlqds_score_mode", "rank")),
-        score_temperature=float(getattr(model_config, "mlqds_score_temperature", 1.0)),
-        rank_confidence_weight=float(getattr(model_config, "mlqds_rank_confidence_weight", 0.15)),
-        range_geometry_scores=range_geometry_scores,
-        range_geometry_blend=float(getattr(model_config, "mlqds_range_geometry_blend", 0.0)),
-    )
-    answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
-        points=points,
-        boundaries=boundaries,
-        retained_mask=retained_mask,
-        typed_queries=workload.typed_queries,
-        workload_map=workload_map,
-        query_cache=query_cache,
-    )
-    metrics = {
-        "answer_f1": float(answer_agg),
-        "combined_f1": float(combined_agg),
-        "range_point_f1": float(answer_pt.get("range", 0.0)),
-    }
-    range_audit: dict[str, Any] | None = None
-    if any(str(query.get("type", "")).lower() == "range" for query in workload.typed_queries):
-        range_audit = score_range_usefulness(
-            points=points,
-            boundaries=boundaries,
-            retained_mask=retained_mask,
-            typed_queries=workload.typed_queries,
-            query_cache=query_cache,
-        )
-        metrics.update(
-            {
-                "range_usefulness": float(range_audit["range_usefulness_score"]),
-                "range_ship_f1": float(range_audit["range_ship_f1"]),
-                "range_ship_coverage": float(range_audit["range_ship_coverage"]),
-                "range_entry_exit_f1": float(range_audit["range_entry_exit_f1"]),
-                "range_crossing_f1": float(range_audit["range_crossing_f1"]),
-                "range_temporal_coverage": float(range_audit["range_temporal_coverage"]),
-                "range_gap_coverage": float(range_audit["range_gap_coverage"]),
-                "range_turn_coverage": float(range_audit["range_turn_coverage"]),
-                "range_shape_score": float(range_audit["range_shape_score"]),
-            }
-        )
-    variant = str(getattr(model_config, "checkpoint_score_variant", "range_usefulness")).lower()
-    if variant == "range_usefulness":
-        if range_audit is None:
-            return float(answer_agg), answer_pt, metrics
-        score = float(range_audit["range_usefulness_score"])
-        return score, {"range": score}, metrics
-    if variant == "combined":
-        return float(combined_agg), combined_pt, metrics
-    return float(answer_agg), answer_pt, metrics
-
-
-def _validation_query_score(
-    model: TrajectoryQDSModel,
-    scaler: FeatureScaler,
-    trajectories: list[torch.Tensor],
-    boundaries: list[tuple[int, int]],
-    workload: TypedQueryWorkload,
-    workload_map: dict[str, float],
-    model_config: ModelConfig,
-    device: torch.device,
-    validation_points: torch.Tensor | None = None,
-    query_cache: Any | None = None,
-    range_geometry_scores: torch.Tensor | None = None,
-) -> tuple[float, dict[str, float]]:
-    """Return the active held-out validation score for checkpoint selection."""
-    score, per_type, _metrics = _validation_checkpoint_scores(
-        model=model,
-        scaler=scaler,
-        trajectories=trajectories,
-        boundaries=boundaries,
-        workload=workload,
-        workload_map=workload_map,
-        model_config=model_config,
-        device=device,
-        validation_points=validation_points,
-        query_cache=query_cache,
-        range_geometry_scores=range_geometry_scores,
-    )
-    return score, per_type
-
-
-def _validation_uniform_score(
-    trajectories: list[torch.Tensor],
-    boundaries: list[tuple[int, int]],
-    workload: TypedQueryWorkload,
-    workload_map: dict[str, float],
-    model_config: ModelConfig,
-    validation_points: torch.Tensor | None = None,
-    query_cache: Any | None = None,
-) -> tuple[float, dict[str, float]]:
-    """Evaluate fair uniform on the held-out validation workload once per run."""
-    from evaluation.baselines import UniformTemporalMethod
-    from evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
-
-    points = validation_points if validation_points is not None else torch.cat(trajectories, dim=0)
-    retained_mask = UniformTemporalMethod().simplify(
-        points=points,
-        boundaries=boundaries,
-        compression_ratio=model_config.compression_ratio,
-    )
-    answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
-        points=points,
-        boundaries=boundaries,
-        retained_mask=retained_mask,
-        typed_queries=workload.typed_queries,
-        workload_map=workload_map,
-        query_cache=query_cache,
-    )
-    variant = str(getattr(model_config, "checkpoint_score_variant", "range_usefulness")).lower()
-    if variant == "range_usefulness":
-        audit = score_range_usefulness(
-            points=points,
-            boundaries=boundaries,
-            retained_mask=retained_mask,
-            typed_queries=workload.typed_queries,
-            query_cache=query_cache,
-        )
-        score = float(audit["range_usefulness_score"])
-        return score, {"range": score}
-    if variant == "combined":
-        return combined_agg, combined_pt
-    return answer_agg, answer_pt
+from training.trajectory_batching import batch_windows, build_trajectory_windows
 
 
 def train_model(
@@ -500,7 +195,7 @@ def train_model(
         temporal_residual_union_mask = temporal_residual_union_mask.to(device=device, non_blocking=True)
 
     opt = torch.optim.Adam(model.parameters(), lr=model_config.lr)
-    grad_scaler = torch.amp.GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))
+    grad_scaler = GradScaler("cuda", enabled=(amp_mode == "fp16" and device.type == "cuda"))
     windows_cpu = build_trajectory_windows(
         points=norm_points,
         boundaries=train_boundaries,
@@ -626,128 +321,39 @@ def train_model(
     epochs_trained = 0
     for epoch in range(effective_epochs):
         epoch_t0 = time.perf_counter()
+        epoch_result = _train_one_epoch(
+            model=model,
+            windows=windows,
+            opt=opt,
+            grad_scaler=grad_scaler,
+            model_config=model_config,
+            device=device,
+            amp_mode=amp_mode,
+            norm_queries_dev=norm_queries_dev,
+            type_ids_dev=type_ids_dev,
+            training_target_dev=training_target_dev,
+            labelled_mask_dev=labelled_mask_dev,
+            prefiltered_zero_windows=prefiltered_zero_windows,
+            active_type_id=active_type_id,
+            loss_objective=loss_objective,
+            budget_ratios=budget_ratios,
+            budget_loss_temperature=budget_loss_temperature,
+            temporal_residual_budget_masks=temporal_residual_budget_masks,
+            temporal_residual_union_mask=temporal_residual_union_mask,
+            training_sample_generator=training_sample_generator,
+        )
         epoch_timing = {
-            "forward_s": 0.0,
-            "loss_s": 0.0,
-            "backward_s": 0.0,
+            "forward_s": float(epoch_result.timing["forward_s"]),
+            "loss_s": float(epoch_result.timing["loss_s"]),
+            "backward_s": float(epoch_result.timing["backward_s"]),
             "diagnostic_s": 0.0,
             "validation_score_s": 0.0,
         }
         evaluated_checkpoint_candidates: list[CheckpointCandidate] = []
-        model.train()
-        epoch_loss = torch.tensor(0.0, device=device)
-        positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
-        skipped_zero_windows = prefiltered_zero_windows.clone()
-        ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
-
-        for window_batch_cpu in windows:
-            window_batch = _trajectory_batch_to_device(window_batch_cpu, device)
-            forward_t0 = time.perf_counter()
-            with torch_autocast_context(device, amp_mode):
-                pred_batch = model(
-                    points=window_batch.points,
-                    queries=norm_queries_dev,
-                    query_type_ids=type_ids_dev,
-                    padding_mask=window_batch.padding_mask,
-                )
-            epoch_timing["forward_s"] += time.perf_counter() - forward_t0
-            loss_t0 = time.perf_counter()
-            pred_batch = pred_batch.float()
-            # pred_batch: (batch, window_length). Build the active objective in batched tensor
-            # paths where possible so batch-size increases create larger GPU
-            # work units instead of many tiny per-window loss calls.
-            loss: torch.Tensor | None = None
-            batch_size = pred_batch.shape[0]
-            batch_global_idx = window_batch.global_indices.to(device=device)
-            valid_batch = batch_global_idx >= 0
-            safe_global_idx = batch_global_idx.clamp(min=0)
-            batch_labels = training_target_dev[safe_global_idx]
-            batch_label_mask = labelled_mask_dev[safe_global_idx] & valid_batch
-            positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
-            positive_windows[active_type_id] += int(positive_row_mask.sum().item())
-            skipped_zero_windows[active_type_id] += int((~positive_row_mask).sum().item())
-            pointwise_mask_batch = batch_label_mask
-            if temporal_residual_union_mask is not None:
-                base_for_batch = temporal_residual_union_mask[safe_global_idx] & valid_batch
-                pointwise_mask_batch = batch_label_mask & (~base_for_batch)
-            pointwise_loss_rows, _pointwise_active_rows = _balanced_pointwise_loss_rows(
-                pred=pred_batch,
-                target=batch_labels,
-                valid_mask=pointwise_mask_batch,
-                generator=training_sample_generator,
-            )
-
-            if loss_objective == "budget_topk":
-                if temporal_residual_budget_masks:
-                    rank_loss_rows, _rank_active_rows = _budget_topk_temporal_residual_loss_rows(
-                        pred=pred_batch,
-                        target=batch_labels,
-                        valid_mask=batch_label_mask,
-                        global_idx=safe_global_idx,
-                        temporal_base_masks=temporal_residual_budget_masks,
-                        temperature=budget_loss_temperature,
-                    )
-                else:
-                    rank_loss_rows, _rank_active_rows = _budget_topk_recall_loss_rows(
-                        pred=pred_batch,
-                        target=batch_labels,
-                        valid_mask=batch_label_mask,
-                        budget_ratios=budget_ratios,
-                        temperature=budget_loss_temperature,
-                    )
-
-                if bool(positive_row_mask.any().item()):
-                    row_losses = rank_loss_rows + model_config.pointwise_loss_weight * pointwise_loss_rows
-                    loss = (
-                        row_losses[positive_row_mask].sum() / float(batch_size)
-                        + model_config.l2_score_weight * (pred_batch ** 2).mean()
-                    )
-            else:
-                loss_terms: list[torch.Tensor] = []
-                for row_index in torch.where(positive_row_mask.detach().cpu())[0].tolist():
-                    row = int(row_index)
-                    window_global_idx = batch_global_idx[row]
-                    valid_window = window_global_idx >= 0
-                    valid_global_idx = window_global_idx[valid_window]
-                    valid_pred = pred_batch[row][valid_window]
-                    rank_loss, pair_count = _ranking_loss_for_type(
-                        pred=valid_pred,
-                        target=training_target_dev[valid_global_idx],
-                        valid_mask=labelled_mask_dev[valid_global_idx],
-                        pairs_per_type=model_config.ranking_pairs_per_type,
-                        top_quantile=model_config.ranking_top_quantile,
-                        margin=model_config.rank_margin,
-                        generator=training_sample_generator,
-                    )
-                    ranking_pair_counts[active_type_id] += int(pair_count)
-                    loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_loss_rows[row])
-                if loss_terms:
-                    loss = (
-                        torch.stack(loss_terms).sum() / float(batch_size)
-                        + model_config.l2_score_weight * (pred_batch ** 2).mean()
-                    )
-            epoch_timing["loss_s"] += time.perf_counter() - loss_t0
-
-            if loss is not None:
-                backward_t0 = time.perf_counter()
-                opt.zero_grad(set_to_none=True)
-                if not torch.isfinite(loss):
-                    raise RuntimeError(f"Non-finite training loss with amp_mode={amp_mode}: {float(loss.item())}")
-                clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)
-                if grad_scaler.is_enabled():
-                    grad_scaler.scale(loss).backward()
-                    if clip_norm > 0.0:
-                        grad_scaler.unscale_(opt)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
-                    grad_scaler.step(opt)
-                    grad_scaler.update()
-                else:
-                    loss.backward()
-                    if clip_norm > 0.0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
-                    opt.step()
-                epoch_loss = epoch_loss + loss.detach()
-                epoch_timing["backward_s"] += time.perf_counter() - backward_t0
+        epoch_loss = epoch_result.loss
+        positive_windows = epoch_result.positive_windows
+        skipped_zero_windows = epoch_result.skipped_zero_windows
+        ranking_pair_counts = epoch_result.ranking_pair_counts
 
         # Diagnostic pass only on selected epochs (every `diag_every` epochs and
         # the final epoch).  Subsample windows by `diag_fraction` to further cut

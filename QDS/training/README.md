@@ -16,6 +16,9 @@ checkpoints, and persists model artifacts.
 | `training_losses.py` | Budget, ranking, pointwise, and temporal-residual losses. |
 | `training_targets.py` | Target scaling and temporal-residual labels. |
 | `training_diagnostics.py` | Target diagnostics and rank-correlation helpers. |
+| `training_epoch.py` | One-epoch forward/loss/backward optimization pass. |
+| `training_validation.py` | Validation scoring for checkpoint selection. |
+| `training_setup.py` / `training_windows.py` | Setup, workload, and trajectory-window helpers. |
 | `training_outputs.py` | Shared training result dataclass. |
 | `train_model.py` | Main training loop and checkpoint selection flow. |
 | `training_pipeline.py` | Compatibility re-exports. |

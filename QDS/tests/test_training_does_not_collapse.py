@@ -19,22 +19,22 @@ from training.checkpoint_selection import (
 )
 from training.importance_labels import compute_typed_importance_labels
 from training.scaler import FeatureScaler
-from training.train_model import (
-    TrainingOutputs,
-    _apply_temporal_residual_labels,
+from training.train_model import train_model
+from training.training_losses import (
     _balanced_pointwise_loss,
     _balanced_pointwise_loss_rows,
-    _effective_budget_loss_ratios,
     _budget_topk_recall_loss,
     _budget_topk_recall_loss_rows,
     _budget_topk_temporal_residual_loss,
     _budget_topk_temporal_residual_loss_rows,
-    _filter_supervised_windows,
+    _effective_budget_loss_ratios,
     _ranking_loss_for_type,
-    _single_active_type_id,
-    _validation_query_score,
-    train_model,
 )
+from training.training_outputs import TrainingOutputs
+from training.training_setup import _single_active_type_id
+from training.training_targets import _apply_temporal_residual_labels
+from training.training_validation import _validation_query_score
+from training.training_windows import _filter_supervised_windows
 from training.trajectory_batching import build_trajectory_windows
 
 
@@ -585,10 +585,6 @@ def test_validation_query_score_matches_final_mlqds_scoring(score_mode: str, mon
     )
 
     monkeypatch.setattr(
-        "training.train_model._predict_workload_logits",
-        lambda **_kwargs: predictions.clone(),
-    )
-    monkeypatch.setattr(
         "evaluation.baselines.windowed_predict",
         lambda **_kwargs: predictions.clone(),
     )
@@ -603,6 +599,7 @@ def test_validation_query_score_matches_final_mlqds_scoring(score_mode: str, mon
         model_config=cfg.model,
         device=torch.device("cpu"),
         validation_points=points,
+        predict_logits_fn=lambda **_kwargs: predictions.clone(),
     )
     retained = MLQDSMethod(
         name="MLQDS",
@@ -672,10 +669,6 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
     )
 
     monkeypatch.setattr(
-        "training.train_model._predict_workload_logits",
-        lambda **_kwargs: predictions.clone(),
-    )
-    monkeypatch.setattr(
         "evaluation.baselines.windowed_predict",
         lambda **_kwargs: predictions.clone(),
     )
@@ -690,6 +683,7 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
         model_config=cfg.model,
         device=torch.device("cpu"),
         validation_points=points,
+        predict_logits_fn=lambda **_kwargs: predictions.clone(),
     )
     retained = MLQDSMethod(
         name="MLQDS",

@@ -30,6 +30,7 @@ def _safe_quantile(values: torch.Tensor, quantile: float | torch.Tensor) -> torc
     sampled_indices = torch.randperm(flat.numel(), device=flat.device)[:_QUANTILE_SUBSAMPLE_CAP]
     return torch.quantile(flat[sampled_indices], quantile)
 
+
 def _balanced_pointwise_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -55,6 +56,7 @@ def _balanced_pointwise_loss(
 
     pointwise_idx = torch.cat([positive_idx, zero_idx]) if zero_idx.numel() > 0 else positive_idx
     return F.binary_cross_entropy_with_logits(pred[pointwise_idx], target[pointwise_idx].clamp(0.0, 1.0))
+
 
 def _balanced_pointwise_loss_rows(
     pred: torch.Tensor,
@@ -93,6 +95,7 @@ def _balanced_pointwise_loss_rows(
     denom = selected_float.sum(dim=1).clamp(min=1.0)
     row_loss = (per_element * selected_float).sum(dim=1) / denom
     return row_loss, active_rows
+
 
 def _budget_topk_recall_loss(
     pred: torch.Tensor,
@@ -138,6 +141,7 @@ def _budget_topk_recall_loss(
     if not losses:
         return pred.new_tensor(0.0)
     return torch.stack(losses).mean()
+
 
 def _budget_topk_recall_loss_rows(
     pred: torch.Tensor,
@@ -194,6 +198,7 @@ def _budget_topk_recall_loss_rows(
     row_loss = row_loss_sum / row_loss_count.clamp(min=1).float()
     return row_loss, active_rows
 
+
 def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
     """Return configured retained-budget ratios for budget-aware loss."""
     raw = getattr(model_config, "budget_loss_ratios", None) or []
@@ -205,6 +210,7 @@ def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
     if not ratios:
         ratios = [float(getattr(model_config, "compression_ratio", 0.05))]
     return tuple(ratios)
+
 
 def _effective_budget_loss_ratios(model_config: ModelConfig, temporal_residual_label_mode: str) -> tuple[float, ...]:
     """Return retained-budget ratios in the candidate set the model actually controls."""
@@ -226,6 +232,7 @@ def _effective_budget_loss_ratios(model_config: ModelConfig, temporal_residual_l
         if value > 0.0:
             effective.append(min(1.0, value))
     return tuple(effective) if effective else ratios
+
 
 def _temporal_base_masks_for_budget_ratios(
     *,
@@ -261,6 +268,7 @@ def _temporal_base_masks_for_budget_ratios(
         masks.append((total_ratio, effective_ratio, base_mask))
     return tuple(masks)
 
+
 def _budget_topk_temporal_residual_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -287,6 +295,7 @@ def _budget_topk_temporal_residual_loss(
     if not losses:
         return pred.new_tensor(0.0)
     return torch.stack(losses).mean()
+
 
 def _budget_topk_temporal_residual_loss_rows(
     pred: torch.Tensor,
@@ -319,6 +328,7 @@ def _budget_topk_temporal_residual_loss_rows(
     active_rows = row_loss_count > 0
     row_loss = row_loss_sum / row_loss_count.clamp(min=1).float()
     return row_loss, active_rows
+
 
 def _ranking_loss_for_type(
     pred: torch.Tensor,
