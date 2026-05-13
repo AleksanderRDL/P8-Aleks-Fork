@@ -6,7 +6,9 @@ performed, so this is safe for a local CPU/GPU machine.
 
 Example, from `QDS`:
 
-    ../.venv/bin/python -m src.experiments.run_inference \
+    PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
+
+    "$PYTHON" -m src.experiments.run_inference \
         --checkpoint artifacts/benchmarks/range_workload_aware_diagnostic/runs/<run_id>/range_workload_aware_diagnostic/benchmark_model.pt \
         --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
         --n_queries 512 \

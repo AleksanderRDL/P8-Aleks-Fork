@@ -21,12 +21,13 @@ The current range-training redesign is summarized in
 
 ## Quick Start
 
-Run commands from `QDS/`. The expected local interpreter is the repository-level
-virtual environment at `../.venv`.
+Run commands from `QDS/`. Use a canonical path to the repository-level virtual
+environment; Python 3.14 warns if the interpreter path contains `..`.
 
 ```bash
 cd QDS
-../.venv/bin/python -m pip install -r requirements.txt
+PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
+"$PYTHON" -m pip install -r requirements.txt
 make check-env
 make test
 make typecheck
@@ -47,7 +48,7 @@ make smoke-csv CLEANED_CSV=../AISDATA/cleaned/<cleaned-ais-file-or-dir>
 Run the main experiment CLI directly:
 
 ```bash
-../.venv/bin/python -m src.experiments.run_ais_experiment \
+"$PYTHON" -m src.experiments.run_ais_experiment \
   --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
   --cache_dir artifacts/cache/manual_csv \
   --workload range \
@@ -113,7 +114,7 @@ triton 3.6.0
 Install a specific profile when changing environments:
 
 ```bash
-../.venv/bin/python -m pip install -r requirements-cuda-cu130.txt
+"$PYTHON" -m pip install -r requirements-cuda-cu130.txt
 ```
 
 ## Architecture

@@ -22,9 +22,10 @@ pure query workload, train MLQDS, evaluate baselines, and write artifacts.
 Use `--help` for the full current CLI surface:
 
 ```bash
-../.venv/bin/python -m src.experiments.run_ais_experiment --help
-../.venv/bin/python -m src.experiments.benchmark_runner --help
-../.venv/bin/python -m src.experiments.run_inference --help
+PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
+"$PYTHON" -m src.experiments.run_ais_experiment --help
+"$PYTHON" -m src.experiments.benchmark_runner --help
+"$PYTHON" -m src.experiments.run_inference --help
 ```
 
 ## Data Modes
@@ -134,7 +135,7 @@ Do not use this archived plan as workload-blind success evidence.
 ## Direct CLI Example
 
 ```bash
-../.venv/bin/python -m src.experiments.benchmark_runner \
+"$PYTHON" -m src.experiments.benchmark_runner \
   --profile range_workload_aware_diagnostic \
   --workloads range \
   --csv_path ../AISDATA/cleaned \
@@ -150,7 +151,7 @@ Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
 Estimate query count and coverage before changing footprint or target coverage:
 
 ```bash
-../.venv/bin/python scripts/estimate_range_coverage.py \
+"$PYTHON" scripts/estimate_range_coverage.py \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_workload_aware_diagnostic \
   --query_counts 80,384,512,640,1024,2048 \
@@ -201,7 +202,7 @@ Use `benchmark_runtime.py` only for targeted runtime studies, not model-quality
 benchmarking:
 
 ```bash
-../.venv/bin/python -m src.experiments.benchmark_runtime \
+"$PYTHON" -m src.experiments.benchmark_runtime \
   --mode train \
   --profile range_workload_aware_diagnostic \
   --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_workload_aware_diagnostic" \

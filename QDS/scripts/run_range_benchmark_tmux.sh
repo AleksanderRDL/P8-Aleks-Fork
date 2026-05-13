@@ -14,7 +14,7 @@ Launcher options:
   -h, --help           Show this help.
 
 Environment overrides:
-  PYTHON                       Python executable. Default: ../.venv/bin/python.
+  PYTHON                       Python executable. Default: repo-root .venv absolute path.
   PROFILE                      benchmark_runner profile. Default: range_workload_aware_diagnostic.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.

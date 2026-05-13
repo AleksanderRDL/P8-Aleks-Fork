@@ -13,7 +13,7 @@ Options:
   --cache-dir PATH     Cache directory. Default: artifacts/cache/range_workload_aware_diagnostic.
   --artifact-root PATH Benchmark family root. Default:
                        artifacts/benchmarks/range_workload_aware_diagnostic.
-  --python PATH        Python executable. Default: ../.venv/bin/python.
+  --python PATH        Python executable. Default: repo-root .venv absolute path.
   --min-free-gb N      Required free space on artifact filesystem. Default: 20.
   --min-ram-gb N       Warn below this available RAM threshold. Default: 24.
   --min-swap-gb N      Warn below this total swap threshold. Default: 8.
