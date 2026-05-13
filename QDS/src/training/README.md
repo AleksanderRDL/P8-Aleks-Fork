@@ -1,96 +1,71 @@
 # Training Module
 
-This module builds range-usefulness labels, batches trajectory-local windows,
-fits the scaler, trains MLQDS, and persists checkpoint artifacts.
+Builds supervision, batches trajectory windows, trains MLQDS, selects
+checkpoints, and persists model artifacts.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `importance_labels.py` | Per-point workload labels and labelled masks. |
-| `trajectory_batching.py` | Fixed-length trajectory windows with padding metadata. |
-| `scaler.py` | Persisted min-max scaler for point/query features. |
-| `checkpoint_selection.py` | Checkpoint candidate scoring and validation-stat bookkeeping. |
-| `checkpoints.py` | Checkpoint save/load and `ModelArtifacts`. |
-| `inference.py` | Deterministic persisted-model prediction helpers. |
-| `train_model.py` | Loss objectives, diagnostics, and training loop. |
-| `training_pipeline.py` | Compatibility re-exports for older imports. |
+| `trajectory_batching.py` | Fixed-length windows that do not cross trajectory boundaries. |
+| `scaler.py` | Persisted min-max scaler. |
+| `checkpoint_selection.py` | Validation score and uniform-gap selection helpers. |
+| `checkpoints.py` | Save/load `ModelArtifacts`. |
+| `inference.py` | Deterministic persisted-model prediction. |
+| `train_model.py` | Losses, diagnostics, and training loop. |
+| `training_pipeline.py` | Compatibility re-exports. |
 
-## Current Workload-Aware Flow
+## Current Flow
 
-This is the implemented flow today. The workload-blind redesign will need a
-separate path that can score and compress trajectories without query inputs.
+The implemented strong path is workload-aware:
 
-1. Build workload labels for the active pure workload.
-2. Fit `FeatureScaler` on training points and query features.
-3. Build padded windows that never cross trajectory boundaries.
-4. Train the currently implemented query-conditioned model and checkpoint by
-   validation selection score.
-5. Restore the best checkpoint for final evaluation/inference.
+1. Generate a pure workload and point labels.
+2. Fit `FeatureScaler` on training points/query features.
+3. Train a query-conditioned model on padded trajectory windows.
+4. Select checkpoints by validation score or `uniform_gap`.
+5. Restore the best checkpoint for final evaluation.
 
-## Range Labels
-
-`range_label_mode="usefulness"` is the current workload-aware default. It
-provides local proxy signal for point hits, ship presence, per-ship coverage,
-sampled entry/exit points, crossing brackets, in-query temporal span, gap
-coverage, turns, and shape. Cross-trajectory proximity is intentionally not
-used.
-
-`range_label_mode="usefulness_balanced"` uses the same per-component signals but
-rescales available component mass so the range column follows the `RangeUseful`
-audit weights more closely. It is meant for cases where raw support frequency
-overweights dense point-hit components relative to temporal, gap, turn, or shape
-components.
-
-`range_label_mode="point_f1"` keeps the old point-hit proxy for ablations.
-`range_boundary_prior_weight` remains available as an explicit optional prior,
-but the workload-aware diagnostic keeps it at `0.0`.
-
-These labels are additive approximations for training, not an exact optimizer
-for retained-set `RangeUseful`. The current workload-blind training redesign
-lives in
+This is not the final workload-blind protocol. The redesign target is in
 [`../../../Aleks-Sprint/range-training-redesign.md`](../../../Aleks-Sprint/range-training-redesign.md).
+
+## Labels
+
+- `range_label_mode="usefulness"`: current range label default. It approximates
+  the `RangeUseful` audit components, not only in-box point hits.
+- `range_label_mode="usefulness_balanced"`: rescales component mass toward the
+  audit weights when raw support frequency dominates.
+- `range_label_mode="point_f1"`: old point-hit ablation.
+- `range_boundary_prior_weight`: optional explicit prior; diagnostic profile
+  keeps it at `0.0`.
+
+Labels are additive training targets. They are not exact retained-set optimizers.
 
 ## Loss And Selection
 
-- `loss_objective="budget_topk"` is the default range loss. It trains the score
-  stream to concentrate label mass inside soft top-k budgets across
-  `budget_loss_ratios` (`0.01,0.02,0.05,0.10` by default).
-- `temporal_residual_label_mode="temporal"` computes a per-budget temporal-base
-  mask and trains only the learned fill that remains controlled by MLQDS. This
-  keeps the loss aligned with `mlqds_temporal_fraction`.
-- `loss_objective="ranking_bce"` is the legacy ranking/BCE ablation.
-- `pointwise_loss_weight` remains an auxiliary BCE term for both objectives.
-- `mlqds_hybrid_mode="fill"` is the legacy temporal-spine-plus-score-fill
-  simplifier. `mlqds_hybrid_mode="swap"` starts from the full uniform temporal
-  sample and swaps only the unprotected budget share for high-scoring learned
-  points.
-- `model_type="range_aware"` augments the point stream with range-query
-  relation features such as containment count, box proximity, center proximity,
-  and boundary proximity. These are model inputs, not retained-set labels, and
-  keep `mlqds_range_geometry_blend=0.0` in the learned baseline. This model is
-  workload-aware and should be treated as a diagnostic/upper-bound path for the
-  workload-blind redesign.
-- `mlqds_range_geometry_blend` is an explicit range-only escape hatch that
-  blends model scores with cached range-usefulness geometry labels before
-  simplification. At `1.0`, the retained set is geometry-driven rather than
-  transformer-driven; this is useful for isolating whether the model or the
-  scoring surface is the bottleneck.
-- `checkpoint_score_variant="range_usefulness"` is the default selection target
-  for range training. `answer` and `combined` are legacy diagnostics/ablations.
-- `checkpoint_full_score_every` and `checkpoint_candidate_pool_size` let cheap
-  diagnostics produce candidates between exact validation epochs.
+- `loss_objective="budget_topk"`: default range loss. It trains score mass into
+  top-k budgets from `budget_loss_ratios`.
+- `temporal_residual_label_mode="temporal"`: trains only the learned fill left
+  after the temporal base selected by `mlqds_temporal_fraction`.
+- `loss_objective="ranking_bce"`: legacy ablation.
+- `pointwise_loss_weight`: auxiliary BCE term.
+- `mlqds_hybrid_mode="fill"`: temporal base plus learned score fill.
+- `mlqds_hybrid_mode="swap"`: start from uniform temporal sampling and replace
+  only the unprotected budget share.
+- `checkpoint_score_variant="range_usefulness"`: default range checkpoint
+  target. `answer` and `combined` are diagnostics.
+- `checkpoint_selection_metric="uniform_gap"`: validation score minus fair
+  uniform score, with active-type deficit penalties.
 
-Training artifacts include `training_target_diagnostics`, epoch timing fields,
-selected validation scores, and range-label component mass fractions. Use those
-before changing the objective; they show whether the temporal base, residual
-fill, or label mix is dominating a run.
+## Model Inputs
 
-## Runtime Knobs
+`model_type="range_aware"` adds point/query relation features before scoring.
+That is useful for diagnostics and teacher targets, but it is workload-aware.
+A final blind model must score without future eval query features.
 
-Benchmark profile defaults are defined in
-[`../experiments/benchmark_profiles.py`](../experiments/benchmark_profiles.py).
-The current `range_workload_aware_diagnostic` profile uses:
+## Runtime Defaults
+
+The active benchmark profile sets:
 
 - `train_batch_size=64`
 - `inference_batch_size=64`
@@ -98,15 +73,10 @@ The current `range_workload_aware_diagnostic` profile uses:
 - `allow_tf32=True`
 - `amp_mode="bf16"`
 
-Library-level defaults are more conservative so direct CLI calls remain
-portable. Benchmark quality should be compared by `RangeUseful`,
-`RangePointF1`, epoch time, and memory use together.
+Library defaults are more conservative for direct CLI use.
 
 ## Persistence
 
-- `ModelArtifacts` stores the trained model, scaler, and experiment config.
-- `save_checkpoint` writes model state, scaler stats, and config.
-- `load_checkpoint` reconstructs the model, reloads the scaler, and returns it
-  in eval mode.
-- New code should import persistence helpers from `checkpoints.py` and
-  prediction helpers from `inference.py`.
+Use `checkpoints.py` for save/load and `inference.py` for prediction. Checkpoint
+artifacts include model state, scaler stats, config, target diagnostics, epoch
+timing, and selected validation scores.

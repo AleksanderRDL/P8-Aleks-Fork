@@ -1,25 +1,9 @@
 # Experiments Module
 
-This module owns run orchestration: parse CLI args, load AIS data, generate one
-pure query workload, train MLQDS, evaluate baselines, and write artifacts.
+Owns CLI parsing, config construction, benchmark profiles, run orchestration,
+and artifact writing.
 
-## Files
-
-| File | Purpose |
-| --- | --- |
-| `experiment_cli.py` | Shared `argparse` parser for train/eval commands. |
-| `experiment_config.py` | Structured config dataclasses. |
-| `experiment_pipeline_helpers.py` | End-to-end orchestration for one train/eval run. |
-| `workload_cache.py` | Persistent typed-workload generation cache. |
-| `range_cache.py` | Range diagnostics and range-label cache helpers. |
-| `benchmark_profiles.py` | Named benchmark profile constants. |
-| `benchmark_artifacts.py` | Benchmark status files, family indexes, and artifact guide writers. |
-| `benchmark_runner.py` | Range benchmark runner for profiles and queued overrides. |
-| `benchmark_runtime.py` | Targeted train/inference timing experiments. |
-| `run_ais_experiment.py` | Main train/evaluate entry point. |
-| `run_inference.py` | Evaluate a saved checkpoint without retraining. |
-
-Use `--help` for the full current CLI surface:
+Commands below assume the current directory is `QDS/`:
 
 ```bash
 PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
@@ -28,127 +12,74 @@ PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
 "$PYTHON" -m src.experiments.run_inference --help
 ```
 
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `experiment_cli.py` | Shared CLI parser. |
+| `experiment_config.py` | Structured config dataclasses and legacy aliases. |
+| `experiment_pipeline_helpers.py` | End-to-end train/eval pipeline. |
+| `benchmark_profiles.py` | Durable benchmark profile defaults. |
+| `benchmark_runner.py` | Profile runner, queue runner, and compact reports. |
+| `benchmark_artifacts.py` | Status files, family indexes, and artifact guides. |
+| `benchmark_runtime.py` | Runtime-only train/inference studies. |
+| `workload_cache.py` / `range_cache.py` | Workload, diagnostics, and label caches. |
+| `run_ais_experiment.py` | Main train/evaluate entry point. |
+| `run_inference.py` | Evaluate a saved checkpoint without retraining. |
+
 ## Data Modes
 
-- Three CSV paths: `--train_csv_path`, `--validation_csv_path`, and
-  `--eval_csv_path` are used as train, checkpoint-validation, and final-eval
-  days.
-- Train/eval CSV paths only: checkpoint validation is split out of train data
-  for compatibility.
-- One `--csv_path`: trajectories are split from one dataset.
-- No CSV path: deterministic synthetic data is generated.
+- `--train_csv_path`, `--validation_csv_path`, `--eval_csv_path`: explicit
+  train, checkpoint-validation, and final-eval days.
+- `--train_csv_path`, `--eval_csv_path`: validation is split from train data.
+- `--csv_path`: one file or sorted directory split internally.
+- no CSV path: deterministic synthetic data.
 
-CSV loading segments MMSI tracks by time gaps. The default
-`--max_time_gap_seconds 3600` starts a new segment after a one-hour gap.
-`--cache_dir` persists post-segmentation Parquet data keyed by source file and
-segmentation config.
+CSV loading segments MMSI tracks by `--max_time_gap_seconds` and can cache the
+post-segmentation tensors with `--cache_dir`.
 
-## Legacy Workload-Aware Benchmark Baseline
+## Active Profile
 
-The implemented legacy profile is `range_workload_aware_diagnostic`. It is a pure range
-workload profile for cleaned AIS CSV days. It remains useful for diagnostics,
-teacher experiments, and upper-bound comparisons, but it is not the final
-redesign protocol.
+`range_workload_aware_diagnostic` is the active implemented range profile. It
+uses `model_type=range_aware`, so it may see the supplied range workload during
+compression. Treat it as diagnostic/teacher evidence, not final workload-blind
+evidence.
 
-Important constraint: the current `model_type=range_aware` profile is
-workload-aware. It computes point/query relation features from the provided
-range workload before retaining points. Treat it as a diagnostic and upper-bound
-style profile until a workload-blind compressor is implemented. The final target
-is to compress once before future user queries are known.
-
-| Area | Default |
+| Setting | Value |
 | --- | --- |
-| Data split | first three sorted cleaned CSVs = train, validation, eval |
 | Workload | range only |
-| Query generation | minimum `80`, default target `20%` coverage, cap `2048` |
-| Required coverage sweep | `5%,10%,15%,30%` |
-| Range footprint | `range_spatial_km=2.2`, `range_time_hours=5.0`, no jitter |
-| Primary compression | `5%` retained points |
-| Required compression sweep | `1%,2%,5%,10%,15%,20%,30%` |
-| Training | `8` epochs, early stopping patience `5` |
-| Checkpoint target | `checkpoint_score_variant=range_usefulness` |
-| Checkpoint selection | `checkpoint_selection_metric=uniform_gap`, `validation_score_every=1`, `checkpoint_full_score_every=4`, candidate pool `2` |
-| Loss | `budget_topk` over training budgets `5%,10%` |
-| MLQDS simplification | score mode `rank`, temporal fraction `0.25` |
-| Runtime | TF32 enabled, BF16 AMP, train/inference batch size `64` |
-| Query chunking | `query_chunk_size=2048`, also used as `max_queries` |
-| Loader caps | no `max_points_per_segment`, `max_segments`, or `max_trajectories` |
+| Data | first three sorted cleaned CSVs = train, validation, eval |
+| Coverage target | default `20%`; required sweep `5%,10%,15%,30%` |
+| Compression | default `5%`; required sweep `1%,2%,5%,10%,15%,20%,30%` |
+| Range footprint | `2.2 km`, `5.0 h`, jitter `0.0` |
+| Training | `8` epochs, early stopping patience `5`, `budget_topk` loss |
+| Checkpointing | `checkpoint_score_variant=range_usefulness`, `checkpoint_selection_metric=uniform_gap` |
+| Runtime | BF16 AMP, TF32 allowed, train/inference batch size `64`, query chunk `2048` |
 
-Keep durable baseline defaults in `benchmark_profiles.py`. For experiments,
-use profile overrides in queue rows or `BENCHMARK_CHILD_EXTRA_ARGS`; promote an
-override into a named profile only when it becomes a repeated baseline.
+Keep durable defaults in `benchmark_profiles.py`. Use queue rows or
+`BENCHMARK_CHILD_EXTRA_ARGS` for one-off variations.
 
-The sweep constants are recorded by `benchmark_profile_settings()` as
-`range_coverage_sweep_targets` and `range_compression_sweep_ratios`. They are
-reporting/evaluation targets, not a promise that every routine benchmark run
-executes the full grid. The full grid can be expensive, especially at higher
-coverage.
-
-## Running Benchmarks
-
-Run preflight first:
+## Benchmark Commands
 
 ```bash
 make benchmark-preflight
-```
-
-Launch one profile run in tmux:
-
-```bash
 ATTACH=0 BENCHMARK_RUN_ID=range_workload_aware_diagnostic_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_SEEDS=42,43,44 make range-benchmark-queue-tmux
 ```
 
-Launch a sequential queue:
-
-```bash
-ATTACH=0 \
-  BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_workload_aware_diagnostic/queues/my_plan.tsv \
-  BENCHMARK_CONTINUE_ON_FAILURE=1 \
-  make range-benchmark-queue-tmux
-```
-
-Queue plan rows are tab-separated:
+Queue files are tab-separated:
 
 ```text
-range_workload_aware_diagnostic_seed42	42
-range_workload_aware_diagnostic_score_rank_tie_seed42	42	--mlqds_score_mode rank_tie
-range_workload_aware_diagnostic_pairs192_seed42	42	--ranking_pairs_per_type 192
+run_id	seed	extra_child_args
 ```
 
-The queue launcher validates child args before tmux starts, so unsupported
-overrides fail before an expensive run begins.
-
-The old workload-aware coverage/compression diagnostic grid is archived at
+The old workload-aware coverage/compression grid is archived at
 [`../../benchmark_plans/archive/range_aware_coverage_compression_grid.tsv`](../../benchmark_plans/archive/range_aware_coverage_compression_grid.tsv).
-It runs coverage `5%,10%,15%,30%` and audits compression
-`1%,2%,5%,10%,15%,20%,30%` using the `range_aware` profile:
-
-```bash
-ATTACH=0 \
-  BENCHMARK_PLAN_FILE=benchmark_plans/archive/range_aware_coverage_compression_grid.tsv \
-  BENCHMARK_CONTINUE_ON_FAILURE=1 \
-  make range-benchmark-queue-tmux
-```
-
-Do not use this archived plan as workload-blind success evidence.
-
-## Direct CLI Example
-
-```bash
-"$PYTHON" -m src.experiments.benchmark_runner \
-  --profile range_workload_aware_diagnostic \
-  --workloads range \
-  --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_workload_aware_diagnostic \
-  --results_dir artifacts/benchmarks/range_workload_aware_diagnostic/runs/manual_a \
-  --run_id manual_a
-```
-
-Use `--no_cache_warmup` only when intentionally measuring cold-cache behavior.
+It is valid only as workload-aware diagnostic evidence.
 
 ## Coverage Calibration
 
-Estimate query count and coverage before changing footprint or target coverage:
+Use this before changing query count, footprint, or coverage target:
 
 ```bash
 "$PYTHON" scripts/estimate_range_coverage.py \
@@ -162,26 +93,13 @@ Estimate query count and coverage before changing footprint or target coverage:
   --range_footprint_jitter 0.0
 ```
 
-`query_coverage` is point-level query-signal coverage. When `max_queries` is
-larger than `n_queries`, generation continues until the target is reached or
-the cap is hit. Run artifacts record the final generated count and stop reason.
-
-For final workload-blind claims, generate evaluation workloads only after the
-retained set has already been chosen. Do not pass eval queries into the model or
-feature builder before compression.
+`query_coverage` is point-level query-signal coverage. If `max_queries` exceeds
+`n_queries`, generation continues until coverage is reached or the cap is hit.
 
 ## Artifacts
 
-For comparisons, start with `benchmark_report.md` or `benchmark_report.csv`.
-The compact report uses explicit metric names:
-
-- `mlqds_primary_score` is the score selected for ranking benchmark rows. For
-  range runs this should be `range_usefulness`.
-- `mlqds_range_point_f1` is the retained in-query point F1.
-- `mlqds_range_usefulness` is the combined range usefulness audit score.
-- `mlqds_f1` is retained only as a legacy aggregate-F1 alias for older tooling.
-
-Then inspect the child run files that explain behavior:
+Start with `benchmark_report.md` or `benchmark_report.csv`, then inspect child
+run files:
 
 - `example_run.json`
 - `matched_table.txt`
@@ -189,23 +107,12 @@ Then inspect the child run files that explain behavior:
 - `range_workload_diagnostics.json`
 - `learned_fill_diagnostics.json`
 - `range_learned_fill_summary.json`
-- `range_compression_audit.json`, when multi-budget audit ratios are enabled
+- `range_compression_audit.json`, when multi-budget audits are enabled
 
-Artifact layout and cleanup rules live in
-[`../../artifacts/README.md`](../../artifacts/README.md). Metric definitions
-live in [`../evaluation/README.md`](../evaluation/README.md), and training
-objective details live in [`../training/README.md`](../training/README.md).
+Artifact layout and cleanup rules live in [`../../artifacts/README.md`](../../artifacts/README.md).
 
-## Timing Experiments
+## Workload-Blind Rule
 
-Use `benchmark_runtime.py` only for targeted runtime studies, not model-quality
-benchmarking:
-
-```bash
-"$PYTHON" -m src.experiments.benchmark_runtime \
-  --mode train \
-  --profile range_workload_aware_diagnostic \
-  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_workload_aware_diagnostic" \
-  --train_batch_sizes 16,32,64 \
-  --results_dir artifacts/benchmarks/runtime_range_workload_aware_diagnostic
-```
+For final workload-blind claims, choose retained masks before generating or
+passing eval queries into the model, feature builder, or checkpoint selector.
+The active implementation has not completed that protocol yet.

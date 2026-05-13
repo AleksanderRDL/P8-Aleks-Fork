@@ -31,3 +31,7 @@
   the actual domain object: bounds, query type, anchor point, candidate indices,
   normalized points/queries, point score accumulators, keep counts, and trajectory
   counts.
+- Cleaned stale and duplicated documentation: removed missing frontend references,
+  updated artifact docs away from `range_testing_baseline`, condensed QDS module
+  READMEs, and kept the workload-blind redesign rationale centralized in
+  `range-training-redesign.md`.

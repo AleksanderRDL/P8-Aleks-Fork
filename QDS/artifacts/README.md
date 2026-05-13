@@ -1,15 +1,14 @@
 # QDS Artifacts
 
-This directory is for local generated outputs. Keep caches, checkpoints,
-benchmark logs, and smoke leftovers out of git; only this README should be
-tracked.
+Local generated outputs live here. Keep caches, checkpoints, benchmark logs,
+and smoke output out of git; only this README should be tracked.
 
 ## Layout
 
 ```text
 artifacts/
   benchmarks/
-    range_testing_baseline/
+    range_workload_aware_diagnostic/
       latest_run.txt
       latest_queue.txt
       runs_index.csv
@@ -20,16 +19,14 @@ artifacts/
   results/
 ```
 
-- `benchmarks/` contains comparable benchmark families.
-- `cache/` contains reusable segmented trajectory and range diagnostic caches.
-- `results/` is for ad hoc smoke/manual experiment output.
+- `benchmarks/`: comparable benchmark families and queue reports.
+- `cache/`: segmented trajectory caches, workload caches, and diagnostics.
+- `results/`: smoke and manual experiment output.
 
-Within a benchmark run, start with `README.md`, `artifact_index.json`,
+Start with the generated run-local `README.md`, `artifact_index.json`,
 `run_status.json`, `benchmark_report.md`, and `benchmark_report.csv`.
-Child experiment details live under the run-label subdirectory, usually
-`range_testing_baseline/`.
 
-## Useful Commands
+## Commands
 
 ```bash
 make benchmark-preflight
@@ -39,20 +36,11 @@ make clean-smoke-artifacts
 make clean-smoke-artifacts CONFIRM=1
 ```
 
-Preflight checks tmux, Python/Torch, cleaned CSV availability, artifact/cache
-writes, disk, RAM, swap, GPU visibility, and dirty git state. RAM/swap and
-dirty-git findings are warnings so intentional runs can still proceed.
-
-## Run IDs
-
-Use descriptive run IDs for runs that may be compared later:
+Use descriptive run IDs for comparable runs:
 
 ```bash
-ATTACH=0 BENCHMARK_RUN_ID=range_testing_baseline_seed42_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_RUN_ID=range_workload_aware_diagnostic_seed42_a make range-benchmark-tmux
 ```
-
-Timestamped IDs are fine for exploratory runs. Avoid reusing a run ID unless
-overwriting that run directory and index row is intentional.
 
 ## Cleanup
 
@@ -62,12 +50,8 @@ Safe cleanup targets:
 - `artifacts/results/post_training_runtime_smoke`
 - `artifacts/benchmarks/*smoke*`
 - `artifacts/benchmarks/*layout_smoke*`
-- old task smoke directories such as `artifacts/benchmarks/task*_smoke`
-  and `artifacts/benchmarks/task*_small`
-- caches created only for smoke runs
-- stale workload-aware diagnostic caches, especially
-  `artifacts/cache/range_testing_baseline/range_diagnostics/`, after their
-  report numbers are captured in notes
+- smoke-only caches
+- stale workload-aware diagnostic caches after their report numbers are captured
 
-Keep `artifacts/benchmarks/range_testing_baseline/` runs until their report
-rows have been reviewed or intentionally archived elsewhere.
+Keep benchmark-family runs until their report rows have been reviewed or moved
+to an explicit archive.

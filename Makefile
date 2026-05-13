@@ -3,9 +3,8 @@ SHELL := /bin/bash
 PYTHON ?= python
 CSV ?=
 QUERY_ARGS ?= --help
-FRONTEND_DIR ?= frontend
 
-.PHONY: help setup install pipeline db-up db-down db-reset db-logs db-smoke db-import db-query frontend-install frontend-dev frontend-build
+.PHONY: help setup install pipeline db-up db-down db-reset db-logs db-smoke db-import db-query
 
 help:
 	@echo "Targets:"
@@ -19,9 +18,6 @@ help:
 	@echo "  db-smoke         Run DB smoke test"
 	@echo "  db-import        Import cleaned AIS CSV (override with CSV=...)"
 	@echo "  db-query         Run range query script (override with QUERY_ARGS=...)"
-	@echo "  frontend-install Install frontend dependencies"
-	@echo "  frontend-dev     Start frontend dev server"
-	@echo "  frontend-build   Build frontend"
 
 setup:
 	$(PYTHON) -m venv .venv
@@ -55,12 +51,3 @@ db-import:
 
 db-query:
 	$(PYTHON) db/run_range_query.py $(QUERY_ARGS)
-
-frontend-install:
-	cd $(FRONTEND_DIR) && npm install
-
-frontend-dev:
-	cd $(FRONTEND_DIR) && npm run dev
-
-frontend-build:
-	cd $(FRONTEND_DIR) && npm run build
