@@ -9,36 +9,38 @@ import torch
 
 def deterministic_topk_with_jitter(
     scores: torch.Tensor,
-    k: int,
+    keep_count: int,
     trajectory_id: int,
 ) -> torch.Tensor:
-    """Select top-k indices with deterministic pseudo-random tie jitter. See src/simplification/README.md for details."""
-    n = scores.numel()
-    if k >= n:
-        return torch.arange(n, dtype=torch.long, device=scores.device)
+    """Select top-k indices with deterministic pseudo-random tie jitter."""
+    score_count = scores.numel()
+    if keep_count >= score_count:
+        return torch.arange(score_count, dtype=torch.long, device=scores.device)
 
-    pos = torch.arange(n, device=scores.device, dtype=torch.float32)
+    positions = torch.arange(score_count, device=scores.device, dtype=torch.float32)
     # Deterministic hash-like noise in [-0.5, 0.5].
-    noise = torch.frac(torch.sin(pos * 12.9898 + float(trajectory_id) * 78.233) * 43758.5453) - 0.5
+    noise = torch.frac(torch.sin(positions * 12.9898 + float(trajectory_id) * 78.233) * 43758.5453) - 0.5
     jittered = scores + 1e-6 * noise
-    top = torch.topk(jittered, k=k, largest=True).indices
+    top = torch.topk(jittered, k=keep_count, largest=True).indices
     return torch.sort(top).values
 
 
-def evenly_spaced_indices(n: int, k: int, device: torch.device) -> torch.Tensor:
+def evenly_spaced_indices(point_count: int, keep_count: int, device: torch.device) -> torch.Tensor:
     """Return deterministic evenly spaced local indices, including endpoints when possible."""
-    n = int(n)
-    k = max(0, min(int(k), n))
-    if k <= 0 or n <= 0:
+    point_count = int(point_count)
+    keep_count = max(0, min(int(keep_count), point_count))
+    if keep_count <= 0 or point_count <= 0:
         return torch.empty((0,), dtype=torch.long, device=device)
-    if k >= n:
-        return torch.arange(n, dtype=torch.long, device=device)
-    local_idx = torch.linspace(0, n - 1, steps=k, device=device).round().long().unique()
-    if local_idx.numel() < k:
-        filler = torch.arange(n, dtype=torch.long, device=device)
-        missing = filler[~torch.isin(filler, local_idx)][: k - local_idx.numel()]
-        local_idx = torch.cat([local_idx, missing])
-    return torch.sort(local_idx).values
+    if keep_count >= point_count:
+        return torch.arange(point_count, dtype=torch.long, device=device)
+    local_indices = torch.linspace(0, point_count - 1, steps=keep_count, device=device).round().long().unique()
+    if local_indices.numel() < keep_count:
+        filler_indices = torch.arange(point_count, dtype=torch.long, device=device)
+        missing_indices = filler_indices[~torch.isin(filler_indices, local_indices)][
+            : keep_count - local_indices.numel()
+        ]
+        local_indices = torch.cat([local_indices, missing_indices])
+    return torch.sort(local_indices).values
 
 
 def simplify_with_scores(
@@ -48,15 +50,15 @@ def simplify_with_scores(
 ) -> torch.Tensor:
     """Build retained mask by per-trajectory score top-k. See src/simplification/README.md for details."""
     retained = torch.zeros(scores.shape[0], dtype=torch.bool, device=scores.device)
-    for tid, (start, end) in enumerate(boundaries):
-        local = scores[start:end]
-        n = local.numel()
-        if n <= 0:
+    for trajectory_id, (start, end) in enumerate(boundaries):
+        local_scores = scores[start:end]
+        point_count = local_scores.numel()
+        if point_count <= 0:
             continue
-        k = max(2, int(math.ceil(compression_ratio * n)))
-        k = min(k, n)
-        idx = deterministic_topk_with_jitter(local, k=k, trajectory_id=tid)
-        retained[start:end][idx] = True
+        keep_count = max(2, int(math.ceil(compression_ratio * point_count)))
+        keep_count = min(keep_count, point_count)
+        local_indices = deterministic_topk_with_jitter(local_scores, keep_count=keep_count, trajectory_id=trajectory_id)
+        retained[start:end][local_indices] = True
         retained[start] = True
         retained[end - 1] = True
     return retained
@@ -83,51 +85,67 @@ def simplify_with_temporal_score_hybrid(
     if mode not in {"fill", "swap"}:
         raise ValueError("hybrid_mode must be 'fill' or 'swap'.")
 
-    for tid, (start, end) in enumerate(boundaries):
-        local = scores[start:end]
-        n = local.numel()
-        if n <= 0:
+    for trajectory_id, (start, end) in enumerate(boundaries):
+        local_scores = scores[start:end]
+        point_count = local_scores.numel()
+        if point_count <= 0:
             continue
-        k_total = max(2, int(math.ceil(float(compression_ratio) * n)))
-        k_total = min(k_total, n)
+        total_keep_count = max(2, int(math.ceil(float(compression_ratio) * point_count)))
+        total_keep_count = min(total_keep_count, point_count)
         if mode == "swap":
-            base_idx = evenly_spaced_indices(n, k_total, scores.device)
-            retained[start + base_idx] = True
-            protected = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
-            swap_count = min(k_total - protected, n - k_total)
+            base_indices = evenly_spaced_indices(point_count, total_keep_count, scores.device)
+            retained[start + base_indices] = True
+            protected_count = min(total_keep_count, max(2, int(math.ceil(total_keep_count * base_fraction))))
+            swap_count = min(total_keep_count - protected_count, point_count - total_keep_count)
             if swap_count <= 0:
                 continue
-            removable_idx = base_idx[(base_idx != 0) & (base_idx != n - 1)]
-            swap_count = min(swap_count, int(removable_idx.numel()))
+            removable_indices = base_indices[(base_indices != 0) & (base_indices != point_count - 1)]
+            swap_count = min(swap_count, int(removable_indices.numel()))
             if swap_count <= 0:
                 continue
 
-            remove_pos = deterministic_topk_with_jitter(-local[removable_idx], k=swap_count, trajectory_id=tid)
-            remove_idx = removable_idx[remove_pos]
-            candidate_scores = local.clone()
-            candidate_scores[base_idx] = -float("inf")
-            add_idx = deterministic_topk_with_jitter(candidate_scores, k=swap_count, trajectory_id=tid)
-            retained[start + remove_idx] = False
-            retained[start + add_idx] = True
+            remove_positions = deterministic_topk_with_jitter(
+                -local_scores[removable_indices],
+                keep_count=swap_count,
+                trajectory_id=trajectory_id,
+            )
+            remove_indices = removable_indices[remove_positions]
+            candidate_scores = local_scores.clone()
+            candidate_scores[base_indices] = -float("inf")
+            add_indices = deterministic_topk_with_jitter(
+                candidate_scores,
+                keep_count=swap_count,
+                trajectory_id=trajectory_id,
+            )
+            retained[start + remove_indices] = False
+            retained[start + add_indices] = True
             continue
 
-        k_base = 0 if base_fraction <= 0.0 else min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
-        base_idx = evenly_spaced_indices(n, k_base, scores.device)
-        retained[start + base_idx] = True
+        base_keep_count = 0
+        if base_fraction > 0.0:
+            base_keep_count = min(total_keep_count, max(2, int(math.ceil(total_keep_count * base_fraction))))
+        base_indices = evenly_spaced_indices(point_count, base_keep_count, scores.device)
+        retained[start + base_indices] = True
 
-        remaining = k_total - int(base_idx.numel())
-        if remaining <= 0:
+        remaining_count = total_keep_count - int(base_indices.numel())
+        if remaining_count <= 0:
             continue
 
-        candidate_scores = local.clone()
-        candidate_scores[base_idx] = -float("inf")
-        if bonus > 0.0 and base_idx.numel() > 0 and n > 1:
-            pos = torch.arange(n, dtype=torch.float32, device=scores.device)
-            dist_to_base = torch.abs(pos.unsqueeze(1) - base_idx.float().unsqueeze(0)).min(dim=1).values
-            candidate_scores = candidate_scores + bonus * (dist_to_base / float(max(1, n - 1)))
-            candidate_scores[base_idx] = -float("inf")
+        candidate_scores = local_scores.clone()
+        candidate_scores[base_indices] = -float("inf")
+        if bonus > 0.0 and base_indices.numel() > 0 and point_count > 1:
+            positions = torch.arange(point_count, dtype=torch.float32, device=scores.device)
+            distance_to_base = torch.abs(
+                positions.unsqueeze(1) - base_indices.float().unsqueeze(0)
+            ).min(dim=1).values
+            candidate_scores = candidate_scores + bonus * (distance_to_base / float(max(1, point_count - 1)))
+            candidate_scores[base_indices] = -float("inf")
 
-        fill_idx = deterministic_topk_with_jitter(candidate_scores, k=remaining, trajectory_id=tid)
-        retained[start + fill_idx] = True
+        fill_indices = deterministic_topk_with_jitter(
+            candidate_scores,
+            keep_count=remaining_count,
+            trajectory_id=trajectory_id,
+        )
+        retained[start + fill_indices] = True
 
     return retained

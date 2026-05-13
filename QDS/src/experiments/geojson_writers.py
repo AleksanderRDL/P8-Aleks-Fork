@@ -32,7 +32,7 @@ def _seconds_to_hhmm(seconds: float) -> str:
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
 
 
-def _query_to_feature(q: dict[str, Any]) -> dict[str, Any]:
+def _query_to_feature(query: dict[str, Any]) -> dict[str, Any]:
     """Convert a typed query dict to a GeoJSON Feature.
 
     All query types are rendered as axis-aligned rectangles (Polygons) so
@@ -41,52 +41,60 @@ def _query_to_feature(q: dict[str, Any]) -> dict[str, Any]:
     - knn: square around the anchor sized from `t_half_window`.
     - similarity: square around the centroid sized from `radius`.
     """
-    qtype = str(q["type"]).lower()
-    p = q["params"]
-    if qtype in ("range", "clustering"):
-        coords = _bbox_polygon(p["lon_min"], p["lat_min"], p["lon_max"], p["lat_max"])
-    elif qtype == "knn":
+    query_type = str(query["type"]).lower()
+    params = query["params"]
+    if query_type in ("range", "clustering"):
+        coords = _bbox_polygon(params["lon_min"], params["lat_min"], params["lon_max"], params["lat_max"])
+    elif query_type == "knn":
         half = 0.05  # default half-width in degrees if not derivable
         coords = _bbox_polygon(
-            p["lon"] - half, p["lat"] - half, p["lon"] + half, p["lat"] + half
+            params["lon"] - half,
+            params["lat"] - half,
+            params["lon"] + half,
+            params["lat"] + half,
         )
-    elif qtype == "similarity":
-        r = float(p.get("radius", 0.05))
+    elif query_type == "similarity":
+        radius = float(params.get("radius", 0.05))
         coords = _bbox_polygon(
-            p["lon_query_centroid"] - r, p["lat_query_centroid"] - r,
-            p["lon_query_centroid"] + r, p["lat_query_centroid"] + r,
+            params["lon_query_centroid"] - radius,
+            params["lat_query_centroid"] - radius,
+            params["lon_query_centroid"] + radius,
+            params["lat_query_centroid"] + radius,
         )
     else:
-        raise ValueError(f"Unsupported query type for GeoJSON export: {qtype}")
-    geom = {"type": "Polygon", "coordinates": coords}
-    props: dict[str, Any] = {"query_type": qtype, **{k: v for k, v in p.items() if isinstance(v, (int, float, str))}}
+        raise ValueError(f"Unsupported query type for GeoJSON export: {query_type}")
+    geometry = {"type": "Polygon", "coordinates": coords}
+    properties: dict[str, Any] = {
+        "query_type": query_type,
+        **{key: value for key, value in params.items() if isinstance(value, (int, float, str))},
+    }
     # Add human-readable time fields alongside the raw seconds values.
-    if "t_start" in props:
-        props["t_start_hm"] = _seconds_to_hhmm(float(props["t_start"]))
-    if "t_end" in props:
-        props["t_end_hm"] = _seconds_to_hhmm(float(props["t_end"]))
+    if "t_start" in properties:
+        properties["t_start_hm"] = _seconds_to_hhmm(float(properties["t_start"]))
+    if "t_end" in properties:
+        properties["t_end_hm"] = _seconds_to_hhmm(float(properties["t_end"]))
     return {
         "type": "Feature",
-        "geometry": geom,
-        "properties": props,
+        "geometry": geometry,
+        "properties": properties,
     }
 
 
 def write_queries_geojson(out_dir: str, typed_queries: list[dict[str, Any]]) -> None:
     """Write one GeoJSON file per query type into out_dir."""
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(out_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     by_type: dict[str, list[dict[str, Any]]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
-    for q in typed_queries:
-        qtype = str(q["type"]).lower()
-        if qtype in by_type:
-            by_type[qtype].append(_query_to_feature(q))
-    for qtype, feats in by_type.items():
-        path = out / f"queries_{qtype}.geojson"
-        payload = {"type": "FeatureCollection", "features": feats}
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        print(f"  wrote {len(feats):>4d} {qtype} queries to {path}", flush=True)
+    for query in typed_queries:
+        query_type = str(query["type"]).lower()
+        if query_type in by_type:
+            by_type[query_type].append(_query_to_feature(query))
+    for query_type, features in by_type.items():
+        output_path = output_dir / f"queries_{query_type}.geojson"
+        payload = {"type": "FeatureCollection", "features": features}
+        with open(output_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file)
+        print(f"  wrote {len(features):>4d} {query_type} queries to {output_path}", flush=True)
 
 
 def write_simplified_csv(
@@ -102,52 +110,64 @@ def write_simplified_csv(
     Uses the same columns as cleaned AIS files, while callers choose the
     output location for ML-produced data.
     """
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    output_path = Path(out_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     points_np = points.detach().cpu().numpy()
     mask_np = retained_mask.detach().cpu().bool().numpy()
 
-    rows = 0
-    with open(out, "w", encoding="utf-8") as f:
-        f.write("MMSI,# Timestamp,Latitude,Longitude,SOG,COG\n")
-        for traj_id, (s, e) in enumerate(boundaries):
-            sub_mask = mask_np[s:e]
-            if not sub_mask.any():
+    retained_row_count = 0
+    with open(output_path, "w", encoding="utf-8") as file:
+        file.write("MMSI,# Timestamp,Latitude,Longitude,SOG,COG\n")
+        for trajectory_idx, (start, end) in enumerate(boundaries):
+            trajectory_mask = mask_np[start:end]
+            if not trajectory_mask.any():
                 continue
-            sub = points_np[s:e][sub_mask]
-            mmsi = trajectory_mmsis[traj_id] if trajectory_mmsis is not None and traj_id < len(trajectory_mmsis) else 100000000 + traj_id
-            for row in sub:
-                # row = [time, lat, lon, speed, heading, ...]
-                f.write(
-                    f"{mmsi},{float(row[0]):.3f},{float(row[1]):.6f},"
-                    f"{float(row[2]):.6f},{float(row[3]):.2f},{float(row[4]):.2f}\n"
+            retained_points = points_np[start:end][trajectory_mask]
+            mmsi = (
+                trajectory_mmsis[trajectory_idx]
+                if trajectory_mmsis is not None and trajectory_idx < len(trajectory_mmsis)
+                else 100000000 + trajectory_idx
+            )
+            for retained_point in retained_points:
+                # retained_point = [time, lat, lon, speed, heading, ...]
+                file.write(
+                    f"{mmsi},{float(retained_point[0]):.3f},{float(retained_point[1]):.6f},"
+                    f"{float(retained_point[2]):.6f},{float(retained_point[3]):.2f},"
+                    f"{float(retained_point[4]):.2f}\n"
                 )
-                rows += 1
-    print(f"  wrote {rows} retained points across "
-          f"{int(mask_np.reshape(-1).sum())} samples to {out}", flush=True)
+                retained_row_count += 1
+    print(f"  wrote {retained_row_count} retained points across "
+          f"{int(mask_np.reshape(-1).sum())} samples to {output_path}", flush=True)
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in km between two lat/lon pairs."""
     import math
-    r = 6371.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+    earth_radius_km = 6371.0
+    lat1_rad, lat2_rad = math.radians(lat1), math.radians(lat2)
+    delta_lat_rad = math.radians(lat2 - lat1)
+    delta_lon_rad = math.radians(lon2 - lon1)
+    haversine_term = (
+        math.sin(delta_lat_rad / 2) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon_rad / 2) ** 2
+    )
+    return 2 * earth_radius_km * math.asin(min(1.0, math.sqrt(haversine_term)))
 
 
 def _trajectory_length_km(lat_lon: "torch.Tensor") -> float:
     """Sum haversine distances between consecutive (lat, lon) rows."""
-    n = lat_lon.shape[0]
-    if n < 2:
+    point_count = lat_lon.shape[0]
+    if point_count < 2:
         return 0.0
-    arr = lat_lon.detach().cpu().numpy()
+    coordinates = lat_lon.detach().cpu().numpy()
     total = 0.0
-    for i in range(1, n):
-        total += _haversine_km(float(arr[i - 1, 0]), float(arr[i - 1, 1]),
-                               float(arr[i, 0]), float(arr[i, 1]))
+    for point_idx in range(1, point_count):
+        total += _haversine_km(
+            float(coordinates[point_idx - 1, 0]),
+            float(coordinates[point_idx - 1, 1]),
+            float(coordinates[point_idx, 0]),
+            float(coordinates[point_idx, 1]),
+        )
     return total
 
 
@@ -175,45 +195,53 @@ def report_trajectory_length_loss(
     Averages over all non-empty trajectories are also printed.
     """
     mask = retained_mask.detach().cpu().bool()
-    rows: list[tuple[int, float, float, float, int, int]] = []  # (display_id, orig, simp, loss, kept, removed)
-    for traj_id, (s, e) in enumerate(boundaries):
-        total_pts = e - s
-        if total_pts < 2:
+    length_rows: list[tuple[int, float, float, float, int, int]] = []
+    for trajectory_idx, (start, end) in enumerate(boundaries):
+        total_points = end - start
+        if total_points < 2:
             continue
-        sub = points[s:e]
-        orig = _trajectory_length_km(sub[:, 1:3])
-        sub_mask = mask[s:e]
-        kept = int(sub_mask.sum().item())
-        removed = total_pts - kept
+        trajectory_points = points[start:end]
+        original_length_km = _trajectory_length_km(trajectory_points[:, 1:3])
+        trajectory_mask = mask[start:end]
+        kept = int(trajectory_mask.sum().item())
+        removed = total_points - kept
         if kept >= 2:
-            simp = _trajectory_length_km(sub[sub_mask][:, 1:3])
+            simplified_length_km = _trajectory_length_km(trajectory_points[trajectory_mask][:, 1:3])
         else:
-            simp = 0.0
-        loss = 0.0 if orig <= 1e-9 else max(0.0, 1.0 - simp / orig)
-        display_id = trajectory_mmsis[traj_id] if trajectory_mmsis is not None and traj_id < len(trajectory_mmsis) else traj_id
-        rows.append((int(display_id), orig, simp, loss, kept, removed))
+            simplified_length_km = 0.0
+        length_loss = (
+            0.0
+            if original_length_km <= 1e-9
+            else max(0.0, 1.0 - simplified_length_km / original_length_km)
+        )
+        display_id = (
+            trajectory_mmsis[trajectory_idx]
+            if trajectory_mmsis is not None and trajectory_idx < len(trajectory_mmsis)
+            else trajectory_idx
+        )
+        length_rows.append((int(display_id), original_length_km, simplified_length_km, length_loss, kept, removed))
 
-    if not rows:
+    if not length_rows:
         print("  [length-loss] no trajectories with >=2 points, skipping.", flush=True)
         return
 
-    avg_orig = sum(r[1] for r in rows) / len(rows)
-    avg_simp = sum(r[2] for r in rows) / len(rows)
-    total_orig = sum(r[1] for r in rows)
-    total_simp = sum(r[2] for r in rows)
-    length_preserved = (total_simp / total_orig) if total_orig > 1e-9 else 1.0
+    avg_orig = sum(row[1] for row in length_rows) / len(length_rows)
+    avg_simp = sum(row[2] for row in length_rows) / len(length_rows)
+    total_orig = sum(row[1] for row in length_rows)
+    total_simp = sum(row[2] for row in length_rows)
+    length_preserved = total_simp / total_orig if total_orig > 1e-9 else 1.0
     length_preserved = max(0.0, min(1.0, length_preserved))
-    avg_removed = sum(r[5] for r in rows) / len(rows)
+    avg_removed = sum(row[5] for row in length_rows) / len(length_rows)
     print(
-        f"  [length] {len(rows)} trajectories  "
+        f"  [length] {len(length_rows)} trajectories  "
         f"avg_orig_km={avg_orig:.2f}  avg_simp_km={avg_simp:.2f}  "
         f"length_preserved={length_preserved:.3f}  avg_points_removed={avg_removed:.1f}",
         flush=True,
     )
 
     # Filter out near-stationary trajectories so the top-K is meaningful.
-    ranked = [r for r in rows if r[1] >= min_orig_km]
-    dropped = len(rows) - len(ranked)
+    ranked = [row for row in length_rows if row[1] >= min_orig_km]
+    dropped = len(length_rows) - len(ranked)
     if dropped:
         print(
             f"  [length-loss] filtered out {dropped} trajectories with orig_km < {min_orig_km:.2f} "
@@ -223,23 +251,28 @@ def report_trajectory_length_loss(
     if not ranked:
         return
 
-    most = sorted(ranked, key=lambda r: r[3], reverse=True)[:top_k]
-    least = sorted(ranked, key=lambda r: r[3])[:top_k]
+    most_distorted = sorted(ranked, key=lambda row: row[3], reverse=True)[:top_k]
+    least_distorted = sorted(ranked, key=lambda row: row[3])[:top_k]
 
     id_label = "mmsi" if trajectory_mmsis is not None else "traj_id"
-    hdr = f"  {'rank':>4}  {id_label:>10}  {'orig_km':>10}  {'simp_km':>10}  {'length_loss':>11}  {'kept':>6}  {'removed':>8}"
+    header = (
+        f"  {'rank':>4}  {id_label:>10}  {'orig_km':>10}  {'simp_km':>10}  "
+        f"{'length_loss':>11}  {'kept':>6}  {'removed':>8}"
+    )
     print(f"\n  [length-loss] Top {top_k} MOST distorted (highest length_loss):", flush=True)
-    print(hdr, flush=True)
-    for rank, r in enumerate(most, start=1):
+    print(header, flush=True)
+    for rank, row in enumerate(most_distorted, start=1):
         print(
-            f"  {rank:>4}  {r[0]:>10d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
+            f"  {rank:>4}  {row[0]:>10d}  {row[1]:>10.2f}  {row[2]:>10.2f}  "
+            f"{row[3]:>11.3f}  {row[4]:>6d}  {row[5]:>8d}",
             flush=True,
         )
 
     print(f"\n  [length-loss] Top {top_k} LEAST distorted (lowest length_loss):", flush=True)
-    print(hdr, flush=True)
-    for rank, r in enumerate(least, start=1):
+    print(header, flush=True)
+    for rank, row in enumerate(least_distorted, start=1):
         print(
-            f"  {rank:>4}  {r[0]:>10d}  {r[1]:>10.2f}  {r[2]:>10.2f}  {r[3]:>11.3f}  {r[4]:>6d}  {r[5]:>8d}",
+            f"  {rank:>4}  {row[0]:>10d}  {row[1]:>10.2f}  {row[2]:>10.2f}  "
+            f"{row[3]:>11.3f}  {row[4]:>6d}  {row[5]:>8d}",
             flush=True,
         )

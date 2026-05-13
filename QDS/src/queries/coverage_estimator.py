@@ -42,7 +42,7 @@ class RangeCoverageEstimate:
 def sample_trajectories_by_stride(trajectories: list[torch.Tensor], sample_stride: int) -> list[torch.Tensor]:
     """Return every Nth trajectory, preserving whole sampled trajectories."""
     stride = max(1, int(sample_stride))
-    return [traj for idx, traj in enumerate(trajectories) if idx % stride == 0]
+    return [trajectory for trajectory_idx, trajectory in enumerate(trajectories) if trajectory_idx % stride == 0]
 
 
 def estimate_range_coverage(
@@ -60,19 +60,19 @@ def estimate_range_coverage(
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
 ) -> list[RangeCoverageEstimate]:
     """Estimate range workload point coverage on a deterministic trajectory sample."""
-    sampled = sample_trajectories_by_stride(trajectories, sample_stride)
-    if not sampled:
+    sampled_trajectories = sample_trajectories_by_stride(trajectories, sample_stride)
+    if not sampled_trajectories:
         raise ValueError("Cannot estimate coverage for an empty trajectory sample.")
-    sampled_points = int(sum(int(traj.shape[0]) for traj in sampled))
-    rows: list[RangeCoverageEstimate] = []
+    sampled_points = int(sum(int(trajectory.shape[0]) for trajectory in sampled_trajectories))
+    estimates: list[RangeCoverageEstimate] = []
     for query_count in query_counts:
-        q = int(query_count)
-        if q <= 0:
+        query_count_int = int(query_count)
+        if query_count_int <= 0:
             raise ValueError("query_counts must all be positive.")
         for seed in seeds:
             workload = generate_typed_query_workload(
-                trajectories=sampled,
-                n_queries=q,
+                trajectories=sampled_trajectories,
+                n_queries=query_count_int,
                 workload_map={"range": 1.0},
                 seed=int(seed),
                 target_coverage=target_coverage,
@@ -82,13 +82,13 @@ def estimate_range_coverage(
                 range_time_hours=range_time_hours,
                 range_footprint_jitter=range_footprint_jitter,
             )
-            rows.append(
+            estimates.append(
                 RangeCoverageEstimate(
                     source=source,
-                    query_count=q,
+                    query_count=query_count_int,
                     seed=int(seed),
                     sample_stride=max(1, int(sample_stride)),
-                    sampled_trajectories=len(sampled),
+                    sampled_trajectories=len(sampled_trajectories),
                     sampled_points=sampled_points,
                     coverage_fraction=float(workload.coverage_fraction or 0.0),
                     covered_points=int(workload.covered_points or 0),
@@ -101,12 +101,12 @@ def estimate_range_coverage(
                     range_footprint_jitter=float(range_footprint_jitter),
                 )
             )
-    return rows
+    return estimates
 
 
-def best_query_count(rows: list[RangeCoverageEstimate], target_coverage: float) -> RangeCoverageEstimate:
+def best_query_count(estimates: list[RangeCoverageEstimate], target_coverage: float) -> RangeCoverageEstimate:
     """Return the estimate closest to a desired coverage fraction."""
-    if not rows:
-        raise ValueError("rows must not be empty.")
+    if not estimates:
+        raise ValueError("estimates must not be empty.")
     target = float(target_coverage)
-    return min(rows, key=lambda row: abs(float(row.coverage_fraction) - target))
+    return min(estimates, key=lambda estimate: abs(float(estimate.coverage_fraction) - target))

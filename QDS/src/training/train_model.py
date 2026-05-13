@@ -25,6 +25,7 @@ from src.simplification.mlqds_scoring import simplify_mlqds_predictions
 from src.simplification.simplify_trajectories import evenly_spaced_indices
 from src.training.checkpoint_selection import (
     CheckpointCandidate,
+    normalize_checkpoint_selection_metric,
     record_validation_stats,
     selection_from_stats,
     selection_score,
@@ -40,7 +41,7 @@ KENDALL_TIE_THRESHOLD = 1e-4
 _QUANTILE_SUBSAMPLE_CAP = 1_000_000  # torch.quantile errors past 2^24 on some builds.
 
 
-def _safe_quantile(t: torch.Tensor, q: float | torch.Tensor) -> torch.Tensor:
+def _safe_quantile(values: torch.Tensor, quantile: float | torch.Tensor) -> torch.Tensor:
     """Quantile that tolerates very large input tensors.
 
     For tensors larger than ~1M elements, torch.quantile can fail with
@@ -48,14 +49,14 @@ def _safe_quantile(t: torch.Tensor, q: float | torch.Tensor) -> torch.Tensor:
     1M-element view, which gives a sufficiently accurate quantile estimate
     for diagnostic logging and label-rescaling purposes.
     """
-    if t.numel() <= _QUANTILE_SUBSAMPLE_CAP:
-        return torch.quantile(t, q)
-    if t.is_floating_point():
-        flat = t.detach().reshape(-1)
+    if values.numel() <= _QUANTILE_SUBSAMPLE_CAP:
+        return torch.quantile(values, quantile)
+    if values.is_floating_point():
+        flat = values.detach().reshape(-1)
     else:
-        flat = t.reshape(-1)
-    perm = torch.randperm(flat.numel(), device=flat.device)[:_QUANTILE_SUBSAMPLE_CAP]
-    return torch.quantile(flat[perm], q)
+        flat = values.reshape(-1)
+    sampled_indices = torch.randperm(flat.numel(), device=flat.device)[:_QUANTILE_SUBSAMPLE_CAP]
+    return torch.quantile(flat[sampled_indices], quantile)
 
 
 def _scaled_training_target_for_type(
@@ -86,12 +87,12 @@ def _apply_temporal_residual_labels(
     base_fraction = min(1.0, max(0.0, float(temporal_fraction)))
 
     for start, end in boundaries:
-        n = int(end - start)
-        if n <= 0:
+        point_count = int(end - start)
+        if point_count <= 0:
             continue
-        k_total = min(n, max(2, int(math.ceil(float(compression_ratio) * n))))
+        k_total = min(point_count, max(2, int(math.ceil(float(compression_ratio) * point_count))))
         k_base = 0 if base_fraction <= 0.0 else min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
-        base_idx = evenly_spaced_indices(n, k_base, labels.device)
+        base_idx = evenly_spaced_indices(point_count, k_base, labels.device)
         base_mask[start + base_idx] = True
 
     residual_labels[base_mask] = 0.0
@@ -119,8 +120,8 @@ def _balanced_pointwise_loss(
     zero_idx = valid_idx[valid_target <= 0]
     max_zero = int(positive_idx.numel() * max(1, negatives_per_positive))
     if zero_idx.numel() > max_zero:
-        perm = torch.randperm(zero_idx.numel(), generator=generator)[:max_zero]
-        zero_idx = zero_idx[perm.to(zero_idx.device)]
+        zero_sample_order = torch.randperm(zero_idx.numel(), generator=generator)[:max_zero]
+        zero_idx = zero_idx[zero_sample_order.to(zero_idx.device)]
 
     pointwise_idx = torch.cat([positive_idx, zero_idx]) if zero_idx.numel() > 0 else positive_idx
     return F.binary_cross_entropy_with_logits(pred[pointwise_idx], target[pointwise_idx].clamp(0.0, 1.0))
@@ -135,7 +136,7 @@ def _balanced_pointwise_loss_rows(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return balanced pointwise BCE for each padded row in one tensor path."""
     if pred.ndim != 2 or target.shape != pred.shape or valid_mask.shape != pred.shape:
-        raise ValueError("pred, target, and valid_mask must have matching shape [B, L].")
+        raise ValueError("pred, target, and valid_mask must have matching shape [batch, window_length].")
 
     positive = valid_mask & (target > 0.0)
     zero = valid_mask & (target <= 0.0)
@@ -182,27 +183,27 @@ def _budget_topk_recall_loss(
     if valid_idx.numel() < 2:
         return pred.new_tensor(0.0)
 
-    x = pred[valid_idx]
-    y = target[valid_idx].clamp(min=0.0)
-    if not bool((y > 0).any().item()):
+    valid_scores = pred[valid_idx]
+    valid_targets = target[valid_idx].clamp(min=0.0)
+    if not bool((valid_targets > 0).any().item()):
         return pred.new_tensor(0.0)
 
-    n = int(y.numel())
-    tau = max(float(temperature), 1e-4)
+    valid_count = int(valid_targets.numel())
+    soft_keep_temperature = max(float(temperature), 1e-4)
     losses: list[torch.Tensor] = []
     for raw_ratio in budget_ratios:
         ratio = min(1.0, max(0.0, float(raw_ratio)))
         if ratio <= 0.0:
             continue
-        k = min(n, max(1, int(math.ceil(ratio * n))))
-        ideal_mass = torch.topk(y, k=k).values.sum().detach()
+        keep_count = min(valid_count, max(1, int(math.ceil(ratio * valid_count))))
+        ideal_mass = torch.topk(valid_targets, k=keep_count).values.sum().detach()
         if float(ideal_mass.item()) <= 1e-12:
             continue
-        threshold = torch.topk(x.detach(), k=k).values[-1]
-        soft_keep = torch.sigmoid((x - threshold) / tau)
-        soft_keep = soft_keep * (float(k) / soft_keep.sum().clamp(min=1e-6))
+        threshold = torch.topk(valid_scores.detach(), k=keep_count).values[-1]
+        soft_keep = torch.sigmoid((valid_scores - threshold) / soft_keep_temperature)
+        soft_keep = soft_keep * (float(keep_count) / soft_keep.sum().clamp(min=1e-6))
         soft_keep = soft_keep.clamp(max=1.0)
-        captured_mass = (soft_keep * y).sum()
+        captured_mass = (soft_keep * valid_targets).sum()
         recall = (captured_mass / ideal_mass.clamp(min=1e-6)).clamp(0.0, 1.0)
         losses.append(1.0 - recall)
 
@@ -220,43 +221,43 @@ def _budget_topk_recall_loss_rows(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return budget-top-k loss for each row in a padded prediction batch."""
     if pred.ndim != 2 or target.shape != pred.shape or valid_mask.shape != pred.shape:
-        raise ValueError("pred, target, and valid_mask must have matching shape [B, L].")
+        raise ValueError("pred, target, and valid_mask must have matching shape [batch, window_length].")
 
-    B, L = pred.shape
-    y = target.clamp(min=0.0)
+    batch_size, window_length = pred.shape
+    nonnegative_target = target.clamp(min=0.0)
     valid_counts = valid_mask.sum(dim=1)
-    has_positive = (valid_mask & (y > 0.0)).any(dim=1)
-    row_loss_sum = pred.new_zeros((B,))
-    row_loss_count = torch.zeros((B,), dtype=torch.long, device=pred.device)
-    tau = max(float(temperature), 1e-4)
+    has_positive = (valid_mask & (nonnegative_target > 0.0)).any(dim=1)
+    row_loss_sum = pred.new_zeros((batch_size,))
+    row_loss_count = torch.zeros((batch_size,), dtype=torch.long, device=pred.device)
+    soft_keep_temperature = max(float(temperature), 1e-4)
 
-    y_sortable = y.masked_fill(~valid_mask, float("-inf"))
-    x_sortable = pred.masked_fill(~valid_mask, float("-inf"))
-    sorted_y = torch.sort(y_sortable, dim=1, descending=True).values
-    sorted_x = torch.sort(x_sortable, dim=1, descending=True).values
-    y_cumsum = sorted_y.clamp(min=0.0).cumsum(dim=1)
+    target_sortable = nonnegative_target.masked_fill(~valid_mask, float("-inf"))
+    score_sortable = pred.masked_fill(~valid_mask, float("-inf"))
+    sorted_target = torch.sort(target_sortable, dim=1, descending=True).values
+    sorted_score = torch.sort(score_sortable, dim=1, descending=True).values
+    target_cumsum = sorted_target.clamp(min=0.0).cumsum(dim=1)
 
     for raw_ratio in budget_ratios:
         ratio = min(1.0, max(0.0, float(raw_ratio)))
         if ratio <= 0.0:
             continue
-        k_float = torch.ceil(valid_counts.float() * ratio)
-        k = k_float.to(dtype=torch.long).clamp(min=1, max=L)
+        keep_count_float = torch.ceil(valid_counts.float() * ratio)
+        keep_count = keep_count_float.to(dtype=torch.long).clamp(min=1, max=window_length)
         active = (valid_counts >= 2) & has_positive
         if not bool(active.any().item()):
             continue
 
-        gather_idx = (k - 1).unsqueeze(1)
-        ideal_mass = y_cumsum.gather(1, gather_idx).squeeze(1).detach()
-        threshold = sorted_x.gather(1, gather_idx).squeeze(1).detach()
+        gather_idx = (keep_count - 1).unsqueeze(1)
+        ideal_mass = target_cumsum.gather(1, gather_idx).squeeze(1).detach()
+        threshold = sorted_score.gather(1, gather_idx).squeeze(1).detach()
         active = active & (ideal_mass > 1e-12)
         if not bool(active.any().item()):
             continue
 
-        soft_keep = torch.sigmoid((pred - threshold.unsqueeze(1)) / tau) * valid_mask.float()
-        soft_keep = soft_keep * (k.float() / soft_keep.sum(dim=1).clamp(min=1e-6)).unsqueeze(1)
+        soft_keep = torch.sigmoid((pred - threshold.unsqueeze(1)) / soft_keep_temperature) * valid_mask.float()
+        soft_keep = soft_keep * (keep_count.float() / soft_keep.sum(dim=1).clamp(min=1e-6)).unsqueeze(1)
         soft_keep = soft_keep.clamp(max=1.0)
-        captured_mass = (soft_keep * y).sum(dim=1)
+        captured_mass = (soft_keep * nonnegative_target).sum(dim=1)
         recall = (captured_mass / ideal_mass.clamp(min=1e-6)).clamp(0.0, 1.0)
         ratio_loss = 1.0 - recall
         row_loss_sum = torch.where(active, row_loss_sum + ratio_loss, row_loss_sum)
@@ -280,10 +281,10 @@ def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
     return tuple(ratios)
 
 
-def _effective_budget_loss_ratios(model_config: ModelConfig, residual_label_mode: str) -> tuple[float, ...]:
+def _effective_budget_loss_ratios(model_config: ModelConfig, temporal_residual_label_mode: str) -> tuple[float, ...]:
     """Return retained-budget ratios in the candidate set the model actually controls."""
     ratios = _budget_loss_ratios(model_config)
-    if residual_label_mode != "temporal":
+    if temporal_residual_label_mode != "temporal":
         return ratios
 
     temporal_fraction = min(1.0, max(0.0, float(getattr(model_config, "mlqds_temporal_fraction", 0.0))))
@@ -322,12 +323,12 @@ def _temporal_base_masks_for_budget_ratios(
             continue
         base_mask = torch.zeros((n_points,), dtype=torch.bool, device=device)
         for start, end in boundaries:
-            n = int(end - start)
-            if n <= 0:
+            point_count = int(end - start)
+            if point_count <= 0:
                 continue
-            k_total = min(n, max(2, int(math.ceil(total_ratio * n))))
+            k_total = min(point_count, max(2, int(math.ceil(total_ratio * point_count))))
             k_base = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
-            base_idx = evenly_spaced_indices(n, k_base, device)
+            base_idx = evenly_spaced_indices(point_count, k_base, device)
             base_mask[start + base_idx] = True
         base_ratio = float(base_mask.float().mean().item()) if n_points > 0 else 0.0
         fill_ratio = max(0.0, total_ratio - base_ratio)
@@ -375,7 +376,7 @@ def _budget_topk_temporal_residual_loss_rows(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return per-row budget-top-k loss over learned-fill candidate points."""
     if global_idx.shape != pred.shape:
-        raise ValueError("global_idx must match pred shape [B, L].")
+        raise ValueError("global_idx must match pred shape [batch, window_length].")
 
     row_loss_sum = pred.new_zeros((pred.shape[0],))
     row_loss_count = torch.zeros((pred.shape[0],), dtype=torch.long, device=pred.device)
@@ -406,7 +407,7 @@ def _training_target_diagnostics(
     configured_budget_ratios: tuple[float, ...],
     effective_budget_ratios: tuple[float, ...],
     temporal_residual_budget_masks: tuple[tuple[float, float, torch.Tensor], ...],
-    residual_label_mode: str,
+    temporal_residual_label_mode: str,
     loss_objective: str,
     temporal_fraction: float,
 ) -> dict[str, Any]:
@@ -420,7 +421,8 @@ def _training_target_diagnostics(
     total_positive_label_mass = float(values[positive].sum().item()) if bool(positive.any().item()) else 0.0
     diagnostics: dict[str, Any] = {
         "workload_type_id": int(workload_type_id),
-        "residual_label_mode": str(residual_label_mode),
+        "temporal_residual_label_mode": str(temporal_residual_label_mode),
+        "residual_label_mode": str(temporal_residual_label_mode),
         "loss_objective": str(loss_objective),
         "mlqds_temporal_fraction": float(temporal_fraction),
         "configured_budget_loss_ratios": [float(value) for value in configured_budget_ratios],
@@ -487,16 +489,21 @@ def _discriminative_sample(
     bottom quantiles focuses the statistic on the pairs the ranker is expected
     to separate, where the signal is strongest.
     """
-    n = target.numel()
-    if n <= 2 * n_each:
+    target_count = target.numel()
+    if target_count <= 2 * n_each:
         return pred, target
-    q = _safe_quantile(target, torch.tensor([0.25, 0.75], dtype=torch.float32, device=target.device))
-    bot = torch.where(target <= q[0])[0]
-    top = torch.where(target >= q[1])[0]
-    perm_b = torch.randperm(bot.numel(), generator=generator)[:n_each]
-    perm_t = torch.randperm(top.numel(), generator=generator)[:n_each]
-    idx = torch.cat([bot[perm_b], top[perm_t]])
-    return pred[idx], target[idx]
+    quartiles = _safe_quantile(target, torch.tensor([0.25, 0.75], dtype=torch.float32, device=target.device))
+    bottom_quantile_indices = torch.where(target <= quartiles[0])[0]
+    top_quantile_indices = torch.where(target >= quartiles[1])[0]
+    bottom_sample_order = torch.randperm(bottom_quantile_indices.numel(), generator=generator)[:n_each]
+    top_sample_order = torch.randperm(top_quantile_indices.numel(), generator=generator)[:n_each]
+    sampled_indices = torch.cat(
+        [
+            bottom_quantile_indices[bottom_sample_order],
+            top_quantile_indices[top_sample_order],
+        ]
+    )
+    return pred[sampled_indices], target[sampled_indices]
 
 
 @dataclass
@@ -523,18 +530,18 @@ class TrainingOutputs:
             self.best_f1 = float(self.best_selection_score)
 
 
-def _kendall_tau(x: torch.Tensor, y: torch.Tensor) -> float:
+def _kendall_tau(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     """Compute Kendall tau for small vectors without external deps. See src/training/README.md for details."""
-    n = int(x.numel())
-    if n < 2:
+    sample_count = int(predictions.numel())
+    if sample_count < 2:
         return 0.0
-    dx = x.unsqueeze(0) - x.unsqueeze(1)
-    dy = y.unsqueeze(0) - y.unsqueeze(1)
-    upper = torch.triu(torch.ones_like(dx, dtype=torch.bool), diagonal=1)
-    tie = dy.abs() < KENDALL_TIE_THRESHOLD
-    prod = dx * dy
-    concordant = int(((prod > 0) & upper & ~tie).sum().item())
-    discordant = int(((prod < 0) & upper & ~tie).sum().item())
+    prediction_delta = predictions.unsqueeze(0) - predictions.unsqueeze(1)
+    target_delta = targets.unsqueeze(0) - targets.unsqueeze(1)
+    upper_triangle = torch.triu(torch.ones_like(prediction_delta, dtype=torch.bool), diagonal=1)
+    tied_target = target_delta.abs() < KENDALL_TIE_THRESHOLD
+    pair_order = prediction_delta * target_delta
+    concordant = int(((pair_order > 0) & upper_triangle & ~tied_target).sum().item())
+    discordant = int(((pair_order < 0) & upper_triangle & ~tied_target).sum().item())
     denom = max(1, concordant + discordant)
     return float((concordant - discordant) / denom)
 
@@ -558,10 +565,13 @@ def _ranking_loss_for_type(
     if valid_idx.numel() < 2:
         return pred.new_tensor(0.0), 0
 
-    y = target[valid_idx]
-    q_val = _safe_quantile(y, torch.tensor(top_quantile, dtype=torch.float32, device=y.device))
-    top_idx = valid_idx[y >= q_val]
-    strict_top_idx = valid_idx[y > q_val]
+    valid_targets = target[valid_idx]
+    top_threshold = _safe_quantile(
+        valid_targets,
+        torch.tensor(top_quantile, dtype=torch.float32, device=valid_targets.device),
+    )
+    top_idx = valid_idx[valid_targets >= top_threshold]
+    strict_top_idx = valid_idx[valid_targets > top_threshold]
     if strict_top_idx.numel() > 0 and top_idx.numel() > max(4, valid_idx.numel() // 2):
         top_idx = strict_top_idx
     if top_idx.numel() == 0:
@@ -571,18 +581,24 @@ def _ranking_loss_for_type(
     # The run-level generator is CPU-backed. Draw small position tensors on
     # CPU for deterministic consumption, then move only the sampled positions
     # to the model device instead of synchronizing labels/indices back to CPU.
-    a_pos = torch.randint(0, top_idx.numel(), (sample_count,), generator=generator)
-    b_pos = torch.randint(0, valid_idx.numel(), (sample_count,), generator=generator)
-    a_idx = top_idx[a_pos.to(top_idx.device)]
-    b_idx = valid_idx[b_pos.to(valid_idx.device)]
-    keep = (a_idx != b_idx) & ~torch.isclose(target[a_idx], target[b_idx])
-    if not bool(keep.any().item()):
+    top_sample_pos = torch.randint(0, top_idx.numel(), (sample_count,), generator=generator)
+    comparison_sample_pos = torch.randint(0, valid_idx.numel(), (sample_count,), generator=generator)
+    top_sample_idx = top_idx[top_sample_pos.to(top_idx.device)]
+    comparison_idx = valid_idx[comparison_sample_pos.to(valid_idx.device)]
+    keep_pair = (top_sample_idx != comparison_idx) & ~torch.isclose(
+        target[top_sample_idx],
+        target[comparison_idx],
+    )
+    if not bool(keep_pair.any().item()):
         return pred.new_tensor(0.0), 0
-    a_idx = a_idx[keep]
-    b_idx = b_idx[keep]
+    top_sample_idx = top_sample_idx[keep_pair]
+    comparison_idx = comparison_idx[keep_pair]
 
-    sign = torch.sign(target[a_idx] - target[b_idx])
-    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), int(a_idx.numel())
+    target_order = torch.sign(target[top_sample_idx] - target[comparison_idx])
+    return (
+        F.margin_ranking_loss(pred[top_sample_idx], pred[comparison_idx], target_order, margin=margin),
+        int(top_sample_idx.numel()),
+    )
 
 
 def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -> torch.Tensor:
@@ -634,12 +650,12 @@ def _window_has_positive_supervision(
     labelled_mask: torch.Tensor,
 ) -> bool:
     """Return whether a pure-workload window has positive supervision."""
-    global_idx = window.global_indices.reshape(-1)
-    valid = global_idx >= 0
-    if not bool(valid.any().item()):
+    global_indices = window.global_indices.reshape(-1)
+    valid_points = global_indices >= 0
+    if not bool(valid_points.any().item()):
         return False
-    idx = global_idx[valid].to(device=training_target.device, dtype=torch.long)
-    return bool((labelled_mask[idx] & (training_target[idx] > 0)).any().item())
+    valid_indices = global_indices[valid_points].to(device=training_target.device, dtype=torch.long)
+    return bool((labelled_mask[valid_indices] & (training_target[valid_indices] > 0)).any().item())
 
 
 def _filter_supervised_windows(
@@ -684,7 +700,7 @@ def _predict_workload_logits(
     model_config: ModelConfig,
     device: torch.device,
 ) -> torch.Tensor:
-    """Predict per-point pure-workload scores for exact query-F1 diagnostics."""
+    """Predict per-point pure-workload scores for exact validation-score diagnostics."""
     model_points = build_model_point_features_for_dim(points, workload, model.point_dim)
     norm_points, norm_queries = scaler.transform(model_points, workload.query_features)
     norm_points_dev = norm_points.to(device)
@@ -699,30 +715,32 @@ def _predict_workload_logits(
     )
     inference_batch_size = max(1, int(getattr(model_config, "inference_batch_size", 16)))
     windows = batch_windows(windows, inference_batch_size)
-    all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
-    pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+    point_score_sum = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+    point_score_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
 
     model.eval()
     with torch.no_grad():
-        for window_cpu in windows:
-            window = _trajectory_batch_to_device(window_cpu, device)
+        for window_batch_cpu in windows:
+            window = _trajectory_batch_to_device(window_batch_cpu, device)
             with torch_autocast_context(device, amp_mode):
-                pred = model(
+                window_scores = model(
                     points=window.points,
                     queries=norm_queries_dev,
                     query_type_ids=type_ids_dev,
                     padding_mask=window.padding_mask,
                 )
-            pred = pred.float()
-            for batch_idx in range(pred.shape[0]):
+            window_scores = window_scores.float()
+            for batch_idx in range(window_scores.shape[0]):
                 global_idx = window.global_indices[batch_idx]
                 valid = global_idx >= 0
-                all_pred[global_idx[valid]] = all_pred[global_idx[valid]] + pred[batch_idx, valid]
-                pred_count[global_idx[valid]] = pred_count[global_idx[valid]] + 1.0
+                point_score_sum[global_idx[valid]] = (
+                    point_score_sum[global_idx[valid]] + window_scores[batch_idx, valid]
+                )
+                point_score_count[global_idx[valid]] = point_score_count[global_idx[valid]] + 1.0
 
-    pred_count = pred_count.clamp(min=1.0)
-    return (all_pred / pred_count).detach().cpu()
+    point_score_count = point_score_count.clamp(min=1.0)
+    return (point_score_sum / point_score_count).detach().cpu()
 
 
 def _validation_checkpoint_scores(
@@ -800,7 +818,7 @@ def _validation_checkpoint_scores(
                 "range_shape_score": float(range_audit["range_shape_score"]),
             }
         )
-    variant = str(getattr(model_config, "checkpoint_f1_variant", "range_usefulness")).lower()
+    variant = str(getattr(model_config, "checkpoint_score_variant", "range_usefulness")).lower()
     if variant == "range_usefulness":
         if range_audit is None:
             return float(answer_agg), answer_pt, metrics
@@ -811,7 +829,7 @@ def _validation_checkpoint_scores(
     return float(answer_agg), answer_pt, metrics
 
 
-def _validation_query_f1(
+def _validation_query_score(
     model: TrajectoryQDSModel,
     scaler: FeatureScaler,
     trajectories: list[torch.Tensor],
@@ -824,7 +842,7 @@ def _validation_query_f1(
     query_cache: Any | None = None,
     range_geometry_scores: torch.Tensor | None = None,
 ) -> tuple[float, dict[str, float]]:
-    """Backward-compatible validation selector used by focused tests."""
+    """Return the active held-out validation score for checkpoint selection."""
     score, per_type, _metrics = _validation_checkpoint_scores(
         model=model,
         scaler=scaler,
@@ -841,7 +859,36 @@ def _validation_query_f1(
     return score, per_type
 
 
-def _validation_uniform_f1(
+def _validation_query_f1(
+    model: TrajectoryQDSModel,
+    scaler: FeatureScaler,
+    trajectories: list[torch.Tensor],
+    boundaries: list[tuple[int, int]],
+    workload: TypedQueryWorkload,
+    workload_map: dict[str, float],
+    model_config: ModelConfig,
+    device: torch.device,
+    validation_points: torch.Tensor | None = None,
+    query_cache: Any | None = None,
+    range_geometry_scores: torch.Tensor | None = None,
+) -> tuple[float, dict[str, float]]:
+    """Legacy alias for _validation_query_score."""
+    return _validation_query_score(
+        model=model,
+        scaler=scaler,
+        trajectories=trajectories,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map=workload_map,
+        model_config=model_config,
+        device=device,
+        validation_points=validation_points,
+        query_cache=query_cache,
+        range_geometry_scores=range_geometry_scores,
+    )
+
+
+def _validation_uniform_score(
     trajectories: list[torch.Tensor],
     boundaries: list[tuple[int, int]],
     workload: TypedQueryWorkload,
@@ -868,7 +915,7 @@ def _validation_uniform_f1(
         workload_map=workload_map,
         query_cache=query_cache,
     )
-    variant = str(getattr(model_config, "checkpoint_f1_variant", "range_usefulness")).lower()
+    variant = str(getattr(model_config, "checkpoint_score_variant", "range_usefulness")).lower()
     if variant == "range_usefulness":
         audit = score_range_usefulness(
             points=points,
@@ -926,9 +973,9 @@ def train_model(
                 "precomputed_labels must match flattened training points and query type count: "
                 f"expected {expected_shape}, got labels={tuple(labels.shape)} mask={tuple(labelled_mask.shape)}"
             )
-    residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
-    if residual_label_mode not in {"none", "temporal"}:
-        raise ValueError("residual_label_mode must be 'none' or 'temporal'.")
+    temporal_residual_label_mode = str(getattr(model_config, "temporal_residual_label_mode", "none")).lower()
+    if temporal_residual_label_mode not in {"none", "temporal"}:
+        raise ValueError("temporal_residual_label_mode must be 'none' or 'temporal'.")
     loss_objective = str(getattr(model_config, "loss_objective", "budget_topk")).lower()
     if loss_objective not in {"ranking_bce", "budget_topk"}:
         raise ValueError("loss_objective must be 'ranking_bce' or 'budget_topk'.")
@@ -937,8 +984,8 @@ def train_model(
     temporal_residual_budget_masks: tuple[tuple[float, float, torch.Tensor], ...] = ()
     temporal_residual_union_mask: torch.Tensor | None = None
     workload_type_id = _pure_query_type_id(workload.type_ids)
-    if residual_label_mode == "temporal" and loss_objective == "budget_topk":
-        budget_ratios = _effective_budget_loss_ratios(model_config, residual_label_mode)
+    if temporal_residual_label_mode == "temporal" and loss_objective == "budget_topk":
+        budget_ratios = _effective_budget_loss_ratios(model_config, temporal_residual_label_mode)
         temporal_residual_budget_masks = _temporal_base_masks_for_budget_ratios(
             n_points=int(labels.shape[0]),
             boundaries=train_boundaries,
@@ -950,7 +997,7 @@ def train_model(
             temporal_residual_union_mask = torch.zeros((labels.shape[0],), dtype=torch.bool, device=labels.device)
             for _total_ratio, _effective_ratio, base_mask in temporal_residual_budget_masks:
                 temporal_residual_union_mask |= base_mask
-    elif residual_label_mode == "temporal":
+    elif temporal_residual_label_mode == "temporal":
         labels, labelled_mask = _apply_temporal_residual_labels(
             labels=labels,
             labelled_mask=labelled_mask,
@@ -983,7 +1030,10 @@ def train_model(
     type_ids_dev = workload.type_ids.to(device)
     training_target_dev = training_target.to(device)
     labelled_mask_dev = training_labelled_mask.to(device)
-    base_type_weights = _workload_map_tensor(train_workload_map or _query_frequency_workload_map(workload), device=device)
+    base_type_weights = _workload_map_tensor(
+        train_workload_map or _query_frequency_workload_map(workload),
+        device=device,
+    )
     active_type_id = _single_active_type_id(base_type_weights)
     if active_type_id != workload_type_id:
         raise ValueError("Training workload map and workload query type must refer to the same pure workload.")
@@ -998,7 +1048,7 @@ def train_model(
         configured_budget_ratios=configured_budget_ratios,
         effective_budget_ratios=budget_ratios,
         temporal_residual_budget_masks=temporal_residual_budget_masks,
-        residual_label_mode=residual_label_mode,
+        temporal_residual_label_mode=temporal_residual_label_mode,
         loss_objective=loss_objective,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
     )
@@ -1006,7 +1056,7 @@ def train_model(
         print(
             f"  [{run_tag}] effective_budget_loss_ratios={list(budget_ratios)} "
             f"from configured={list(configured_budget_ratios)} "
-            f"residual_label_mode={residual_label_mode} "
+            f"temporal_residual_label_mode={temporal_residual_label_mode} "
             f"mlqds_temporal_fraction={float(getattr(model_config, 'mlqds_temporal_fraction', 0.0)):.3f}",
             flush=True,
         )
@@ -1061,68 +1111,71 @@ def train_model(
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
-    selection_metric = str(getattr(model_config, "checkpoint_selection_metric", "f1")).lower()
-    if selection_metric not in {"loss", "f1", "uniform_gap"}:
-        raise ValueError("checkpoint_selection_metric must be 'loss', 'f1', or 'uniform_gap'.")
-    f1_diag_every = int(getattr(model_config, "f1_diagnostic_every", 0) or 0)
-    has_validation_f1 = (
+    selection_metric = normalize_checkpoint_selection_metric(
+        getattr(model_config, "checkpoint_selection_metric", "score")
+    )
+    if selection_metric not in {"loss", "score", "uniform_gap"}:
+        raise ValueError("checkpoint_selection_metric must be 'loss', 'score', 'f1', or 'uniform_gap'.")
+    validation_score_every = int(getattr(model_config, "validation_score_every", 0) or 0)
+    has_validation_score = (
         validation_trajectories is not None
         and validation_boundaries is not None
         and validation_workload is not None
         and validation_workload_map is not None
     )
-    if selection_metric in {"f1", "uniform_gap"} and not has_validation_f1:
+    if selection_metric in {"score", "uniform_gap"} and not has_validation_score:
         print(
-            f"  [{run_tag}] WARNING: checkpoint_selection_metric={selection_metric} requested without validation workload; "
+            f"  [{run_tag}] WARNING: checkpoint_selection_metric={selection_metric} "
+            "requested without validation workload; "
             "falling back to loss selection.",
             flush=True,
         )
         selection_metric = "loss"
-    if selection_metric in {"f1", "uniform_gap"} and f1_diag_every <= 0:
-        f1_diag_every = diag_every
-    validation_points_for_f1: torch.Tensor | None = None
+    if selection_metric in {"score", "uniform_gap"} and validation_score_every <= 0:
+        validation_score_every = diag_every
+    validation_points_for_score: torch.Tensor | None = None
     validation_query_cache: Any | None = None
-    if has_validation_f1:
+    if has_validation_score:
         from src.evaluation.query_cache import EvaluationQueryCache
 
         assert validation_trajectories is not None
         assert validation_boundaries is not None
         assert validation_workload is not None
-        validation_points_for_f1 = (
+        validation_points_for_score = (
             validation_points
             if validation_points is not None
             else torch.cat(validation_trajectories, dim=0)
         )
         if precomputed_validation_query_cache is None:
             validation_query_cache = EvaluationQueryCache.for_workload(
-                validation_points_for_f1,
+                validation_points_for_score,
                 validation_boundaries,
                 validation_workload.typed_queries,
             )
         else:
             precomputed_validation_query_cache.validate(
-                validation_points_for_f1,
+                validation_points_for_score,
                 validation_boundaries,
                 validation_workload.typed_queries,
             )
             validation_query_cache = precomputed_validation_query_cache
     validation_uniform_result: tuple[float, dict[str, float]] | None = None
-    if selection_metric == "uniform_gap" and has_validation_f1:
+    if selection_metric == "uniform_gap" and has_validation_score:
         assert validation_trajectories is not None
         assert validation_boundaries is not None
         assert validation_workload is not None
-        validation_uniform_result = _validation_uniform_f1(
+        validation_uniform_result = _validation_uniform_score(
             trajectories=validation_trajectories,
             boundaries=validation_boundaries,
             workload=validation_workload,
             workload_map=validation_workload_map or {},
             model_config=model_config,
-            validation_points=validation_points_for_f1,
+            validation_points=validation_points_for_score,
             query_cache=validation_query_cache,
         )
-        uniform_f1, uniform_per_type = validation_uniform_result
+        uniform_score, uniform_per_type = validation_uniform_result
         print(
-            f"  [{run_tag}] validation uniform_f1={uniform_f1:.6f}  "
+            f"  [{run_tag}] validation uniform_score={uniform_score:.6f}  "
             f"range={uniform_per_type.get('range', 0.0):.6f}  "
             f"knn={uniform_per_type.get('knn', 0.0):.6f}  "
             f"similarity={uniform_per_type.get('similarity', 0.0):.6f}  "
@@ -1130,16 +1183,16 @@ def train_model(
             flush=True,
         )
 
-    g = torch.Generator().manual_seed(int(seed) + 99)
+    training_sample_generator = torch.Generator().manual_seed(int(seed) + 99)
     # Separate fixed-seed generator for diagnostics so the tau subsample
     # stays consistent across epochs and doesn't oscillate with training state.
-    eval_g = torch.Generator().manual_seed(int(seed) + 777)
+    diagnostic_sample_generator = torch.Generator().manual_seed(int(seed) + 777)
     history: list[dict[str, float]] = []
 
     effective_epochs = max(1, int(model_config.epochs))
     patience = int(getattr(model_config, "early_stopping_patience", 0) or 0)
     smoothing_window = max(1, int(getattr(model_config, "checkpoint_smoothing_window", 1) or 1))
-    checkpoint_full_f1_every = max(1, int(getattr(model_config, "checkpoint_full_f1_every", 1) or 1))
+    checkpoint_full_score_every = max(1, int(getattr(model_config, "checkpoint_full_score_every", 1) or 1))
     checkpoint_candidate_pool_size = max(1, int(getattr(model_config, "checkpoint_candidate_pool_size", 1) or 1))
     checkpoint_candidates: list[CheckpointCandidate] = []
     selection_history: list[float] = []
@@ -1149,7 +1202,7 @@ def train_model(
     best_epoch = 0
     best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
-    epoch_w = len(str(effective_epochs))
+    epoch_label_width = len(str(effective_epochs))
     epochs_trained = 0
     for epoch in range(effective_epochs):
         epoch_t0 = time.perf_counter()
@@ -1158,7 +1211,7 @@ def train_model(
             "loss_s": 0.0,
             "backward_s": 0.0,
             "diagnostic_s": 0.0,
-            "f1_s": 0.0,
+            "validation_score_s": 0.0,
         }
         evaluated_checkpoint_candidates: list[CheckpointCandidate] = []
         model.train()
@@ -1167,25 +1220,25 @@ def train_model(
         skipped_zero_windows = prefiltered_zero_windows.clone()
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
-        for w_cpu in windows:
-            w = _trajectory_batch_to_device(w_cpu, device)
+        for window_batch_cpu in windows:
+            window_batch = _trajectory_batch_to_device(window_batch_cpu, device)
             forward_t0 = time.perf_counter()
             with torch_autocast_context(device, amp_mode):
                 pred_batch = model(
-                    points=w.points,
+                    points=window_batch.points,
                     queries=norm_queries_dev,
                     query_type_ids=type_ids_dev,
-                    padding_mask=w.padding_mask,
+                    padding_mask=window_batch.padding_mask,
                 )
             epoch_timing["forward_s"] += time.perf_counter() - forward_t0
             loss_t0 = time.perf_counter()
             pred_batch = pred_batch.float()
-            # pred_batch: (B, L).  Build the active objective in batched tensor
+            # pred_batch: (batch, window_length). Build the active objective in batched tensor
             # paths where possible so batch-size increases create larger GPU
             # work units instead of many tiny per-window loss calls.
             loss: torch.Tensor | None = None
-            B = pred_batch.shape[0]
-            batch_global_idx = w.global_indices.to(device=device)
+            batch_size = pred_batch.shape[0]
+            batch_global_idx = window_batch.global_indices.to(device=device)
             valid_batch = batch_global_idx >= 0
             safe_global_idx = batch_global_idx.clamp(min=0)
             batch_labels = training_target_dev[safe_global_idx]
@@ -1201,7 +1254,7 @@ def train_model(
                 pred=pred_batch,
                 target=batch_labels,
                 valid_mask=pointwise_mask_batch,
-                generator=g,
+                generator=training_sample_generator,
             )
 
             if loss_objective == "budget_topk":
@@ -1226,31 +1279,31 @@ def train_model(
                 if bool(positive_row_mask.any().item()):
                     row_losses = rank_loss_rows + model_config.pointwise_loss_weight * pointwise_loss_rows
                     loss = (
-                        row_losses[positive_row_mask].sum() / float(B)
+                        row_losses[positive_row_mask].sum() / float(batch_size)
                         + model_config.l2_score_weight * (pred_batch ** 2).mean()
                     )
             else:
                 loss_terms: list[torch.Tensor] = []
-                for b in torch.where(positive_row_mask.detach().cpu())[0].tolist():
-                    row = int(b)
-                    idx = batch_global_idx[row]
-                    valid_window = idx >= 0
-                    global_idx = idx[valid_window]
-                    pred_valid = pred_batch[row][valid_window]
+                for row_index in torch.where(positive_row_mask.detach().cpu())[0].tolist():
+                    row = int(row_index)
+                    window_global_idx = batch_global_idx[row]
+                    valid_window = window_global_idx >= 0
+                    valid_global_idx = window_global_idx[valid_window]
+                    valid_pred = pred_batch[row][valid_window]
                     rank_loss, pair_count = _ranking_loss_for_type(
-                        pred=pred_valid,
-                        target=training_target_dev[global_idx],
-                        valid_mask=labelled_mask_dev[global_idx],
+                        pred=valid_pred,
+                        target=training_target_dev[valid_global_idx],
+                        valid_mask=labelled_mask_dev[valid_global_idx],
                         pairs_per_type=model_config.ranking_pairs_per_type,
                         top_quantile=model_config.ranking_top_quantile,
                         margin=model_config.rank_margin,
-                        generator=g,
+                        generator=training_sample_generator,
                     )
                     ranking_pair_counts[active_type_id] += int(pair_count)
                     loss_terms.append(rank_loss + model_config.pointwise_loss_weight * pointwise_loss_rows[row])
                 if loss_terms:
                     loss = (
-                        torch.stack(loss_terms).sum() / float(B)
+                        torch.stack(loss_terms).sum() / float(batch_size)
                         + model_config.l2_score_weight * (pred_batch ** 2).mean()
                     )
             epoch_timing["loss_s"] += time.perf_counter() - loss_t0
@@ -1285,41 +1338,49 @@ def train_model(
         if is_diag_epoch:
             diagnostic_t0 = time.perf_counter()
             if diag_fraction < 1.0 and len(diag_windows) > 8:
-                k = max(8, int(len(diag_windows) * diag_fraction))
-                perm = torch.randperm(len(diag_windows), generator=eval_g)[:k].tolist()
-                sample_windows = [diag_windows[i] for i in perm]
+                diagnostic_window_count = max(8, int(len(diag_windows) * diag_fraction))
+                sample_indices = torch.randperm(
+                    len(diag_windows),
+                    generator=diagnostic_sample_generator,
+                )[:diagnostic_window_count].tolist()
+                diagnostic_windows = [diag_windows[i] for i in sample_indices]
             else:
-                sample_windows = diag_windows
+                diagnostic_windows = diag_windows
 
             model.eval()
             with torch.no_grad():
-                all_pred = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
-                pred_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+                diagnostic_score_sum = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
+                diagnostic_score_count = norm_points_dev.new_zeros((norm_points_dev.shape[0],))
                 diagnostic_batch_size = max(1, int(getattr(model_config, "inference_batch_size", train_batch_size)))
-                for w_cpu in batch_windows(sample_windows, diagnostic_batch_size):
-                    w = _trajectory_batch_to_device(w_cpu, device)
+                for diagnostic_batch_cpu in batch_windows(diagnostic_windows, diagnostic_batch_size):
+                    diagnostic_batch = _trajectory_batch_to_device(diagnostic_batch_cpu, device)
                     with torch_autocast_context(device, amp_mode):
-                        wp = model(
-                            points=w.points,
+                        window_scores = model(
+                            points=diagnostic_batch.points,
                             queries=norm_queries_dev,
                             query_type_ids=type_ids_dev,
-                            padding_mask=w.padding_mask,
+                            padding_mask=diagnostic_batch.padding_mask,
                         )
-                    wp = wp.float()
-                    for batch_idx in range(wp.shape[0]):
-                        widx = w.global_indices[batch_idx]
-                        valid = widx >= 0
-                        all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx, valid]
-                        pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
-                covered_mask = pred_count > 0
-                pred_count = pred_count.clamp(min=1.0)
-                full_pred = all_pred / pred_count
+                    window_scores = window_scores.float()
+                    for batch_idx in range(window_scores.shape[0]):
+                        point_indices = diagnostic_batch.global_indices[batch_idx]
+                        valid_points = point_indices >= 0
+                        diagnostic_score_sum[point_indices[valid_points]] = (
+                            diagnostic_score_sum[point_indices[valid_points]]
+                            + window_scores[batch_idx, valid_points]
+                        )
+                        diagnostic_score_count[point_indices[valid_points]] = (
+                            diagnostic_score_count[point_indices[valid_points]] + 1.0
+                        )
+                covered_mask = diagnostic_score_count > 0
+                diagnostic_score_count = diagnostic_score_count.clamp(min=1.0)
+                full_scores = diagnostic_score_sum / diagnostic_score_count
 
             stats: dict[str, float] = {
                 "epoch": float(epoch),
                 "loss": float(epoch_loss.item() / max(1, len(windows))),
                 "pred_std": (
-                    float(full_pred[covered_mask].std().item())
+                    float(full_scores[covered_mask].std().item())
                     if bool(covered_mask.any().item())
                     else 0.0
                 ),
@@ -1337,10 +1398,10 @@ def train_model(
             for t in range(NUM_QUERY_TYPES):
                 if t != active_type_id:
                     continue
-                pt = full_pred
-                stats[f"pred_p50_t{t}"] = float(_safe_quantile(pt, 0.50).item())
-                stats[f"pred_p90_t{t}"] = float(_safe_quantile(pt, 0.90).item())
-                stats[f"pred_p99_t{t}"] = float(_safe_quantile(pt, 0.99).item())
+                type_scores = full_scores
+                stats[f"pred_p50_t{t}"] = float(_safe_quantile(type_scores, 0.50).item())
+                stats[f"pred_p90_t{t}"] = float(_safe_quantile(type_scores, 0.90).item())
+                stats[f"pred_p99_t{t}"] = float(_safe_quantile(type_scores, 0.99).item())
                 labelled_type = labelled_mask_dev
                 positive_type = labelled_type & (training_target_dev > 0)
                 labelled_count = max(1, int(labelled_type.sum().item()))
@@ -1351,16 +1412,16 @@ def train_model(
                     stats[f"label_p95_t{t}"] = 0.0
                 eval_mask = labelled_mask_dev & covered_mask
                 if bool(eval_mask.any().item()):
-                    # Reset eval_g to the same state each epoch so the diagnostic
+                    # Reset the diagnostic generator each epoch so the diagnostic
                     # subsample is identical across epochs, giving stable tau trends.
-                    eval_g.manual_seed(int(seed) + 777)
-                    p_sample, y_sample = _discriminative_sample(
-                        pt[eval_mask].detach().cpu(),
+                    diagnostic_sample_generator.manual_seed(int(seed) + 777)
+                    pred_sample, target_sample = _discriminative_sample(
+                        type_scores[eval_mask].detach().cpu(),
                         training_target_dev[eval_mask].detach().cpu(),
                         n_each=100,
-                        generator=eval_g,
+                        generator=diagnostic_sample_generator,
                     )
-                    stats[f"kendall_tau_t{t}"] = _kendall_tau(p_sample, y_sample)
+                    stats[f"kendall_tau_t{t}"] = _kendall_tau(pred_sample, target_sample)
                 else:
                     stats[f"kendall_tau_t{t}"] = 0.0
 
@@ -1370,27 +1431,32 @@ def train_model(
 
             candidate_tau_vals = [stats[f"kendall_tau_t{t}"] for t in active_type_ids]
             candidate_avg_tau = sum(candidate_tau_vals) / max(1, len(candidate_tau_vals))
-            f1_due = f1_diag_every <= 0 or ((epoch + 1) % f1_diag_every == 0 or is_last_epoch or epoch == 0)
-            full_f1_due = f1_due and (
-                checkpoint_full_f1_every <= 1
-                or (epoch + 1) % checkpoint_full_f1_every == 0
+            validation_score_due = (
+                validation_score_every <= 0
+                or (epoch + 1) % validation_score_every == 0
+                or is_last_epoch
+                or epoch == 0
+            )
+            full_score_due = validation_score_due and (
+                checkpoint_full_score_every <= 1
+                or (epoch + 1) % checkpoint_full_score_every == 0
                 or is_last_epoch
             )
             use_checkpoint_candidate_pool = (
-                has_validation_f1
-                and f1_due
-                and selection_metric in {"f1", "uniform_gap"}
-                and checkpoint_full_f1_every > 1
+                has_validation_score
+                and validation_score_due
+                and selection_metric in {"score", "uniform_gap"}
+                and checkpoint_full_score_every > 1
             )
-            should_run_f1 = has_validation_f1 and full_f1_due and (
-                selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
+            should_run_validation_score = has_validation_score and full_score_due and (
+                selection_metric in {"score", "uniform_gap"} or validation_score_every > 0
             ) and not use_checkpoint_candidate_pool
-            if should_run_f1:
-                f1_t0 = time.perf_counter()
+            if should_run_validation_score:
+                score_t0 = time.perf_counter()
                 assert validation_trajectories is not None
                 assert validation_boundaries is not None
                 assert validation_workload is not None
-                validation_score, per_type_f1, validation_metrics = _validation_checkpoint_scores(
+                validation_score, per_type_score, validation_metrics = _validation_checkpoint_scores(
                     model=model,
                     scaler=scaler,
                     trajectories=validation_trajectories,
@@ -1399,27 +1465,29 @@ def train_model(
                     workload_map=validation_workload_map or {},
                     model_config=model_config,
                     device=device,
-                    validation_points=validation_points_for_f1,
+                    validation_points=validation_points_for_score,
                     query_cache=validation_query_cache,
                     range_geometry_scores=precomputed_validation_geometry_scores,
                 )
-                epoch_timing["f1_s"] += time.perf_counter() - f1_t0
+                epoch_timing["validation_score_s"] += time.perf_counter() - score_t0
                 record_validation_stats(
                     stats,
                     validation_score=validation_score,
-                    per_type_f1=per_type_f1,
+                    per_type_score=per_type_score,
                     validation_metrics=validation_metrics,
                     validation_uniform_result=validation_uniform_result,
                     validation_workload_map=validation_workload_map,
                 )
-            if has_validation_f1 and f1_due and selection_metric in {"f1", "uniform_gap"}:
+            if has_validation_score and validation_score_due and selection_metric in {"score", "uniform_gap"}:
+                stats["checkpoint_score_candidate"] = 1.0
                 stats["checkpoint_f1_candidate"] = 1.0
                 stats["checkpoint_candidate_cheap_score"] = selection_score(
                     candidate_avg_tau,
                     stats["pred_std"],
                     stats["loss"],
                 )
-                stats["checkpoint_full_f1_due"] = 1.0 if full_f1_due else 0.0
+                stats["checkpoint_full_score_due"] = 1.0 if full_score_due else 0.0
+                stats["checkpoint_full_f1_due"] = stats["checkpoint_full_score_due"]
                 if use_checkpoint_candidate_pool:
                     checkpoint_candidates.append(
                         CheckpointCandidate(
@@ -1434,8 +1502,8 @@ def train_model(
                     )
                     checkpoint_candidates.sort(key=lambda candidate: candidate.cheap_score, reverse=True)
                     checkpoint_candidates = checkpoint_candidates[:checkpoint_candidate_pool_size]
-                    if full_f1_due and checkpoint_candidates:
-                        f1_t0 = time.perf_counter()
+                    if full_score_due and checkpoint_candidates:
+                        score_t0 = time.perf_counter()
                         assert validation_trajectories is not None
                         assert validation_boundaries is not None
                         assert validation_workload is not None
@@ -1443,7 +1511,7 @@ def train_model(
                         for candidate in sorted(checkpoint_candidates, key=lambda item: item.epoch_number):
                             candidate_t0 = time.perf_counter()
                             model.load_state_dict(candidate.state_dict)
-                            validation_score, per_type_f1, validation_metrics = _validation_checkpoint_scores(
+                            validation_score, per_type_score, validation_metrics = _validation_checkpoint_scores(
                                 model=model,
                                 scaler=scaler,
                                 trajectories=validation_trajectories,
@@ -1452,24 +1520,25 @@ def train_model(
                                 workload_map=validation_workload_map or {},
                                 model_config=model_config,
                                 device=device,
-                                validation_points=validation_points_for_f1,
+                                validation_points=validation_points_for_score,
                                 query_cache=validation_query_cache,
                                 range_geometry_scores=precomputed_validation_geometry_scores,
                             )
                             record_validation_stats(
                                 candidate.stats,
                                 validation_score=validation_score,
-                                per_type_f1=per_type_f1,
+                                per_type_score=per_type_score,
                                 validation_metrics=validation_metrics,
                                 validation_uniform_result=validation_uniform_result,
                                 validation_workload_map=validation_workload_map,
                             )
                             candidate.stats["checkpoint_candidate_evaluated"] = 1.0
+                            candidate.stats["checkpoint_full_score_round_epoch"] = float(epoch + 1)
                             candidate.stats["checkpoint_full_f1_round_epoch"] = float(epoch + 1)
                             candidate.stats["checkpoint_validation_seconds"] = float(time.perf_counter() - candidate_t0)
                             evaluated_checkpoint_candidates.append(candidate)
                         model.load_state_dict(current_state_dict)
-                        epoch_timing["f1_s"] += time.perf_counter() - f1_t0
+                        epoch_timing["validation_score_s"] += time.perf_counter() - score_t0
                         checkpoint_candidates = []
         else:
             # Skip diagnostics this epoch; log only loss.  Patience counters
@@ -1489,7 +1558,8 @@ def train_model(
         stats["epoch_loss_seconds"] = float(epoch_timing["loss_s"])
         stats["epoch_backward_seconds"] = float(epoch_timing["backward_s"])
         stats["epoch_diagnostic_seconds"] = float(epoch_timing["diagnostic_s"])
-        stats["epoch_f1_seconds"] = float(epoch_timing["f1_s"])
+        stats["epoch_validation_score_seconds"] = float(epoch_timing["validation_score_s"])
+        stats["epoch_f1_seconds"] = stats["epoch_validation_score_seconds"]
         stats["raw_training_window_count"] = float(raw_window_count)
         stats["trained_training_window_count"] = float(trained_window_count)
         stats["filtered_zero_window_count"] = float(raw_window_count - trained_window_count)
@@ -1543,7 +1613,7 @@ def train_model(
                         status = "promoted" if candidate_is_new_best else "checked"
                         print(
                             f"  [{run_tag}] checkpoint candidate epoch "
-                            f"{candidate.epoch_number:0{epoch_w}d}/{effective_epochs}  "
+                            f"{candidate.epoch_number:0{epoch_label_width}d}/{effective_epochs}  "
                             f"cheap={candidate.cheap_score:+.3f}  "
                             f"select={candidate_selection:+.3f}  "
                             f"smoothed={candidate_smoothed:+.3f}  {status}",
@@ -1571,7 +1641,7 @@ def train_model(
                     smoothed_selection = smoothed_score
                     stats["selection_score_smoothed"] = smoothed_score
                     # Use the smoothed score for "best" decisions: averages out
-                    # epoch-to-epoch validation F1 noise so we don't lock onto a lucky
+                    # epoch-to-epoch validation score noise so we don't lock onto a lucky
                     # spike. Single-epoch loss still tiebreaks on near-equal smoothed.
                     is_new_best_model = smoothed_score > best_selection + 1e-4 or (
                         abs(smoothed_score - best_selection) <= 1e-4 and stats["loss"] < best_loss - 1e-8
@@ -1588,7 +1658,7 @@ def train_model(
             )
             selection_text = f"{selection:+.3f}" if selection is not None else "skipped"
             print(
-                f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
+                f"  [{run_tag}] epoch {epoch + 1:0{epoch_label_width}d}/{effective_epochs}  "
                 f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
                 f"pred_std={stats['pred_std']:.6g}  select={selection_text}{smoothed_label}  "
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
@@ -1603,10 +1673,10 @@ def train_model(
                     f"combined_f1={stats.get('val_combined_f1', 0.0):.6f}",
                     flush=True,
                 )
-            if "val_uniform_f1" in stats:
+            if "val_uniform_score" in stats:
                 print(
-                    f"    [{run_tag}] val_vs_uniform aggregate={stats['val_query_uniform_gap']:+.6f}  "
-                    f"type_deficit={stats['val_query_type_deficit']:.6f}  "
+                    f"    [{run_tag}] val_vs_uniform aggregate={stats['val_selection_uniform_gap']:+.6f}  "
+                    f"type_deficit={stats['val_selection_type_deficit']:.6f}  "
                     f"range={stats.get('val_selection_score_gap_range', 0.0):+.6f}  "
                     f"knn={stats.get('val_selection_score_gap_knn', 0.0):+.6f}  "
                     f"similarity={stats.get('val_selection_score_gap_similarity', 0.0):+.6f}  "
@@ -1631,7 +1701,7 @@ def train_model(
                 f"loss={stats['epoch_loss_seconds']:.2f}s  "
                 f"backward={stats['epoch_backward_seconds']:.2f}s  "
                 f"diagnostic={stats['epoch_diagnostic_seconds']:.2f}s  "
-                f"f1={stats['epoch_f1_seconds']:.2f}s  "
+                f"validation_score={stats['epoch_validation_score_seconds']:.2f}s  "
                 f"filtered_zero_windows={int(stats['filtered_zero_window_count'])}",
                 flush=True,
             )
@@ -1650,7 +1720,7 @@ def train_model(
                     epochs_no_improve += 1
                     if epochs_no_improve >= patience:
                         print(
-                            f"  [{run_tag}] early stopping at epoch {epoch + 1:0{epoch_w}d}: "
+                            f"  [{run_tag}] early stopping at epoch {epoch + 1:0{epoch_label_width}d}: "
                             f"selection score did not improve over {patience} diag epochs "
                             f"(best_selection={best_selection:+.3f}, best_loss={best_loss:.8f})",
                             flush=True,
@@ -1659,7 +1729,7 @@ def train_model(
         else:
             # Non-diagnostic epoch: log loss only, no tau / early-stopping update.
             print(
-                f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
+                f"  [{run_tag}] epoch {epoch + 1:0{epoch_label_width}d}/{effective_epochs}  "
                 f"loss={stats['loss']:.8f}  (no-diag)  ({epoch_dt:.2f}s)",
                 flush=True,
             )

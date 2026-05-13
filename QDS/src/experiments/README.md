@@ -65,8 +65,8 @@ is to compress once before future user queries are known.
 | Primary compression | `5%` retained points |
 | Required compression sweep | `1%,2%,5%,10%,15%,20%,30%` |
 | Training | `8` epochs, early stopping patience `5` |
-| Checkpoint target | `checkpoint_f1_variant=range_usefulness` |
-| Checkpoint selection | `checkpoint_selection_metric=uniform_gap`, full F1 every `4` epochs, candidate pool `2` |
+| Checkpoint target | `checkpoint_score_variant=range_usefulness` |
+| Checkpoint selection | `checkpoint_selection_metric=uniform_gap`, `validation_score_every=1`, `checkpoint_full_score_every=4`, candidate pool `2` |
 | Loss | `budget_topk` over training budgets `5%,10%` |
 | MLQDS simplification | score mode `rank`, temporal fraction `0.25` |
 | Runtime | TF32 enabled, BF16 AMP, train/inference batch size `64` |

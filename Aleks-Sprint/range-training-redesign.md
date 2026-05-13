@@ -279,7 +279,7 @@ Checkpoint selection must be workload-blind:
 
 `uniform_gap` means checkpoint score minus uniform score on the same validation
 workload and compression ratio. It does not replace `RangeUseful`; it uses
-`RangeUseful` as the underlying metric when `checkpoint_f1_variant` is
+`RangeUseful` as the underlying metric when `checkpoint_score_variant` is
 `range_usefulness`.
 
 ## Workload Generation

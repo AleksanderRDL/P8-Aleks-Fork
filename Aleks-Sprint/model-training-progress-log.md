@@ -19,3 +19,15 @@
   multi-budget output files from `range_objective_audit` to
   `range_compression_audit`, and renamed the learned residual-fill summary to
   `range_learned_fill_summary`.
+- Replaced misleading checkpoint/runtime knobs that said `f1` with score-based
+  names: `validation_score_every`, `checkpoint_full_score_every`, and
+  `checkpoint_score_variant`. Kept legacy aliases for old configs and commands.
+- Renamed the temporal-base label knob to `temporal_residual_label_mode` so it
+  describes the actual learned-fill residual behavior. Kept `residual_label_mode`
+  as a legacy alias.
+- Ran a broader naming cleanup beyond the workload-blind pivot. Replaced vague
+  local names in workload generation, inference, query execution, simplification,
+  GeoJSON export, trajectory caching, and split handling with names that expose
+  the actual domain object: bounds, query type, anchor point, candidate indices,
+  normalized points/queries, point score accumulators, keep counts, and trajectory
+  counts.

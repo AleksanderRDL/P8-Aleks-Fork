@@ -57,7 +57,12 @@ class MLQDSMethod:
     amp_mode: str = "off"
     inference_batch_size: int = 16
 
-    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
         """Simplify using one explicit typed workload score.
 
         If the workload contains no queries, keep every point because there is
@@ -75,13 +80,17 @@ class MLQDSMethod:
         else:
             point_dim = self.trained.model.point_dim
             model_points = build_model_point_features_for_dim(points, self.workload, point_dim)
-            p, q = self.trained.scaler.transform(model_points, self.workload.query_features)
-            device = torch.device(self.inference_device) if self.inference_device is not None else default_inference_device()
+            norm_points, norm_queries = self.trained.scaler.transform(model_points, self.workload.query_features)
+            device = (
+                torch.device(self.inference_device)
+                if self.inference_device is not None
+                else default_inference_device()
+            )
             pred = windowed_predict(
                 model=self.trained.model,
-                norm_points=p,
+                norm_points=norm_points,
                 boundaries=boundaries,
-                queries=q,
+                queries=norm_queries,
                 query_type_ids=self.workload.type_ids,
                 batch_size=self.inference_batch_size,
                 device=device,
@@ -110,17 +119,22 @@ class UniformTemporalMethod:
 
     name: str = "uniform"
 
-    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
         """Retain evenly spaced points per trajectory, including endpoints."""
         retained = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
         for start, end in boundaries:
-            n = end - start
-            if n <= 0:
+            point_count = end - start
+            if point_count <= 0:
                 continue
-            k = max(2, int(torch.ceil(torch.tensor(float(compression_ratio) * n)).item()))
-            k = min(k, n)
-            local_idx = evenly_spaced_indices(n, k, points.device)
-            retained[start + local_idx] = True
+            keep_count = max(2, int(torch.ceil(torch.tensor(float(compression_ratio) * point_count)).item()))
+            keep_count = min(keep_count, point_count)
+            local_indices = evenly_spaced_indices(point_count, keep_count, points.device)
+            retained[start + local_indices] = True
         return retained
 
 
@@ -134,7 +148,12 @@ class ScoreHybridMethod:
     diversity_bonus: float = 0.0
     hybrid_mode: str = "fill"
 
-    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
         """Retain temporal base points, then fill with supplied per-point scores."""
         if int(self.scores.numel()) != int(points.shape[0]):
             raise ValueError(
@@ -167,75 +186,77 @@ class DouglasPeuckerMethod:
     name: str = "DouglasPeucker"
 
     @staticmethod
-    def _farthest_in_segment(xy: np.ndarray, s: int, e: int) -> tuple[int, float]:
-        """Return (split_idx, max_perp) for points strictly between s and e."""
-        if e - s < 2:
+    def _farthest_in_segment(xy: np.ndarray, start: int, end: int) -> tuple[int, float]:
+        """Return (split_idx, max_perp) for points strictly between start and end."""
+        if end - start < 2:
             return -1, 0.0
-        a = xy[s]
-        b = xy[e]
-        v = b - a
-        v_norm_sq = float(v[0] * v[0] + v[1] * v[1])
-        seg = xy[s + 1 : e]
-        if v_norm_sq < 1e-12:
-            d = np.linalg.norm(seg - a, axis=1)
+        start_point = xy[start]
+        end_point = xy[end]
+        segment_vector = end_point - start_point
+        segment_norm_sq = float(segment_vector[0] * segment_vector[0] + segment_vector[1] * segment_vector[1])
+        interior_points = xy[start + 1 : end]
+        if segment_norm_sq < 1e-12:
+            distances = np.linalg.norm(interior_points - start_point, axis=1)
         else:
-            rel = seg - a
-            proj = (rel @ v) / v_norm_sq
-            closest = a + proj[:, None] * v
-            d = np.linalg.norm(seg - closest, axis=1)
-        local = int(np.argmax(d))
-        return s + 1 + local, float(d[local])
+            relative_points = interior_points - start_point
+            projection = (relative_points @ segment_vector) / segment_norm_sq
+            closest_points = start_point + projection[:, None] * segment_vector
+            distances = np.linalg.norm(interior_points - closest_points, axis=1)
+        local_split_idx = int(np.argmax(distances))
+        return start + 1 + local_split_idx, float(distances[local_split_idx])
 
     def _dp_retained_mask(self, traj_xy_np: np.ndarray, k_keep: int) -> np.ndarray:
         """Retain the k_keep points produced by DP recursion (largest perp first)."""
-        n = int(traj_xy_np.shape[0])
-        mask = np.zeros((n,), dtype=bool)
-        if n == 0 or k_keep <= 0:
+        point_count = int(traj_xy_np.shape[0])
+        mask = np.zeros((point_count,), dtype=bool)
+        if point_count == 0 or k_keep <= 0:
             return mask
         mask[0] = True
-        if n == 1 or k_keep == 1:
+        if point_count == 1 or k_keep == 1:
             return mask
-        mask[n - 1] = True
+        mask[point_count - 1] = True
         if k_keep <= 2:
             return mask
 
         # Negative-distance heap so largest perp pops first.
         heap: list[tuple[float, int, int, int]] = []
-        split_idx, perp = self._farthest_in_segment(traj_xy_np, 0, n - 1)
+        split_idx, perpendicular_distance = self._farthest_in_segment(traj_xy_np, 0, point_count - 1)
         if split_idx >= 0:
-            heapq.heappush(heap, (-perp, split_idx, 0, n - 1))
+            heapq.heappush(heap, (-perpendicular_distance, split_idx, 0, point_count - 1))
 
         kept = 2
-        tie = 0  # heap-stability tiebreak counter (keeps push order deterministic)
         while heap and kept < k_keep:
-            _, split_idx, s, e = heapq.heappop(heap)
+            _, split_idx, start, end = heapq.heappop(heap)
             if mask[split_idx]:
                 continue
             mask[split_idx] = True
             kept += 1
-            left_split, left_perp = self._farthest_in_segment(traj_xy_np, s, split_idx)
+            left_split, left_perpendicular = self._farthest_in_segment(traj_xy_np, start, split_idx)
             if left_split >= 0:
-                tie += 1
-                heapq.heappush(heap, (-left_perp, left_split, s, split_idx))
-            right_split, right_perp = self._farthest_in_segment(traj_xy_np, split_idx, e)
+                heapq.heappush(heap, (-left_perpendicular, left_split, start, split_idx))
+            right_split, right_perpendicular = self._farthest_in_segment(traj_xy_np, split_idx, end)
             if right_split >= 0:
-                tie += 1
-                heapq.heappush(heap, (-right_perp, right_split, split_idx, e))
+                heapq.heappush(heap, (-right_perpendicular, right_split, split_idx, end))
         return mask
 
-    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
         """Retain DP-selected points per trajectory at the requested ratio."""
         retained = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
         ratio = max(0.0, min(1.0, float(compression_ratio)))
         xy_np = points[:, 1:3].detach().cpu().numpy().astype(np.float64)
         for start, end in boundaries:
-            n = int(end - start)
-            if n <= 0:
+            point_count = int(end - start)
+            if point_count <= 0:
                 continue
-            k = max(2, int(math.ceil(ratio * n)))
-            k = min(k, n)
-            traj_mask = self._dp_retained_mask(xy_np[start:end], k)
-            retained[start:end] = torch.from_numpy(traj_mask).to(retained.device)
+            keep_count = max(2, int(math.ceil(ratio * point_count)))
+            keep_count = min(keep_count, point_count)
+            trajectory_mask = self._dp_retained_mask(xy_np[start:end], keep_count)
+            retained[start:end] = torch.from_numpy(trajectory_mask).to(retained.device)
         return retained
 
 
@@ -248,7 +269,12 @@ class OracleMethod:
     name: str = "Oracle"
     oracle_kind: str = "additive_label_greedy"
 
-    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
         """Simplify using oracle label gains for one explicit workload."""
         _name, type_idx = workload_type_head(self.workload_type)
         if self.labels.ndim != 2 or type_idx >= self.labels.shape[1]:

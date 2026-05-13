@@ -13,7 +13,7 @@ from src.experiments.experiment_config import build_experiment_config
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.queries.query_generator import generate_typed_query_workload
 from src.training.checkpoint_selection import (
-    f1_selection_score as _f1_selection_score,
+    validation_score_selection_score as _validation_score_selection_score,
     selection_score as _selection_score,
     uniform_gap_selection_score as _uniform_gap_selection_score,
 )
@@ -32,7 +32,7 @@ from src.training.train_model import (
     _filter_supervised_windows,
     _ranking_loss_for_type,
     _single_active_type_id,
-    _validation_query_f1,
+    _validation_query_score,
     train_model,
 )
 from src.training.trajectory_batching import build_trajectory_windows
@@ -90,26 +90,29 @@ def test_selection_score_uses_loss_before_tau_proxy() -> None:
     assert lower_loss > proxy_best
 
 
-def test_f1_selection_score_penalizes_collapsed_predictions() -> None:
-    assert _f1_selection_score(query_f1=0.8, pred_std=0.0) < _f1_selection_score(query_f1=0.2, pred_std=0.01)
+def test_validation_score_selection_score_penalizes_collapsed_predictions() -> None:
+    assert _validation_score_selection_score(
+        validation_score=0.8,
+        pred_std=0.0,
+    ) < _validation_score_selection_score(validation_score=0.2, pred_std=0.01)
 
 
 def test_uniform_gap_selection_penalizes_active_type_deficit() -> None:
     workload_map = {"range": 1.0}
     uniform_per_type = {"range": 0.50}
     range_deficit = _uniform_gap_selection_score(
-        query_f1=0.55,
-        per_type_f1={"range": 0.45},
-        uniform_f1=0.50,
-        uniform_per_type=uniform_per_type,
+        validation_score=0.55,
+        per_type_score={"range": 0.45},
+        uniform_score=0.50,
+        uniform_per_type_score=uniform_per_type,
         workload_map=workload_map,
         pred_std=0.1,
     )
     balanced = _uniform_gap_selection_score(
-        query_f1=0.54,
-        per_type_f1={"range": 0.54},
-        uniform_f1=0.50,
-        uniform_per_type=uniform_per_type,
+        validation_score=0.54,
+        per_type_score={"range": 0.54},
+        uniform_score=0.50,
+        uniform_per_type_score=uniform_per_type,
         workload_map=workload_map,
         pred_std=0.1,
     )
@@ -437,8 +440,8 @@ def test_training_records_validation_selection_score() -> None:
         epochs=8,
         n_queries=4,
         workload="range",
-        checkpoint_selection_metric="f1",
-        f1_diagnostic_every=2,
+        checkpoint_selection_metric="score",
+        validation_score_every=2,
         compression_ratio=0.5,
     )
     cfg.model.embed_dim = 16
@@ -476,16 +479,16 @@ def test_training_records_validation_selection_score() -> None:
         validation_workload_map={"range": 1.0},
     )
 
-    f1_rows = [row for row in out.history if "val_selection_score" in row]
-    assert f1_rows
-    assert [int(row["epoch"]) for row in f1_rows] == [0, 1, 3, 5, 7]
-    assert all(0.0 <= row["val_selection_score"] <= 1.0 for row in f1_rows)
-    assert all("val_range_point_f1" in row for row in f1_rows)
-    assert all("val_range_usefulness" in row for row in f1_rows)
-    assert all("val_query_f1" not in row for row in f1_rows)
+    score_rows = [row for row in out.history if "val_selection_score" in row]
+    assert score_rows
+    assert [int(row["epoch"]) for row in score_rows] == [0, 1, 3, 5, 7]
+    assert all(0.0 <= row["val_selection_score"] <= 1.0 for row in score_rows)
+    assert all("val_range_point_f1" in row for row in score_rows)
+    assert all("val_range_usefulness" in row for row in score_rows)
+    assert all("val_query_f1" not in row for row in score_rows)
     assert all("selection_score" not in row for row in out.history if "val_selection_score" not in row)
-    assert out.best_selection_score == pytest.approx(max(row["val_selection_score"] for row in f1_rows))
-    assert out.best_f1 == pytest.approx(max(row["val_selection_score"] for row in f1_rows))
+    assert out.best_selection_score == pytest.approx(max(row["val_selection_score"] for row in score_rows))
+    assert out.best_f1 == pytest.approx(max(row["val_selection_score"] for row in score_rows))
 
 
 def test_checkpoint_candidate_pool_defers_full_validation() -> None:
@@ -499,9 +502,9 @@ def test_checkpoint_candidate_pool_defers_full_validation() -> None:
         epochs=5,
         n_queries=4,
         workload="range",
-        checkpoint_selection_metric="f1",
-        f1_diagnostic_every=1,
-        checkpoint_full_f1_every=3,
+        checkpoint_selection_metric="score",
+        validation_score_every=1,
+        checkpoint_full_score_every=3,
         checkpoint_candidate_pool_size=1,
         compression_ratio=0.5,
     )
@@ -540,7 +543,7 @@ def test_checkpoint_candidate_pool_defers_full_validation() -> None:
         validation_workload_map={"range": 1.0},
     )
 
-    candidate_rows = [row for row in out.history if row.get("checkpoint_f1_candidate") == 1.0]
+    candidate_rows = [row for row in out.history if row.get("checkpoint_score_candidate") == 1.0]
     evaluated_rows = [row for row in out.history if row.get("checkpoint_candidate_evaluated") == 1.0]
 
     assert len(candidate_rows) == 5
@@ -558,7 +561,7 @@ def test_checkpoint_candidate_pool_defers_full_validation() -> None:
     "score_mode",
     ["rank", "rank_tie", "raw", "sigmoid", "zscore_sigmoid", "rank_confidence", "temperature_sigmoid"],
 )
-def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validation_query_score_matches_final_mlqds_scoring(score_mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
     trajectories = generate_synthetic_ais_data(n_ships=2, n_points_per_ship=12, seed=515)
     ds = TrajectoryDataset(trajectories)
     points = ds.get_all_points()
@@ -580,7 +583,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         mlqds_score_mode=score_mode,
         mlqds_score_temperature=0.75,
         mlqds_rank_confidence_weight=0.35,
-        checkpoint_f1_variant="answer",
+        checkpoint_score_variant="answer",
     )
     predictions = torch.linspace(-1.0, 1.0, steps=points.shape[0])
 
@@ -610,7 +613,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         lambda **_kwargs: predictions.clone(),
     )
 
-    validation_f1, validation_per_type = _validation_query_f1(
+    validation_score, validation_per_type = _validation_query_score(
         model=model,
         scaler=scaler,
         trajectories=trajectories,
@@ -643,7 +646,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         workload_map={"range": 1.0},
     )
 
-    assert validation_f1 == pytest.approx(final_f1)
+    assert validation_score == pytest.approx(final_f1)
     assert validation_per_type["range"] == pytest.approx(final_per_type["range"])
 
 
@@ -667,7 +670,7 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
         mlqds_diversity_bonus=0.0,
         mlqds_hybrid_mode="swap",
         mlqds_score_mode="rank",
-        checkpoint_f1_variant="range_usefulness",
+        checkpoint_score_variant="range_usefulness",
     )
     predictions = torch.linspace(-1.0, 1.0, steps=points.shape[0])
 
@@ -697,7 +700,7 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
         lambda **_kwargs: predictions.clone(),
     )
 
-    validation_score, validation_per_type = _validation_query_f1(
+    validation_score, validation_per_type = _validation_query_score(
         model=model,
         scaler=scaler,
         trajectories=trajectories,

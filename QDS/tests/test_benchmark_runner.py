@@ -75,7 +75,7 @@ def _profile_core_args() -> list[str]:
         "5",
         "--checkpoint_smoothing_window",
         "1",
-        "--checkpoint_full_f1_every",
+        "--checkpoint_full_score_every",
         "4",
         "--checkpoint_candidate_pool_size",
         "2",
@@ -99,7 +99,7 @@ def _profile_core_args() -> list[str]:
         "0.00",
         "--mlqds_hybrid_mode",
         "fill",
-        "--residual_label_mode",
+        "--temporal_residual_label_mode",
         "none",
         "--range_label_mode",
         "usefulness",
@@ -107,7 +107,7 @@ def _profile_core_args() -> list[str]:
         "0.0",
         "--checkpoint_selection_metric",
         "uniform_gap",
-        "--checkpoint_f1_variant",
+        "--checkpoint_score_variant",
         "range_usefulness",
     ]
 
@@ -155,7 +155,7 @@ def test_run_config_records_profile_checkpoint_selection_metric(tmp_path) -> Non
         max_time_gap_seconds=3600.0,
         max_segments=None,
         max_trajectories=None,
-        f1_diagnostic_every=1,
+        validation_score_every=1,
         extra_args=None,
         continue_on_failure=False,
     )
@@ -203,15 +203,15 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "mlqds_score_temperature": 1.0,
                 "mlqds_rank_confidence_weight": 0.15,
                 "mlqds_range_geometry_blend": 0.25,
-                "residual_label_mode": "temporal",
+                "temporal_residual_label_mode": "temporal",
                 "range_label_mode": "usefulness",
                 "range_boundary_prior_weight": 0.0,
                 "loss_objective": "budget_topk",
                 "budget_loss_ratios": [0.01, 0.02, 0.05, 0.10],
                 "budget_loss_temperature": 0.10,
-                "checkpoint_full_f1_every": 3,
+                "checkpoint_full_score_every": 3,
                 "checkpoint_candidate_pool_size": 2,
-                "checkpoint_f1_variant": "range_usefulness",
+                "checkpoint_score_variant": "range_usefulness",
                 "float32_matmul_precision": "high",
                 "allow_tf32": True,
                 "amp_mode": "bf16",
@@ -339,12 +339,12 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_score_temperature"] == 1.0
     assert row["mlqds_rank_confidence_weight"] == 0.15
     assert row["mlqds_range_geometry_blend"] == 0.25
-    assert row["residual_label_mode"] == "temporal"
+    assert row["temporal_residual_label_mode"] == "temporal"
     assert row["range_label_mode"] == "usefulness"
     assert row["loss_objective"] == "budget_topk"
     assert row["budget_loss_ratios"] == [0.01, 0.02, 0.05, 0.10]
     assert row["budget_loss_temperature"] == 0.10
-    assert row["checkpoint_full_f1_every"] == 3
+    assert row["checkpoint_full_score_every"] == 3
     assert row["checkpoint_candidate_pool_size"] == 2
     assert row["best_selection_score"] == 0.42
     assert row["best_f1"] == 0.42
@@ -478,7 +478,7 @@ def test_profile_args_use_three_day_train_validation_eval_sources() -> None:
     ]
 
 
-def test_testing_baseline_profile_uses_requested_training_shape() -> None:
+def test_workload_aware_diagnostic_profile_uses_requested_training_shape() -> None:
     args = argparse.Namespace(
         csv_path=None,
         train_csv_path="../AISDATA/cleaned/day1.csv",

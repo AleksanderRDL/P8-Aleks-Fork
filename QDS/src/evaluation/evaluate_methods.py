@@ -690,7 +690,7 @@ def score_retained_mask(
         simplified_now, simp_traj_now, simp_boundaries_now = simplified_views()
         simp_res = execute_typed_query(simplified_now, simp_traj_now, query, simp_boundaries_now)
         if qtype == "knn":
-            ans = f1_score(set(full_res), set(simp_res))
+            answer_f1 = f1_score(set(full_res), set(simp_res))
             support = support_mask(
                 query_index,
                 lambda full_res=full_res, query=query: _knn_representative_mask(
@@ -700,20 +700,20 @@ def score_retained_mask(
                     query["params"],
                 ),
             )
-            answer_scores[qtype].append(ans)
-            combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
+            answer_scores[qtype].append(answer_f1)
+            combined_scores[qtype].append(answer_f1 * _point_subset_f1(retained_mask, support))
         elif qtype == "similarity":
-            ans = f1_score(set(full_res), set(simp_res))
+            answer_f1 = f1_score(set(full_res), set(simp_res))
             support = support_mask(
                 query_index,
                 lambda full_res=full_res, query=query: _similarity_support_mask(points, boundaries, set(full_res), query),
             )
-            answer_scores[qtype].append(ans)
-            combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
+            answer_scores[qtype].append(answer_f1)
+            combined_scores[qtype].append(answer_f1 * _point_subset_f1(retained_mask, support))
         elif qtype == "clustering":
             full_labels = cast(list[int], full_res)
             simp_labels = cast(list[int], simp_res)
-            ans = clustering_f1(full_labels, simp_labels)
+            answer_f1 = clustering_f1(full_labels, simp_labels)
             support = support_mask(
                 query_index,
                 lambda full_res=full_labels, query=query: _clustering_support_mask(
@@ -723,8 +723,8 @@ def score_retained_mask(
                     query["params"],
                 ),
             )
-            answer_scores[qtype].append(ans)
-            combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
+            answer_scores[qtype].append(answer_f1)
+            combined_scores[qtype].append(answer_f1 * _point_subset_f1(retained_mask, support))
 
     per_type_answer = {name: (sum(v) / len(v) if v else 0.0) for name, v in answer_scores.items()}
     per_type_combined = {name: (sum(v) / len(v) if v else 0.0) for name, v in combined_scores.items()}
@@ -844,4 +844,3 @@ def evaluate_method(
         range_audit=range_audit,
         retained_mask=retained_mask if return_mask else None,
     )
-

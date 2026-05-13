@@ -209,13 +209,13 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
-        g = metrics.geometric_distortion or {}
+        geometric = metrics.geometric_distortion or {}
         lines.append(
             f"{name:<{col1}}"
-            f"{g.get('avg_sed_km', 0.0):>{col2}.4f}"
-            f"{g.get('max_sed_km', 0.0):>{col3}.2f}"
-            f"{g.get('avg_ped_km', 0.0):>{col4}.4f}"
-            f"{g.get('max_ped_km', 0.0):>{col5}.2f}"
+            f"{geometric.get('avg_sed_km', 0.0):>{col2}.4f}"
+            f"{geometric.get('max_sed_km', 0.0):>{col3}.2f}"
+            f"{geometric.get('avg_ped_km', 0.0):>{col4}.4f}"
+            f"{geometric.get('max_ped_km', 0.0):>{col5}.2f}"
             f"{metrics.avg_length_preserved:>{col6}.4f}"
             f"{metrics.combined_query_shape_score:>{col7}.6f}"
         )

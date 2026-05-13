@@ -56,9 +56,9 @@ lives in
 - `loss_objective="budget_topk"` is the default range loss. It trains the score
   stream to concentrate label mass inside soft top-k budgets across
   `budget_loss_ratios` (`0.01,0.02,0.05,0.10` by default).
-- `residual_label_mode="temporal"` computes a per-budget temporal-base mask and
-  trains only the learned fill that remains controlled by MLQDS. This keeps the
-  loss aligned with `mlqds_temporal_fraction`.
+- `temporal_residual_label_mode="temporal"` computes a per-budget temporal-base
+  mask and trains only the learned fill that remains controlled by MLQDS. This
+  keeps the loss aligned with `mlqds_temporal_fraction`.
 - `loss_objective="ranking_bce"` is the legacy ranking/BCE ablation.
 - `pointwise_loss_weight` remains an auxiliary BCE term for both objectives.
 - `mlqds_hybrid_mode="fill"` is the legacy temporal-spine-plus-score-fill
@@ -76,9 +76,9 @@ lives in
   simplification. At `1.0`, the retained set is geometry-driven rather than
   transformer-driven; this is useful for isolating whether the model or the
   scoring surface is the bottleneck.
-- `checkpoint_f1_variant="range_usefulness"` is the default selection target
+- `checkpoint_score_variant="range_usefulness"` is the default selection target
   for range training. `answer` and `combined` are legacy diagnostics/ablations.
-- `checkpoint_full_f1_every` and `checkpoint_candidate_pool_size` let cheap
+- `checkpoint_full_score_every` and `checkpoint_candidate_pool_size` let cheap
   diagnostics produce candidates between exact validation epochs.
 
 Training artifacts include `training_target_diagnostics`, epoch timing fields,

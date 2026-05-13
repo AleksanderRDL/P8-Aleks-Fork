@@ -63,7 +63,7 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         mlqds_rank_confidence_weight=0.3,
         mlqds_range_geometry_blend=0.4,
         range_audit_compression_ratios=[0.01, 0.05],
-        checkpoint_full_f1_every=3,
+        checkpoint_full_score_every=3,
         checkpoint_candidate_pool_size=2,
         range_diagnostics_mode="cached",
         final_metrics_mode="core",
@@ -96,8 +96,8 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.mlqds_rank_confidence_weight == 0.3
     assert restored.model.mlqds_range_geometry_blend == 0.4
     assert restored.model.range_audit_compression_ratios == [0.01, 0.05]
-    assert restored.model.checkpoint_selection_metric == "f1"
-    assert restored.model.checkpoint_full_f1_every == 3
+    assert restored.model.checkpoint_selection_metric == "score"
+    assert restored.model.checkpoint_full_score_every == 3
     assert restored.model.checkpoint_candidate_pool_size == 2
 
 
@@ -128,7 +128,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "0.01,0.05",
             "--budget_loss_temperature",
             "0.20",
-            "--checkpoint_full_f1_every",
+            "--checkpoint_full_score_every",
             "3",
             "--checkpoint_candidate_pool_size",
             "2",
@@ -154,7 +154,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
         loss_objective=args.loss_objective,
         budget_loss_ratios=args.budget_loss_ratios,
         budget_loss_temperature=args.budget_loss_temperature,
-        checkpoint_full_f1_every=args.checkpoint_full_f1_every,
+        checkpoint_full_score_every=args.checkpoint_full_score_every,
         checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
         range_diagnostics_mode=args.range_diagnostics_mode,
         final_metrics_mode=args.final_metrics_mode,
@@ -173,7 +173,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.loss_objective == "budget_topk"
     assert args.budget_loss_ratios == [0.01, 0.05]
     assert args.budget_loss_temperature == 0.20
-    assert args.checkpoint_full_f1_every == 3
+    assert args.checkpoint_full_score_every == 3
     assert args.checkpoint_candidate_pool_size == 2
     assert args.range_diagnostics_mode == "cached"
     assert args.final_metrics_mode == "core"
@@ -190,7 +190,7 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert cfg.model.loss_objective == "budget_topk"
     assert cfg.model.budget_loss_ratios == [0.01, 0.05]
     assert cfg.model.budget_loss_temperature == 0.20
-    assert cfg.model.checkpoint_full_f1_every == 3
+    assert cfg.model.checkpoint_full_score_every == 3
     assert cfg.model.checkpoint_candidate_pool_size == 2
     assert cfg.data.range_diagnostics_mode == "cached"
     assert cfg.baselines.final_metrics_mode == "core"
@@ -212,7 +212,7 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     payload["model"].pop("mlqds_score_mode")
     payload["model"].pop("mlqds_score_temperature")
     payload["model"].pop("mlqds_rank_confidence_weight")
-    payload["model"].pop("checkpoint_full_f1_every")
+    payload["model"].pop("checkpoint_full_score_every")
     payload["model"].pop("checkpoint_candidate_pool_size")
     payload["data"].pop("range_diagnostics_mode")
     payload["baselines"].pop("final_metrics_mode")
@@ -233,12 +233,49 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.model.mlqds_score_temperature == 1.0
     assert restored.model.mlqds_rank_confidence_weight == 0.15
     assert restored.model.mlqds_range_geometry_blend == 0.0
-    assert restored.model.checkpoint_selection_metric == "f1"
-    assert restored.model.checkpoint_f1_variant == "range_usefulness"
-    assert restored.model.checkpoint_full_f1_every == 1
+    assert restored.model.checkpoint_selection_metric == "score"
+    assert restored.model.checkpoint_score_variant == "range_usefulness"
+    assert restored.model.checkpoint_full_score_every == 1
     assert restored.model.checkpoint_candidate_pool_size == 1
     assert restored.data.range_diagnostics_mode == "full"
     assert restored.baselines.final_metrics_mode == "diagnostic"
+
+
+def test_legacy_validation_score_config_names_still_load() -> None:
+    payload = build_experiment_config().to_dict()
+    payload["model"].pop("validation_score_every")
+    payload["model"].pop("checkpoint_full_score_every")
+    payload["model"].pop("checkpoint_score_variant")
+    payload["model"].pop("temporal_residual_label_mode")
+    payload["model"]["f1_diagnostic_every"] = 2
+    payload["model"]["checkpoint_full_f1_every"] = 4
+    payload["model"]["checkpoint_f1_variant"] = "answer"
+    payload["model"]["residual_label_mode"] = "none"
+
+    restored = ExperimentConfig.from_dict(payload)
+    args = build_parser().parse_args(
+        [
+            "--f1_diagnostic_every",
+            "3",
+            "--checkpoint_full_f1_every",
+            "5",
+            "--checkpoint_f1_variant",
+            "combined",
+            "--residual_label_mode",
+            "none",
+        ]
+    )
+
+    assert restored.model.validation_score_every == 2
+    assert restored.model.checkpoint_full_score_every == 4
+    assert restored.model.checkpoint_score_variant == "answer"
+    assert restored.model.temporal_residual_label_mode == "none"
+    assert restored.model.f1_diagnostic_every == 2
+    assert restored.model.residual_label_mode == "none"
+    assert args.validation_score_every == 3
+    assert args.checkpoint_full_score_every == 5
+    assert args.checkpoint_score_variant == "combined"
+    assert args.temporal_residual_label_mode == "none"
 
 
 def test_amp_helpers_default_to_cuda_only_autocast() -> None:
@@ -291,9 +328,9 @@ def test_runtime_profile_uses_workload_aware_diagnostic_shape(tmp_path) -> None:
     assert args[args.index("--range_diagnostics_mode") + 1] == "cached"
     assert args[args.index("--final_metrics_mode") + 1] == "diagnostic"
     assert args[args.index("--early_stopping_patience") + 1] == "5"
-    assert args[args.index("--f1_diagnostic_every") + 1] == "1"
+    assert args[args.index("--validation_score_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
-    assert args[args.index("--checkpoint_full_f1_every") + 1] == "4"
+    assert args[args.index("--checkpoint_full_score_every") + 1] == "4"
     assert args[args.index("--checkpoint_candidate_pool_size") + 1] == "2"
     assert args[args.index("--loss_objective") + 1] == "budget_topk"
     assert args[args.index("--budget_loss_ratios") + 1] == "0.05,0.10"
@@ -305,7 +342,7 @@ def test_runtime_profile_uses_workload_aware_diagnostic_shape(tmp_path) -> None:
     assert args[args.index("--mlqds_range_geometry_blend") + 1] == "0.00"
     assert args[args.index("--mlqds_diversity_bonus") + 1] == "0.00"
     assert args[args.index("--mlqds_hybrid_mode") + 1] == "fill"
-    assert args[args.index("--residual_label_mode") + 1] == "none"
+    assert args[args.index("--temporal_residual_label_mode") + 1] == "none"
     assert args[args.index("--range_label_mode") + 1] == "usefulness"
     assert args[args.index("--range_boundary_prior_weight") + 1] == "0.0"
     assert "--n_ships" not in args

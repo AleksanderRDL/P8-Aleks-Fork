@@ -149,6 +149,6 @@ def normalize_points_and_queries(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Min-max normalize points and queries with persisted stats. See src/models/README.md for details."""
     eps = 1e-6
-    p = (points - point_min) / torch.clamp(point_max - point_min, min=eps)
-    q = (queries - query_min) / torch.clamp(query_max - query_min, min=eps)
-    return p, q
+    normalized_points = (points - point_min) / torch.clamp(point_max - point_min, min=eps)
+    normalized_queries = (queries - query_min) / torch.clamp(query_max - query_min, min=eps)
+    return normalized_points, normalized_queries

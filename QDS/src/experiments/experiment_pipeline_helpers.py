@@ -70,6 +70,7 @@ from src.queries.workload_diagnostics import (
     range_box_mask,
 )
 from src.simplification.mlqds_scoring import workload_type_head
+from src.training.checkpoint_selection import normalize_checkpoint_selection_metric
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.checkpoints import ModelArtifacts, save_checkpoint
@@ -100,19 +101,19 @@ def split_trajectories(
     seed: int,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
     """Deterministically split trajectories at trajectory level. See src/experiments/README.md for details."""
-    n = len(trajectories)
-    g = torch.Generator().manual_seed(int(seed))
-    perm = torch.randperm(n, generator=g).tolist()
+    trajectory_count = len(trajectories)
+    generator = torch.Generator().manual_seed(int(seed))
+    permutation = torch.randperm(trajectory_count, generator=generator).tolist()
 
-    n_train = max(1, int(n * train_fraction))
-    n_val = max(1, int(n * val_fraction)) if n - n_train > 1 else 0
-    n_test = max(1, n - n_train - n_val)
-    if n_train + n_val + n_test > n:
-        n_test = n - n_train - n_val
+    train_count = max(1, int(trajectory_count * train_fraction))
+    val_count = max(1, int(trajectory_count * val_fraction)) if trajectory_count - train_count > 1 else 0
+    test_count = max(1, trajectory_count - train_count - val_count)
+    if train_count + val_count + test_count > trajectory_count:
+        test_count = trajectory_count - train_count - val_count
 
-    train = [trajectories[i] for i in perm[:n_train]]
-    val = [trajectories[i] for i in perm[n_train : n_train + n_val]]
-    test = [trajectories[i] for i in perm[n_train + n_val :]]
+    train = [trajectories[i] for i in permutation[:train_count]]
+    val = [trajectories[i] for i in permutation[train_count : train_count + val_count]]
+    test = [trajectories[i] for i in permutation[train_count + val_count : train_count + val_count + test_count]]
     if not test:
         test = val if val else train
     return train, val, test
@@ -120,7 +121,10 @@ def split_trajectories(
 
 def _workload_name(workload_map: dict[str, float]) -> str:
     """Build compact string name for a pure workload map."""
-    return ",".join(f"{k}={v:.1f}" for k, v in sorted(workload_map.items()))
+    return ",".join(
+        f"{query_type}={weight:.1f}"
+        for query_type, weight in sorted(workload_map.items())
+    )
 
 
 def _normalized_coverage_target(value: float | None) -> float | None:
@@ -553,9 +557,14 @@ def _range_learned_fill_summary(
         "oracle_notes": {
             "temporal_oracle_fill_kind": "temporal_base_plus_additive_label_fill",
             "exact_optimum": False,
-            "purpose": "diagnostic upper reference for learned residual fill, not exact retained-set RangeUseful optimum",
+            "purpose": (
+                "diagnostic upper reference for learned residual fill, "
+                "not exact retained-set RangeUseful optimum"
+            ),
         },
-        "train_positive_label_mass": train_labels.get("positive_label_mass") if isinstance(train_labels, dict) else None,
+        "train_positive_label_mass": (
+            train_labels.get("positive_label_mass") if isinstance(train_labels, dict) else None
+        ),
         "train_label_component_mass_basis": (
             train_labels.get("component_label_mass_basis") if isinstance(train_labels, dict) else None
         ),
@@ -607,31 +616,37 @@ def run_experiment_pipeline(
         )
 
     seeds = derive_seed_bundle(config.data.seed)
-    selection_metric = str(getattr(config.model, "checkpoint_selection_metric", "f1")).lower()
-    f1_diag_every = int(getattr(config.model, "f1_diagnostic_every", 0) or 0)
-    needs_validation_f1 = selection_metric in {"f1", "uniform_gap"} or f1_diag_every > 0
+    selection_metric = normalize_checkpoint_selection_metric(
+        getattr(config.model, "checkpoint_selection_metric", "score")
+    )
+    validation_score_every = int(getattr(config.model, "validation_score_every", 0) or 0)
+    needs_validation_score = selection_metric in {"score", "uniform_gap"} or validation_score_every > 0
     with _phase("split"):
         selection_traj: list[torch.Tensor] | None = None
         if eval_trajectories is None:
             # Reproduce split_trajectories' permutation here so we can align the
             # MMSI list with the test split (the helper itself doesn't carry ids).
-            n = len(trajectories)
-            g = torch.Generator().manual_seed(int(seeds.split_seed))
-            perm = torch.randperm(n, generator=g).tolist()
-            n_train = max(1, int(n * config.data.train_fraction))
-            n_val = max(1, int(n * config.data.val_fraction)) if n - n_train > 1 else 0
-            train_traj = [trajectories[i] for i in perm[:n_train]]
-            _val_traj = [trajectories[i] for i in perm[n_train : n_train + n_val]]
-            test_traj = [trajectories[i] for i in perm[n_train + n_val :]]
+            trajectory_count = len(trajectories)
+            generator = torch.Generator().manual_seed(int(seeds.split_seed))
+            permutation = torch.randperm(trajectory_count, generator=generator).tolist()
+            train_count = max(1, int(trajectory_count * config.data.train_fraction))
+            val_count = (
+                max(1, int(trajectory_count * config.data.val_fraction))
+                if trajectory_count - train_count > 1
+                else 0
+            )
+            train_traj = [trajectories[i] for i in permutation[:train_count]]
+            _val_traj = [trajectories[i] for i in permutation[train_count : train_count + val_count]]
+            test_traj = [trajectories[i] for i in permutation[train_count + val_count :]]
             if not test_traj:
                 test_traj = _val_traj if _val_traj else train_traj
-            selection_traj = _val_traj if needs_validation_f1 and _val_traj else None
-            if trajectory_mmsis is not None and len(trajectory_mmsis) == n:
-                train_mmsis = [trajectory_mmsis[i] for i in perm[:n_train]]
-                test_mmsis = [trajectory_mmsis[i] for i in perm[n_train + n_val :]]
+            selection_traj = _val_traj if needs_validation_score and _val_traj else None
+            if trajectory_mmsis is not None and len(trajectory_mmsis) == trajectory_count:
+                train_mmsis = [trajectory_mmsis[i] for i in permutation[:train_count]]
+                test_mmsis = [trajectory_mmsis[i] for i in permutation[train_count + val_count :]]
                 if not test_mmsis:
-                    test_mmsis = [trajectory_mmsis[i] for i in perm[n_train : n_train + n_val]] or \
-                                 [trajectory_mmsis[i] for i in perm[:n_train]]
+                    test_mmsis = [trajectory_mmsis[i] for i in permutation[train_count : train_count + val_count]] or \
+                                 [trajectory_mmsis[i] for i in permutation[:train_count]]
             else:
                 train_mmsis = None
                 test_mmsis = None
@@ -642,17 +657,29 @@ def run_experiment_pipeline(
             train_mmsis = trajectory_mmsis
             test_mmsis = eval_trajectory_mmsis
             if validation_trajectories is not None:
-                selection_traj = validation_trajectories if needs_validation_f1 else None
-            elif needs_validation_f1:
-                n = len(train_traj)
-                g = torch.Generator().manual_seed(int(seeds.split_seed))
-                perm = torch.randperm(n, generator=g).tolist()
-                n_val = max(1, int(n * config.data.val_fraction)) if n > 1 else 0
-                val_idx = set(perm[:n_val])
-                selection_traj = [traj for idx, traj in enumerate(train_traj) if idx in val_idx]
-                train_traj = [traj for idx, traj in enumerate(train_traj) if idx not in val_idx]
-                if train_mmsis is not None and len(train_mmsis) == n:
-                    train_mmsis = [mmsi for idx, mmsi in enumerate(train_mmsis) if idx not in val_idx]
+                selection_traj = validation_trajectories if needs_validation_score else None
+            elif needs_validation_score:
+                train_count = len(train_traj)
+                generator = torch.Generator().manual_seed(int(seeds.split_seed))
+                permutation = torch.randperm(train_count, generator=generator).tolist()
+                val_count = max(1, int(train_count * config.data.val_fraction)) if train_count > 1 else 0
+                val_indices = set(permutation[:val_count])
+                selection_traj = [
+                    trajectory
+                    for trajectory_idx, trajectory in enumerate(train_traj)
+                    if trajectory_idx in val_indices
+                ]
+                train_traj = [
+                    trajectory
+                    for trajectory_idx, trajectory in enumerate(train_traj)
+                    if trajectory_idx not in val_indices
+                ]
+                if train_mmsis is not None and len(train_mmsis) == train_count:
+                    train_mmsis = [
+                        mmsi
+                        for trajectory_idx, mmsi in enumerate(train_mmsis)
+                        if trajectory_idx not in val_indices
+                    ]
             print(f"  split mode=separate CSVs  train={len(train_traj)}  eval={len(test_traj)}", flush=True)
         if selection_traj:
             print(f"  checkpoint-selection validation={len(selection_traj)} trajectories", flush=True)
@@ -731,7 +758,8 @@ def run_experiment_pipeline(
                 if coverage + 1e-9 < target:
                     print(
                         f"  WARNING: {label} workload stopped below requested coverage "
-                        f"({coverage:.2%} < {target:.2%}); raise --max_queries or query footprint to cover more points.",
+                        f"({coverage:.2%} < {target:.2%}); raise --max_queries "
+                        "or query footprint to cover more points.",
                         flush=True,
                     )
                 elif label == "selection" and coverage > target + 0.05:
@@ -1150,8 +1178,10 @@ def run_experiment_pipeline(
         "best_loss": trained.best_loss,
         "best_selection_score": trained.best_selection_score,
         "best_f1": trained.best_f1,
-        "checkpoint_selection_metric": config.model.checkpoint_selection_metric,
-        "checkpoint_f1_variant": config.model.checkpoint_f1_variant,
+        "checkpoint_selection_metric": selection_metric,
+        "checkpoint_selection_metric_requested": config.model.checkpoint_selection_metric,
+        "checkpoint_score_variant": config.model.checkpoint_score_variant,
+        "checkpoint_f1_variant": config.model.checkpoint_score_variant,
         "final_metrics_mode": config.baselines.final_metrics_mode,
         "range_usefulness_weight_summary": range_usefulness_weight_summary(),
         "checkpoint_smoothing_window": config.model.checkpoint_smoothing_window,
@@ -1271,7 +1301,13 @@ def run_experiment_pipeline(
                     )
 
         with _phase("trajectory-length-loss"):
-            report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)
+            report_trajectory_length_loss(
+                test_points,
+                test_boundaries,
+                eval_mask,
+                top_k=25,
+                trajectory_mmsis=test_mmsis,
+            )
 
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(

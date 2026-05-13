@@ -58,35 +58,35 @@ def windowed_predict(
 
     windows = build_trajectory_windows(norm_points, boundaries, window_length, window_stride)
     windows = batch_windows(windows, max(1, int(batch_size)))
-    n = norm_points.shape[0]
-    all_pred = torch.zeros((n,), dtype=norm_points.dtype, device=predict_device)
-    pred_count = torch.zeros((n,), dtype=norm_points.dtype, device=predict_device)
+    point_count = norm_points.shape[0]
+    point_score_sum = torch.zeros((point_count,), dtype=norm_points.dtype, device=predict_device)
+    point_score_count = torch.zeros((point_count,), dtype=norm_points.dtype, device=predict_device)
     queries_dev = queries.to(predict_device)
     query_type_ids_dev = query_type_ids.to(predict_device)
 
     try:
         model.eval()
         with torch.no_grad():
-            for w in windows:
-                points_dev = w.points.to(predict_device)
-                padding_dev = w.padding_mask.to(predict_device)
-                indices_dev = w.global_indices.to(predict_device)
+            for window_batch in windows:
+                points_dev = window_batch.points.to(predict_device)
+                padding_dev = window_batch.padding_mask.to(predict_device)
+                indices_dev = window_batch.global_indices.to(predict_device)
                 with torch_autocast_context(predict_device, amp_mode):
-                    wp = model(
+                    window_scores = model(
                         points=points_dev,
                         queries=queries_dev,
                         query_type_ids=query_type_ids_dev,
                         padding_mask=padding_dev,
                     )
-                wp = wp.to(dtype=all_pred.dtype)
-                for batch_idx in range(wp.shape[0]):
-                    widx = indices_dev[batch_idx]
-                    valid = widx >= 0
-                    all_pred[widx[valid]] = all_pred[widx[valid]] + wp[batch_idx, valid]
-                    pred_count[widx[valid]] = pred_count[widx[valid]] + 1.0
+                window_scores = window_scores.to(dtype=point_score_sum.dtype)
+                for batch_idx in range(window_scores.shape[0]):
+                    point_indices = indices_dev[batch_idx]
+                    valid_points = point_indices >= 0
+                    point_score_sum[point_indices[valid_points]] += window_scores[batch_idx, valid_points]
+                    point_score_count[point_indices[valid_points]] += 1.0
 
-        pred_count = pred_count.clamp(min=1.0)
-        return (all_pred / pred_count).to(output_device)
+        point_score_count = point_score_count.clamp(min=1.0)
+        return (point_score_sum / point_score_count).to(output_device)
     finally:
         if original_device != predict_device:
             model.to(original_device)
@@ -111,14 +111,14 @@ def forward_predict(
     batch_size: int = 16,
 ) -> torch.Tensor:
     """Run deterministic predictions with persisted scaler and model."""
-    p, q = artifacts.scaler.transform(points[:, : artifacts.model.point_dim], queries)
+    norm_points, norm_queries = artifacts.scaler.transform(points[:, : artifacts.model.point_dim], queries)
     if boundaries is None:
-        boundaries = [(0, p.shape[0])]
+        boundaries = [(0, norm_points.shape[0])]
     return windowed_predict(
         model=artifacts.model,
-        norm_points=p,
+        norm_points=norm_points,
         boundaries=boundaries,
-        queries=q,
+        queries=norm_queries,
         query_type_ids=query_type_ids,
         window_length=window_length,
         window_stride=window_stride,

@@ -297,15 +297,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint_selection_metric",
         type=str,
-        default="f1",
-        choices=["loss", "f1", "uniform_gap"],
-        help="Select restored checkpoints by held-out query F1, training loss, or F1 with fair-uniform gap penalties.",
+        default="score",
+        choices=["loss", "score", "f1", "uniform_gap"],
+        help=(
+            "Select restored checkpoints by held-out validation score, training loss, or validation score "
+            "with fair-uniform gap penalties. 'f1' is a legacy alias for 'score'."
+        ),
     )
     parser.add_argument(
+        "--validation_score_every",
         "--f1_diagnostic_every",
+        dest="validation_score_every",
         type=int,
         default=0,
-        help="Run held-out query-F1 diagnostics every N epochs. 0 disables unless checkpoint selection metric is f1 or uniform_gap.",
+        help="Run held-out validation scoring every N epochs. 0 disables unless checkpoint selection metric is score/uniform_gap.",
     )
     parser.add_argument(
         "--checkpoint_uniform_gap_weight",
@@ -317,28 +322,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint_type_penalty_weight",
         type=float,
         default=1.0,
-        help="When checkpoint_selection_metric=uniform_gap, penalty weight for per-type F1 deficits versus uniform.",
+        help="When checkpoint_selection_metric=uniform_gap, penalty weight for per-type validation-score deficits versus uniform.",
     )
     parser.add_argument(
         "--checkpoint_smoothing_window",
         type=int,
         default=1,
-        help="Pick checkpoints by rolling-mean selection score over the last K diagnostic epochs. Reduces selection bias from noisy single-epoch F1. 1 = original single-epoch behavior; 5 = average over 5 latest diagnostic epochs.",
+        help="Pick checkpoints by rolling-mean selection score over the last K diagnostic epochs. Reduces selection bias from noisy single-epoch validation scores. 1 = original single-epoch behavior; 5 = average over 5 latest diagnostic epochs.",
     )
     parser.add_argument(
+        "--checkpoint_full_score_every",
         "--checkpoint_full_f1_every",
+        dest="checkpoint_full_score_every",
         type=int,
         default=1,
-        help="Run exact validation F1/usefulness every N F1-diagnostic epochs. 1 keeps exact validation every eligible epoch.",
+        help="Run exact validation scoring every N eligible validation-score epochs. 1 keeps exact validation every eligible epoch.",
     )
     parser.add_argument(
         "--checkpoint_candidate_pool_size",
         type=int,
         default=1,
-        help="When checkpoint_full_f1_every > 1, keep this many cheap-diagnostic candidate snapshots for the next exact validation round.",
+        help="When checkpoint_full_score_every > 1, keep this many cheap-diagnostic candidate snapshots for the next exact validation round.",
     )
     parser.add_argument(
+        "--checkpoint_score_variant",
         "--checkpoint_f1_variant",
+        dest="checkpoint_score_variant",
         type=str,
         default="range_usefulness",
         choices=["answer", "combined", "range_usefulness"],
@@ -400,7 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--temporal_residual_label_mode",
         "--residual_label_mode",
+        dest="temporal_residual_label_mode",
         type=str,
         default="temporal",
         choices=["none", "temporal"],

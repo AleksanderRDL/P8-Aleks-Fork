@@ -34,12 +34,12 @@ class BenchmarkProfile:
     epochs: int
     early_stopping_patience: int
     checkpoint_smoothing_window: int
-    checkpoint_full_f1_every: int
+    checkpoint_full_score_every: int
     checkpoint_candidate_pool_size: int
     mlqds_temporal_fraction: float
     workload: str
     checkpoint_selection_metric: str
-    checkpoint_f1_variant: str
+    checkpoint_score_variant: str
     float32_matmul_precision: str
     allow_tf32: bool
     amp_mode: str
@@ -52,8 +52,8 @@ class BenchmarkProfile:
     mlqds_range_geometry_blend: float
     mlqds_diversity_bonus: float
     mlqds_hybrid_mode: str
-    residual_label_mode: str
-    f1_diagnostic_every: int
+    temporal_residual_label_mode: str
+    validation_score_every: int
     range_label_mode: str
     range_boundary_prior_weight: float
 
@@ -77,12 +77,12 @@ RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE = BenchmarkProfile(
     epochs=8,
     early_stopping_patience=5,
     checkpoint_smoothing_window=1,
-    checkpoint_full_f1_every=4,
+    checkpoint_full_score_every=4,
     checkpoint_candidate_pool_size=2,
     mlqds_temporal_fraction=0.25,
     workload="range",
     checkpoint_selection_metric="uniform_gap",
-    checkpoint_f1_variant="range_usefulness",
+    checkpoint_score_variant="range_usefulness",
     float32_matmul_precision="high",
     allow_tf32=True,
     amp_mode="bf16",
@@ -95,8 +95,8 @@ RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE = BenchmarkProfile(
     mlqds_range_geometry_blend=0.0,
     mlqds_diversity_bonus=0.0,
     mlqds_hybrid_mode="fill",
-    residual_label_mode="none",
-    f1_diagnostic_every=1,
+    temporal_residual_label_mode="none",
+    validation_score_every=1,
     range_label_mode="usefulness",
     range_boundary_prior_weight=0.0,
 )
@@ -117,7 +117,7 @@ def benchmark_profile_args(
     *,
     include_workload: bool = False,
     include_checkpoint_selection: bool = False,
-    include_f1_diagnostic: bool = False,
+    include_validation_score_diagnostic: bool = False,
 ) -> list[str]:
     """Return shared child CLI args for a benchmark profile."""
     profile = benchmark_profile(name)
@@ -165,8 +165,8 @@ def benchmark_profile_args(
         str(profile.early_stopping_patience),
         "--checkpoint_smoothing_window",
         str(profile.checkpoint_smoothing_window),
-        "--checkpoint_full_f1_every",
-        str(profile.checkpoint_full_f1_every),
+        "--checkpoint_full_score_every",
+        str(profile.checkpoint_full_score_every),
         "--checkpoint_candidate_pool_size",
         str(profile.checkpoint_candidate_pool_size),
         "--loss_objective",
@@ -189,8 +189,8 @@ def benchmark_profile_args(
         f"{profile.mlqds_diversity_bonus:.2f}",
         "--mlqds_hybrid_mode",
         profile.mlqds_hybrid_mode,
-        "--residual_label_mode",
-        profile.residual_label_mode,
+        "--temporal_residual_label_mode",
+        profile.temporal_residual_label_mode,
         "--range_label_mode",
         profile.range_label_mode,
         "--range_boundary_prior_weight",
@@ -202,11 +202,11 @@ def benchmark_profile_args(
         args += [
             "--checkpoint_selection_metric",
             profile.checkpoint_selection_metric,
-            "--checkpoint_f1_variant",
-            profile.checkpoint_f1_variant,
+            "--checkpoint_score_variant",
+            profile.checkpoint_score_variant,
         ]
-    if include_f1_diagnostic:
-        args += ["--f1_diagnostic_every", str(profile.f1_diagnostic_every)]
+    if include_validation_score_diagnostic:
+        args += ["--validation_score_every", str(profile.validation_score_every)]
     return args
 
 
@@ -239,11 +239,13 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "epochs": profile.epochs,
         "early_stopping_patience": profile.early_stopping_patience,
         "checkpoint_selection_metric": profile.checkpoint_selection_metric,
-        "checkpoint_f1_variant": profile.checkpoint_f1_variant,
+        "checkpoint_score_variant": profile.checkpoint_score_variant,
+        "checkpoint_f1_variant": profile.checkpoint_score_variant,
         "float32_matmul_precision": profile.float32_matmul_precision,
         "allow_tf32": profile.allow_tf32,
         "amp_mode": profile.amp_mode,
-        "checkpoint_full_f1_every": profile.checkpoint_full_f1_every,
+        "checkpoint_full_score_every": profile.checkpoint_full_score_every,
+        "checkpoint_full_f1_every": profile.checkpoint_full_score_every,
         "checkpoint_candidate_pool_size": profile.checkpoint_candidate_pool_size,
         "loss_objective": profile.loss_objective,
         "budget_loss_ratios": list(profile.budget_loss_ratios),
@@ -254,8 +256,10 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "mlqds_range_geometry_blend": profile.mlqds_range_geometry_blend,
         "mlqds_diversity_bonus": profile.mlqds_diversity_bonus,
         "mlqds_hybrid_mode": profile.mlqds_hybrid_mode,
-        "residual_label_mode": profile.residual_label_mode,
-        "f1_diagnostic_every": profile.f1_diagnostic_every,
+        "temporal_residual_label_mode": profile.temporal_residual_label_mode,
+        "residual_label_mode": profile.temporal_residual_label_mode,
+        "validation_score_every": profile.validation_score_every,
+        "f1_diagnostic_every": profile.validation_score_every,
         "range_label_mode": profile.range_label_mode,
         "checkpoint_smoothing_window": profile.checkpoint_smoothing_window,
         "mlqds_temporal_fraction": profile.mlqds_temporal_fraction,

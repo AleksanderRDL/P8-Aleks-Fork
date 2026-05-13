@@ -3,7 +3,7 @@
 The benchmark intentionally shells out to the existing experiment and
 inference entrypoints so timing artifacts cover the real CLI path users run.
 It records environment metadata, git state, child commands, parsed phase and
-epoch timings, and final F1 metrics into a stable JSON file.
+epoch timings, and final metrics into a stable JSON file.
 """
 
 from __future__ import annotations
@@ -46,11 +46,11 @@ INFERENCE_STEP_RE = re.compile(
     r"^\[(?P<name>eval|workload|load-data|trajectory-length-loss)\].*?(?:done|generated|in)\s+"
     r"(?P<seconds>[0-9.]+)s"
 )
-DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(
+DEFAULT_PROFILE_ARGS = benchmark_profile_args(
     DEFAULT_PROFILE,
     include_workload=True,
     include_checkpoint_selection=True,
-    include_f1_diagnostic=True,
+    include_validation_score_diagnostic=True,
 )
 
 
@@ -344,7 +344,7 @@ def _profile_train_args(profile: str, seed: int, results_dir: Path, checkpoint: 
         str(checkpoint),
     ]
     if profile == DEFAULT_PROFILE:
-        return [*DEFAULT_BASELINE_PROFILE_ARGS, *common]
+        return [*DEFAULT_PROFILE_ARGS, *common]
     raise ValueError(f"Unknown benchmark profile: {profile}")
 
 

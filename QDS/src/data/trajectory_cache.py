@@ -62,7 +62,7 @@ def _source_info(csv_path: str) -> dict[str, Any]:
 
 def _cache_key(source: dict[str, Any], config: AISLoadConfig) -> str:
     """Build a stable cache key from source identity and loader config."""
-    payload = json.dumps(
+    cache_key_json = json.dumps(
         {
             "schema_version": CACHE_SCHEMA_VERSION,
             "source": source,
@@ -70,7 +70,7 @@ def _cache_key(source: dict[str, Any], config: AISLoadConfig) -> str:
         },
         sort_keys=True,
     )
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(cache_key_json.encode("utf-8")).hexdigest()[:16]
     stem = Path(str(source["path"])).stem.replace(" ", "_")
     return f"{stem}_{digest}"
 
@@ -84,22 +84,22 @@ def _manifest_matches(manifest: dict[str, Any], source: dict[str, Any], config: 
     )
 
 
-def _audit_from_dict(payload: dict[str, Any]) -> AISLoadAudit:
+def _audit_from_dict(audit_payload: dict[str, Any]) -> AISLoadAudit:
     """Rehydrate cached audit metadata."""
-    return AISLoadAudit(**payload)
+    return AISLoadAudit(**audit_payload)
 
 
 def _trajectories_to_frame(trajectories: list[torch.Tensor], mmsis: list[int]) -> pd.DataFrame:
     """Flatten trajectory tensors into a Parquet-friendly point table."""
     columns: dict[str, list[Any]] = {name: [] for name in CACHE_COLUMNS}
-    for segment_id, traj in enumerate(trajectories):
-        n_points = int(traj.shape[0])
+    for segment_id, trajectory in enumerate(trajectories):
+        n_points = int(trajectory.shape[0])
         mmsi = int(mmsis[segment_id]) if segment_id < len(mmsis) else 0
         columns["segment_id"].extend([segment_id] * n_points)
         columns["point_index"].extend(range(n_points))
         columns["mmsi"].extend([mmsi] * n_points)
-        for col_idx, name in enumerate(FEATURE_COLUMNS):
-            columns[name].extend(traj[:, col_idx].detach().cpu().tolist())
+        for feature_idx, column_name in enumerate(FEATURE_COLUMNS):
+            columns[column_name].extend(trajectory[:, feature_idx].detach().cpu().tolist())
 
     frame = pd.DataFrame(columns)
     int_columns = ["segment_id", "point_index", "mmsi"]

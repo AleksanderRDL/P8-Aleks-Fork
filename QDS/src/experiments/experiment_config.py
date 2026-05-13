@@ -16,6 +16,15 @@ def _known_dataclass_values(cls: type, data: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if key in allowed}
 
 
+def _apply_key_aliases(data: dict[str, Any], aliases: dict[str, str]) -> dict[str, Any]:
+    """Copy legacy serialized keys to their current names when the current key is absent."""
+    values = dict(data)
+    for old_key, new_key in aliases.items():
+        if old_key in values and new_key not in values:
+            values[new_key] = values[old_key]
+    return values
+
+
 @dataclass
 class DataConfig:
     """Data loading and splitting configuration. See src/data/README.md for details."""
@@ -111,14 +120,14 @@ class ModelConfig:
     inference_batch_size: int = 16
     diagnostic_every: int = 1
     diagnostic_window_fraction: float = 0.2
-    checkpoint_selection_metric: str = "f1"
-    f1_diagnostic_every: int = 0
+    checkpoint_selection_metric: str = "score"
+    validation_score_every: int = 0
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
     checkpoint_smoothing_window: int = 1
-    checkpoint_full_f1_every: int = 1
+    checkpoint_full_score_every: int = 1
     checkpoint_candidate_pool_size: int = 1
-    checkpoint_f1_variant: str = "range_usefulness"
+    checkpoint_score_variant: str = "range_usefulness"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
     mlqds_hybrid_mode: str = "fill"
@@ -126,7 +135,7 @@ class ModelConfig:
     mlqds_score_temperature: float = 1.0
     mlqds_rank_confidence_weight: float = 0.15
     mlqds_range_geometry_blend: float = 0.0
-    residual_label_mode: str = "temporal"
+    temporal_residual_label_mode: str = "temporal"
     range_label_mode: str = "usefulness"
     range_boundary_prior_weight: float = 0.0
     range_audit_compression_ratios: list[float] = field(default_factory=list)
@@ -141,7 +150,56 @@ class ModelConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModelConfig":
         """Deserialize config from a dictionary. See src/experiments/README.md for details."""
-        return cls(**_known_dataclass_values(cls, data))
+        return cls(
+            **_known_dataclass_values(
+                cls,
+                _apply_key_aliases(
+                    data,
+                    {
+                        "f1_diagnostic_every": "validation_score_every",
+                        "checkpoint_full_f1_every": "checkpoint_full_score_every",
+                        "checkpoint_f1_variant": "checkpoint_score_variant",
+                        "residual_label_mode": "temporal_residual_label_mode",
+                    },
+                ),
+            )
+        )
+
+    @property
+    def f1_diagnostic_every(self) -> int:
+        """Legacy alias for validation_score_every."""
+        return self.validation_score_every
+
+    @f1_diagnostic_every.setter
+    def f1_diagnostic_every(self, value: int) -> None:
+        self.validation_score_every = value
+
+    @property
+    def checkpoint_full_f1_every(self) -> int:
+        """Legacy alias for checkpoint_full_score_every."""
+        return self.checkpoint_full_score_every
+
+    @checkpoint_full_f1_every.setter
+    def checkpoint_full_f1_every(self, value: int) -> None:
+        self.checkpoint_full_score_every = value
+
+    @property
+    def checkpoint_f1_variant(self) -> str:
+        """Legacy alias for checkpoint_score_variant."""
+        return self.checkpoint_score_variant
+
+    @checkpoint_f1_variant.setter
+    def checkpoint_f1_variant(self, value: str) -> None:
+        self.checkpoint_score_variant = value
+
+    @property
+    def residual_label_mode(self) -> str:
+        """Legacy alias for temporal_residual_label_mode."""
+        return self.temporal_residual_label_mode
+
+    @residual_label_mode.setter
+    def residual_label_mode(self, value: str) -> None:
+        self.temporal_residual_label_mode = value
 
 
 @dataclass
@@ -249,14 +307,14 @@ def build_experiment_config(
     query_chunk_size: int = 2048,
     diagnostic_every: int = 1,
     diagnostic_window_fraction: float = 0.2,
-    checkpoint_selection_metric: str = "f1",
-    f1_diagnostic_every: int = 0,
+    checkpoint_selection_metric: str = "score",
+    validation_score_every: int | None = None,
     checkpoint_uniform_gap_weight: float = 0.5,
     checkpoint_type_penalty_weight: float = 1.0,
     checkpoint_smoothing_window: int = 1,
-    checkpoint_full_f1_every: int = 1,
+    checkpoint_full_score_every: int | None = None,
     checkpoint_candidate_pool_size: int = 1,
-    checkpoint_f1_variant: str = "range_usefulness",
+    checkpoint_score_variant: str | None = None,
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
@@ -265,7 +323,7 @@ def build_experiment_config(
     mlqds_score_temperature: float = 1.0,
     mlqds_rank_confidence_weight: float = 0.15,
     mlqds_range_geometry_blend: float = 0.0,
-    residual_label_mode: str = "temporal",
+    temporal_residual_label_mode: str | None = None,
     range_label_mode: str = "usefulness",
     range_boundary_prior_weight: float = 0.0,
     range_audit_compression_ratios: list[float] | None = None,
@@ -273,9 +331,29 @@ def build_experiment_config(
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
     amp_mode: str = "off",
+    f1_diagnostic_every: int | None = None,
+    checkpoint_full_f1_every: int | None = None,
+    checkpoint_f1_variant: str | None = None,
+    residual_label_mode: str | None = None,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
     uses_csv = bool(csv_path or train_csv_path or validation_csv_path or eval_csv_path)
+    resolved_validation_score_every = (
+        validation_score_every if validation_score_every is not None
+        else (f1_diagnostic_every if f1_diagnostic_every is not None else 0)
+    )
+    resolved_checkpoint_full_score_every = (
+        checkpoint_full_score_every if checkpoint_full_score_every is not None
+        else (checkpoint_full_f1_every if checkpoint_full_f1_every is not None else 1)
+    )
+    resolved_checkpoint_score_variant = (
+        checkpoint_score_variant if checkpoint_score_variant is not None
+        else (checkpoint_f1_variant if checkpoint_f1_variant is not None else "range_usefulness")
+    )
+    resolved_temporal_residual_label_mode = (
+        temporal_residual_label_mode if temporal_residual_label_mode is not None
+        else (residual_label_mode if residual_label_mode is not None else "temporal")
+    )
     return ExperimentConfig(
         data=DataConfig(
             n_ships=None if uses_csv else n_ships,
@@ -332,13 +410,13 @@ def build_experiment_config(
             diagnostic_every=diagnostic_every,
             diagnostic_window_fraction=diagnostic_window_fraction,
             checkpoint_selection_metric=checkpoint_selection_metric,
-            f1_diagnostic_every=f1_diagnostic_every,
+            validation_score_every=resolved_validation_score_every,
             checkpoint_uniform_gap_weight=checkpoint_uniform_gap_weight,
             checkpoint_type_penalty_weight=checkpoint_type_penalty_weight,
             checkpoint_smoothing_window=checkpoint_smoothing_window,
-            checkpoint_full_f1_every=checkpoint_full_f1_every,
+            checkpoint_full_score_every=resolved_checkpoint_full_score_every,
             checkpoint_candidate_pool_size=checkpoint_candidate_pool_size,
-            checkpoint_f1_variant=checkpoint_f1_variant,
+            checkpoint_score_variant=resolved_checkpoint_score_variant,
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             mlqds_hybrid_mode=mlqds_hybrid_mode,
@@ -346,7 +424,7 @@ def build_experiment_config(
             mlqds_score_temperature=mlqds_score_temperature,
             mlqds_rank_confidence_weight=mlqds_rank_confidence_weight,
             mlqds_range_geometry_blend=mlqds_range_geometry_blend,
-            residual_label_mode=residual_label_mode,
+            temporal_residual_label_mode=resolved_temporal_residual_label_mode,
             range_label_mode=range_label_mode,
             range_boundary_prior_weight=range_boundary_prior_weight,
             range_audit_compression_ratios=list(range_audit_compression_ratios or []),

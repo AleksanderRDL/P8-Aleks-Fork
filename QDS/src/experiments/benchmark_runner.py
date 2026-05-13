@@ -48,7 +48,7 @@ PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 3
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
-DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE, include_checkpoint_selection=True)
+DEFAULT_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE, include_checkpoint_selection=True)
 
 
 @dataclass(frozen=True)
@@ -330,10 +330,10 @@ def _profile_args(
         profile_args += [
             "--eval_csv_path",
             data_sources.eval_csv_path,
-            *DEFAULT_BASELINE_PROFILE_ARGS,
+            *DEFAULT_PROFILE_ARGS,
         ]
     elif data_sources.csv_path:
-        profile_args = ["--csv_path", data_sources.csv_path, *DEFAULT_BASELINE_PROFILE_ARGS]
+        profile_args = ["--csv_path", data_sources.csv_path, *DEFAULT_PROFILE_ARGS]
     else:
         raise ValueError(
             f"{DEFAULT_PROFILE} requires --csv_path or --train_csv_path/--eval_csv_path."
@@ -655,12 +655,26 @@ def _row_from_run(
         "min_pred_std": collapse_summary["min_pred_std"],
         "best_epoch_pred_std": collapse_summary["best_epoch_pred_std"],
         "model_type": model_config.get("model_type"),
-        "checkpoint_f1_variant": model_config.get("checkpoint_f1_variant"),
+        "checkpoint_score_variant": model_config.get(
+            "checkpoint_score_variant",
+            model_config.get("checkpoint_f1_variant"),
+        ),
+        "checkpoint_f1_variant": model_config.get(
+            "checkpoint_score_variant",
+            model_config.get("checkpoint_f1_variant"),
+        ),
         "compression_ratio": model_config.get("compression_ratio"),
         "loss_objective": model_config.get("loss_objective"),
         "budget_loss_ratios": model_config.get("budget_loss_ratios"),
         "budget_loss_temperature": model_config.get("budget_loss_temperature"),
-        "checkpoint_full_f1_every": model_config.get("checkpoint_full_f1_every"),
+        "checkpoint_full_score_every": model_config.get(
+            "checkpoint_full_score_every",
+            model_config.get("checkpoint_full_f1_every"),
+        ),
+        "checkpoint_full_f1_every": model_config.get(
+            "checkpoint_full_score_every",
+            model_config.get("checkpoint_full_f1_every"),
+        ),
         "checkpoint_candidate_pool_size": model_config.get("checkpoint_candidate_pool_size"),
         "mlqds_temporal_fraction": model_config.get("mlqds_temporal_fraction"),
         "mlqds_diversity_bonus": model_config.get("mlqds_diversity_bonus"),
@@ -669,7 +683,14 @@ def _row_from_run(
         "mlqds_score_temperature": model_config.get("mlqds_score_temperature"),
         "mlqds_rank_confidence_weight": model_config.get("mlqds_rank_confidence_weight"),
         "mlqds_range_geometry_blend": model_config.get("mlqds_range_geometry_blend"),
-        "residual_label_mode": model_config.get("residual_label_mode"),
+        "temporal_residual_label_mode": model_config.get(
+            "temporal_residual_label_mode",
+            model_config.get("residual_label_mode"),
+        ),
+        "residual_label_mode": model_config.get(
+            "temporal_residual_label_mode",
+            model_config.get("residual_label_mode"),
+        ),
         "range_label_mode": model_config.get("range_label_mode"),
         "range_boundary_prior_weight": model_config.get("range_boundary_prior_weight"),
         "range_boundary_prior_enabled": bool(float(model_config.get("range_boundary_prior_weight") or 0.0) > 0.0),
@@ -736,7 +757,7 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "compression_ratio",
         "loss_objective",
         "model_type",
-        "residual_label_mode",
+        "temporal_residual_label_mode",
         "mlqds_diversity_bonus",
         "mlqds_hybrid_mode",
         "mlqds_range_geometry_blend",
@@ -749,7 +770,7 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "train_label_mass_range_shape_score",
         "train_target_residual_label_mass_fraction",
         "train_target_effective_fill_budget_ratio",
-        "checkpoint_full_f1_every",
+        "checkpoint_full_score_every",
         "checkpoint_candidate_pool_size",
         "final_metrics_mode",
         "mlqds_primary_metric",
@@ -823,7 +844,8 @@ def _run_config(
             "max_trajectories": args.max_trajectories,
         },
         "checkpoint_selection_metric": _profile_settings(args.profile).get("checkpoint_selection_metric"),
-        "f1_diagnostic_every": int(args.f1_diagnostic_every),
+        "validation_score_every": int(args.validation_score_every),
+        "f1_diagnostic_every": int(args.validation_score_every),
         "extra_args": _split_extra_args(args.extra_args),
         "continue_on_failure": bool(args.continue_on_failure),
     }
@@ -887,10 +909,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_segments", type=int, default=None)
     parser.add_argument("--max_trajectories", type=int, default=None)
     parser.add_argument(
+        "--validation_score_every",
         "--f1_diagnostic_every",
+        dest="validation_score_every",
         type=int,
         default=1,
-        help="Held-out query-F1 diagnostic cadence passed to each child run.",
+        help="Held-out validation-score cadence passed to each child run.",
     )
     parser.add_argument(
         "--extra_args",
@@ -1006,8 +1030,8 @@ def main() -> None:
                 str(args.seed),
                 "--results_dir",
                 str(run_dir),
-                "--f1_diagnostic_every",
-                str(args.f1_diagnostic_every),
+                "--validation_score_every",
+                str(args.validation_score_every),
                 *_split_extra_args(args.extra_args),
             ]
             print(f"[benchmark] {workload}/{run_label}: {' '.join(shlex.quote(part) for part in command)}", flush=True)

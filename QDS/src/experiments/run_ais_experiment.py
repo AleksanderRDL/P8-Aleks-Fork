@@ -168,13 +168,13 @@ def main() -> None:
         diagnostic_every=args.diagnostic_every,
         diagnostic_window_fraction=args.diagnostic_window_fraction,
         checkpoint_selection_metric=args.checkpoint_selection_metric,
-        f1_diagnostic_every=args.f1_diagnostic_every,
+        validation_score_every=args.validation_score_every,
         checkpoint_uniform_gap_weight=args.checkpoint_uniform_gap_weight,
         checkpoint_type_penalty_weight=args.checkpoint_type_penalty_weight,
         checkpoint_smoothing_window=args.checkpoint_smoothing_window,
-        checkpoint_full_f1_every=args.checkpoint_full_f1_every,
+        checkpoint_full_score_every=args.checkpoint_full_score_every,
         checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
-        checkpoint_f1_variant=args.checkpoint_f1_variant,
+        checkpoint_score_variant=args.checkpoint_score_variant,
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         mlqds_hybrid_mode=args.mlqds_hybrid_mode,
@@ -182,7 +182,7 @@ def main() -> None:
         mlqds_score_temperature=args.mlqds_score_temperature,
         mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
         mlqds_range_geometry_blend=args.mlqds_range_geometry_blend,
-        residual_label_mode=args.residual_label_mode,
+        temporal_residual_label_mode=args.temporal_residual_label_mode,
         range_label_mode=args.range_label_mode,
         range_boundary_prior_weight=args.range_boundary_prior_weight,
         range_audit_compression_ratios=args.range_audit_compression_ratios,
@@ -218,13 +218,13 @@ def main() -> None:
         f"final_metrics_mode={args.final_metrics_mode}  "
         f"diagnostic_every={args.diagnostic_every}  "
         f"checkpoint_selection_metric={args.checkpoint_selection_metric}  "
-        f"f1_diagnostic_every={args.f1_diagnostic_every}  "
+        f"validation_score_every={args.validation_score_every}  "
         f"uniform_gap_weight={args.checkpoint_uniform_gap_weight}  "
         f"type_penalty_weight={args.checkpoint_type_penalty_weight}  "
         f"smoothing_window={args.checkpoint_smoothing_window}  "
-        f"full_f1_every={args.checkpoint_full_f1_every}  "
+        f"full_score_every={args.checkpoint_full_score_every}  "
         f"candidate_pool={args.checkpoint_candidate_pool_size}  "
-        f"f1_variant={args.checkpoint_f1_variant}  "
+        f"score_variant={args.checkpoint_score_variant}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
         f"range_spatial_km={args.range_spatial_km}  range_time_hours={args.range_time_hours}  "
         f"range_footprint_jitter={args.range_footprint_jitter}  "
@@ -241,7 +241,7 @@ def main() -> None:
         f"mlqds_score_temperature={args.mlqds_score_temperature}  "
         f"mlqds_rank_confidence_weight={args.mlqds_rank_confidence_weight}  "
         f"mlqds_range_geometry_blend={args.mlqds_range_geometry_blend}  "
-        f"residual_label_mode={args.residual_label_mode}  "
+        f"temporal_residual_label_mode={args.temporal_residual_label_mode}  "
         f"range_label_mode={args.range_label_mode}  "
         f"range_boundary_prior_weight={args.range_boundary_prior_weight}  "
         f"range_audit_compression_ratios={args.range_audit_compression_ratios}  "

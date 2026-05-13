@@ -25,8 +25,8 @@ def _trajectory_boundaries(trajectories: list[torch.Tensor]) -> list[tuple[int, 
     """Return flattened boundaries for generated trajectory lists."""
     boundaries: list[tuple[int, int]] = []
     cursor = 0
-    for traj in trajectories:
-        end = cursor + int(traj.shape[0])
+    for trajectory in trajectories:
+        end = cursor + int(trajectory.shape[0])
         boundaries.append((cursor, end))
         cursor = end
     return boundaries
@@ -81,20 +81,20 @@ def _weighted_sample_one(
     exceed (23M+ points). Falls back to inverse-CDF sampling via cumsum +
     searchsorted, which has no size limit.
     """
-    n = int(weights.numel())
-    if n == 0:
+    weight_count = int(weights.numel())
+    if weight_count == 0:
         return 0
     total = float(weights.sum().item())
     if total <= 0.0:
-        return int(torch.randint(0, n, (1,), generator=generator).item())
-    if n <= (1 << 24):
+        return int(torch.randint(0, weight_count, (1,), generator=generator).item())
+    if weight_count <= (1 << 24):
         return int(torch.multinomial(weights, 1, generator=generator).item())
     cdf = torch.cumsum(weights, dim=0)
-    r = float(torch.rand(1, generator=generator).item()) * total
-    return int(torch.searchsorted(cdf, torch.tensor(r, dtype=cdf.dtype)).item())
+    sample_threshold = float(torch.rand(1, generator=generator).item()) * total
+    return int(torch.searchsorted(cdf, torch.tensor(sample_threshold, dtype=cdf.dtype)).item())
 
 
-def _pick_point(
+def _sample_anchor_point(
     points: torch.Tensor,
     generator: torch.Generator,
     candidate_mask: torch.Tensor | None = None,
@@ -103,9 +103,9 @@ def _pick_point(
 ) -> torch.Tensor:
     """Sample one point row from the cloud. See src/queries/README.md for details."""
     if candidate_mask is not None and bool(candidate_mask.any().item()):
-        candidates = torch.where(candidate_mask)[0]
+        candidate_indices = torch.where(candidate_mask)[0]
     else:
-        candidates = None
+        candidate_indices = None
 
     use_density = (
         density_weights is not None
@@ -114,23 +114,23 @@ def _pick_point(
     )
     if use_density:
         assert density_weights is not None
-        if candidates is not None:
-            candidate_weights = density_weights[candidates].float()
+        if candidate_indices is not None:
+            candidate_weights = density_weights[candidate_indices].float()
             if float(candidate_weights.sum().item()) > 0.0:
-                sampled = _weighted_sample_one(candidate_weights, generator)
-                return points[int(candidates[sampled].item())]
+                sampled_candidate_offset = _weighted_sample_one(candidate_weights, generator)
+                return points[int(candidate_indices[sampled_candidate_offset].item())]
         else:
             weights = density_weights.float()
             if float(weights.sum().item()) > 0.0:
-                sampled = _weighted_sample_one(weights, generator)
-                return points[sampled]
+                sampled_point_idx = _weighted_sample_one(weights, generator)
+                return points[sampled_point_idx]
 
-    if candidates is not None:
-        candidate_idx = int(torch.randint(0, candidates.shape[0], (1,), generator=generator).item())
-        idx = int(candidates[candidate_idx].item())
+    if candidate_indices is not None:
+        candidate_offset = int(torch.randint(0, candidate_indices.shape[0], (1,), generator=generator).item())
+        point_idx = int(candidate_indices[candidate_offset].item())
     else:
-        idx = int(torch.randint(0, points.shape[0], (1,), generator=generator).item())
-    return points[idx]
+        point_idx = int(torch.randint(0, points.shape[0], (1,), generator=generator).item())
+    return points[point_idx]
 
 
 def _jitter_scale(generator: torch.Generator, jitter: float) -> float:
@@ -146,7 +146,7 @@ def _jitter_scale(generator: torch.Generator, jitter: float) -> float:
 
 def _make_range_query(
     points: torch.Tensor,
-    b: dict[str, float],
+    bounds: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
     density_weights: torch.Tensor | None = None,
@@ -167,53 +167,57 @@ def _make_range_query(
         raise ValueError("range_spatial_km must be positive when provided.")
     if time_hours is not None and time_hours <= 0.0:
         raise ValueError("range_time_hours must be positive when provided.")
-    p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
+    anchor_point = _sample_anchor_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     lat_jitter = _jitter_scale(generator, range_footprint_jitter)
     lon_jitter = _jitter_scale(generator, range_footprint_jitter)
     time_jitter = _jitter_scale(generator, range_footprint_jitter)
     if spatial_km is None:
-        lat_w = spatial_fraction * (b["lat_max"] - b["lat_min"]) * lat_jitter
-        lon_w = spatial_fraction * (b["lon_max"] - b["lon_min"]) * lon_jitter
+        lat_w = spatial_fraction * (bounds["lat_max"] - bounds["lat_min"]) * lat_jitter
+        lon_w = spatial_fraction * (bounds["lon_max"] - bounds["lon_min"]) * lon_jitter
     else:
         lat_w = (spatial_km / 111.32) * lat_jitter
-        cos_lat = max(0.10, abs(math.cos(math.radians(float(p[1].item())))))
+        cos_lat = max(0.10, abs(math.cos(math.radians(float(anchor_point[1].item())))))
         lon_w = (spatial_km / (111.32 * cos_lat)) * lon_jitter
     if time_hours is None:
-        t_w = time_fraction * (b["t_max"] - b["t_min"]) * time_jitter
+        t_w = time_fraction * (bounds["t_max"] - bounds["t_min"]) * time_jitter
     else:
         t_w = time_hours * 3600.0 * time_jitter
     return {
         "type": "range",
         "params": {
-            "lat_min": float(max(b["lat_min"], p[1].item() - lat_w)),
-            "lat_max": float(min(b["lat_max"], p[1].item() + lat_w)),
-            "lon_min": float(max(b["lon_min"], p[2].item() - lon_w)),
-            "lon_max": float(min(b["lon_max"], p[2].item() + lon_w)),
-            "t_start": float(max(b["t_min"], p[0].item() - t_w)),
-            "t_end": float(min(b["t_max"], p[0].item() + t_w)),
+            "lat_min": float(max(bounds["lat_min"], anchor_point[1].item() - lat_w)),
+            "lat_max": float(min(bounds["lat_max"], anchor_point[1].item() + lat_w)),
+            "lon_min": float(max(bounds["lon_min"], anchor_point[2].item() - lon_w)),
+            "lon_max": float(min(bounds["lon_max"], anchor_point[2].item() + lon_w)),
+            "t_start": float(max(bounds["t_min"], anchor_point[0].item() - t_w)),
+            "t_end": float(min(bounds["t_max"], anchor_point[0].item() + t_w)),
         },
     }
 
 
 def _make_knn_query(
     points: torch.Tensor,
-    b: dict[str, float],
+    bounds: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
     density_weights: torch.Tensor | None = None,
     knn_k: int | None = DEFAULT_KNN_K,
 ) -> dict[str, Any]:
     """Generate one kNN query. See src/queries/README.md for details."""
-    p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
-    k = int(knn_k) if knn_k is not None and int(knn_k) > 0 else int(torch.randint(3, 8, (1,), generator=generator).item())
+    anchor_point = _sample_anchor_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
+    neighbor_count = (
+        int(knn_k)
+        if knn_k is not None and int(knn_k) > 0
+        else int(torch.randint(3, 8, (1,), generator=generator).item())
+    )
     return {
         "type": "knn",
         "params": {
-            "lat": float(p[1].item()),
-            "lon": float(p[2].item()),
-            "t_center": float(p[0].item()),
-            "t_half_window": float(0.25 * (b["t_max"] - b["t_min"])),  # 25% of day ≈ 6 h
-            "k": max(1, k),
+            "lat": float(anchor_point[1].item()),
+            "lon": float(anchor_point[2].item()),
+            "t_center": float(anchor_point[0].item()),
+            "t_half_window": float(0.25 * (bounds["t_max"] - bounds["t_min"])),  # 25% of day ≈ 6 h
+            "k": max(1, neighbor_count),
         },
     }
 
@@ -221,37 +225,40 @@ def _make_knn_query(
 def _make_similarity_query(
     points: torch.Tensor,
     trajectories: list[torch.Tensor],
-    b: dict[str, float],
+    bounds: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Generate one similarity query with a reference snippet. See src/queries/README.md for details."""
-    p = _pick_point(points, generator, candidate_mask=anchor_mask)
-    t_half = DEFAULT_SIMILARITY_TIME_FRACTION * (b["t_max"] - b["t_min"])
-    radius = DEFAULT_SIMILARITY_RADIUS_FRACTION * max(b["lat_max"] - b["lat_min"], b["lon_max"] - b["lon_min"])
+    anchor_point = _sample_anchor_point(points, generator, candidate_mask=anchor_mask)
+    t_half = DEFAULT_SIMILARITY_TIME_FRACTION * (bounds["t_max"] - bounds["t_min"])
+    radius = DEFAULT_SIMILARITY_RADIUS_FRACTION * max(
+        bounds["lat_max"] - bounds["lat_min"],
+        bounds["lon_max"] - bounds["lon_min"],
+    )
 
-    traj_idx = int(torch.randint(0, len(trajectories), (1,), generator=generator).item())
-    traj = trajectories[traj_idx]
-    center = int(torch.randint(2, max(3, traj.shape[0] - 2), (1,), generator=generator).item())
-    ref = traj[max(0, center - 2) : min(traj.shape[0], center + 3), :3]
+    trajectory_idx = int(torch.randint(0, len(trajectories), (1,), generator=generator).item())
+    trajectory = trajectories[trajectory_idx]
+    center = int(torch.randint(2, max(3, trajectory.shape[0] - 2), (1,), generator=generator).item())
+    reference = trajectory[max(0, center - 2) : min(trajectory.shape[0], center + 3), :3]
 
     return {
         "type": "similarity",
         "params": {
-            "lat_query_centroid": float(p[1].item()),
-            "lon_query_centroid": float(p[2].item()),
-            "t_start": float(max(b["t_min"], p[0].item() - t_half)),
-            "t_end": float(min(b["t_max"], p[0].item() + t_half)),
+            "lat_query_centroid": float(anchor_point[1].item()),
+            "lon_query_centroid": float(anchor_point[2].item()),
+            "t_start": float(max(bounds["t_min"], anchor_point[0].item() - t_half)),
+            "t_end": float(min(bounds["t_max"], anchor_point[0].item() + t_half)),
             "radius": float(radius),
             "top_k": 5,
         },
-        "reference": ref.tolist(),
+        "reference": reference.tolist(),
     }
 
 
 def _make_clustering_query(
     points: torch.Tensor,
-    b: dict[str, float],
+    bounds: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
     density_weights: torch.Tensor | None = None,
@@ -262,9 +269,9 @@ def _make_clustering_query(
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
 ) -> dict[str, Any]:
     """Generate one clustering query. See src/queries/README.md for details."""
-    rq = _make_range_query(
+    range_query = _make_range_query(
         points,
-        b,
+        bounds,
         generator,
         anchor_mask=anchor_mask,
         density_weights=density_weights,
@@ -274,14 +281,14 @@ def _make_clustering_query(
         range_time_hours=range_time_hours,
         range_footprint_jitter=range_footprint_jitter,
     )
-    params = dict(rq["params"])
-    params.update(
+    range_params = dict(range_query["params"])
+    range_params.update(
         {
-            "eps": float(0.02 * max(b["lat_max"] - b["lat_min"], b["lon_max"] - b["lon_min"])),
+            "eps": float(0.02 * max(bounds["lat_max"] - bounds["lat_min"], bounds["lon_max"] - bounds["lon_min"])),
             "min_samples": int(torch.randint(3, 7, (1,), generator=generator).item()),
         }
     )
-    return {"type": "clustering", "params": params}
+    return {"type": "clustering", "params": range_params}
 
 
 def _box_mask(points: torch.Tensor, params: dict[str, float]) -> torch.Tensor:
@@ -300,16 +307,22 @@ def _haversine_km(lat1: torch.Tensor, lon1: torch.Tensor, lat2: float, lon2: flo
     """Compute haversine distances in km to one anchor point."""
     import math
 
-    r = 6371.0
-    lat1r = torch.deg2rad(lat1)
-    lon1r = torch.deg2rad(lon1)
-    lat2r = math.radians(lat2)
-    lon2r = math.radians(lon2)
-    dlat = lat1r - lat2r
-    dlon = lon1r - lon2r
-    a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat1r) * math.cos(lat2r) * torch.sin(dlon / 2.0) ** 2
-    c = 2.0 * torch.atan2(torch.sqrt(a), torch.sqrt(torch.clamp(1.0 - a, min=1e-9)))
-    return r * c
+    earth_radius_km = 6371.0
+    lat1_rad = torch.deg2rad(lat1)
+    lon1_rad = torch.deg2rad(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+    delta_lat = lat1_rad - lat2_rad
+    delta_lon = lon1_rad - lon2_rad
+    haversine_term = (
+        torch.sin(delta_lat / 2.0) ** 2
+        + torch.cos(lat1_rad) * math.cos(lat2_rad) * torch.sin(delta_lon / 2.0) ** 2
+    )
+    angular_distance = 2.0 * torch.atan2(
+        torch.sqrt(haversine_term),
+        torch.sqrt(torch.clamp(1.0 - haversine_term, min=1e-9)),
+    )
+    return earth_radius_km * angular_distance
 
 
 def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -> torch.Tensor:
@@ -324,29 +337,34 @@ def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -
     if points.numel() == 0:
         return mask
 
-    qtype = str(query["type"]).lower()
+    query_type = str(query["type"]).lower()
     params = query["params"]
-    if qtype in {"range", "clustering"}:
+    if query_type in {"range", "clustering"}:
         return _box_mask(points, params)
 
-    if qtype == "knn":
+    if query_type == "knn":
         t0 = float(params["t_center"] - params["t_half_window"])
         t1 = float(params["t_center"] + params["t_half_window"])
         in_window = (points[:, 0] >= t0) & (points[:, 0] <= t1)
-        cand = torch.where(in_window)[0]
-        if cand.numel() == 0:
+        candidate_indices = torch.where(in_window)[0]
+        if candidate_indices.numel() == 0:
             return mask
-        cand_points = points[cand]
-        d_space = _haversine_km(cand_points[:, 1], cand_points[:, 2], float(params["lat"]), float(params["lon"]))
-        d_time = torch.abs(cand_points[:, 0] - float(params["t_center"]))
-        dist = d_space + 0.001 * d_time
-        k_eff = min(max(1, int(params["k"])), dist.numel())
-        kth = torch.topk(-dist, k_eff).values[-1].neg()
-        covered = cand[dist <= (3.0 * (float(kth.item()) + 1e-6))]
-        mask[covered] = True
+        candidate_points = points[candidate_indices]
+        spatial_distance = _haversine_km(
+            candidate_points[:, 1],
+            candidate_points[:, 2],
+            float(params["lat"]),
+            float(params["lon"]),
+        )
+        temporal_distance = torch.abs(candidate_points[:, 0] - float(params["t_center"]))
+        distance = spatial_distance + 0.001 * temporal_distance
+        effective_k = min(max(1, int(params["k"])), distance.numel())
+        kth_distance = torch.topk(-distance, effective_k).values[-1].neg()
+        covered_indices = candidate_indices[distance <= (3.0 * (float(kth_distance.item()) + 1e-6))]
+        mask[covered_indices] = True
         return mask
 
-    if qtype == "similarity":
+    if query_type == "similarity":
         radius = float(params["radius"])
         return (
             (points[:, 0] >= params["t_start"])
@@ -360,7 +378,7 @@ def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -
             )
         )
 
-    raise ValueError(f"Unsupported query type for coverage: {qtype}")
+    raise ValueError(f"Unsupported query type for coverage: {query_type}")
 
 
 def query_coverage_mask(points: torch.Tensor, typed_queries: list[dict[str, Any]]) -> torch.Tensor:
@@ -394,10 +412,10 @@ def _normalize_target_coverage(target_coverage: float | None) -> float | None:
 
 
 def _make_query(
-    name: str,
+    query_type: str,
     points: torch.Tensor,
     trajectories: list[torch.Tensor],
-    b: dict[str, float],
+    bounds: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
     density_weights: torch.Tensor | None = None,
@@ -409,10 +427,10 @@ def _make_query(
     knn_k: int | None = DEFAULT_KNN_K,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
-    if name == "range":
+    if query_type == "range":
         return _make_range_query(
             points,
-            b,
+            bounds,
             generator,
             anchor_mask=anchor_mask,
             density_weights=density_weights,
@@ -422,21 +440,21 @@ def _make_query(
             range_time_hours=range_time_hours,
             range_footprint_jitter=range_footprint_jitter,
         )
-    if name == "knn":
+    if query_type == "knn":
         return _make_knn_query(
             points,
-            b,
+            bounds,
             generator,
             anchor_mask=anchor_mask,
             density_weights=density_weights,
             knn_k=knn_k,
         )
-    if name == "similarity":
-        return _make_similarity_query(points, trajectories, b, generator, anchor_mask=anchor_mask)
-    if name == "clustering":
+    if query_type == "similarity":
+        return _make_similarity_query(points, trajectories, bounds, generator, anchor_mask=anchor_mask)
+    if query_type == "clustering":
         return _make_clustering_query(
             points,
-            b,
+            bounds,
             generator,
             anchor_mask=anchor_mask,
             density_weights=density_weights,
@@ -446,34 +464,34 @@ def _make_query(
             range_time_hours=range_time_hours,
             range_footprint_jitter=range_footprint_jitter,
         )
-    raise ValueError(f"Unsupported query type: {name}")
+    raise ValueError(f"Unsupported query type: {query_type}")
 
 
 def _finalize_workload(
     points: torch.Tensor,
-    typed: list[dict[str, Any]],
+    typed_queries: list[dict[str, Any]],
     generator: torch.Generator,
     generation_diagnostics: dict[str, Any] | None = None,
 ) -> TypedQueryWorkload:
     """Shuffle, featurize, and attach point-coverage metadata."""
-    if typed:
-        perm = torch.randperm(len(typed), generator=generator).tolist()
-        typed = [typed[i] for i in perm]
+    if typed_queries:
+        shuffle_order = torch.randperm(len(typed_queries), generator=generator).tolist()
+        typed_queries = [typed_queries[i] for i in shuffle_order]
 
-    features, type_ids = pad_query_features(typed)
-    covered = query_coverage_mask(points, typed)
+    features, type_ids = pad_query_features(typed_queries)
+    covered = query_coverage_mask(points, typed_queries)
     covered_points = int(covered.sum().item())
     total_points = int(points.shape[0])
     coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
     diagnostics = dict(generation_diagnostics or {})
     query_generation = dict(diagnostics.get("query_generation") or {})
     type_counts: dict[str, int] = {}
-    for query in typed:
+    for query in typed_queries:
         query_type = str(query.get("type", "unknown"))
         type_counts[query_type] = int(type_counts.get(query_type, 0)) + 1
     query_generation.update(
         {
-            "final_query_count": int(len(typed)),
+            "final_query_count": int(len(typed_queries)),
             "type_counts": type_counts,
             "covered_points": covered_points,
             "total_points": total_points,
@@ -483,7 +501,7 @@ def _finalize_workload(
     diagnostics["query_generation"] = query_generation
     return TypedQueryWorkload(
         query_features=features,
-        typed_queries=typed,
+        typed_queries=typed_queries,
         type_ids=type_ids,
         coverage_fraction=coverage_fraction,
         covered_points=covered_points,
@@ -603,15 +621,18 @@ def generate_typed_query_workload(
     so kNN queries are guaranteed their full quota even if generation stops early.
     """
     points = torch.cat(trajectories, dim=0)
-    b = _dataset_bounds(points)
+    bounds = _dataset_bounds(points)
     boundaries = _trajectory_boundaries(trajectories)
 
     normalized_workload = normalize_pure_workload_map(workload_map)
-    g = torch.Generator().manual_seed(int(seed))
+    generator = torch.Generator().manual_seed(int(seed))
     density_weights = _density_anchor_weights(points)
 
-    names = list(normalized_workload.keys())
-    weights = torch.tensor([normalized_workload[n] for n in names], dtype=torch.float32)
+    query_types = list(normalized_workload.keys())
+    query_type_weights = torch.tensor(
+        [normalized_workload[query_type] for query_type in query_types],
+        dtype=torch.float32,
+    )
     coverage_target = _normalize_target_coverage(target_coverage)
     acceptance_enabled = _range_acceptance_enabled(
         range_min_point_hits,
@@ -633,19 +654,19 @@ def generate_typed_query_workload(
     range_acceptance = _range_acceptance_state(acceptance_enabled, max_range_attempts, requested_for_attempts)
     accepted_range_queries: list[dict[str, Any]] = []
 
-    def build_query(name: str, anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
+    def build_query(query_type: str, anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
         """Build one query, applying optional range acceptance filters."""
-        if name == "range" and acceptance_enabled:
+        if query_type == "range" and acceptance_enabled:
             if max_range_attempts is not None and int(range_acceptance["attempts"]) >= max_range_attempts:
                 range_acceptance["exhausted"] = True
                 return None
             range_acceptance["attempts"] = int(range_acceptance["attempts"]) + 1
         query = _make_query(
-            name,
+            query_type,
             points,
             trajectories,
-            b,
-            g,
+            bounds,
+            generator,
             anchor_mask=anchor_mask,
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
@@ -655,14 +676,14 @@ def generate_typed_query_workload(
             range_footprint_jitter=range_footprint_jitter,
             knn_k=knn_k,
         )
-        if name != "range" or not acceptance_enabled:
+        if query_type != "range" or not acceptance_enabled:
             return query
         accepted, reason = _accept_range_query(
             query,
             points,
             boundaries,
             accepted_range_queries,
-            b,
+            bounds,
             range_min_point_hits=range_min_point_hits,
             range_max_point_hit_fraction=range_max_point_hit_fraction,
             range_min_trajectory_hits=range_min_trajectory_hits,
@@ -681,8 +702,8 @@ def generate_typed_query_workload(
         requested_queries = max(1, int(n_queries))
         if max_queries is not None and int(max_queries) <= 0:
             raise ValueError("max_queries must be positive when target_coverage is set.")
-        typed: list[dict[str, Any]] = []
-        counts = torch.zeros((len(names),), dtype=torch.long)
+        generated_queries: list[dict[str, Any]] = []
+        query_type_counts = torch.zeros((len(query_types),), dtype=torch.long)
         covered = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
 
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
@@ -690,39 +711,39 @@ def generate_typed_query_workload(
 
         # Generate kNN queries first so they always get their initial quota even
         # when other types advance coverage faster.
-        if front_load_knn > 0 and "knn" in names:
-            knn_idx = names.index("knn")
+        if front_load_knn > 0 and "knn" in query_types:
+            knn_idx = query_types.index("knn")
             for _ in range(min(front_load_knn, query_limit)):
                 query = build_query("knn", anchor_mask=None)
                 if query is None:
                     break
-                typed.append(query)
-                counts[knn_idx] += 1
+                generated_queries.append(query)
+                query_type_counts[knn_idx] += 1
                 covered |= point_coverage_mask_for_query(points, query)
 
-        while len(typed) < query_limit:
+        while len(generated_queries) < query_limit:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
-            if len(typed) >= requested_queries and current_coverage >= coverage_target:
+            if len(generated_queries) >= requested_queries and current_coverage >= coverage_target:
                 stop_reason = "target_coverage_reached"
                 break
-            desired = weights * float(len(typed) + 1)
-            type_idx = int(torch.argmax(desired - counts.float()).item())
-            name = names[type_idx]
+            desired_counts = query_type_weights * float(len(generated_queries) + 1)
+            query_type_idx = int(torch.argmax(desired_counts - query_type_counts.float()).item())
+            query_type = query_types[query_type_idx]
             anchor_mask = (~covered) if current_coverage < coverage_target else None
-            query = build_query(name, anchor_mask=anchor_mask)
+            query = build_query(query_type, anchor_mask=anchor_mask)
             if query is None:
-                if name == "range" and range_acceptance.get("exhausted"):
+                if query_type == "range" and range_acceptance.get("exhausted"):
                     stop_reason = "range_acceptance_exhausted"
                     break
                 continue
-            typed.append(query)
-            counts[type_idx] += 1
+            generated_queries.append(query)
+            query_type_counts[query_type_idx] += 1
             covered |= point_coverage_mask_for_query(points, query)
 
         final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
         if (
             stop_reason == "max_queries_reached"
-            and len(typed) >= requested_queries
+            and len(generated_queries) >= requested_queries
             and final_coverage >= coverage_target
         ):
             stop_reason = "target_coverage_reached"
@@ -736,44 +757,46 @@ def generate_typed_query_workload(
         }
         return _finalize_workload(
             points,
-            typed,
-            g,
+            generated_queries,
+            generator,
             generation_diagnostics={
                 "range_acceptance": range_acceptance,
                 "query_generation": query_generation,
             },
         )
 
-    counts = torch.floor(weights * n_queries).to(torch.long)
-    while int(counts.sum().item()) < n_queries:
-        idx = int(torch.argmax(weights - counts.float() / max(1, n_queries)).item())
-        counts[idx] += 1
+    query_type_counts = torch.floor(query_type_weights * n_queries).to(torch.long)
+    while int(query_type_counts.sum().item()) < n_queries:
+        underfilled_type_idx = int(
+            torch.argmax(query_type_weights - query_type_counts.float() / max(1, n_queries)).item()
+        )
+        query_type_counts[underfilled_type_idx] += 1
 
-    typed: list[dict[str, Any]] = []
+    generated_queries: list[dict[str, Any]] = []
     stop_reason = "fixed_count_completed"
     # Front-load kNN queries before proportional types
-    if front_load_knn > 0 and "knn" in names:
-        knn_idx = names.index("knn")
-        n_front = min(front_load_knn, int(counts[knn_idx].item()))
-        for _ in range(n_front):
+    if front_load_knn > 0 and "knn" in query_types:
+        knn_idx = query_types.index("knn")
+        frontloaded_knn_count = min(front_load_knn, int(query_type_counts[knn_idx].item()))
+        for _ in range(frontloaded_knn_count):
             query = build_query("knn")
             if query is not None:
-                typed.append(query)
-        counts[knn_idx] = max(0, counts[knn_idx] - n_front)
-    for name, count in zip(names, counts.tolist()):
+                generated_queries.append(query)
+        query_type_counts[knn_idx] = max(0, query_type_counts[knn_idx] - frontloaded_knn_count)
+    for query_type, count in zip(query_types, query_type_counts.tolist()):
         for _ in range(int(count)):
-            query = build_query(name)
+            query = build_query(query_type)
             if query is None:
-                if name == "range" and range_acceptance.get("exhausted"):
+                if query_type == "range" and range_acceptance.get("exhausted"):
                     stop_reason = "range_acceptance_exhausted"
                     break
                 continue
-            typed.append(query)
+            generated_queries.append(query)
 
     return _finalize_workload(
         points,
-        typed,
-        g,
+        generated_queries,
+        generator,
         generation_diagnostics={
             "range_acceptance": range_acceptance,
             "query_generation": {
