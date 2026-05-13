@@ -52,9 +52,9 @@ from experiments.range_diagnostics import (
     _range_workload_distribution_comparison,
 )
 from experiments.experiment_workloads import (
-    _workload_name,
     generate_experiment_workloads,
     resolve_workload_maps,
+    workload_name,
 )
 from queries.query_types import single_workload_type
 from simplification.mlqds_scoring import workload_type_head
@@ -98,7 +98,7 @@ def run_experiment_pipeline(
     train_workload_map, eval_workload_map = resolve_workload_maps(config.query.workload)
     if eval_trajectories is None:
         print(
-            f"[pipeline] {len(trajectories)} trajectories, workload={_workload_name(eval_workload_map)}",
+            f"[pipeline] {len(trajectories)} trajectories, workload={workload_name(eval_workload_map)}",
             flush=True,
         )
     else:
@@ -110,7 +110,7 @@ def run_experiment_pipeline(
         print(
             f"[pipeline] train={len(trajectories)} trajectories{validation_part}, "
             f"eval={len(eval_trajectories)} trajectories, "
-            f"workload={_workload_name(eval_workload_map)}",
+            f"workload={workload_name(eval_workload_map)}",
             flush=True,
         )
 
@@ -266,7 +266,7 @@ def run_experiment_pipeline(
                 f"  saved checkpoint to {save_model}  "
                 f"(epochs_trained={trained.epochs_trained}, "
                 f"best_epoch={trained.best_epoch}, best_loss={trained.best_loss:.8f}, "
-                f"workload={_workload_name(eval_workload_map)})",
+                f"workload={workload_name(eval_workload_map)})",
                 flush=True,
             )
     methods = build_primary_methods(

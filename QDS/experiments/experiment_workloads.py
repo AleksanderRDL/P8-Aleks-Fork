@@ -24,7 +24,7 @@ class ExperimentWorkloads:
     selection_workload: TypedQueryWorkload | None
 
 
-def _workload_name(workload_map: dict[str, float]) -> str:
+def workload_name(workload_map: dict[str, float]) -> str:
     """Build compact string name for a pure workload map."""
     return ",".join(
         f"{query_type}={weight:.1f}"
@@ -40,7 +40,7 @@ def _normalized_coverage_target(value: float | None) -> float | None:
     return target / 100.0 if target > 1.0 else target
 
 
-def _validation_query_count(config: ExperimentConfig) -> int:
+def validation_query_count(config: ExperimentConfig) -> int:
     """Use the same minimum query count for validation and final eval workloads."""
     return max(1, int(config.query.n_queries))
 
@@ -88,7 +88,7 @@ def generate_experiment_workloads(
     if selection_traj:
         selection_workload = generate_typed_query_workload_for_config(
             trajectories=selection_traj,
-            n_queries=_validation_query_count(config),
+            n_queries=validation_query_count(config),
             workload_map=eval_workload_map,
             seed=seeds.eval_query_seed + 17,
             config=config,

@@ -14,7 +14,7 @@ from evaluation.baselines import (
 from evaluation.evaluate_methods import evaluate_method
 from evaluation.query_cache import EvaluationQueryCache
 from experiments.experiment_config import ExperimentConfig, SeedBundle
-from experiments.experiment_workloads import _workload_name
+from experiments.experiment_workloads import workload_name
 from experiments.range_cache import RangeRuntimeCache, prepare_range_label_cache
 from queries.query_types import single_workload_type
 from queries.workload import TypedQueryWorkload
@@ -172,8 +172,8 @@ def evaluate_shift_pairs(
     test_boundaries: list[tuple[int, int]],
 ) -> dict[str, dict[str, float]]:
     """Evaluate the train-workload self score needed by the shift table."""
-    train_name = _workload_name(train_workload_map)
-    eval_name = _workload_name(eval_workload_map)
+    train_name = workload_name(train_workload_map)
+    eval_name = workload_name(eval_workload_map)
     shift_pairs = {train_name: {eval_name: float(matched_mlqds_score)}}
     if train_name == eval_name:
         shift_pairs[train_name][train_name] = float(matched_mlqds_score)

@@ -28,7 +28,7 @@ from experiments.benchmark_runner import (
 )
 from experiments.benchmark_artifacts import index_entry, write_family_indexes
 from experiments.experiment_config import build_experiment_config
-from experiments.experiment_workloads import _validation_query_count, resolve_workload_maps
+from experiments.experiment_workloads import resolve_workload_maps, validation_query_count
 
 
 def _profile_core_args() -> list[str]:
@@ -501,10 +501,10 @@ def test_workload_aware_diagnostic_profile_uses_requested_training_shape() -> No
     assert "--max_trajectories" not in profile_args
 
 
-def test_validation_query_count_matches_eval_minimum_query_count() -> None:
+def test_selection_query_count_matches_eval_query_count() -> None:
     cfg = build_experiment_config(n_queries=80, query_coverage=0.20, max_queries=None)
 
-    assert _validation_query_count(cfg) == 80
+    assert validation_query_count(cfg) == 80
 
 
 def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:
