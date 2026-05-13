@@ -56,7 +56,7 @@ DEFAULT_PROFILE_ARGS = benchmark_profile_args(
 
 def _qds_root() -> Path:
     """Return the QDS package root."""
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def _repo_root() -> Path:

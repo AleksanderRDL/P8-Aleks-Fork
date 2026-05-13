@@ -1,16 +1,24 @@
 SHELL := /bin/bash
 
+REPO_ROOT := $(abspath .)
+QDS_DIR := $(REPO_ROOT)/QDS
 PYTHON ?= python
+QDS_PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 CSV ?=
 QUERY_ARGS ?= --help
 
-.PHONY: help setup install pipeline db-up db-down db-reset db-logs db-smoke db-import db-query
+.PHONY: help setup install pipeline qds-check-env test typecheck smoke smoke-csv db-up db-down db-reset db-logs db-smoke db-import db-query
 
 help:
 	@echo "Targets:"
 	@echo "  setup            Create .venv and install Python dependencies"
 	@echo "  install          Install Python dependencies into current interpreter"
 	@echo "  pipeline         Run AIS cleaning pipeline"
+	@echo "  qds-check-env    Print QDS Python/package versions and run pip check"
+	@echo "  test             Run the QDS pytest suite"
+	@echo "  typecheck        Run QDS Pyright"
+	@echo "  smoke            Run a tiny QDS synthetic training/evaluation experiment"
+	@echo "  smoke-csv        Run a tiny QDS cleaned-CSV experiment"
 	@echo "  db-up            Start PostGIS service"
 	@echo "  db-down          Stop PostGIS service"
 	@echo "  db-reset         Recreate PostGIS volume and schema"
@@ -28,6 +36,21 @@ install:
 
 pipeline:
 	$(PYTHON) main.py
+
+qds-check-env:
+	$(MAKE) -C $(QDS_DIR) check-env PYTHON="$(QDS_PYTHON)"
+
+test:
+	$(MAKE) -C $(QDS_DIR) test PYTHON="$(QDS_PYTHON)"
+
+typecheck:
+	$(MAKE) -C $(QDS_DIR) typecheck PYTHON="$(QDS_PYTHON)"
+
+smoke:
+	$(MAKE) -C $(QDS_DIR) smoke PYTHON="$(QDS_PYTHON)"
+
+smoke-csv:
+	$(MAKE) -C $(QDS_DIR) smoke-csv PYTHON="$(QDS_PYTHON)" CLEANED_CSV="$(CLEANED_CSV)"
 
 db-up:
 	docker compose -f db/compose.yaml up -d
