@@ -115,7 +115,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - Defaults: `window_length=512`, `window_stride=256`,
   `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
   `allow_tf32=False`, and `amp_mode="off"`. The testing-baseline benchmark
-  applies runtime precision through its selected profile variant.
+  profile overrides these with its range baseline runtime settings.
 
 ## Persistence
 

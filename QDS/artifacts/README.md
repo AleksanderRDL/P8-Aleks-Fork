@@ -29,7 +29,7 @@ artifacts/benchmarks/range_testing_baseline/
     benchmark_matrix.csv
     benchmark_matrix.md
     logs/
-    variants/
+    <run_label>/
   queues/<queue_id>/
     queue_manifest.json
     queue_plan.tsv

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 DEFAULT_PROFILE = "range_testing_baseline"
 PROFILE_CHOICES = (DEFAULT_PROFILE,)
-DEFAULT_PROFILE_VARIANTS = ("baseline",)
 ProfileSetting = int | float | str | bool | list[float] | None
 
 
@@ -36,6 +35,10 @@ class BenchmarkProfile:
     mlqds_temporal_fraction: float
     workload: str
     checkpoint_selection_metric: str
+    checkpoint_f1_variant: str
+    float32_matmul_precision: str
+    allow_tf32: bool
+    amp_mode: str
     loss_objective: str
     budget_loss_ratios: tuple[float, ...]
     budget_loss_temperature: float
@@ -47,21 +50,6 @@ class BenchmarkProfile:
     f1_diagnostic_every: int
     range_label_mode: str
     range_boundary_prior_weight: float
-
-
-@dataclass(frozen=True)
-class BenchmarkProfileVariant:
-    """Small runtime/config overlay applied on top of a benchmark profile."""
-
-    name: str
-    float32_matmul_precision: str = "highest"
-    allow_tf32: bool = False
-    amp_mode: str = "off"
-    train_batch_size: int | None = None
-    inference_batch_size: int | None = None
-    checkpoint_f1_variant: str = "range_usefulness"
-    extra_args: tuple[str, ...] = ()
-
 
 RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
     name=DEFAULT_PROFILE,
@@ -85,6 +73,10 @@ RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
     mlqds_temporal_fraction=0.25,
     workload="range",
     checkpoint_selection_metric="f1",
+    checkpoint_f1_variant="range_usefulness",
+    float32_matmul_precision="high",
+    allow_tf32=True,
+    amp_mode="bf16",
     loss_objective="budget_topk",
     budget_loss_ratios=(0.01, 0.02, 0.05, 0.10),
     budget_loss_temperature=0.10,
@@ -100,16 +92,6 @@ RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
 
 _PROFILES = {RANGE_TESTING_BASELINE_PROFILE.name: RANGE_TESTING_BASELINE_PROFILE}
 
-PROFILE_VARIANTS: dict[str, BenchmarkProfileVariant] = {
-    "baseline": BenchmarkProfileVariant(
-        name="baseline",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-    ),
-}
-PROFILE_VARIANT_CHOICES = tuple(PROFILE_VARIANTS)
-
 
 def benchmark_profile(name: str) -> BenchmarkProfile:
     """Return a known benchmark profile by name."""
@@ -119,55 +101,6 @@ def benchmark_profile(name: str) -> BenchmarkProfile:
         raise ValueError(f"Unknown benchmark profile: {name}") from exc
 
 
-def benchmark_profile_variant(name: str) -> BenchmarkProfileVariant:
-    """Return a known profile variant by name."""
-    try:
-        return PROFILE_VARIANTS[name]
-    except KeyError as exc:
-        raise ValueError(f"Unknown benchmark profile variant: {name}") from exc
-
-
-def benchmark_profile_variant_settings(profile_name: str, variant_name: str) -> dict[str, int | str | bool | list[str]]:
-    """Return effective runtime settings for a profile variant."""
-    profile = benchmark_profile(profile_name)
-    variant = benchmark_profile_variant(variant_name)
-    train_batch_size = variant.train_batch_size if variant.train_batch_size is not None else profile.train_batch_size
-    inference_batch_size = (
-        variant.inference_batch_size if variant.inference_batch_size is not None else profile.inference_batch_size
-    )
-    return {
-        "name": variant.name,
-        "float32_matmul_precision": variant.float32_matmul_precision,
-        "allow_tf32": variant.allow_tf32,
-        "amp_mode": variant.amp_mode,
-        "train_batch_size": train_batch_size,
-        "inference_batch_size": inference_batch_size,
-        "checkpoint_f1_variant": variant.checkpoint_f1_variant,
-        "extra_args": list(variant.extra_args),
-    }
-
-
-def benchmark_profile_variant_args(profile_name: str, variant_name: str) -> list[str]:
-    """Return child CLI args for a profile variant."""
-    benchmark_profile(profile_name)
-    variant = benchmark_profile_variant(variant_name)
-    args = [
-        "--float32_matmul_precision",
-        variant.float32_matmul_precision,
-        "--allow_tf32" if variant.allow_tf32 else "--no-allow_tf32",
-        "--amp_mode",
-        variant.amp_mode,
-        "--checkpoint_selection_metric",
-        "f1",
-        "--checkpoint_f1_variant",
-        variant.checkpoint_f1_variant,
-    ]
-    if variant.train_batch_size is not None:
-        args += ["--train_batch_size", str(variant.train_batch_size)]
-    if variant.inference_batch_size is not None:
-        args += ["--inference_batch_size", str(variant.inference_batch_size)]
-    args += list(variant.extra_args)
-    return args
 
 
 def benchmark_profile_args(
@@ -198,6 +131,11 @@ def benchmark_profile_args(
         str(profile.range_footprint_jitter),
         "--range_diagnostics_mode",
         profile.range_diagnostics_mode,
+        "--float32_matmul_precision",
+        profile.float32_matmul_precision,
+        "--allow_tf32" if profile.allow_tf32 else "--no-allow_tf32",
+        "--amp_mode",
+        profile.amp_mode,
         "--query_chunk_size",
         str(profile.query_chunk_size),
         "--train_batch_size",
@@ -244,7 +182,12 @@ def benchmark_profile_args(
     if include_workload:
         args += ["--workload", profile.workload]
     if include_checkpoint_selection:
-        args += ["--checkpoint_selection_metric", profile.checkpoint_selection_metric]
+        args += [
+            "--checkpoint_selection_metric",
+            profile.checkpoint_selection_metric,
+            "--checkpoint_f1_variant",
+            profile.checkpoint_f1_variant,
+        ]
     if include_f1_diagnostic:
         args += ["--f1_diagnostic_every", str(profile.f1_diagnostic_every)]
     return args
@@ -274,7 +217,10 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "epochs": profile.epochs,
         "early_stopping_patience": profile.early_stopping_patience,
         "checkpoint_selection_metric": profile.checkpoint_selection_metric,
-        "checkpoint_f1_variant": "range_usefulness",
+        "checkpoint_f1_variant": profile.checkpoint_f1_variant,
+        "float32_matmul_precision": profile.float32_matmul_precision,
+        "allow_tf32": profile.allow_tf32,
+        "amp_mode": profile.amp_mode,
         "checkpoint_full_f1_every": profile.checkpoint_full_f1_every,
         "checkpoint_candidate_pool_size": profile.checkpoint_candidate_pool_size,
         "loss_objective": profile.loss_objective,

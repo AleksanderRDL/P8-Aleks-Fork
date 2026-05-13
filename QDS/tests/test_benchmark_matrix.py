@@ -12,11 +12,11 @@ import sys
 import pytest
 
 from src.experiments.benchmark_matrix import (
-    DEFAULT_VARIANTS,
     DEFAULT_WORKLOADS,
     DEFAULT_PROFILE,
     MatrixDataSources,
     PURE_WORKLOADS,
+    _child_run_dir,
     _format_markdown_table,
     _index_entry,
     _parse_name_list,
@@ -25,14 +25,7 @@ from src.experiments.benchmark_matrix import (
     _row_from_run,
     _run_capture_streaming,
     _runner_environment_metadata,
-    _selected_variants,
     _write_family_indexes,
-    _variant_args,
-    _variant_run_dir,
-)
-from src.experiments.benchmark_profiles import (
-    BenchmarkProfileVariant,
-    benchmark_profile_variant_settings,
 )
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
@@ -57,6 +50,11 @@ def _profile_core_args() -> list[str]:
         "0.0",
         "--range_diagnostics_mode",
         "cached",
+        "--float32_matmul_precision",
+        "high",
+        "--allow_tf32",
+        "--amp_mode",
+        "bf16",
         "--query_chunk_size",
         "2048",
         "--train_batch_size",
@@ -99,6 +97,10 @@ def _profile_core_args() -> list[str]:
         "usefulness",
         "--range_boundary_prior_weight",
         "0.0",
+        "--checkpoint_selection_metric",
+        "f1",
+        "--checkpoint_f1_variant",
+        "range_usefulness",
     ]
 
 
@@ -118,62 +120,22 @@ def test_experiment_workload_resolution_is_pure_only() -> None:
         resolve_workload_maps("mixed")
 
 
-def test_selected_variants_default_to_range_usefulness_checkpointing() -> None:
-    variants = _selected_variants(None)
+def test_profile_args_own_runtime_and_checkpoint_defaults() -> None:
+    args = _profile_core_args()
 
-    assert [variant.name for variant in variants] == list(DEFAULT_VARIANTS)
-    assert [variant.name for variant in variants] == ["baseline"]
-    assert variants[0].checkpoint_f1_variant == "range_usefulness"
-    assert variants[0].amp_mode == "bf16"
-    assert variants[0].train_batch_size is None
-    settings = benchmark_profile_variant_settings(DEFAULT_PROFILE, variants[0].name)
-    assert settings["train_batch_size"] == 64
-    assert settings["inference_batch_size"] == 64
-    variant_args = _variant_args(DEFAULT_PROFILE, variants[0])
-    assert "--train_batch_size" not in variant_args
-    assert "--inference_batch_size" not in variant_args
-
-
-def test_selected_variants_reject_stale_named_sweeps() -> None:
-    with pytest.raises(ValueError, match="unknown"):
-        _selected_variants("old_named_sweep")
-
-    with pytest.raises(ValueError, match="unknown"):
-        _selected_variants("old_point_f1_label_sweep")
+    assert args[args.index("--float32_matmul_precision") + 1] == "high"
+    assert "--allow_tf32" in args
+    assert args[args.index("--amp_mode") + 1] == "bf16"
 
 
 def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
-    variants = [
-        BenchmarkProfileVariant(
-            name="custom_runtime",
-            float32_matmul_precision="high",
-            allow_tf32=True,
-            amp_mode="bf16",
-        )
-    ]
-
-    environment = _runner_environment_metadata(variants)
+    environment = _runner_environment_metadata()
 
     assert environment["scope"] == "benchmark_matrix_parent_process"
     assert "rows[*].child_torch_runtime" in environment["note"]
-    assert environment["requested_variant_torch_settings"] == [
-        {
-            "variant": "custom_runtime",
-            "float32_matmul_precision": "high",
-            "allow_tf32": True,
-            "amp_mode": "bf16",
-            "extra_args": [],
-        }
-    ]
 
 
 def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
-    variant = BenchmarkProfileVariant(
-        name="custom_runtime",
-        float32_matmul_precision="high",
-        allow_tf32=True,
-        amp_mode="bf16",
-    )
     run_json = {
         "config": {
             "model": {
@@ -190,6 +152,10 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "budget_loss_temperature": 0.10,
                 "checkpoint_full_f1_every": 3,
                 "checkpoint_candidate_pool_size": 2,
+                "checkpoint_f1_variant": "range_usefulness",
+                "float32_matmul_precision": "high",
+                "allow_tf32": True,
+                "amp_mode": "bf16",
                 "compression_ratio": 0.05,
             }
         },
@@ -280,7 +246,7 @@ def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
 
     row = _row_from_run(
         workload="range",
-        variant=variant,
+        run_label="custom_runtime",
         command=["python", "-m", "src.experiments.run_ais_experiment"],
         returncode=0,
         elapsed_seconds=1.0,
@@ -477,11 +443,11 @@ def test_csv_config_suppresses_inactive_synthetic_metadata() -> None:
     assert cfg.data.n_points_per_ship is None
 
 
-def test_variant_run_dir_uses_readable_layout(tmp_path) -> None:
-    variant = BenchmarkProfileVariant(name="custom_variant")
+def test_child_run_dir_uses_readable_layout(tmp_path) -> None:
+    run_label = "custom_run"
 
-    assert _variant_run_dir(tmp_path, "range", variant, 1) == tmp_path / "variants" / "custom_variant"
-    assert _variant_run_dir(tmp_path, "knn", variant, 2) == tmp_path / "variants" / "knn" / "custom_variant"
+    assert _child_run_dir(tmp_path, "range", run_label, 1) == tmp_path / "custom_run"
+    assert _child_run_dir(tmp_path, "knn", run_label, 2) == tmp_path / "knn" / "custom_run"
 
 
 def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> None:
@@ -492,7 +458,7 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
         max_segments=None,
         max_trajectories=None,
     )
-    variants = [BenchmarkProfileVariant(name="custom_variant")]
+    run_label = "custom_run"
     sources = MatrixDataSources(train_csv_path="day1.csv", validation_csv_path="day2.csv", eval_csv_path="day3.csv")
     git = {"commit": "abc123", "dirty": False}
     running_status = {
@@ -517,7 +483,7 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
             status_payload=running_status,
             args=args,
             workloads=["range"],
-            variants=variants,
+            run_label=run_label,
             data_sources=sources,
             results_dir=tmp_path / "runs" / "run-a",
             rows=[],
@@ -531,10 +497,10 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
             status_payload=completed_status,
             args=args,
             workloads=["range"],
-            variants=variants,
+            run_label=run_label,
             data_sources=sources,
             results_dir=tmp_path / "runs" / "run-a",
-            rows=[{"variant": "custom_variant", "mlqds_f1": 0.4}],
+            rows=[{"run_label": "custom_run", "mlqds_f1": 0.4}],
             git=git,
         ),
     )
@@ -545,7 +511,9 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
     assert len(index_rows) == 1
     assert index_rows[0]["run_id"] == "run-a"
     assert index_rows[0]["status"] == "completed"
+    assert index_rows[0]["run_label"] == "custom_run"
     assert index_rows[0]["best_mlqds_f1"] == "0.4"
+    assert index_rows[0]["best_mlqds_run_label"] == "custom_run"
     assert events_text.count('"run_id": "run-a"') == 2
 
 
@@ -591,7 +559,7 @@ def test_matrix_markdown_table_is_compact() -> None:
         [
             {
                 "workload": "range",
-                "variant": "custom",
+                "run_label": "custom",
                 "returncode": 0,
                 "elapsed_seconds": 12.34567,
                 "epoch_mean_seconds": 1.25,
@@ -608,7 +576,7 @@ def test_matrix_markdown_table_is_compact() -> None:
         ]
     )
 
-    assert "| workload | variant |" in table
+    assert "| workload | run_label |" in table
     assert "train_label_mass_range_point_f1" in table
     assert "| range | custom | 0 | 12.3457 |" in table
 

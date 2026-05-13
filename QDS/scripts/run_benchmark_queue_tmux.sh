@@ -22,8 +22,6 @@ Environment overrides:
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
                                artifacts/benchmarks/range_testing_baseline.
-  VARIANTS                     benchmark_matrix profile-variant value. Default:
-                               baseline.
   SEEDS                        Comma-separated seeds for default plan. Default: 42,43,44.
   CHILD_EXTRA_ARGS             String passed as benchmark_matrix --extra_args for
                                every default-plan run. Example:
@@ -56,10 +54,6 @@ join_shell() {
   printf '%q ' "$@"
 }
 
-slug() {
-  printf '%s' "$1" | tr -cs '[:alnum:]' '_' | sed 's/^_//; s/_$//'
-}
-
 display_path() {
   case "$1" in
     /*) printf '%s' "$1" ;;
@@ -82,12 +76,10 @@ WORKLOADS="${WORKLOADS:-range}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
-VARIANTS="${VARIANTS:-baseline}"
 SEEDS="${SEEDS:-42,43,44}"
 CHILD_EXTRA_ARGS="${CHILD_EXTRA_ARGS:-}"
 PLAN_FILE="${PLAN_FILE:-}"
-VARIANT_SLUG="$(slug "$VARIANTS")"
-QUEUE_ID="${QUEUE_ID:-$(date +%Y%m%d-%H%M%S)_${PROFILE}_${VARIANT_SLUG}_queue}"
+QUEUE_ID="${QUEUE_ID:-$(date +%Y%m%d-%H%M%S)_${PROFILE}_queue}"
 RUN_PREFIX="${RUN_PREFIX:-$QUEUE_ID}"
 QUEUE_DIR="${QUEUE_DIR:-$ARTIFACT_ROOT/queues/$QUEUE_ID}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-}"
@@ -179,7 +171,7 @@ rm -f "$(display_path "$console_log")" "$(display_path "$monitor_log")" "$(displ
   "$(display_path "$summary_file")" "$(display_path "$done_file")"
 
 "$PYTHON" - "$(display_path "$manifest_file")" \
-  "$QUEUE_ID" "$SESSION" "$PROFILE" "$WORKLOADS" "$VARIANTS" "$ARTIFACT_ROOT" "$QUEUE_DIR" \
+  "$QUEUE_ID" "$SESSION" "$PROFILE" "$WORKLOADS" "$ARTIFACT_ROOT" "$QUEUE_DIR" \
   "$QUEUE_DIR/queue_plan.tsv" "$CONTINUE_ON_FAILURE" <<'PY'
 import json
 import sys
@@ -192,11 +184,10 @@ payload = {
     "session": sys.argv[3],
     "profile": sys.argv[4],
     "workloads": sys.argv[5],
-    "variants": sys.argv[6],
-    "artifact_root": sys.argv[7],
-    "queue_dir": sys.argv[8],
-    "plan_file": sys.argv[9],
-    "continue_on_failure": bool(int(sys.argv[10])),
+    "artifact_root": sys.argv[6],
+    "queue_dir": sys.argv[7],
+    "plan_file": sys.argv[8],
+    "continue_on_failure": bool(int(sys.argv[9])),
 }
 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
@@ -211,7 +202,6 @@ PY
   printf 'CSV_PATH=%q\n' "$CSV_PATH"
   printf 'CACHE_DIR=%q\n' "$CACHE_DIR"
   printf 'ARTIFACT_ROOT=%q\n' "$ARTIFACT_ROOT"
-  printf 'VARIANTS=%q\n' "$VARIANTS"
   printf 'PLAN_FILE=%q\n' "$QUEUE_DIR/queue_plan.tsv"
   printf 'CONSOLE_LOG=%q\n' "$console_log"
   printf 'STATUS_FILE=%q\n' "$status_file"
@@ -271,7 +261,7 @@ run_one() {
     --cache_dir "$CACHE_DIR"
     --results_dir "$results_dir"
     --run_id "$run_id"
-    --variants "$VARIANTS"
+    --run_label "$PROFILE"
     --seed "$seed"
   )
   if [[ -n "$MAX_POINTS_PER_SEGMENT" ]]; then

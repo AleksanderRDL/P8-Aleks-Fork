@@ -24,7 +24,12 @@ from typing import Any
 
 import torch
 
-from src.experiments.benchmark_profiles import DEFAULT_PROFILE, PROFILE_CHOICES, benchmark_profile_args
+from src.experiments.benchmark_profiles import (
+    DEFAULT_PROFILE,
+    PROFILE_CHOICES,
+    benchmark_profile,
+    benchmark_profile_args,
+)
 from src.experiments.torch_runtime import (
     AMP_MODE_CHOICES,
     FLOAT32_MATMUL_PRECISION_CHOICES,
@@ -469,6 +474,7 @@ def _run_child_step(
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build benchmark CLI parser."""
+    default_profile = benchmark_profile(DEFAULT_PROFILE)
     parser = argparse.ArgumentParser(
         description="Run stable AIS-QDS runtime benchmarks and write a JSON artifact.",
     )
@@ -529,19 +535,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--amp_mode",
         choices=AMP_MODE_CHOICES,
-        default="off",
+        default=default_profile.amp_mode,
         help="Optional CUDA autocast mode forwarded to training and saved-checkpoint inference.",
     )
     parser.add_argument(
         "--float32_matmul_precision",
         choices=FLOAT32_MATMUL_PRECISION_CHOICES,
-        default="highest",
+        default=default_profile.float32_matmul_precision,
         help="Torch float32 matmul precision. Use 'high' with --allow_tf32 for TF32 benchmarking.",
     )
     parser.add_argument(
         "--allow_tf32",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=default_profile.allow_tf32,
         help="Allow TF32 for CUDA float32 matmul in the wrapper and child runs.",
     )
     parser.add_argument(

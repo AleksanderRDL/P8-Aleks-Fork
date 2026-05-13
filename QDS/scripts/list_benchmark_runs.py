@@ -66,7 +66,7 @@ def main() -> int:
     if not args.all:
         rows = rows[: max(args.limit, 0)]
 
-    headers = ["status", "started", "run_id", "profile", "best_f1", "best_variant", "results_dir"]
+    headers = ["status", "started", "run_id", "profile", "best_f1", "best_label", "results_dir"]
     table_rows = []
     for row in rows:
         table_rows.append(
@@ -76,7 +76,7 @@ def main() -> int:
                 _short(row.get("run_id"), 40),
                 _short(row.get("profile"), 8),
                 _format_f1(row.get("best_mlqds_f1")),
-                _short(row.get("best_mlqds_variant"), 16),
+                _short(row.get("best_mlqds_run_label"), 16),
                 _short(row.get("results_dir"), 72),
             ]
         )

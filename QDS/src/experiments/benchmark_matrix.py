@@ -19,16 +19,10 @@ from typing import Any
 from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.benchmark_profiles import (
     DEFAULT_PROFILE,
-    DEFAULT_PROFILE_VARIANTS,
     PROFILE_CHOICES,
-    PROFILE_VARIANT_CHOICES,
-    BenchmarkProfileVariant,
     ProfileSetting,
     benchmark_profile_args,
     benchmark_profile_settings,
-    benchmark_profile_variant,
-    benchmark_profile_variant_args,
-    benchmark_profile_variant_settings,
 )
 from src.experiments.benchmark_runtime import (
     EPOCH_RE,
@@ -45,8 +39,7 @@ PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 3
 DEFAULT_CHILD_STDOUT_TAIL_CHARS = 1_000_000
-DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE)
-DEFAULT_VARIANTS = DEFAULT_PROFILE_VARIANTS
+DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE, include_checkpoint_selection=True)
 
 
 @dataclass(frozen=True)
@@ -212,36 +205,16 @@ def _parse_name_list(raw: str | None, *, allowed: tuple[str, ...] | set[str], ar
     return values
 
 
-def _selected_variants(raw: str | None) -> list[BenchmarkProfileVariant]:
-    """Return benchmark variants selected by CLI text."""
-    names = _parse_name_list(
-        raw or ",".join(DEFAULT_VARIANTS),
-        allowed=set(PROFILE_VARIANT_CHOICES),
-        arg_name="--variants",
-    )
-    return [benchmark_profile_variant(name) for name in names]
-
-
-def _runner_environment_metadata(variants: list[BenchmarkProfileVariant]) -> dict[str, Any]:
-    """Return parent-process environment metadata with explicit variant-runtime scope."""
+def _runner_environment_metadata() -> dict[str, Any]:
+    """Return parent-process environment metadata with explicit runtime scope."""
     environment = _environment_metadata("off")
     environment["scope"] = "benchmark_matrix_parent_process"
     environment["note"] = (
         "Torch precision fields in this block describe the benchmark_matrix parent process. "
-        "Each child run applies its variant-specific TF32/AMP settings; effective child "
-        "runtime settings are recorded in rows[*].child_torch_runtime and in each "
-        "variant example_run.json."
+        "Each child run applies the selected benchmark profile plus any --extra_args "
+        "overrides; effective child runtime settings are recorded in "
+        "rows[*].child_torch_runtime and in each child example_run.json."
     )
-    environment["requested_variant_torch_settings"] = [
-        {
-            "variant": variant.name,
-            "float32_matmul_precision": variant.float32_matmul_precision,
-            "allow_tf32": variant.allow_tf32,
-            "amp_mode": variant.amp_mode,
-            "extra_args": list(variant.extra_args),
-        }
-        for variant in variants
-    ]
     return environment
 
 
@@ -378,16 +351,11 @@ def _profile_settings(profile: str) -> dict[str, ProfileSetting]:
     return benchmark_profile_settings(profile)
 
 
-def _variant_run_dir(results_dir: Path, workload: str, variant: BenchmarkProfileVariant, workload_count: int) -> Path:
+def _child_run_dir(results_dir: Path, workload: str, run_label: str, workload_count: int) -> Path:
     """Return the child experiment output directory for a matrix row."""
     if workload_count == 1:
-        return results_dir / "variants" / variant.name
-    return results_dir / "variants" / workload / variant.name
-
-
-def _variant_args(profile: str, variant: BenchmarkProfileVariant) -> list[str]:
-    """Return CLI args for a variant."""
-    return benchmark_profile_variant_args(profile, variant.name)
+        return results_dir / run_label
+    return results_dir / workload / run_label
 
 
 def _phase_seconds(timings: dict[str, Any], name: str) -> float | None:
@@ -533,7 +501,7 @@ def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) 
 def _row_from_run(
     *,
     workload: str,
-    variant: BenchmarkProfileVariant,
+    run_label: str,
     command: list[str],
     returncode: int,
     elapsed_seconds: float,
@@ -575,7 +543,7 @@ def _row_from_run(
     dp_f1 = dp.get("aggregate_f1")
     return {
         "workload": workload,
-        "variant": variant.name,
+        "run_label": run_label,
         "returncode": int(returncode),
         "elapsed_seconds": float(elapsed_seconds),
         "train_seconds": _phase_seconds_with_prefix(timings, "train-model"),
@@ -635,7 +603,7 @@ def _row_from_run(
         "best_epoch_collapse_warning": collapse_summary["best_epoch_collapse_warning"],
         "min_pred_std": collapse_summary["min_pred_std"],
         "best_epoch_pred_std": collapse_summary["best_epoch_pred_std"],
-        "checkpoint_f1_variant": variant.checkpoint_f1_variant,
+        "checkpoint_f1_variant": model_config.get("checkpoint_f1_variant"),
         "loss_objective": model_config.get("loss_objective"),
         "budget_loss_ratios": model_config.get("budget_loss_ratios"),
         "budget_loss_temperature": model_config.get("budget_loss_temperature"),
@@ -671,18 +639,18 @@ def _row_from_run(
         "train_target_residual_positive_label_fraction": target_budget_row.get("residual_positive_label_fraction"),
         "oracle_kind": oracle_diagnostic.get("kind"),
         "oracle_exact_optimum": oracle_diagnostic.get("exact_optimum"),
-        "float32_matmul_precision": variant.float32_matmul_precision,
-        "allow_tf32": variant.allow_tf32,
-        "amp_mode": variant.amp_mode,
-        "variant_extra_args": " ".join(variant.extra_args),
+        "float32_matmul_precision": model_config.get("float32_matmul_precision"),
+        "allow_tf32": model_config.get("allow_tf32"),
+        "amp_mode": model_config.get("amp_mode"),
+        "extra_args": "",
         "child_float32_matmul_precision": child_torch_runtime.get("float32_matmul_precision"),
         "child_tf32_matmul_allowed": child_torch_runtime.get("tf32_matmul_allowed"),
         "child_tf32_cudnn_allowed": child_torch_runtime.get("tf32_cudnn_allowed"),
         "child_amp_enabled": child_amp.get("enabled"),
         "child_amp_dtype": child_amp.get("dtype"),
         "child_torch_runtime": child_torch_runtime or None,
-        "train_batch_size": model_config.get("train_batch_size", variant.train_batch_size),
-        "inference_batch_size": model_config.get("inference_batch_size", variant.inference_batch_size),
+        "train_batch_size": model_config.get("train_batch_size"),
+        "inference_batch_size": model_config.get("inference_batch_size"),
         "run_dir": str(run_dir),
         "example_run_path": str(run_json_path) if run_json_path.exists() else None,
         "stdout_path": str(stdout_path),
@@ -703,7 +671,7 @@ def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
     """Return a compact markdown comparison table."""
     columns = [
         "workload",
-        "variant",
+        "run_label",
         "returncode",
         "elapsed_seconds",
         "epoch_mean_seconds",
@@ -799,7 +767,7 @@ def _write_status(
 ) -> dict[str, Any]:
     """Write the current status marker for one run."""
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "status": status,
         "started_at_utc": started_at_utc,
@@ -818,7 +786,7 @@ def _run_config(
     args: argparse.Namespace,
     run_id: str,
     workloads: list[str],
-    variants: list[BenchmarkProfileVariant],
+    run_label: str,
     data_sources: MatrixDataSources,
     results_dir: Path,
 ) -> dict[str, Any]:
@@ -831,7 +799,7 @@ def _run_config(
         "profile_settings": _profile_settings(args.profile),
         "seed": int(args.seed),
         "workloads": workloads,
-        "variants": [benchmark_profile_variant_settings(args.profile, variant.name) for variant in variants],
+        "run_label": run_label,
         "data_sources": {
             "csv_path": data_sources.csv_path,
             "train_csv_path": data_sources.train_csv_path,
@@ -866,7 +834,7 @@ RUN_INDEX_FIELDS = [
     "profile",
     "seed",
     "workloads",
-    "variants",
+    "run_label",
     "train_csv_path",
     "validation_csv_path",
     "eval_csv_path",
@@ -876,16 +844,16 @@ RUN_INDEX_FIELDS = [
     "max_trajectories",
     "results_dir",
     "best_mlqds_f1",
-    "best_mlqds_variant",
+    "best_mlqds_run_label",
     "git_commit",
     "git_dirty",
 ]
 
 
 def _best_mlqds(rows: list[dict[str, Any]]) -> tuple[float | None, str | None]:
-    """Return the best MLQDS aggregate F1 and variant name from completed rows."""
+    """Return the best MLQDS aggregate F1 and run label from completed rows."""
     best_value: float | None = None
-    best_variant: str | None = None
+    best_run_label: str | None = None
     for row in rows:
         value = row.get("mlqds_f1")
         if value is None:
@@ -893,8 +861,8 @@ def _best_mlqds(rows: list[dict[str, Any]]) -> tuple[float | None, str | None]:
         numeric = float(value)
         if best_value is None or numeric > best_value:
             best_value = numeric
-            best_variant = str(row.get("variant"))
-    return best_value, best_variant
+            best_run_label = str(row.get("run_label"))
+    return best_value, best_run_label
 
 
 def _index_entry(
@@ -903,14 +871,14 @@ def _index_entry(
     status_payload: dict[str, Any],
     args: argparse.Namespace,
     workloads: list[str],
-    variants: list[BenchmarkProfileVariant],
+    run_label: str,
     data_sources: MatrixDataSources,
     results_dir: Path,
     rows: list[dict[str, Any]],
     git: dict[str, Any],
 ) -> dict[str, Any]:
     """Build one family-level index row."""
-    best_f1, best_variant = _best_mlqds(rows)
+    best_f1, best_run_label = _best_mlqds(rows)
     return {
         "run_id": run_id,
         "status": status_payload.get("status"),
@@ -921,7 +889,7 @@ def _index_entry(
         "profile": args.profile,
         "seed": int(args.seed),
         "workloads": ",".join(workloads),
-        "variants": ",".join(variant.name for variant in variants),
+        "run_label": run_label,
         "train_csv_path": data_sources.train_csv_path,
         "validation_csv_path": data_sources.validation_csv_path,
         "eval_csv_path": data_sources.eval_csv_path,
@@ -931,7 +899,7 @@ def _index_entry(
         "max_trajectories": args.max_trajectories,
         "results_dir": str(results_dir),
         "best_mlqds_f1": best_f1,
-        "best_mlqds_variant": best_variant,
+        "best_mlqds_run_label": best_run_label,
         "git_commit": git.get("commit"),
         "git_dirty": git.get("dirty"),
     }
@@ -987,10 +955,10 @@ def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict
             "system_monitor_log": str(results_dir / "logs" / "system_monitor.log"),
             "tmux_status": str(results_dir / "logs" / "tmux_status.txt"),
         },
-        "variant_runs": [
+        "child_runs": [
             {
                 "workload": row.get("workload"),
-                "variant": row.get("variant"),
+                "run_label": row.get("run_label"),
                 "returncode": row.get("returncode"),
                 "run_dir": row.get("run_dir"),
                 "example_run_json": row.get("example_run_path"),
@@ -1026,7 +994,7 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         f"- Profile: `{artifact.get('profile')}`",
         f"- Seed: `{artifact.get('seed')}`",
         f"- Workloads: `{', '.join(artifact.get('workloads', []))}`",
-        f"- Variants: `{', '.join(artifact.get('variants', []))}`",
+        f"- Run label: `{artifact.get('run_label')}`",
         "",
         "## Top-Level Files",
         "",
@@ -1046,18 +1014,18 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         "",
         (
             "`benchmark_matrix.json.environment` describes the parent benchmark-matrix process. "
-            "Variant-specific effective torch precision/AMP settings are recorded in "
-            "`benchmark_matrix.json.rows[*].child_torch_runtime` and in each variant `example_run.json`."
+            "Effective child torch precision/AMP settings are recorded in "
+            "`benchmark_matrix.json.rows[*].child_torch_runtime` and in each child `example_run.json`."
         ),
         "",
-        "## Variant Runs",
+        "## Child Runs",
         "",
-        "| workload | variant | returncode | run_dir |",
+        "| workload | run_label | returncode | run_dir |",
         "| --- | --- | --- | --- |",
     ]
     for row in rows:
         lines.append(
-            f"| {row.get('workload')} | {row.get('variant')} | {row.get('returncode')} | `{row.get('run_dir')}` |"
+            f"| {row.get('workload')} | {row.get('run_label')} | {row.get('returncode')} | `{row.get('run_dir')}` |"
         )
     lines.append("")
     return "\n".join(lines)
@@ -1071,10 +1039,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=PROFILE_CHOICES, default=DEFAULT_PROFILE)
     parser.add_argument("--workloads", type=str, default=",".join(DEFAULT_WORKLOADS))
     parser.add_argument(
-        "--variants",
+        "--run_label",
         type=str,
-        default=",".join(DEFAULT_VARIANTS),
-        help="Comma-separated profile variants defined in benchmark_profiles.py.",
+        default=None,
+        help="Optional label for the child run row/directory. Defaults to the selected profile name.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -1144,7 +1112,7 @@ def main() -> None:
     """Run the benchmark matrix."""
     args = _build_parser().parse_args()
     workloads = _parse_name_list(args.workloads, allowed=PURE_WORKLOADS, arg_name="--workloads")
-    variants = _selected_variants(args.variants)
+    run_label = args.run_label or args.profile
     data_sources = _resolve_data_sources(args)
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -1153,14 +1121,14 @@ def main() -> None:
     family_root = _family_root(results_dir)
     started_at_utc = _utc_now()
     git = _git_metadata()
-    environment = _runner_environment_metadata(variants)
+    environment = _runner_environment_metadata()
     rows: list[dict[str, Any]] = []
     failures = 0
     run_config = _run_config(
         args=args,
         run_id=run_id,
         workloads=workloads,
-        variants=variants,
+        run_label=run_label,
         data_sources=data_sources,
         results_dir=results_dir,
     )
@@ -1179,7 +1147,7 @@ def main() -> None:
             status_payload=status_payload,
             args=args,
             workloads=workloads,
-            variants=variants,
+            run_label=run_label,
             data_sources=data_sources,
             results_dir=results_dir,
             rows=[],
@@ -1206,7 +1174,7 @@ def main() -> None:
                 status_payload=interrupted,
                 args=args,
                 workloads=workloads,
-                variants=variants,
+                run_label=run_label,
                 data_sources=data_sources,
                 results_dir=results_dir,
                 rows=rows,
@@ -1223,57 +1191,53 @@ def main() -> None:
         measured_include_refresh = bool(args.refresh_cache and not cache_warmup)
 
         for workload in workloads:
-            for variant in variants:
-                run_dir = _variant_run_dir(results_dir, workload, variant, len(workloads))
-                command = [
-                    sys.executable,
-                    "-m",
-                    "src.experiments.run_ais_experiment",
-                    *_profile_args(
-                        args.profile,
-                        args,
-                        data_sources,
-                        include_refresh_cache=measured_include_refresh,
-                    ),
-                    "--workload",
-                    workload,
-                    "--seed",
-                    str(args.seed),
-                    "--results_dir",
-                    str(run_dir),
-                    "--f1_diagnostic_every",
-                    str(args.f1_diagnostic_every),
-                    *_variant_args(args.profile, variant),
-                    *_split_extra_args(args.extra_args),
-                ]
-                print(f"[matrix] {workload}/{variant.name}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
-                stdout_path = run_dir / "stdout.log"
-                proc = _run_capture_streaming(command, cwd=_qds_root(), stdout_path=stdout_path)
-                run_json_path = run_dir / "example_run.json"
-                run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
-                timings = proc.timings
-                row = _row_from_run(
-                    workload=workload,
-                    variant=variant,
-                    command=command,
-                    returncode=proc.returncode,
-                    elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
-                    run_dir=run_dir,
-                    stdout_path=stdout_path,
-                    run_json_path=run_json_path,
-                    timings=timings,
-                    run_json=run_json,
+            run_dir = _child_run_dir(results_dir, workload, run_label, len(workloads))
+            command = [
+                sys.executable,
+                "-m",
+                "src.experiments.run_ais_experiment",
+                *_profile_args(
+                    args.profile,
+                    args,
+                    data_sources,
+                    include_refresh_cache=measured_include_refresh,
+                ),
+                "--workload",
+                workload,
+                "--seed",
+                str(args.seed),
+                "--results_dir",
+                str(run_dir),
+                "--f1_diagnostic_every",
+                str(args.f1_diagnostic_every),
+                *_split_extra_args(args.extra_args),
+            ]
+            print(f"[matrix] {workload}/{run_label}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
+            stdout_path = run_dir / "stdout.log"
+            proc = _run_capture_streaming(command, cwd=_qds_root(), stdout_path=stdout_path)
+            run_json_path = run_dir / "example_run.json"
+            run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
+            timings = proc.timings
+            row = _row_from_run(
+                workload=workload,
+                run_label=run_label,
+                command=command,
+                returncode=proc.returncode,
+                elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
+                run_dir=run_dir,
+                stdout_path=stdout_path,
+                run_json_path=run_json_path,
+                timings=timings,
+                run_json=run_json,
+            )
+            rows.append(row)
+            failures += int(proc.returncode != 0)
+            if proc.returncode != 0:
+                print(
+                    f"[matrix] {workload}/{run_label} failed with returncode={proc.returncode}; "
+                    f"see {stdout_path}",
+                    flush=True,
                 )
-                rows.append(row)
-                failures += int(proc.returncode != 0)
-                if proc.returncode != 0:
-                    print(
-                        f"[matrix] {workload}/{variant.name} failed with returncode={proc.returncode}; "
-                        f"see {stdout_path}",
-                        flush=True,
-                    )
-                if proc.returncode != 0 and not args.continue_on_failure:
-                    break
             if failures and not args.continue_on_failure:
                 break
     except KeyboardInterrupt:
@@ -1296,7 +1260,7 @@ def main() -> None:
                 status_payload=failed_status,
                 args=args,
                 workloads=workloads,
-                variants=variants,
+                run_label=run_label,
                 data_sources=data_sources,
                 results_dir=results_dir,
                 rows=rows,
@@ -1306,7 +1270,7 @@ def main() -> None:
         raise
 
     artifact = {
-        "schema_version": 3,
+        "schema_version": 4,
         "timestamp_utc": _utc_now(),
         "command": [sys.executable, "-m", "src.experiments.benchmark_matrix", *sys.argv[1:]],
         "run_id": run_id,
@@ -1315,7 +1279,7 @@ def main() -> None:
         "profile": args.profile,
         "seed": int(args.seed),
         "workloads": workloads,
-        "variants": [variant.name for variant in variants],
+        "run_label": run_label,
         "run_config": run_config,
         "data_sources": {
             "csv_path": data_sources.csv_path,
@@ -1355,7 +1319,7 @@ def main() -> None:
             status_payload=status_payload,
             args=args,
             workloads=workloads,
-            variants=variants,
+            run_label=run_label,
             data_sources=data_sources,
             results_dir=results_dir,
             rows=rows,

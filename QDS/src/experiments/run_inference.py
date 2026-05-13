@@ -7,7 +7,7 @@ performed, so this is safe for a local CPU/GPU machine.
 Example, from `QDS`:
 
     ../.venv/bin/python -m src.experiments.run_inference \
-        --checkpoint artifacts/benchmarks/range_testing_baseline/runs/<run_id>/variants/baseline/benchmark_model.pt \
+        --checkpoint artifacts/benchmarks/range_testing_baseline/runs/<run_id>/range_testing_baseline/benchmark_model.pt \
         --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
         --n_queries 512 \
         --results_dir artifacts/benchmarks/inference_range_testing_baseline

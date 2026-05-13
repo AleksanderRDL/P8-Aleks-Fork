@@ -24,7 +24,7 @@ DEFAULT_INDEX_FIELDS: list[str] = [
     "profile",
     "seed",
     "workloads",
-    "variants",
+    "run_label",
     "train_csv_path",
     "validation_csv_path",
     "eval_csv_path",
@@ -34,7 +34,7 @@ DEFAULT_INDEX_FIELDS: list[str] = [
     "max_trajectories",
     "results_dir",
     "best_mlqds_f1",
-    "best_mlqds_variant",
+    "best_mlqds_run_label",
     "git_commit",
     "git_dirty",
 ]

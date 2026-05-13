@@ -26,8 +26,6 @@ Environment overrides:
   MAX_POINTS_PER_SEGMENT       Optional per-segment point cap. Default: unset.
   MAX_SEGMENTS                 Optional segment cap. Default: unset.
   MAX_TRAJECTORIES             Optional post-load trajectory cap. Default: unset.
-  VARIANTS                     benchmark_matrix profile-variant value. Default:
-                               baseline.
   MONITOR_INTERVAL             Monitor sample interval in seconds. Default: 10.
   ATTACH                       Attach to tmux after start. Default: 1.
 
@@ -59,13 +57,11 @@ CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-}"
 MAX_SEGMENTS="${MAX_SEGMENTS:-}"
 MAX_TRAJECTORIES="${MAX_TRAJECTORIES:-}"
-VARIANTS="${VARIANTS:-baseline}"
-VARIANT_SLUG="$(printf '%s' "$VARIANTS" | tr -cs '[:alnum:]' '_' | sed 's/_$//')"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
 ATTACH="${ATTACH:-1}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
-RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_3day_full_${VARIANT_SLUG}}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_3day_full}"
 RESULTS_DIR="${RESULTS_DIR:-$ARTIFACT_ROOT/runs/$RUN_ID}"
 
 extra_args=()
@@ -142,8 +138,6 @@ fi
 if [[ -n "$MAX_TRAJECTORIES" ]]; then
   benchmark_cmd+=(--max_trajectories "$MAX_TRAJECTORIES")
 fi
-
-benchmark_cmd+=(--variants "$VARIANTS")
 
 if [[ "${#extra_args[@]}" -gt 0 ]]; then
   benchmark_cmd+=("${extra_args[@]}")

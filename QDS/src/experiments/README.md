@@ -90,16 +90,15 @@ Profile shape:
 | Range labels | `range_label_mode=usefulness`, `range_boundary_prior_weight=0.0` |
 | Range diagnostics | `range_diagnostics_mode=cached` when `--cache_dir` is set |
 | Diagnostics | F1 diagnostics are eligible every epoch; exact validation runs every second eligible epoch with `checkpoint_full_f1_every=2`, `checkpoint_candidate_pool_size=2`, no smoothing (`checkpoint_smoothing_window=1`) |
-| Profile variant | `baseline` by default: TF32/BF16 with profile batch sizes |
+| Runtime | TF32 enabled, BF16 AMP enabled, profile batch sizes |
 | Ranking sampler | `vectorized` by default |
 | Caps | leave `max_points_per_segment`, `max_segments`, and `max_trajectories` unset |
 
-Profile variants live in `benchmark_profiles.py`; the active registry only
-keeps `baseline`. `benchmark_matrix.py` runs the selected variant and writes
-comparison tables. Use CLI `--extra_args` or queue-plan child args for A/B
-changes such as label mode, loss mode, temporal fraction, scoring mode, batch
-size, or precision. Promote an override into `benchmark_profiles.py` only after
-it becomes a repeated, named baseline worth keeping.
+`range_testing_baseline` owns the full default configuration, including runtime
+precision. Use CLI `--extra_args` or queue-plan child args for A/B changes such
+as label mode, loss mode, temporal fraction, scoring mode, batch size, or
+precision. Promote an override into `benchmark_profiles.py` only after it
+becomes a repeated, named baseline worth keeping.
 
 `query_coverage` is a target used for workload generation and diagnostics.
 For the testing-baseline profile, `n_queries` is only the minimum workload size;
@@ -140,7 +139,6 @@ Direct matrix run:
   --workloads range \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_testing_baseline \
-  --variants baseline \
   --results_dir artifacts/benchmarks/range_testing_baseline/runs/manual_range_testing_baseline_a \
   --run_id manual_range_testing_baseline_a
 ```
@@ -205,7 +203,7 @@ quality deltas can be checked against the supervision mix used by that run.
 It also includes the training target residual label-mass fraction at the run
 compression ratio, which helps identify cases where the temporal base consumes
 most of the useful signal before learned fill is trained.
-For model behavior, inspect the variant `example_run.json`,
+For model behavior, inspect the child run `example_run.json`,
 `matched_table.txt`, `range_usefulness_table.txt`, and
 `range_workload_diagnostics.json`. `RangePointF1` is the retained in-box point
 metric; `RangeUseful` is the current versioned audit score for range-local
