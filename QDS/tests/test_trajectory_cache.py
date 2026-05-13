@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
-from src.data.trajectory_cache import CACHE_COLUMNS, load_or_build_ais_cache
+from data.trajectory_cache import CACHE_COLUMNS, load_or_build_ais_cache
 
 
 def _write_csv(path: Path) -> None:

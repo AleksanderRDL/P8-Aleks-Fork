@@ -1,4 +1,4 @@
-"""Tests coverage-targeted query generation. See src/queries/README.md for details."""
+"""Tests coverage-targeted query generation. See queries/README.md for details."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from pathlib import Path
 
 import torch
 
-from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
-from src.experiments.experiment_config import build_experiment_config
-from src.experiments.workload_cache import generate_typed_query_workload_for_config
-from src.queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
-from src.queries.query_generator import generate_typed_query_workload, point_coverage_mask_for_query
+from data.ais_loader import generate_synthetic_ais_data, load_ais_csv
+from experiments.experiment_config import build_experiment_config
+from experiments.workload_cache import generate_typed_query_workload_for_config
+from queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
+from queries.query_generator import generate_typed_query_workload, point_coverage_mask_for_query
 
 
 def _density_test_trajectories() -> list[torch.Tensor]:

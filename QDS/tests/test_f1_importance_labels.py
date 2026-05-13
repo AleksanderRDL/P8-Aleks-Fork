@@ -1,17 +1,17 @@
-"""Tests F1-contribution training labels. See src/training/README.md for details."""
+"""Tests F1-contribution training labels. See training/README.md for details."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from src.queries.query_types import (
+from queries.query_types import (
     QUERY_TYPE_ID_CLUSTERING,
     QUERY_TYPE_ID_KNN,
     QUERY_TYPE_ID_RANGE,
     QUERY_TYPE_ID_SIMILARITY,
 )
-from src.training.importance_labels import (
+from training.importance_labels import (
     RANGE_USEFULNESS_LABEL_COMPONENTS,
     RANGE_USEFULNESS_LABEL_WEIGHTS,
     compute_typed_importance_labels,

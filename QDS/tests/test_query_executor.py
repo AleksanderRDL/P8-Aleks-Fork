@@ -1,10 +1,10 @@
-"""Tests typed query execution semantics. See src/queries/README.md for details."""
+"""Tests typed query execution semantics. See queries/README.md for details."""
 
 from __future__ import annotations
 
 import torch
 
-from src.queries.query_executor import execute_knn_query, execute_similarity_query
+from queries.query_executor import execute_knn_query, execute_similarity_query
 
 
 def test_knn_returns_nearest_distinct_trajectories() -> None:

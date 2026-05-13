@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from src.queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
-from src.queries.workload import TypedQueryWorkload
-from src.training.model_features import RANGE_AWARE_POINT_DIM, build_model_point_features
+from queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
+from queries.workload import TypedQueryWorkload
+from training.model_features import RANGE_AWARE_POINT_DIM, build_model_point_features
 
 
 def _range_workload() -> TypedQueryWorkload:

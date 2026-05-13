@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.experiments.benchmark_runtime import (
+from experiments.benchmark_runtime import (
     DEFAULT_PROFILE,
     _batch_size_sweep_summary,
     _extra_args_include_training_data_source,
@@ -13,9 +13,9 @@ from src.experiments.benchmark_runtime import (
     _profile_train_args,
     _runtime_child_args,
 )
-from src.experiments.experiment_cli import build_parser
-from src.experiments.experiment_config import ExperimentConfig, build_experiment_config
-from src.experiments.torch_runtime import (
+from experiments.experiment_cli import build_parser
+from experiments.experiment_config import ExperimentConfig, build_experiment_config
+from experiments.torch_runtime import (
     amp_runtime_snapshot,
     apply_torch_runtime_settings,
     normalize_amp_mode,

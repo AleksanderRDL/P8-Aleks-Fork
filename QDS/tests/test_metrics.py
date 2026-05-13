@@ -1,24 +1,24 @@
-"""Tests F1-based query metrics. See src/evaluation/README.md for details."""
+"""Tests F1-based query metrics. See evaluation/README.md for details."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from src.evaluation.baselines import OracleMethod, UniformTemporalMethod
-from src.evaluation.evaluate_methods import (
+from evaluation.baselines import OracleMethod, UniformTemporalMethod
+from evaluation.evaluate_methods import (
     _retained_point_gap_stats,
     evaluate_method,
     score_range_boundary_preservation,
     score_range_usefulness,
     score_retained_mask,
 )
-from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
-from src.evaluation.query_cache import EvaluationQueryCache
-from src.evaluation.range_usefulness import range_usefulness_weight_summary
-from src.evaluation.tables import print_method_comparison_table, print_range_usefulness_table
-from src.simplification.mlqds_scoring import pure_workload_scores, simplify_mlqds_predictions
-from src.simplification.simplify_trajectories import simplify_with_scores, simplify_with_temporal_score_hybrid
+from evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
+from evaluation.query_cache import EvaluationQueryCache
+from evaluation.range_usefulness import range_usefulness_weight_summary
+from evaluation.tables import print_method_comparison_table, print_range_usefulness_table
+from simplification.mlqds_scoring import pure_workload_scores, simplify_mlqds_predictions
+from simplification.simplify_trajectories import simplify_with_scores, simplify_with_temporal_score_hybrid
 
 
 class KeepAllMethod:
@@ -180,7 +180,7 @@ def test_score_retained_mask_matches_evaluate_method() -> None:
 
 
 def test_score_retained_mask_cache_reuses_full_query_results(monkeypatch) -> None:
-    import src.evaluation.evaluate_methods as eval_methods
+    import evaluation.evaluate_methods as eval_methods
 
     points = torch.tensor(
         [

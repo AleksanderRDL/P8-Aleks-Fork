@@ -8,18 +8,18 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.data.ais_loader import generate_synthetic_ais_data
-from src.experiments.experiment_config import build_experiment_config
-from src.queries.workload import TypedQueryWorkload
-from src.experiments.experiment_pipeline_helpers import _range_workload_diagnostics
-from src.experiments.range_cache import RangeRuntimeCache, prepare_range_label_cache as _prepare_range_label_cache
-from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
-from src.queries.workload_diagnostics import (
+from data.ais_loader import generate_synthetic_ais_data
+from experiments.experiment_config import build_experiment_config
+from queries.workload import TypedQueryWorkload
+from experiments.experiment_pipeline_helpers import _range_workload_diagnostics
+from experiments.range_cache import RangeRuntimeCache, prepare_range_label_cache as _prepare_range_label_cache
+from queries.query_generator import generate_typed_query_workload
+from queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
+from queries.workload_diagnostics import (
     compute_range_label_diagnostics,
     compute_range_workload_diagnostics,
 )
-from src.training.importance_labels import (
+from training.importance_labels import (
     compute_typed_importance_labels,
     compute_typed_importance_labels_with_range_components,
 )

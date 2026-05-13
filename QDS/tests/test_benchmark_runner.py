@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from src.experiments.benchmark_runner import (
+from experiments.benchmark_runner import (
     DEFAULT_WORKLOADS,
     DEFAULT_PROFILE,
     BenchmarkDataSources,
@@ -26,9 +26,9 @@ from src.experiments.benchmark_runner import (
     _run_capture_streaming,
     _runner_environment_metadata,
 )
-from src.experiments.benchmark_artifacts import index_entry, write_family_indexes
-from src.experiments.experiment_config import build_experiment_config
-from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
+from experiments.benchmark_artifacts import index_entry, write_family_indexes
+from experiments.experiment_config import build_experiment_config
+from experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
 
 
 def _profile_core_args() -> list[str]:
@@ -312,7 +312,7 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     row = _row_from_run(
         workload="range",
         run_label="custom_runtime",
-        command=["python", "-m", "src.experiments.run_ais_experiment"],
+        command=["python", "-m", "experiments.run_ais_experiment"],
         returncode=0,
         elapsed_seconds=1.0,
         run_dir=tmp_path,

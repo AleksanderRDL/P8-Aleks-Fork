@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.queries.range_geometry import (
+from queries.range_geometry import (
     haversine_km_to_point,
     points_in_range_box,
     segment_box_bracket_mask,

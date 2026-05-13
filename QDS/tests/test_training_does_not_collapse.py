@@ -1,25 +1,25 @@
-"""Tests that short training keeps non-collapsed typed predictions. See src/training/README.md for details."""
+"""Tests that short training keeps non-collapsed typed predictions. See training/README.md for details."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from src.data.ais_loader import generate_synthetic_ais_data
-from src.data.trajectory_dataset import TrajectoryDataset
-from src.evaluation.baselines import MLQDSMethod
-from src.evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
-from src.experiments.experiment_config import build_experiment_config
-from src.models.trajectory_qds_model import TrajectoryQDSModel
-from src.queries.query_generator import generate_typed_query_workload
-from src.training.checkpoint_selection import (
+from data.ais_loader import generate_synthetic_ais_data
+from data.trajectory_dataset import TrajectoryDataset
+from evaluation.baselines import MLQDSMethod
+from evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
+from experiments.experiment_config import build_experiment_config
+from models.trajectory_qds_model import TrajectoryQDSModel
+from queries.query_generator import generate_typed_query_workload
+from training.checkpoint_selection import (
     validation_score_selection_score as _validation_score_selection_score,
     selection_score as _selection_score,
     uniform_gap_selection_score as _uniform_gap_selection_score,
 )
-from src.training.importance_labels import compute_typed_importance_labels
-from src.training.scaler import FeatureScaler
-from src.training.train_model import (
+from training.importance_labels import compute_typed_importance_labels
+from training.scaler import FeatureScaler
+from training.train_model import (
     TrainingOutputs,
     _apply_temporal_residual_labels,
     _balanced_pointwise_loss,
@@ -35,7 +35,7 @@ from src.training.train_model import (
     _validation_query_score,
     train_model,
 )
-from src.training.trajectory_batching import build_trajectory_windows
+from training.trajectory_batching import build_trajectory_windows
 
 
 def test_selection_score_penalizes_collapsed_predictions() -> None:
@@ -585,11 +585,11 @@ def test_validation_query_score_matches_final_mlqds_scoring(score_mode: str, mon
     )
 
     monkeypatch.setattr(
-        "src.training.train_model._predict_workload_logits",
+        "training.train_model._predict_workload_logits",
         lambda **_kwargs: predictions.clone(),
     )
     monkeypatch.setattr(
-        "src.evaluation.baselines.windowed_predict",
+        "evaluation.baselines.windowed_predict",
         lambda **_kwargs: predictions.clone(),
     )
 
@@ -672,11 +672,11 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
     )
 
     monkeypatch.setattr(
-        "src.training.train_model._predict_workload_logits",
+        "training.train_model._predict_workload_logits",
         lambda **_kwargs: predictions.clone(),
     )
     monkeypatch.setattr(
-        "src.evaluation.baselines.windowed_predict",
+        "evaluation.baselines.windowed_predict",
         lambda **_kwargs: predictions.clone(),
     )
 

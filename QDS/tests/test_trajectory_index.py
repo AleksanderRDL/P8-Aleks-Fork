@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from src.data.trajectory_index import (
+from data.trajectory_index import (
     boundaries_from_trajectories,
     default_boundaries,
     split_by_boundaries,

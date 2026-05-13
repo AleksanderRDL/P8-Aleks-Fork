@@ -254,7 +254,7 @@ run_one() {
 
   local cmd=(
     "$PYTHON"
-    -m src.experiments.benchmark_runner
+    -m experiments.benchmark_runner
     --profile "$PROFILE"
     --workloads "$WORKLOADS"
     --csv_path "$CSV_PATH"

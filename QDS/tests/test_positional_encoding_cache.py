@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from src.models.trajectory_qds_model import TrajectoryQDSModel
+from models.trajectory_qds_model import TrajectoryQDSModel
 
 
 def test_positional_encoding_cache_reuses_matching_buffer() -> None:

@@ -1,3 +1,0 @@
-# Compatibility alias for the local QDS sprint profile.
-# Use requirements-cpu.txt on machines that should not install CUDA wheels.
--r requirements-cuda-cu130.txt

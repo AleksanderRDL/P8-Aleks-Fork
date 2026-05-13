@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 
-from src.queries.query_generator import _weighted_sample_one, generate_typed_query_workload
+from queries.query_generator import _weighted_sample_one, generate_typed_query_workload
 
 
 def test_weighted_sample_one_small_uses_multinomial_path() -> None:

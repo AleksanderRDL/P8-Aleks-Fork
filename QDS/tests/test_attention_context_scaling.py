@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from src.models.attention_utils import chunked_cross_attention_context
+from models.attention_utils import chunked_cross_attention_context
 
 
 def test_single_chunk_attention_matches_direct_multihead_attention() -> None:

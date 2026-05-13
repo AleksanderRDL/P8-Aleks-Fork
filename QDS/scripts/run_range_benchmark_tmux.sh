@@ -118,7 +118,7 @@ rm -f "$(display_path "$monitor_log")" "$(display_path "$status_file")" "$(displ
 
 benchmark_cmd=(
   "$PYTHON"
-  -m src.experiments.benchmark_runner
+  -m experiments.benchmark_runner
   --profile "$PROFILE"
   --workloads range
   --csv_path "$CSV_PATH"

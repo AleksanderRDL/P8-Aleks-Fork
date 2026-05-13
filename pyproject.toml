@@ -10,7 +10,16 @@ requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
 where = [".", "QDS"]
-include = ["ais_pipeline*", "src*"]
+include = [
+    "ais_pipeline*",
+    "data*",
+    "evaluation*",
+    "experiments*",
+    "models*",
+    "queries*",
+    "simplification*",
+    "training*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["QDS/tests"]

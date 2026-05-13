@@ -16,7 +16,7 @@ interpreter path contains `..`.
 ```bash
 cd QDS
 PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
-"$PYTHON" -m pip install -r requirements.txt
+"$PYTHON" -m pip install -r ../requirements.txt
 make check-env
 make test
 ```
@@ -37,7 +37,7 @@ make clean-smoke-artifacts CONFIRM=1
 Direct CLI example:
 
 ```bash
-"$PYTHON" -m src.experiments.run_ais_experiment \
+"$PYTHON" -m experiments.run_ais_experiment \
   --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
   --cache_dir artifacts/cache/manual_csv \
   --workload range \
@@ -52,26 +52,19 @@ Direct CLI example:
 | Need | File |
 | --- | --- |
 | Redesign objective and acceptance criteria | [`../Aleks-Sprint/range-training-redesign.md`](../Aleks-Sprint/range-training-redesign.md) |
-| Benchmark profile, CLI modes, artifact names | [`src/experiments/README.md`](src/experiments/README.md) |
+| Code layout | [`CODE_LAYOUT.md`](CODE_LAYOUT.md) |
+| Benchmark profile, CLI modes, artifact names | [`experiments/README.md`](experiments/README.md) |
 | Generated artifact layout and cleanup | [`artifacts/README.md`](artifacts/README.md) |
-| Training labels, loss, checkpoint selection | [`src/training/README.md`](src/training/README.md) |
-| Query generation and execution | [`src/queries/README.md`](src/queries/README.md) |
-| Evaluation metrics and baselines | [`src/evaluation/README.md`](src/evaluation/README.md) |
-| Data loading and segmented cache | [`src/data/README.md`](src/data/README.md) |
-| Model architecture | [`src/models/README.md`](src/models/README.md) |
+| Training labels, loss, checkpoint selection | [`training/README.md`](training/README.md) |
+| Query generation and execution | [`queries/README.md`](queries/README.md) |
+| Evaluation metrics and baselines | [`evaluation/README.md`](evaluation/README.md) |
+| Data loading and segmented cache | [`data/README.md`](data/README.md) |
+| Model architecture | [`models/README.md`](models/README.md) |
 
 ## Requirements
 
-- `requirements-common.txt`: shared non-Torch dependencies.
-- `requirements-cpu.txt`: CPU/generic Torch profile.
-- `requirements-cuda-cu130.txt`: CUDA reference profile.
-- `requirements.txt`: compatibility alias for the current CUDA sprint profile.
-
-Install a specific profile when changing environments:
-
-```bash
-"$PYTHON" -m pip install -r requirements-cuda-cu130.txt
-```
+Use the root [`../requirements.txt`](../requirements.txt). QDS is the dominant
+workstream, so dependency management is centralized at repo root.
 
 ## Output Policy
 

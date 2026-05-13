@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from src.evaluation.evaluate_methods import evaluate_method
+from evaluation.evaluate_methods import evaluate_method
 
 
 @dataclass

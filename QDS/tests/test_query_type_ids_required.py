@@ -1,15 +1,15 @@
-"""Tests required query_type_ids path for model training mode. See src/models/README.md for details."""
+"""Tests required query_type_ids path for model training mode. See models/README.md for details."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from src.models.trajectory_qds_model import TrajectoryQDSModel
+from models.trajectory_qds_model import TrajectoryQDSModel
 
 
 def test_query_type_ids_required() -> None:
-    """Assert training forward fails without query_type_ids. See src/models/README.md for details."""
+    """Assert training forward fails without query_type_ids. See models/README.md for details."""
     model = TrajectoryQDSModel(point_dim=7, query_dim=12)
     model.train()
     points = torch.randn(1, 32, 7)

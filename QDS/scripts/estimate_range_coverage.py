@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.ais_loader import load_ais_csv
-from src.data.trajectory_cache import load_or_build_ais_cache
-from src.queries.coverage_estimator import RangeCoverageEstimate, best_query_count, estimate_range_coverage
+from data.ais_loader import load_ais_csv
+from data.trajectory_cache import load_or_build_ais_cache
+from queries.coverage_estimator import RangeCoverageEstimate, best_query_count, estimate_range_coverage
 
 
 def _parse_int_list(value: str) -> list[int]:

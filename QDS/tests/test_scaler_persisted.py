@@ -1,4 +1,4 @@
-"""Tests scaler and model persistence keeps predictions identical. See src/training/README.md for details."""
+"""Tests scaler and model persistence keeps predictions identical. See training/README.md for details."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.experiments.experiment_config import build_experiment_config
-from src.models.trajectory_qds_model import TrajectoryQDSModel
-from src.training.scaler import FeatureScaler
-from src.training.checkpoints import ModelArtifacts, load_checkpoint, save_checkpoint
-from src.training.inference import forward_predict, windowed_predict
+from experiments.experiment_config import build_experiment_config
+from models.trajectory_qds_model import TrajectoryQDSModel
+from training.scaler import FeatureScaler
+from training.checkpoints import ModelArtifacts, load_checkpoint, save_checkpoint
+from training.inference import forward_predict, windowed_predict
 
 
 def test_scaler_persisted(tmp_path: Path) -> None:
-    """Assert checkpoint reload yields identical predictions. See src/training/README.md for details."""
+    """Assert checkpoint reload yields identical predictions. See training/README.md for details."""
     model = TrajectoryQDSModel(point_dim=7, query_dim=12)
     model.eval()
     points = torch.randn(128, 7)

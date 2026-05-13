@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.data.ais_loader import load_ais_csv
+from data.ais_loader import load_ais_csv
 
 
 def _write_csv(path: Path, rows: list[tuple[int, float, float, float, float, float]]) -> None:

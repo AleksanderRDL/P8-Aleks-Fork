@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data.combine_days import combine
+from data.combine_days import combine
 
 
 def _write_day(path, timestamp: str) -> None:

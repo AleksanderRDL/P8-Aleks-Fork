@@ -1,6 +1,12 @@
 {
   "include": [
-    "src",
+    "data",
+    "evaluation",
+    "experiments",
+    "models",
+    "queries",
+    "simplification",
+    "training",
     "scripts",
     "tests"
   ],
