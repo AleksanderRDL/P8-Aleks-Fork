@@ -43,8 +43,9 @@ components.
 but the testing baseline keeps it at `0.0`.
 
 These labels are additive approximations for training, not an exact optimizer
-for retained-set `RangeUseful`. The current objective reasoning lives in
-[`../../../Aleks-Sprint/range-objective-redesign.md`](../../../Aleks-Sprint/range-objective-redesign.md).
+for retained-set `RangeUseful`. The current workload-blind training redesign
+lives in
+[`../../../Aleks-Sprint/range-training-redesign.md`](../../../Aleks-Sprint/range-training-redesign.md).
 
 ## Loss And Selection
 
@@ -63,7 +64,9 @@ for retained-set `RangeUseful`. The current objective reasoning lives in
 - `model_type="range_aware"` augments the point stream with range-query
   relation features such as containment count, box proximity, center proximity,
   and boundary proximity. These are model inputs, not retained-set labels, and
-  keep `mlqds_range_geometry_blend=0.0` in the learned baseline.
+  keep `mlqds_range_geometry_blend=0.0` in the learned baseline. This model is
+  workload-aware and should be treated as a diagnostic/upper-bound path for the
+  workload-blind redesign.
 - `mlqds_range_geometry_blend` is an explicit range-only escape hatch that
   blends model scores with cached range-usefulness geometry labels before
   simplification. At `1.0`, the retained set is geometry-driven rather than

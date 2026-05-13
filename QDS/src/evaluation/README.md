@@ -38,8 +38,8 @@ Range tables report two top-level scores:
 
 `RangeUseful` is the canonical checkpoint target for range training, but it is
 still an evolving audit objective rather than a mathematically final target.
-See [`../../../Aleks-Sprint/range-objective-redesign.md`](../../../Aleks-Sprint/range-objective-redesign.md)
-for the rationale.
+See [`../../../Aleks-Sprint/range-training-redesign.md`](../../../Aleks-Sprint/range-training-redesign.md)
+for the workload-blind training protocol and metric rationale.
 
 Important component semantics:
 

@@ -2,7 +2,7 @@
 
 ## 2026-05-13
 
-- Started from `range-objective-redesign.md` and the latest `range_testing_baseline` artifacts.
+- Started from the range objective notes and the latest `range_testing_baseline` artifacts. The current redesign reference is now `range-training-redesign.md`.
 - Existing full cached baseline runs are stable but poor: MLQDS stays below uniform and `TemporalRandomFill` on `RangeUseful`.
 - Latest refactor-check run: MLQDS `RangeUseful=0.2829`, uniform `0.3721`, Douglas-Peucker `0.3522`, `TemporalRandomFill=0.3427`.
 - Failure mode is not model collapse. The trained score fill hurts temporal coverage, gap coverage, and shape versus uniform/random fill.
@@ -53,3 +53,4 @@
 - Updated the documented target sweep grid to coverage `5%,10%,15%,30%` and compression `1%,2%,5%,10%,15%,20%,30%`. Added these as profile settings metadata in `benchmark_profiles.py` and added `QDS/benchmark_plans/range_coverage_compression_grid.tsv` for the exact workload-aware diagnostic queue.
 - Product constraint correction: the final target is workload-blind compression, meaning the retained set must be chosen before future queries are known. The current `range_aware` wins are workload-aware diagnostics because inference uses the eval workload to build point/query relation features. They are useful evidence about recoverable signal, but not proof that the final workload-blind model beats uniform or Douglas-Peucker.
 - Next required research path is a workload-blind protocol: train from historical/generated range workloads as supervision, compress eval trajectories without eval queries, then score the frozen retained set on held-out query workloads across the requested coverage/compression grid.
+- Renamed the old objective note to `range-training-redesign.md` and rewrote it as the current workload-blind training redesign spec. It now covers the hard train-vs-inference rule, expected-usefulness labels, teacher-student distillation, marginal-gain targets, workload-generator upgrades, blind checkpointing, implementation checklist, runtime concerns, and acceptance criteria.

@@ -1,8 +1,8 @@
 # AIS-QDS
 
-AIS-QDS trains query-conditioned simplification models for AIS trajectories and
-evaluates retained-point sets against pure query workloads. The current sprint
-focus is the range workload on cleaned AIS CSV days.
+AIS-QDS trains simplification models for AIS trajectories and evaluates
+retained-point sets against pure query workloads. The current sprint focus is
+the workload-blind range-training redesign on cleaned AIS CSV days.
 
 ## Where To Look
 
@@ -16,8 +16,8 @@ focus is the range workload on cleaned AIS CSV days.
 | Evaluation metrics and baseline methods | [`src/evaluation/README.md`](src/evaluation/README.md) |
 | Model architecture | [`src/models/README.md`](src/models/README.md) |
 
-The current research direction for range-query usefulness is summarized in
-[`../Aleks-Sprint/range-objective-redesign.md`](../Aleks-Sprint/range-objective-redesign.md).
+The current range-training redesign is summarized in
+[`../Aleks-Sprint/range-training-redesign.md`](../Aleks-Sprint/range-training-redesign.md).
 
 ## Quick Start
 
