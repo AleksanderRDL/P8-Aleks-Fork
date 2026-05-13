@@ -43,6 +43,24 @@ def test_scaler_persisted(tmp_path: Path) -> None:
     assert loaded.workload_type == "range"
 
 
+def test_checkpoint_loader_ignores_retired_query_config_fields(tmp_path: Path) -> None:
+    model = TrajectoryQDSModel(point_dim=7, query_dim=12)
+    scaler = FeatureScaler.fit(torch.randn(8, 7), torch.randn(2, 12))
+    cfg = build_experiment_config()
+    ckpt = tmp_path / "model.pt"
+    save_checkpoint(
+        str(ckpt),
+        ModelArtifacts(model=model, scaler=scaler, config=cfg, workload_type="range"),
+    )
+    payload = torch.load(ckpt, map_location="cpu")
+    payload["config"]["query"]["retired_query_option"] = 123
+    torch.save(payload, ckpt)
+
+    loaded = load_checkpoint(str(ckpt))
+
+    assert loaded.config.query.workload == "range"
+
+
 def test_windowed_predict_batching_matches_single_window_loop() -> None:
     """Assert batched inference preserves the previous per-window predictions."""
     model = TrajectoryQDSModel(point_dim=7, query_dim=12)

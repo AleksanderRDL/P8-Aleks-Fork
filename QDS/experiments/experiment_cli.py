@@ -186,12 +186,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum candidate range boxes to try when acceptance filters are enabled.",
     )
-    parser.add_argument(
-        "--knn_k",
-        type=int,
-        default=12,
-        help="Number of nearest trajectories returned by generated kNN queries.",
-    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument(
@@ -267,8 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--workload",
         type=str,
         default="range",
-        choices=["range", "knn", "similarity", "clustering"],
-        help="Pure query workload type for this model run.",
+        choices=["range"],
+        help="Query workload type for this model run. Only range is supported.",
     )
 
     parser.add_argument("--seed", type=int, default=42)

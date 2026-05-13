@@ -1,7 +1,7 @@
 """GeoJSON writers for query workloads and simplified trajectories.
 
 These outputs are designed for inspection in QGIS:
-- Queries: one FeatureCollection per query type (range/knn/similarity/clustering).
+- Queries: one FeatureCollection for range query boxes.
 - Simplified trajectories: one FeatureCollection of LineStrings with a Points
   layer for the retained samples.
 """
@@ -35,34 +35,14 @@ def _seconds_to_hhmm(seconds: float) -> str:
 def _query_to_feature(query: dict[str, Any]) -> dict[str, Any]:
     """Convert a typed query dict to a GeoJSON Feature.
 
-    All query types are rendered as axis-aligned rectangles (Polygons) so
-    they're consistently plottable in QGIS next to range/clustering boxes.
-    - range / clustering: native lat/lon bbox.
-    - knn: square around the anchor sized from `t_half_window`.
-    - similarity: square around the centroid sized from `radius`.
+    Range queries are rendered as their native axis-aligned lat/lon boxes.
     """
     query_type = str(query["type"]).lower()
     params = query["params"]
-    if query_type in ("range", "clustering"):
+    if query_type == "range":
         coords = _bbox_polygon(params["lon_min"], params["lat_min"], params["lon_max"], params["lat_max"])
-    elif query_type == "knn":
-        half = 0.05  # default half-width in degrees if not derivable
-        coords = _bbox_polygon(
-            params["lon"] - half,
-            params["lat"] - half,
-            params["lon"] + half,
-            params["lat"] + half,
-        )
-    elif query_type == "similarity":
-        radius = float(params.get("radius", 0.05))
-        coords = _bbox_polygon(
-            params["lon_query_centroid"] - radius,
-            params["lat_query_centroid"] - radius,
-            params["lon_query_centroid"] + radius,
-            params["lat_query_centroid"] + radius,
-        )
     else:
-        raise ValueError(f"Unsupported query type for GeoJSON export: {query_type}")
+        raise ValueError(f"Only range queries are supported for GeoJSON export; got query type: {query_type}")
     geometry = {"type": "Polygon", "coordinates": coords}
     properties: dict[str, Any] = {
         "query_type": query_type,
@@ -84,7 +64,7 @@ def write_queries_geojson(out_dir: str, typed_queries: list[dict[str, Any]]) -> 
     """Write one GeoJSON file per query type into out_dir."""
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    by_type: dict[str, list[dict[str, Any]]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
+    by_type: dict[str, list[dict[str, Any]]] = {"range": []}
     for query in typed_queries:
         query_type = str(query["type"]).lower()
         if query_type in by_type:

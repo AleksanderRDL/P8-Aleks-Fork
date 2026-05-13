@@ -15,7 +15,7 @@ from experiments.benchmark_profiles import (
 )
 from experiments.benchmark_runtime import _environment_metadata
 
-PURE_WORKLOADS = ("range", "knn", "similarity", "clustering")
+PURE_WORKLOADS = ("range",)
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 3
 DEFAULT_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE, include_checkpoint_selection=True)

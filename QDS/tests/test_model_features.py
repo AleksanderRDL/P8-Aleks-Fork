@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
+from queries.query_types import pad_query_features
 from queries.workload import TypedQueryWorkload
 from training.model_features import RANGE_AWARE_POINT_DIM, build_model_point_features
 
@@ -53,11 +53,7 @@ def test_model_feature_modes_keep_expected_base_dimensions() -> None:
 
 
 def test_range_aware_rejects_non_range_workloads() -> None:
-    queries = [{"type": "knn", "params": {"lat": 0.0, "lon": 0.0, "t_center": 0.0, "t_half_window": 1.0, "k": 1}}]
-    features, type_ids = pad_query_features(queries)
-    workload = TypedQueryWorkload(query_features=features, typed_queries=queries, type_ids=type_ids)
-    points = torch.zeros((2, 8), dtype=torch.float32)
+    queries = [{"type": "legacy", "params": {}}]
 
-    assert int(type_ids[0].item()) != QUERY_TYPE_ID_RANGE
-    with pytest.raises(ValueError, match="pure range"):
-        build_model_point_features(points, workload, "range_aware")
+    with pytest.raises(ValueError, match="Only range"):
+        pad_query_features(queries)

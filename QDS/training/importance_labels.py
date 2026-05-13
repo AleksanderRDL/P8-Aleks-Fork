@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence, cast
+from typing import Any
 
 import torch
 
-from data.trajectory_index import split_by_boundaries, trajectory_ids_for_points
+from data.trajectory_index import trajectory_ids_for_points
 from evaluation.range_usefulness import RANGE_USEFULNESS_WEIGHTS
-from queries.query_executor import execute_typed_query
 from queries.range_geometry import (
-    haversine_km_to_point,
     points_in_range_box,
     segment_box_bracket_mask,
 )
 from queries.query_types import QUERY_NAME_TO_ID, QUERY_TYPE_ID_RANGE, NUM_QUERY_TYPES
 
-KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
-SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
 RANGE_LABEL_MODES = ("point_f1", "usefulness", "usefulness_balanced")
 RANGE_USEFULNESS_LABEL_WEIGHTS = dict(RANGE_USEFULNESS_WEIGHTS)
 RANGE_USEFULNESS_LABEL_COMPONENTS = tuple(RANGE_USEFULNESS_LABEL_WEIGHTS.keys())
@@ -49,29 +45,6 @@ def _add_distributed_hit_label(labels: torch.Tensor, support: torch.Tensor, type
     labels[support, type_idx] += float(gain) / float(support_count)
 
 
-def _add_weighted_hit_label(
-    labels: torch.Tensor,
-    support: torch.Tensor,
-    type_idx: int,
-    gain: float,
-    weights: torch.Tensor,
-) -> None:
-    """Distribute a trajectory-hit gain over support points, scaled by per-point weights.
-
-    weights[support] should be non-negative. Total mass added equals gain. Falls back to
-    uniform distribution if all weights are zero.
-    """
-    support_idx = torch.where(support)[0]
-    if support_idx.numel() == 0:
-        return
-    w = weights[support_idx]
-    total = float(w.sum().item())
-    if total <= 0.0:
-        labels[support, type_idx] += float(gain) / float(support_idx.numel())
-        return
-    labels[support_idx, type_idx] += float(gain) * (w / total)
-
-
 def _add_weighted_index_label(
     labels: torch.Tensor,
     indices: torch.Tensor,
@@ -88,43 +61,6 @@ def _add_weighted_index_label(
         labels[indices, type_idx] += float(gain) / float(indices.numel())
         return
     labels[indices, type_idx] += float(gain) * (w / total)
-
-
-def _within_box_centroid_weights(
-    points: torch.Tensor,
-    box_mask: torch.Tensor,
-    point_trajectory_ids: torch.Tensor,
-) -> torch.Tensor:
-    """Per-point weights for clustering: squared distance from each in-box point to its
-    trajectory's in-box centroid (lat/lon).
-
-    Squared distance amplifies the contrast between extremes (load-bearing for centroid
-    stability) and near-centroid points (replaceable). Weights are normalized to mean=1
-    per trajectory so total per-query label mass is preserved.
-    """
-    weights = torch.zeros(points.shape[0], dtype=torch.float32, device=points.device)
-    in_box_idx = torch.where(box_mask)[0]
-    if in_box_idx.numel() == 0:
-        return weights
-
-    box_traj_ids = point_trajectory_ids[in_box_idx]
-    box_coords = points[in_box_idx, 1:3]
-    for tid in torch.unique(box_traj_ids).tolist():
-        local = torch.where(box_traj_ids == tid)[0]
-        if local.numel() == 0:
-            continue
-        if local.numel() == 1:
-            weights[in_box_idx[local]] = 1.0
-            continue
-        coords = box_coords[local]
-        centroid = coords.mean(dim=0)
-        dists_sq = torch.sum((coords - centroid) ** 2, dim=1)
-        mean_d_sq = float(dists_sq.mean().item())
-        if mean_d_sq > 1e-12:
-            weights[in_box_idx[local]] = dists_sq / mean_d_sq
-        else:
-            weights[in_box_idx[local]] = 1.0
-    return weights
 
 
 def _range_boundary_weights(
@@ -418,107 +354,10 @@ def _balance_range_component_label_mass(
     labels[:, type_idx] = torch.clamp(balanced, 0.0, 1.0)
 
 
-def _knn_representative_support(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    trajectory_ids: set[int],
-    params: dict[str, float],
-    representatives_per_trajectory: int = KNN_REPRESENTATIVES_PER_TRAJECTORY,
-) -> torch.Tensor:
-    """Return nearest in-window points of kNN-selected trajectories as positive support.
-
-    Labels up to ``representatives_per_trajectory`` points per answer trajectory.
-    This keeps the signal much denser than the old top-3 limit while still
-    focusing supervision on the points most likely to preserve the kNN answer.
-    """
-    support = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    time_start = float(params["t_center"] - params["t_half_window"])
-    time_end = float(params["t_center"] + params["t_half_window"])
-    limit = int(representatives_per_trajectory)
-
-    for trajectory_id in sorted(trajectory_ids):
-        if trajectory_id < 0 or trajectory_id >= len(boundaries):
-            continue
-        start, end = boundaries[trajectory_id]
-        if end <= start:
-            continue
-        trajectory_points = points[start:end]
-        in_window = (trajectory_points[:, 0] >= time_start) & (trajectory_points[:, 0] <= time_end)
-        candidate_offsets = torch.where(in_window)[0]
-        if candidate_offsets.numel() == 0:
-            continue
-        if limit > 0 and candidate_offsets.numel() > limit:
-            candidates = trajectory_points[candidate_offsets]
-            distance = haversine_km_to_point(
-                candidates[:, 1],
-                candidates[:, 2],
-                float(params["lat"]),
-                float(params["lon"]),
-            )
-            distance = distance + 0.001 * torch.abs(candidates[:, 0] - float(params["t_center"]))
-            nearest = torch.topk(-distance, k=limit).indices
-            candidate_offsets = candidate_offsets[nearest]
-        support[start + candidate_offsets] = True
-
-    return support
-
-
-def _similarity_support_mask(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    trajectory_ids: set[int],
-    query: dict[str, Any],
-    representatives_per_trajectory: int = SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY,
-) -> torch.Tensor:
-    """Return reference-nearest points for trajectories selected by similarity execution."""
-    params = query["params"]
-    support = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    time_start = float(params["t_start"])
-    time_end = float(params["t_end"])
-    reference = torch.tensor(query.get("reference", []), dtype=points.dtype, device=points.device)
-    limit = int(representatives_per_trajectory)
-    for trajectory_id in sorted(trajectory_ids):
-        if trajectory_id < 0 or trajectory_id >= len(boundaries):
-            continue
-        start, end = boundaries[trajectory_id]
-        if end <= start:
-            continue
-        trajectory_points = points[start:end]
-        in_window = (trajectory_points[:, 0] >= time_start) & (trajectory_points[:, 0] <= time_end)
-        candidate_offsets = torch.where(in_window)[0]
-        if candidate_offsets.numel() == 0:
-            continue
-        if reference.numel() > 0 and limit > 0 and candidate_offsets.numel() > limit:
-            candidates = trajectory_points[candidate_offsets]
-            spatial = torch.cdist(candidates[:, 1:3], reference[:, 1:3]).min(dim=1).values
-            temporal = torch.cdist(candidates[:, 0:1], reference[:, 0:1]).min(dim=1).values
-            radius = max(float(params.get("radius", 1.0)), 1e-6)
-            time_span = max(time_end - time_start, 1e-6)
-            distance = spatial / radius + 0.25 * temporal / time_span
-            candidate_offsets = candidate_offsets[torch.topk(-distance, k=limit).indices]
-        support[start + candidate_offsets] = True
-    return support
-
-
-def _cluster_members(labels: Mapping[int, int] | Sequence[int]) -> dict[int, list[int]]:
-    """Group non-noise trajectory labels by cluster ID."""
-    items = labels.items() if isinstance(labels, Mapping) else enumerate(labels)
-    clusters: dict[int, list[int]] = {}
-    for trajectory_id, label in items:
-        label_value = int(label)
-        if label_value == -1:
-            continue
-        clusters.setdefault(label_value, []).append(int(trajectory_id))
-    return clusters
-
-
 def _compute_typed_importance_labels(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     typed_queries: list[dict[str, Any]],
-    seed: int,
-    similarity_sample_rate: float = 0.70,
-    clustering_sample_rate: float = 0.70,
     range_boundary_prior_weight: float = 0.0,
     range_label_mode: str = "point_f1",
     return_range_components: bool = False,
@@ -542,83 +381,37 @@ def _compute_typed_importance_labels(
     labelled_mask = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.bool, device=points.device)
     query_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.float32, device=points.device)
     point_trajectory_ids = trajectory_ids_for_points(n, boundaries, points.device)
-    trajectories = split_by_boundaries(points, boundaries)
-
-    # Column 7 of the trajectory feature tensor is turn_score in [0,1] = normalized |Δheading|.
-    # It acts as a local route-change prior for usefulness labels and non-range representatives.
-    turn_score = points[:, 7] if points.shape[1] >= 8 else torch.zeros(n, device=points.device)
-    TURN_BIAS_ALPHA = 0.05
 
     for q in typed_queries:
-        qtype = q["type"]
+        qtype = str(q["type"]).lower()
+        if qtype != "range":
+            raise ValueError(f"Only range queries are supported for labels; got query type: {qtype}")
         t_idx = QUERY_NAME_TO_ID[qtype]
         params = q["params"]
         query_counts[t_idx] += 1.0
 
-        if qtype == "range":
-            box_support = points_in_range_box(points, params)
-            if range_label_mode in {"usefulness", "usefulness_balanced"}:
-                _add_range_usefulness_labels(
-                    labels=labels,
-                    points=points,
-                    boundaries=boundaries,
-                    box_support=box_support,
-                    params=params,
-                    point_trajectory_ids=point_trajectory_ids,
-                    type_idx=t_idx,
-                    range_boundary_prior_weight=range_boundary_prior_weight,
-                    component_labels=component_labels,
-                )
-            else:
-                _add_range_point_f1_labels(
-                    labels=labels,
-                    points=points,
-                    boundaries=boundaries,
-                    box_support=box_support,
-                    type_idx=t_idx,
-                    range_boundary_prior_weight=range_boundary_prior_weight,
-                )
-
-        elif qtype == "knn":
-            original_ids = set(execute_typed_query(points, trajectories, q, boundaries))
-            gain = _set_query_singleton_gain(original_ids)
-            if gain <= 0.0:
-                continue
-            support = _knn_representative_support(points, boundaries, original_ids, params)
-            for trajectory_id in original_ids:
-                trajectory_support = support & (point_trajectory_ids == int(trajectory_id))
-                _add_distributed_hit_label(labels, trajectory_support, t_idx, gain)
-
-        elif qtype == "similarity":
-            original_ids = set(execute_typed_query(points, trajectories, q, boundaries))
-            gain = _set_query_singleton_gain(original_ids)
-            if gain > 0.0:
-                similarity_support = _similarity_support_mask(points, boundaries, original_ids, q)
-                for trajectory_id in original_ids:
-                    support = similarity_support & (point_trajectory_ids == int(trajectory_id))
-                    _add_distributed_hit_label(labels, support, t_idx, gain)
-                labels[similarity_support, t_idx] += TURN_BIAS_ALPHA * turn_score[similarity_support]
-
-        elif qtype == "clustering":
-            original_labels = cast(list[int], execute_typed_query(points, trajectories, q, boundaries))
-            clusters = _cluster_members(original_labels)
-            pair_count = sum(len(members) * (len(members) - 1) // 2 for members in clusters.values())
-            if pair_count <= 0:
-                continue
-            box_support = points_in_range_box(points, params)
-            centroid_weights = _within_box_centroid_weights(points, box_support, point_trajectory_ids)
-            clustered_traj_mask = torch.zeros_like(box_support)
-            for members in clusters.values():
-                degree = len(members) - 1
-                if degree <= 0:
-                    continue
-                gain = float(2.0 * degree / (pair_count + degree))
-                for trajectory_id in members:
-                    support = box_support & (point_trajectory_ids == int(trajectory_id))
-                    _add_weighted_hit_label(labels, support, t_idx, gain, centroid_weights)
-                    clustered_traj_mask |= point_trajectory_ids == int(trajectory_id)
-            cluster_turn_support = box_support & clustered_traj_mask
-            labels[cluster_turn_support, t_idx] += TURN_BIAS_ALPHA * turn_score[cluster_turn_support]
+        box_support = points_in_range_box(points, params)
+        if range_label_mode in {"usefulness", "usefulness_balanced"}:
+            _add_range_usefulness_labels(
+                labels=labels,
+                points=points,
+                boundaries=boundaries,
+                box_support=box_support,
+                params=params,
+                point_trajectory_ids=point_trajectory_ids,
+                type_idx=t_idx,
+                range_boundary_prior_weight=range_boundary_prior_weight,
+                component_labels=component_labels,
+            )
+        else:
+            _add_range_point_f1_labels(
+                labels=labels,
+                points=points,
+                boundaries=boundaries,
+                box_support=box_support,
+                type_idx=t_idx,
+                range_boundary_prior_weight=range_boundary_prior_weight,
+            )
 
     for type_idx in range(NUM_QUERY_TYPES):
         count = float(query_counts[type_idx].item())
@@ -644,9 +437,6 @@ def compute_typed_importance_labels(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     typed_queries: list[dict[str, Any]],
-    seed: int,
-    similarity_sample_rate: float = 0.70,
-    clustering_sample_rate: float = 0.70,
     range_boundary_prior_weight: float = 0.0,
     range_label_mode: str = "point_f1",
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -655,9 +445,6 @@ def compute_typed_importance_labels(
         points=points,
         boundaries=boundaries,
         typed_queries=typed_queries,
-        seed=seed,
-        similarity_sample_rate=similarity_sample_rate,
-        clustering_sample_rate=clustering_sample_rate,
         range_boundary_prior_weight=range_boundary_prior_weight,
         range_label_mode=range_label_mode,
         return_range_components=False,
@@ -669,7 +456,6 @@ def compute_typed_importance_labels_with_range_components(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     typed_queries: list[dict[str, Any]],
-    seed: int,
     range_boundary_prior_weight: float = 0.0,
     range_label_mode: str = "usefulness",
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
@@ -681,7 +467,6 @@ def compute_typed_importance_labels_with_range_components(
         points=points,
         boundaries=boundaries,
         typed_queries=typed_queries,
-        seed=seed,
         range_boundary_prior_weight=range_boundary_prior_weight,
         range_label_mode=range_label_mode,
         return_range_components=True,

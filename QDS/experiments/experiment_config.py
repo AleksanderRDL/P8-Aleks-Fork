@@ -53,8 +53,6 @@ class QueryConfig:
     range_time_hours: float | None = None
     range_footprint_jitter: float = 0.5
     workload: str = "range"
-    similarity_top_k: int = 5
-    knn_k: int = 12
     range_min_point_hits: int | None = None
     range_max_point_hit_fraction: float | None = None
     range_min_trajectory_hits: int | None = None
@@ -253,7 +251,6 @@ def build_experiment_config(
     checkpoint_full_score_every: int | None = None,
     checkpoint_candidate_pool_size: int = 1,
     checkpoint_score_variant: str | None = None,
-    knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
     mlqds_hybrid_mode: str = "fill",
@@ -307,7 +304,6 @@ def build_experiment_config(
             range_duplicate_iou_threshold=range_duplicate_iou_threshold,
             range_acceptance_max_attempts=range_acceptance_max_attempts,
             workload=workload,
-            knn_k=knn_k,
         ),
         model=ModelConfig(
             epochs=epochs,

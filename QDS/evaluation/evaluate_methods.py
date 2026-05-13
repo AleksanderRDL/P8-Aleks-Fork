@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 import torch
 
 from data.trajectory_index import (
-    trajectory_id_mask,
     trajectory_ids_for_points,
     trajectory_ids_from_mask,
 )
@@ -18,7 +16,6 @@ from evaluation.metrics import (
     MethodEvaluation,
     _polyline_length_km,
     _trajectory_sed_ped_km,
-    clustering_f1,
     compute_geometric_distortion,
     compute_length_preservation,
     f1_score,
@@ -28,24 +25,18 @@ from evaluation.query_cache import (
     RangeQueryAuditSupport,
     RangeSegmentAuditGeometry,
     RangeTrajectoryAuditSupport,
-    split_by_boundaries,
 )
 from evaluation.range_usefulness import (
     RANGE_USEFULNESS_SCHEMA_VERSION,
     RANGE_USEFULNESS_WEIGHTS,
     range_usefulness_weight_summary,
 )
-from queries.query_executor import execute_typed_query
 from queries.range_geometry import (
-    haversine_km_to_point,
     points_in_range_box,
     segment_box_bracket_indices,
     segment_pairs_box_crossings,
 )
 from queries.query_types import normalize_pure_workload_map
-
-POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
-POINT_AWARE_SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
 
 
 def _range_point_f1(retained_mask: torch.Tensor, range_mask: torch.Tensor) -> float:
@@ -492,87 +483,6 @@ def score_range_usefulness(
     }
 
 
-def _knn_representative_mask(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    trajectory_ids: set[int],
-    params: dict[str, float],
-    representatives_per_trajectory: int = POINT_AWARE_KNN_REPRESENTATIVES_PER_TRAJECTORY,
-) -> torch.Tensor:
-    support = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    time_start = float(params["t_center"] - params["t_half_window"])
-    time_end = float(params["t_center"] + params["t_half_window"])
-    limit = int(representatives_per_trajectory)
-    for trajectory_id in sorted(trajectory_ids):
-        if trajectory_id < 0 or trajectory_id >= len(boundaries):
-            continue
-        start, end = boundaries[trajectory_id]
-        trajectory_points = points[start:end]
-        in_window = (trajectory_points[:, 0] >= time_start) & (trajectory_points[:, 0] <= time_end)
-        candidate_offsets = torch.where(in_window)[0]
-        if candidate_offsets.numel() == 0:
-            continue
-        if limit > 0 and candidate_offsets.numel() > limit:
-            candidates = trajectory_points[candidate_offsets]
-            distance = haversine_km_to_point(
-                candidates[:, 1],
-                candidates[:, 2],
-                float(params["lat"]),
-                float(params["lon"]),
-            )
-            distance = distance + 0.001 * torch.abs(candidates[:, 0] - float(params["t_center"]))
-            candidate_offsets = candidate_offsets[torch.topk(-distance, k=limit).indices]
-        support[start + candidate_offsets] = True
-    return support
-
-
-def _similarity_support_mask(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    trajectory_ids: set[int],
-    query: dict,
-    representatives_per_trajectory: int = POINT_AWARE_SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY,
-) -> torch.Tensor:
-    params = query["params"]
-    support = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    time_start = float(params["t_start"])
-    time_end = float(params["t_end"])
-    reference = torch.tensor(query.get("reference", []), dtype=points.dtype, device=points.device)
-    limit = int(representatives_per_trajectory)
-    for trajectory_id in sorted(trajectory_ids):
-        if trajectory_id < 0 or trajectory_id >= len(boundaries):
-            continue
-        start, end = boundaries[trajectory_id]
-        trajectory_points = points[start:end]
-        in_window = (trajectory_points[:, 0] >= time_start) & (trajectory_points[:, 0] <= time_end)
-        candidate_offsets = torch.where(in_window)[0]
-        if candidate_offsets.numel() == 0:
-            continue
-        if reference.numel() > 0 and limit > 0 and candidate_offsets.numel() > limit:
-            candidates = trajectory_points[candidate_offsets]
-            spatial = torch.cdist(candidates[:, 1:3], reference[:, 1:3]).min(dim=1).values
-            temporal = torch.cdist(candidates[:, 0:1], reference[:, 0:1]).min(dim=1).values
-            radius = max(float(params.get("radius", 1.0)), 1e-6)
-            time_span = max(time_end - time_start, 1e-6)
-            distance = spatial / radius + 0.25 * temporal / time_span
-            candidate_offsets = candidate_offsets[torch.topk(-distance, k=limit).indices]
-        support[start + candidate_offsets] = True
-    return support
-
-
-def _clustering_support_mask(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    labels: list[int],
-    params: dict[str, float],
-) -> torch.Tensor:
-    clustered_ids = {trajectory_id for trajectory_id, label in enumerate(labels) if int(label) != -1}
-    if not clustered_ids:
-        return torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
-    point_trajectory_ids = trajectory_ids_for_points(points.shape[0], boundaries, points.device)
-    return points_in_range_box(points, params) & trajectory_id_mask(point_trajectory_ids, clustered_ids)
-
-
 def score_retained_mask(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -584,112 +494,31 @@ def score_retained_mask(
     """Score a precomputed retained mask with the final query-F1 semantics.
 
     Returns (aggregate_answer_f1, per_type_answer_f1, aggregate_combined,
-    per_type_combined). The "answer" variant uses pure set/cluster F1 between
-    queries on the full vs simplified data (the natural, defensible metric).
-    The "combined" variant is answer_f1 * point_subset_f1, kept as a
-    diagnostic ablation; it double-penalizes a method that returns the right
-    answer set via different points than ground truth's "support".
+    per_type_combined). Range workloads use point-subset F1 over each query box;
+    answer and combined scores are identical under the range-only contract.
     """
     if query_cache is not None:
         query_cache.validate(points, boundaries, typed_queries)
 
-    full_traj: list[torch.Tensor] | None = None
-    simplified: torch.Tensor | None = None
-    simp_boundaries: list[tuple[int, int]] | None = None
-    simp_traj: list[torch.Tensor] | None = None
-
-    def full_views() -> list[torch.Tensor]:
-        nonlocal full_traj
-        if query_cache is not None:
-            return query_cache.get_full_traj(points, boundaries)
-        if full_traj is None:
-            full_traj = split_by_boundaries(points, boundaries)
-        return full_traj
-
-    def simplified_views() -> tuple[torch.Tensor, list[torch.Tensor], list[tuple[int, int]]]:
-        nonlocal simplified, simp_boundaries, simp_traj
-        if simplified is None or simp_boundaries is None or simp_traj is None:
-            simplified = points[retained_mask]
-            simp_boundaries = []
-            cursor = 0
-            for start, end in boundaries:
-                n = int(retained_mask[start:end].sum().item())
-                simp_boundaries.append((cursor, cursor + n))
-                cursor += n
-            simp_traj = split_by_boundaries(simplified, simp_boundaries)
-        return simplified, simp_traj, simp_boundaries
-
-    def full_result(query_index: int, query: dict) -> Any:
-        def build() -> Any:
-            return execute_typed_query(points, full_views(), query, boundaries)
-
-        if query_cache is not None:
-            return query_cache.get_full_result(query_index, build)
-        return build()
-
-    def support_mask(query_index: int, builder: Callable[[], torch.Tensor]) -> torch.Tensor:
-        if query_cache is not None:
-            return query_cache.get_support_mask(query_index, builder)
-        return builder()
-
-    answer_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
-    combined_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
-    for query_index, query in enumerate(typed_queries):
-        qtype = query["type"]
-        if qtype == "range":
-            range_mask = support_mask(query_index, lambda query=query: points_in_range_box(points, query["params"]))
-            point_f1 = _range_point_f1(retained_mask, range_mask)
-            answer_scores[qtype].append(point_f1)
-            combined_scores[qtype].append(point_f1)
-            continue
-
-        full_res = full_result(query_index, query)
-        simplified_now, simp_traj_now, simp_boundaries_now = simplified_views()
-        simp_res = execute_typed_query(simplified_now, simp_traj_now, query, simp_boundaries_now)
-        if qtype == "knn":
-            answer_f1 = f1_score(set(full_res), set(simp_res))
-            support = support_mask(
-                query_index,
-                lambda full_res=full_res, query=query: _knn_representative_mask(
-                    points,
-                    boundaries,
-                    set(full_res),
-                    query["params"],
-                ),
-            )
-            answer_scores[qtype].append(answer_f1)
-            combined_scores[qtype].append(answer_f1 * _point_subset_f1(retained_mask, support))
-        elif qtype == "similarity":
-            answer_f1 = f1_score(set(full_res), set(simp_res))
-            support = support_mask(
-                query_index,
-                lambda full_res=full_res, query=query: _similarity_support_mask(points, boundaries, set(full_res), query),
-            )
-            answer_scores[qtype].append(answer_f1)
-            combined_scores[qtype].append(answer_f1 * _point_subset_f1(retained_mask, support))
-        elif qtype == "clustering":
-            full_labels = cast(list[int], full_res)
-            simp_labels = cast(list[int], simp_res)
-            answer_f1 = clustering_f1(full_labels, simp_labels)
-            support = support_mask(
-                query_index,
-                lambda full_res=full_labels, query=query: _clustering_support_mask(
-                    points,
-                    boundaries,
-                    list(full_res),
-                    query["params"],
-                ),
-            )
-            answer_scores[qtype].append(answer_f1)
-            combined_scores[qtype].append(answer_f1 * _point_subset_f1(retained_mask, support))
-
-    per_type_answer = {name: (sum(v) / len(v) if v else 0.0) for name, v in answer_scores.items()}
-    per_type_combined = {name: (sum(v) / len(v) if v else 0.0) for name, v in combined_scores.items()}
     workload_weights = normalize_pure_workload_map(workload_map)
-    normalized_map = {name: workload_weights.get(name, 0.0) for name in per_type_answer}
-    aggregate_answer = sum(normalized_map[name] * per_type_answer[name] for name in per_type_answer)
-    aggregate_combined = sum(normalized_map[name] * per_type_combined[name] for name in per_type_combined)
-    return float(aggregate_answer), per_type_answer, float(aggregate_combined), per_type_combined
+    scores: list[float] = []
+    for query_index, query in enumerate(typed_queries):
+        qtype = str(query.get("type", "")).lower()
+        if qtype != "range":
+            raise ValueError(f"Only range queries are supported for evaluation; got query type: {qtype}")
+        if query_cache is not None:
+            range_mask = query_cache.get_support_mask(
+                query_index,
+                lambda query=query: points_in_range_box(points, query["params"]),
+            )
+        else:
+            range_mask = points_in_range_box(points, query["params"])
+        scores.append(_range_point_f1(retained_mask, range_mask))
+
+    range_score = _mean(scores)
+    aggregate = float(workload_weights["range"] * range_score)
+    per_type = {"range": range_score}
+    return aggregate, per_type, aggregate, dict(per_type)
 
 
 def _retained_point_gap_stats(
@@ -748,7 +577,7 @@ def evaluate_method(
         range_point = float(range_audit.get("range_point_f1", 0.0))
         aggregate = range_point
         aggregate_combined = range_point
-        per_type = {"range": range_point, "knn": 0.0, "similarity": 0.0, "clustering": 0.0}
+        per_type = {"range": range_point}
         per_type_combined = dict(per_type)
     else:
         aggregate, per_type, aggregate_combined, per_type_combined = score_retained_mask(

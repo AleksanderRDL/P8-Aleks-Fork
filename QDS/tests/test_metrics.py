@@ -13,7 +13,7 @@ from evaluation.evaluate_methods import (
     score_range_usefulness,
     score_retained_mask,
 )
-from evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
+from evaluation.metrics import MethodEvaluation, compute_length_preservation, f1_score
 from evaluation.query_cache import EvaluationQueryCache
 from evaluation.range_usefulness import range_usefulness_weight_summary
 from evaluation.tables import print_method_comparison_table, print_range_usefulness_table
@@ -79,19 +79,6 @@ def test_f1_score_one_empty() -> None:
 def test_f1_score_partial_overlap() -> None:
     # precision = 2/3, recall = 2/4, F1 = 4/7.
     assert f1_score({1, 2, 3, 4}, {2, 3, 5}) == pytest.approx(4.0 / 7.0)
-
-
-def test_clustering_f1_uses_co_membership_pairs() -> None:
-    labels_o = [0, 0, 1, 1, -1]
-    labels_s = [0, 0, 0, 1, -1]
-
-    # original pairs: {(0, 1), (2, 3)}; simplified pairs: {(0, 1), (0, 2), (1, 2)}
-    # precision = 1/3, recall = 1/2, F1 = 0.4.
-    assert clustering_f1(labels_o, labels_s) == pytest.approx(0.4)
-
-
-def test_clustering_f1_empty_pair_sets_agree() -> None:
-    assert clustering_f1([-1, -1], [-1, -1]) == pytest.approx(1.0)
 
 
 def test_evaluate_method_scores_noop_above_degenerate_baseline() -> None:
@@ -194,32 +181,28 @@ def test_score_retained_mask_cache_reuses_full_query_results(monkeypatch) -> Non
     boundaries = [(0, 2), (2, 4)]
     queries = [
         {
-            "type": "knn",
+            "type": "range",
             "params": {
-                "lat": 0.0,
-                "lon": 0.0,
-                "t_center": 0.5,
-                "t_half_window": 2.0,
-                "k": 1,
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 2.0,
             },
         }
     ]
-    original_execute = eval_methods.execute_typed_query
-    calls = {"full": 0, "simplified": 0}
+    original_points_in_range_box = eval_methods.points_in_range_box
+    calls = {"range_mask": 0}
 
-    def counting_execute(
+    def counting_points_in_range_box(
         query_points: torch.Tensor,
-        trajectories: list[torch.Tensor],
-        query: dict,
-        query_boundaries: list[tuple[int, int]] | None = None,
-    ):
-        if query_points.data_ptr() == points.data_ptr() and tuple(query_points.shape) == tuple(points.shape):
-            calls["full"] += 1
-        else:
-            calls["simplified"] += 1
-        return original_execute(query_points, trajectories, query, query_boundaries)
+        params: dict[str, float],
+    ) -> torch.Tensor:
+        calls["range_mask"] += 1
+        return original_points_in_range_box(query_points, params)
 
-    monkeypatch.setattr(eval_methods, "execute_typed_query", counting_execute)
+    monkeypatch.setattr(eval_methods, "points_in_range_box", counting_points_in_range_box)
     query_cache = EvaluationQueryCache.for_workload(points, boundaries, queries)
 
     for retained in (
@@ -231,11 +214,11 @@ def test_score_retained_mask_cache_reuses_full_query_results(monkeypatch) -> Non
             boundaries=boundaries,
             retained_mask=retained,
             typed_queries=queries,
-            workload_map={"knn": 1.0},
+            workload_map={"range": 1.0},
             query_cache=query_cache,
         )
 
-    assert calls == {"full": 1, "simplified": 2}
+    assert calls == {"range_mask": 1}
 
 
 def test_score_retained_mask_cache_rejects_different_workload() -> None:
@@ -278,48 +261,6 @@ def test_score_retained_mask_cache_rejects_different_workload() -> None:
             workload_map={"range": 1.0},
             query_cache=query_cache,
         )
-
-
-def test_knn_f1_penalizes_missing_representative_points() -> None:
-    points = torch.tensor(
-        [
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 0.0, 0.1, 1.0],
-            [2.0, 0.0, 0.2, 1.0],
-            [3.0, 0.0, 0.3, 1.0],
-            [0.0, 10.0, 10.0, 1.0],
-        ],
-        dtype=torch.float32,
-    )
-    boundaries = [(0, 4), (4, 5)]
-    queries = [
-        {
-            "type": "knn",
-            "params": {
-                "lat": 0.0,
-                "lon": 0.0,
-                "t_center": 1.5,
-                "t_half_window": 2.0,
-                "k": 1,
-            },
-        }
-    ]
-    retained = torch.tensor([True, False, False, False, True])
-
-    aggregate, per_type, agg_combined, per_type_combined = score_retained_mask(
-        points=points,
-        boundaries=boundaries,
-        retained_mask=retained,
-        typed_queries=queries,
-        workload_map={"knn": 1.0},
-    )
-
-    # Pure answer F1: trajectory 0 still found via point 0 (closest to anchor).
-    assert per_type["knn"] == pytest.approx(1.0)
-    assert aggregate == pytest.approx(1.0)
-    # Combined F1 still penalizes losing the kNN representative points.
-    assert per_type_combined["knn"] == pytest.approx(0.4)
-    assert agg_combined == pytest.approx(0.4)
 
 
 def test_uniform_temporal_is_evenly_spaced() -> None:

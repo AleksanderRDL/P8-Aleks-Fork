@@ -722,7 +722,6 @@ def test_training_accepts_precomputed_importance_labels() -> None:
         points=ds.get_all_points(),
         boundaries=boundaries,
         typed_queries=workload.typed_queries,
-        seed=820,
     )
 
     cfg = build_experiment_config(

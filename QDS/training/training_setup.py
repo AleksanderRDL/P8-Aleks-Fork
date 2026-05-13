@@ -17,12 +17,7 @@ def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -
     """Return normalized pure-workload weights in query-type ID order."""
     normalized = normalize_pure_workload_map(workload_map)
     values = torch.tensor(
-        [
-            float(normalized.get("range", 0.0)),
-            float(normalized.get("knn", 0.0)),
-            float(normalized.get("similarity", 0.0)),
-            float(normalized.get("clustering", 0.0)),
-        ],
+        [float(normalized.get("range", 0.0))],
         dtype=torch.float32,
         device=device,
     )
@@ -32,12 +27,7 @@ def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -
 def _query_frequency_workload_map(workload: TypedQueryWorkload) -> dict[str, float]:
     """Infer type weights from a workload when no explicit training workload map is provided."""
     counts = torch.bincount(workload.type_ids.detach().cpu(), minlength=NUM_QUERY_TYPES).float()
-    return {
-        "range": float(counts[0].item()),
-        "knn": float(counts[1].item()),
-        "similarity": float(counts[2].item()),
-        "clustering": float(counts[3].item()),
-    }
+    return {"range": float(counts[0].item())}
 
 
 def _single_active_type_id(type_weights: torch.Tensor) -> int:

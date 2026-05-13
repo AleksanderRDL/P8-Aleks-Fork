@@ -72,7 +72,6 @@ def ensure_range_runtime_labels(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
-            seed=seed,
             range_boundary_prior_weight=range_boundary_prior_weight,
             range_label_mode=range_label_mode,
         )
@@ -81,7 +80,6 @@ def ensure_range_runtime_labels(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
-            seed=seed,
             range_label_mode=range_label_mode,
             range_boundary_prior_weight=range_boundary_prior_weight,
         )
@@ -395,7 +393,6 @@ def prepare_range_label_cache(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
-            seed=seed,
             range_boundary_prior_weight=prior_weight,
             range_label_mode=range_label_mode,
         )
@@ -405,7 +402,6 @@ def prepare_range_label_cache(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
-            seed=seed,
             range_label_mode=range_label_mode,
             range_boundary_prior_weight=prior_weight,
         )

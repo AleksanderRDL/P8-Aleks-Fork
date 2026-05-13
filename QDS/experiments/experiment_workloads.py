@@ -62,13 +62,11 @@ def generate_experiment_workloads(
     eval_workload_map: dict[str, float],
 ) -> ExperimentWorkloads:
     """Generate train, eval, and optional checkpoint-selection query workloads."""
-    knn_front_load = int(train_workload_map.get("knn", 0.0) * config.query.n_queries)
     train_workload = generate_typed_query_workload_for_config(
         trajectories=train_traj,
         n_queries=config.query.n_queries,
         workload_map=train_workload_map,
         seed=seeds.train_query_seed,
-        front_load_knn=knn_front_load,
         config=config,
         points=train_points,
         boundaries=train_boundaries,
@@ -151,13 +149,10 @@ def _workload_keyword_to_map(keyword: str | None) -> dict[str, float] | None:
         return None
     k = keyword.strip().lower()
     if k in {"mixed", "local_mixed", "global_mixed"}:
-        raise ValueError(
-            f"workload='{k}' is no longer supported for model runs; use one pure type: "
-            "range, knn, similarity, or clustering."
-        )
-    if k in {"range", "knn", "similarity", "clustering"}:
+        raise ValueError(f"workload='{k}' is no longer supported; only range workloads are supported.")
+    if k == "range":
         return {k: 1.0}
-    return None
+    raise ValueError(f"workload='{k}' is no longer supported; only range workloads are supported.")
 
 
 def resolve_workload_maps(workload_keyword: str | None = None) -> tuple[dict[str, float], dict[str, float]]:

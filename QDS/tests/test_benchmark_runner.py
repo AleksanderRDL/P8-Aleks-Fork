@@ -113,19 +113,18 @@ def _profile_core_args() -> list[str]:
 
 
 def test_benchmark_name_list_rejects_mixed_workloads() -> None:
-    assert _parse_name_list("range,knn", allowed=PURE_WORKLOADS, arg_name="--workloads") == ["range", "knn"]
+    assert _parse_name_list("range", allowed=PURE_WORKLOADS, arg_name="--workloads") == ["range"]
     assert _parse_name_list(None, allowed=DEFAULT_WORKLOADS, arg_name="--workloads") == ["range"]
 
     with pytest.raises(ValueError, match="unknown"):
-        _parse_name_list("range,mixed", allowed=PURE_WORKLOADS, arg_name="--workloads")
+        _parse_name_list("range,legacy", allowed=PURE_WORKLOADS, arg_name="--workloads")
 
 
 def test_experiment_workload_resolution_is_pure_only() -> None:
     assert resolve_workload_maps("range") == ({"range": 1.0}, {"range": 1.0})
-    assert resolve_workload_maps("knn") == ({"knn": 1.0}, {"knn": 1.0})
 
     with pytest.raises(ValueError, match="no longer supported"):
-        resolve_workload_maps("mixed")
+        resolve_workload_maps("legacy")
 
 
 def test_profile_args_own_runtime_and_checkpoint_defaults() -> None:
@@ -524,7 +523,7 @@ def test_child_run_dir_uses_readable_layout(tmp_path) -> None:
     run_label = "custom_run"
 
     assert _child_run_dir(tmp_path, "range", run_label, 1) == tmp_path / "custom_run"
-    assert _child_run_dir(tmp_path, "knn", run_label, 2) == tmp_path / "knn" / "custom_run"
+    assert _child_run_dir(tmp_path, "range", run_label, 2) == tmp_path / "range" / "custom_run"
 
 
 def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> None:

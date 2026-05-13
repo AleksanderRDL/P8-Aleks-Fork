@@ -2,9 +2,8 @@
 
 Defines range query formats, workload generation, and query execution.
 
-Range is the active product/query surface. Historical kNN, similarity, and
-clustering code may still exist in the package until it is removed, but it is
-legacy and should not shape new training, evaluation, or benchmark design.
+Range is the active product/query surface. Non-range workloads are not part of
+the supported training, evaluation, or benchmark contract.
 
 ## Files
 

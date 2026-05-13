@@ -120,13 +120,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Random +/- fraction applied to range query spatial and temporal half-windows. 0.0 makes footprints fixed.",
     )
-    p.add_argument("--knn_k", type=int, default=12, help="Number of nearest trajectories in generated kNN queries.")
     p.add_argument(
         "--workload",
         type=str,
         default=None,
-        choices=["range", "knn", "similarity", "clustering"],
-        help="Pure eval workload type. Default: use pure workload saved in checkpoint; else range.",
+        choices=["range"],
+        help="Eval workload type. Default: use pure workload saved in checkpoint; else range.",
     )
     p.add_argument(
         "--compression_ratio",
@@ -214,11 +213,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_eval_workload(workload: str | None, checkpoint_workload: str | None) -> str:
-    if workload:
-        return workload
-    if checkpoint_workload:
-        return checkpoint_workload
-    return "range"
+    selected = workload or checkpoint_workload or "range"
+    if selected != "range":
+        raise ValueError(f"Only range inference workloads are supported; got {selected!r}.")
+    return selected
 
 
 def main() -> None:
@@ -326,7 +324,6 @@ def main() -> None:
         range_spatial_km=args.range_spatial_km,
         range_time_hours=args.range_time_hours,
         range_footprint_jitter=args.range_footprint_jitter,
-        knn_k=args.knn_k,
     )
     coverage_msg = ""
     if workload.coverage_fraction is not None:
@@ -363,7 +360,6 @@ def main() -> None:
             points=points,
             boundaries=boundaries,
             typed_queries=workload.typed_queries,
-            seed=int(args.seed),
             range_label_mode=str(getattr(saved_cfg.model, "range_label_mode", "usefulness")),
             range_boundary_prior_weight=float(getattr(saved_cfg.model, "range_boundary_prior_weight", 0.0)),
         )

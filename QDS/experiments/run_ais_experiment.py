@@ -142,7 +142,6 @@ def main() -> None:
         range_max_box_volume_fraction=args.range_max_box_volume_fraction,
         range_duplicate_iou_threshold=args.range_duplicate_iou_threshold,
         range_acceptance_max_attempts=args.range_acceptance_max_attempts,
-        knn_k=args.knn_k,
         epochs=args.epochs,
         lr=args.lr,
         ranking_pairs_per_type=args.ranking_pairs_per_type,
@@ -235,7 +234,7 @@ def main() -> None:
         f"range_max_box_volume_fraction={args.range_max_box_volume_fraction}  "
         f"range_duplicate_iou_threshold={args.range_duplicate_iou_threshold}  "
         f"range_acceptance_max_attempts={args.range_acceptance_max_attempts}  "
-        f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
+        f"mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"mlqds_hybrid_mode={args.mlqds_hybrid_mode}  "
         f"mlqds_score_mode={args.mlqds_score_mode}  "
         f"mlqds_score_temperature={args.mlqds_score_temperature}  "

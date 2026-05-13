@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Any
 
 import torch
 
-from experiments.experiment_config import ExperimentConfig
+from experiments.experiment_config import ExperimentConfig, QueryConfig
 from models.trajectory_qds_model import TrajectoryQDSModel
 from models.turn_aware_qds_model import TurnAwareQDSModel
 from training.scaler import FeatureScaler
@@ -22,6 +23,19 @@ class ModelArtifacts:
     config: ExperimentConfig
     epochs_trained: int = 0
     workload_type: str | None = None
+
+
+def _checkpoint_config_payload(raw_config: dict[str, Any]) -> dict[str, Any]:
+    """Return a loadable config payload from a persisted checkpoint."""
+    config = dict(raw_config)
+    allowed_query_keys = {field.name for field in fields(QueryConfig)}
+    query_config = dict(config.get("query") or {})
+    config["query"] = {
+        key: value
+        for key, value in query_config.items()
+        if key in allowed_query_keys
+    }
+    return config
 
 
 def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
@@ -45,7 +59,7 @@ def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
 def load_checkpoint(path: str) -> ModelArtifacts:
     """Load model weights, scaler stats, and config from checkpoint."""
     payload = torch.load(path, map_location="cpu")
-    cfg = ExperimentConfig.from_dict(payload["config"])
+    cfg = ExperimentConfig.from_dict(_checkpoint_config_payload(payload["config"]))
     model_cls = TurnAwareQDSModel if payload["model_type"] == "turn_aware" else TrajectoryQDSModel
     model = model_cls(
         point_dim=int(payload["point_dim"]),

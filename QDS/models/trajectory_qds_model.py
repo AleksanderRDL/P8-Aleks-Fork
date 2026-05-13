@@ -51,6 +51,8 @@ class TrajectoryQDSModel(nn.Module):
         # The project trains one pure workload per model. Query type still
         # conditions the query embedding, but prediction uses one shared score
         # head instead of per-type output heads.
+        # Keep the historical embedding row count so existing range checkpoints
+        # still load. Current workloads only emit type ID 0.
         self.type_embedding = nn.Embedding(4, type_embed_dim)
         self.query_encoder = nn.Sequential(
             nn.Linear(query_dim + type_embed_dim, embed_dim),

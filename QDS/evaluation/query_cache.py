@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
-
-from data.trajectory_index import split_by_boundaries as split_points_by_boundaries
 
 
 @dataclass(frozen=True)
@@ -47,11 +44,6 @@ class RangeSegmentAuditGeometry:
     lon_max_cpu: torch.Tensor
 
 
-def split_by_boundaries(points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
-    """Split flattened points into trajectory list by boundaries."""
-    return split_points_by_boundaries(points, boundaries)
-
-
 def _points_cache_token(points: torch.Tensor) -> tuple[int, int, tuple[int, ...], str, str]:
     """Return an identity token for caller-owned evaluation caches."""
     data_ptr = int(points.data_ptr()) if points.numel() > 0 else 0
@@ -70,8 +62,6 @@ class EvaluationQueryCache:
     points_token: tuple[int, int, tuple[int, ...], str, str]
     boundaries_key: tuple[tuple[int, int], ...]
     queries_token: tuple[int, int, tuple[int, ...]]
-    full_traj: list[torch.Tensor] | None = None
-    full_results: dict[int, Any] = field(default_factory=dict)
     support_masks: dict[int, torch.Tensor] = field(default_factory=dict)
     range_audit_supports: dict[int, RangeQueryAuditSupport] = field(default_factory=dict)
     range_segment_geometry: RangeSegmentAuditGeometry | None = None
@@ -103,18 +93,6 @@ class EvaluationQueryCache:
             or self.queries_token != _queries_cache_token(typed_queries)
         ):
             raise ValueError("EvaluationQueryCache was built for different points, boundaries, or typed queries.")
-
-    def get_full_traj(self, points: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[torch.Tensor]:
-        """Return split full-data trajectories, building them once per cache."""
-        if self.full_traj is None:
-            self.full_traj = split_by_boundaries(points, boundaries)
-        return self.full_traj
-
-    def get_full_result(self, query_index: int, builder: Callable[[], Any]) -> Any:
-        """Return a cached full-data query answer."""
-        if query_index not in self.full_results:
-            self.full_results[query_index] = builder()
-        return self.full_results[query_index]
 
     def get_support_mask(self, query_index: int, builder: Callable[[], torch.Tensor]) -> torch.Tensor:
         """Return a cached full-data support mask."""

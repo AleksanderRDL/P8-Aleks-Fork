@@ -301,69 +301,21 @@ def test_query_generation_accepts_percent_coverage() -> None:
     assert 10 <= len(workload.typed_queries) <= 250
 
 
-def test_range_and_knn_generation_biases_dense_regions() -> None:
-    """Assert range/kNN anchors are mostly drawn from dense spatial cells."""
+def test_range_generation_biases_dense_regions() -> None:
+    """Assert range anchors are mostly drawn from dense spatial cells."""
     trajectories = _density_test_trajectories()
 
-    range_workload = generate_typed_query_workload(
+    workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=80,
         workload_map={"range": 1.0},
         seed=101,
     )
-    range_dense = 0
-    for query in range_workload.typed_queries:
+    dense = 0
+    for query in workload.typed_queries:
         params = query["params"]
         lat_center = 0.5 * (float(params["lat_min"]) + float(params["lat_max"]))
         lon_center = 0.5 * (float(params["lon_min"]) + float(params["lon_max"]))
-        range_dense += int(_near_dense_region(lat_center, lon_center))
+        dense += int(_near_dense_region(lat_center, lon_center))
 
-    knn_workload = generate_typed_query_workload(
-        trajectories=trajectories,
-        n_queries=80,
-        workload_map={"knn": 1.0},
-        seed=202,
-    )
-    knn_dense = sum(
-        int(_near_dense_region(query["params"]["lat"], query["params"]["lon"]))
-        for query in knn_workload.typed_queries
-    )
-
-    assert range_dense / len(range_workload.typed_queries) >= 0.70
-    assert knn_dense / len(knn_workload.typed_queries) >= 0.70
-
-
-def test_knn_generation_uses_configured_k() -> None:
-    trajectories = _density_test_trajectories()
-
-    workload = generate_typed_query_workload(
-        trajectories=trajectories,
-        n_queries=12,
-        workload_map={"knn": 1.0},
-        seed=404,
-        knn_k=12,
-    )
-
-    assert {int(query["params"]["k"]) for query in workload.typed_queries} == {12}
-
-
-def test_coverage_generation_uses_density_biased_knn_anchors() -> None:
-    """Assert dynamic coverage mode still applies the dense-region anchor sampler."""
-    trajectories = _density_test_trajectories()
-
-    workload = generate_typed_query_workload(
-        trajectories=trajectories,
-        n_queries=10,
-        workload_map={"knn": 1.0},
-        seed=303,
-        target_coverage=0.80,
-        max_queries=120,
-    )
-    dense = sum(
-        int(_near_dense_region(query["params"]["lat"], query["params"]["lon"]))
-        for query in workload.typed_queries
-    )
-
-    assert workload.coverage_fraction is not None
-    assert 10 <= len(workload.typed_queries) <= 120
     assert dense / len(workload.typed_queries) >= 0.70

@@ -39,9 +39,8 @@ def validation_score_selection_score(validation_score: float, pred_std: float) -
 
 def _normalized_workload_map(workload_map: dict[str, float]) -> dict[str, float]:
     """Normalize a pure workload map into the fixed query-type key set."""
-    names = ["range", "knn", "similarity", "clustering"]
     normalized = normalize_pure_workload_map(workload_map)
-    return {name: float(normalized.get(name, 0.0)) for name in names}
+    return {"range": float(normalized.get("range", 0.0))}
 
 
 def uniform_type_deficit(
@@ -131,10 +130,7 @@ def selection_from_stats(
         and validation_uniform_result is not None
     ):
         uniform_score, uniform_per_type_score = validation_uniform_result
-        per_type_score = {
-            name: stats.get(f"val_selection_score_{name}", 0.0)
-            for name in ["range", "knn", "similarity", "clustering"]
-        }
+        per_type_score = {"range": stats.get("val_selection_score_range", 0.0)}
         return uniform_gap_selection_score(
             validation_score=stats["val_selection_score"],
             per_type_score=per_type_score,

@@ -60,7 +60,6 @@ def _workload_cache_payload(
     n_queries: int,
     workload_map: dict[str, float],
     seed: int,
-    front_load_knn: int,
     config: ExperimentConfig,
 ) -> dict[str, Any]:
     """Build the canonical workload-cache key payload."""
@@ -73,7 +72,6 @@ def _workload_cache_payload(
         ).hexdigest(),
         "n_queries": int(n_queries),
         "seed": int(seed),
-        "front_load_knn": int(front_load_knn),
         "workload_map": {key: float(workload_map[key]) for key in sorted(workload_map)},
         "target_coverage": query_config.target_coverage,
         "max_queries": query_config.max_queries,
@@ -82,7 +80,6 @@ def _workload_cache_payload(
         "range_spatial_km": query_config.range_spatial_km,
         "range_time_hours": query_config.range_time_hours,
         "range_footprint_jitter": query_config.range_footprint_jitter,
-        "knn_k": query_config.knn_k,
         "range_min_point_hits": query_config.range_min_point_hits,
         "range_max_point_hit_fraction": query_config.range_max_point_hit_fraction,
         "range_min_trajectory_hits": query_config.range_min_trajectory_hits,
@@ -124,7 +121,6 @@ def generate_typed_query_workload_for_config(
     workload_map: dict[str, float],
     seed: int,
     config: ExperimentConfig,
-    front_load_knn: int = 0,
     points: torch.Tensor | None = None,
     boundaries: list[tuple[int, int]] | None = None,
     cache_label: str | None = None,
@@ -143,7 +139,6 @@ def generate_typed_query_workload_for_config(
             n_queries=n_queries,
             workload_map=workload_map,
             seed=seed,
-            front_load_knn=front_load_knn,
             config=config,
         )
         cache_key = _workload_cache_key(payload)
@@ -170,8 +165,6 @@ def generate_typed_query_workload_for_config(
         range_spatial_km=query_config.range_spatial_km,
         range_time_hours=query_config.range_time_hours,
         range_footprint_jitter=query_config.range_footprint_jitter,
-        knn_k=query_config.knn_k,
-        front_load_knn=front_load_knn,
         range_min_point_hits=query_config.range_min_point_hits,
         range_max_point_hit_fraction=query_config.range_max_point_hit_fraction,
         range_min_trajectory_hits=query_config.range_min_trajectory_hits,

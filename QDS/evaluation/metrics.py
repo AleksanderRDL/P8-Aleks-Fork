@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import combinations
-from typing import AbstractSet, Any, Hashable, Iterable, Mapping, Sequence
+from typing import AbstractSet, Any, Hashable
 
 import torch
 
@@ -28,40 +27,6 @@ def f1_score(r_o: AbstractSet[Hashable], r_s: AbstractSet[Hashable]) -> float:
     if denom <= 0.0:
         return 0.0
     return float(2.0 * precision * recall / denom)
-
-
-def _label_items(labels: Mapping[int, int] | Sequence[int] | torch.Tensor) -> Iterable[tuple[int, int]]:
-    """Yield stable trajectory ID and cluster label pairs."""
-    if isinstance(labels, Mapping):
-        for traj_id, label in labels.items():
-            yield int(traj_id), int(label)
-        return
-    values = labels.tolist() if isinstance(labels, torch.Tensor) else labels
-    for traj_id, label in enumerate(values):
-        yield int(traj_id), int(label)
-
-
-def _co_membership_pairs(labels: Mapping[int, int] | Sequence[int] | torch.Tensor) -> set[tuple[int, int]]:
-    """Build unordered same-cluster trajectory-pair set, excluding noise label -1."""
-    clusters: dict[int, list[int]] = {}
-    for traj_id, label in _label_items(labels):
-        if label == -1:
-            continue
-        clusters.setdefault(label, []).append(traj_id)
-
-    pairs: set[tuple[int, int]] = set()
-    for members in clusters.values():
-        for i, j in combinations(sorted(members), 2):
-            pairs.add((i, j))
-    return pairs
-
-
-def clustering_f1(
-    labels_o: Mapping[int, int] | Sequence[int] | torch.Tensor,
-    labels_s: Mapping[int, int] | Sequence[int] | torch.Tensor,
-) -> float:
-    """Compute F1 over clustering co-membership pair sets."""
-    return f1_score(_co_membership_pairs(labels_o), _co_membership_pairs(labels_s))
 
 
 @dataclass

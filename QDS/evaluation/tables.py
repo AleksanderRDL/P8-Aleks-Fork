@@ -56,7 +56,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
     lines.append(header)
     lines.append("-" * len(header))
 
-    type_rows: tuple[str, ...] = () if range_focused else ("range", "knn", "similarity", "clustering")
+    type_rows: tuple[str, ...] = () if range_focused else ("range",)
     for name, metrics in results.items():
         primary = _range_point_metric(metrics) if range_focused else float(metrics.aggregate_f1)
         secondary = _range_usefulness_metric(metrics) if range_focused else float(metrics.aggregate_combined_f1)

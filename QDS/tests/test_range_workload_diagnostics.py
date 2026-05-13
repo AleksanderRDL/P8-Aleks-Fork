@@ -204,7 +204,7 @@ def test_range_label_diagnostics_reports_positive_fraction() -> None:
     points, boundaries = _points_and_boundaries()
     queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 1.5)]
 
-    labels, labelled_mask = compute_typed_importance_labels(points, boundaries, queries, seed=1)
+    labels, labelled_mask = compute_typed_importance_labels(points, boundaries, queries)
     diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
 
     assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
@@ -222,7 +222,6 @@ def test_range_label_diagnostics_reports_component_mass() -> None:
         points,
         boundaries,
         queries,
-        seed=1,
     )
     diagnostics = compute_range_label_diagnostics(labels, labelled_mask, component_labels)
     fractions = diagnostics["component_positive_label_mass_fraction"]

@@ -78,7 +78,6 @@ def train_model(
             points=all_points,
             boundaries=train_boundaries,
             typed_queries=workload.typed_queries,
-            seed=seed,
             range_label_mode=str(getattr(model_config, "range_label_mode", "usefulness")),
             range_boundary_prior_weight=float(getattr(model_config, "range_boundary_prior_weight", 0.0)),
         )
@@ -291,10 +290,7 @@ def train_model(
         uniform_score, uniform_per_type = validation_uniform_result
         print(
             f"  [{run_tag}] validation uniform_score={uniform_score:.6f}  "
-            f"range={uniform_per_type.get('range', 0.0):.6f}  "
-            f"knn={uniform_per_type.get('knn', 0.0):.6f}  "
-            f"similarity={uniform_per_type.get('similarity', 0.0):.6f}  "
-            f"clustering={uniform_per_type.get('clustering', 0.0):.6f}",
+            f"range={uniform_per_type.get('range', 0.0):.6f}",
             flush=True,
         )
 
@@ -700,10 +696,7 @@ def train_model(
                 print(
                     f"    [{run_tag}] val_vs_uniform aggregate={stats['val_selection_uniform_gap']:+.6f}  "
                     f"type_deficit={stats['val_selection_type_deficit']:.6f}  "
-                    f"range={stats.get('val_selection_score_gap_range', 0.0):+.6f}  "
-                    f"knn={stats.get('val_selection_score_gap_knn', 0.0):+.6f}  "
-                    f"similarity={stats.get('val_selection_score_gap_similarity', 0.0):+.6f}  "
-                    f"clustering={stats.get('val_selection_score_gap_clustering', 0.0):+.6f}",
+                    f"range={stats.get('val_selection_score_gap_range', 0.0):+.6f}",
                     flush=True,
                 )
             diag_parts = []
