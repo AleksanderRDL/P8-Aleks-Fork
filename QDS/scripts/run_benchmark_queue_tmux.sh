@@ -3,9 +3,9 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run_benchmark_queue_tmux.sh [launcher options] [benchmark_matrix args...]
+Usage: scripts/run_benchmark_queue_tmux.sh [launcher options] [benchmark_runner args...]
 
-Launch a sequential benchmark_matrix queue in tmux with a second pane logging
+Launch a sequential benchmark_runner queue in tmux with a second pane logging
 lightweight system/GPU telemetry. Use this for multi-seed batches where runs
 must not compete for the same GPU/CPU/RAM.
 
@@ -16,14 +16,14 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_matrix profile. Default: range_testing_baseline.
-  WORKLOADS                    benchmark_matrix --workloads value. Default: range.
+  PROFILE                      benchmark_runner profile. Default: range_testing_baseline.
+  WORKLOADS                    benchmark_runner --workloads value. Default: range.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
                                artifacts/benchmarks/range_testing_baseline.
   SEEDS                        Comma-separated seeds for default plan. Default: 42,43,44.
-  CHILD_EXTRA_ARGS             String passed as benchmark_matrix --extra_args for
+  CHILD_EXTRA_ARGS             String passed as benchmark_runner --extra_args for
                                every default-plan run. Example:
                                "--ranking_top_quantile 0.70".
   PLAN_FILE                    Optional tab-separated plan file with rows:
@@ -42,7 +42,7 @@ Environment overrides:
                                Default: 0.
   ATTACH                       Attach to tmux after start. Default: 1.
 
-Any remaining arguments are appended to every benchmark_matrix command.
+Any remaining arguments are appended to every benchmark_runner command.
 EOF
 }
 
@@ -90,7 +90,7 @@ CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-0}"
 SESSION="${SESSION:-qds-benchmark-queue}"
 ATTACH="${ATTACH:-1}"
 
-extra_matrix_args=()
+extra_benchmark_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --session)
@@ -106,7 +106,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      extra_matrix_args+=("$1")
+      extra_benchmark_args+=("$1")
       shift
       ;;
   esac
@@ -211,10 +211,10 @@ PY
   printf 'MAX_SEGMENTS=%q\n' "$MAX_SEGMENTS"
   printf 'MAX_TRAJECTORIES=%q\n' "$MAX_TRAJECTORIES"
   printf 'CONTINUE_ON_FAILURE=%q\n' "$CONTINUE_ON_FAILURE"
-  if [[ "${#extra_matrix_args[@]}" -gt 0 ]]; then
-    printf 'EXTRA_MATRIX_ARGS=(%s)\n' "$(join_shell "${extra_matrix_args[@]}")"
+  if [[ "${#extra_benchmark_args[@]}" -gt 0 ]]; then
+    printf 'EXTRA_BENCHMARK_ARGS=(%s)\n' "$(join_shell "${extra_benchmark_args[@]}")"
   else
-    printf 'EXTRA_MATRIX_ARGS=()\n'
+    printf 'EXTRA_BENCHMARK_ARGS=()\n'
   fi
   cat <<'RUNNER'
 cd "$QDS_ROOT"
@@ -254,7 +254,7 @@ run_one() {
 
   local cmd=(
     "$PYTHON"
-    -m src.experiments.benchmark_matrix
+    -m src.experiments.benchmark_runner
     --profile "$PROFILE"
     --workloads "$WORKLOADS"
     --csv_path "$CSV_PATH"
@@ -276,8 +276,8 @@ run_one() {
   if [[ -n "$child_extra_args" ]]; then
     cmd+=(--extra_args "$child_extra_args")
   fi
-  if [[ "${#EXTRA_MATRIX_ARGS[@]}" -gt 0 ]]; then
-    cmd+=("${EXTRA_MATRIX_ARGS[@]}")
+  if [[ "${#EXTRA_BENCHMARK_ARGS[@]}" -gt 0 ]]; then
+    cmd+=("${EXTRA_BENCHMARK_ARGS[@]}")
   fi
 
   printf '[queue] command:' | tee -a "$CONSOLE_LOG"

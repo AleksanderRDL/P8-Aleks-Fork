@@ -1,4 +1,4 @@
-"""Tests for range benchmark matrix helpers."""
+"""Tests for range benchmark run helpers."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ import sys
 
 import pytest
 
-from src.experiments.benchmark_matrix import (
+from src.experiments.benchmark_runner import (
     DEFAULT_WORKLOADS,
     DEFAULT_PROFILE,
-    MatrixDataSources,
+    BenchmarkDataSources,
     PURE_WORKLOADS,
     _child_run_dir,
-    _format_markdown_table,
+    _format_report_table,
     _index_entry,
     _parse_name_list,
     _profile_args,
@@ -104,7 +104,7 @@ def _profile_core_args() -> list[str]:
     ]
 
 
-def test_matrix_name_list_rejects_mixed_workloads() -> None:
+def test_benchmark_name_list_rejects_mixed_workloads() -> None:
     assert _parse_name_list("range,knn", allowed=PURE_WORKLOADS, arg_name="--workloads") == ["range", "knn"]
     assert _parse_name_list(None, allowed=DEFAULT_WORKLOADS, arg_name="--workloads") == ["range"]
 
@@ -128,14 +128,14 @@ def test_profile_args_own_runtime_and_checkpoint_defaults() -> None:
     assert args[args.index("--amp_mode") + 1] == "bf16"
 
 
-def test_matrix_environment_metadata_is_scoped_to_parent_process() -> None:
+def test_benchmark_environment_metadata_is_scoped_to_parent_process() -> None:
     environment = _runner_environment_metadata()
 
-    assert environment["scope"] == "benchmark_matrix_parent_process"
+    assert environment["scope"] == "benchmark_runner_parent_process"
     assert "rows[*].child_torch_runtime" in environment["note"]
 
 
-def test_matrix_row_records_effective_child_torch_runtime(tmp_path) -> None:
+def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     run_json = {
         "config": {
             "model": {
@@ -329,7 +329,7 @@ def test_profile_args_use_csv_when_provided() -> None:
         train_csv_path=None,
         validation_csv_path=None,
         eval_csv_path=None,
-        cache_dir="artifacts/cache/matrix",
+        cache_dir="artifacts/cache/benchmark",
         refresh_cache=True,
         min_points_per_segment=4,
         max_points_per_segment=128,
@@ -337,7 +337,7 @@ def test_profile_args_use_csv_when_provided() -> None:
         max_segments=16,
         max_trajectories=8,
     )
-    data_sources = MatrixDataSources(csv_path="../AISDATA/cleaned/day.csv")
+    data_sources = BenchmarkDataSources(csv_path="../AISDATA/cleaned/day.csv")
 
     assert _profile_args(DEFAULT_PROFILE, args, data_sources) == [
         "--csv_path",
@@ -354,7 +354,7 @@ def test_profile_args_use_csv_when_provided() -> None:
         "--max_trajectories",
         "8",
         "--cache_dir",
-        "artifacts/cache/matrix",
+        "artifacts/cache/benchmark",
         "--refresh_cache",
     ]
 
@@ -365,7 +365,7 @@ def test_profile_args_use_three_day_train_validation_eval_sources() -> None:
         train_csv_path="../AISDATA/cleaned/day1.csv",
         validation_csv_path="../AISDATA/cleaned/day2.csv",
         eval_csv_path="../AISDATA/cleaned/day3.csv",
-        cache_dir="artifacts/cache/matrix",
+        cache_dir="artifacts/cache/benchmark",
         refresh_cache=True,
         min_points_per_segment=4,
         max_points_per_segment=None,
@@ -373,7 +373,7 @@ def test_profile_args_use_three_day_train_validation_eval_sources() -> None:
         max_segments=None,
         max_trajectories=None,
     )
-    data_sources = MatrixDataSources(
+    data_sources = BenchmarkDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
         validation_csv_path="../AISDATA/cleaned/day2.csv",
         eval_csv_path="../AISDATA/cleaned/day3.csv",
@@ -392,7 +392,7 @@ def test_profile_args_use_three_day_train_validation_eval_sources() -> None:
         "--max_time_gap_seconds",
         "3600.0",
         "--cache_dir",
-        "artifacts/cache/matrix",
+        "artifacts/cache/benchmark",
     ]
 
 
@@ -402,7 +402,7 @@ def test_testing_baseline_profile_uses_requested_training_shape() -> None:
         train_csv_path="../AISDATA/cleaned/day1.csv",
         validation_csv_path="../AISDATA/cleaned/day2.csv",
         eval_csv_path="../AISDATA/cleaned/day3.csv",
-        cache_dir="artifacts/cache/matrix",
+        cache_dir="artifacts/cache/benchmark",
         refresh_cache=False,
         min_points_per_segment=4,
         max_points_per_segment=None,
@@ -410,7 +410,7 @@ def test_testing_baseline_profile_uses_requested_training_shape() -> None:
         max_segments=None,
         max_trajectories=None,
     )
-    data_sources = MatrixDataSources(
+    data_sources = BenchmarkDataSources(
         train_csv_path="../AISDATA/cleaned/day1.csv",
         validation_csv_path="../AISDATA/cleaned/day2.csv",
         eval_csv_path="../AISDATA/cleaned/day3.csv",
@@ -459,7 +459,7 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
         max_trajectories=None,
     )
     run_label = "custom_run"
-    sources = MatrixDataSources(train_csv_path="day1.csv", validation_csv_path="day2.csv", eval_csv_path="day3.csv")
+    sources = BenchmarkDataSources(train_csv_path="day1.csv", validation_csv_path="day2.csv", eval_csv_path="day3.csv")
     git = {"commit": "abc123", "dirty": False}
     running_status = {
         "status": "running",
@@ -554,8 +554,8 @@ def test_resolve_data_sources_rejects_duplicate_explicit_splits(tmp_path) -> Non
         _resolve_data_sources(args)
 
 
-def test_matrix_markdown_table_is_compact() -> None:
-    table = _format_markdown_table(
+def test_benchmark_markdown_table_is_compact() -> None:
+    table = _format_report_table(
         [
             {
                 "workload": "range",
@@ -638,7 +638,7 @@ def test_mark_benchmark_failed_updates_stale_running_status_and_family_index(tmp
                 "finished_at_utc": None,
                 "exit_status": None,
                 "failures": None,
-                "message": "benchmark matrix started",
+                "message": "benchmark run started",
                 "results_dir": str(results_dir),
             }
         ),

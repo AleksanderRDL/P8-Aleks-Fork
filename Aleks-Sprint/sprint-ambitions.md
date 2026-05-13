@@ -74,9 +74,8 @@ Several important improvements are already present:
   optional validation F1 checkpoint selection, uniform-gap checkpoint selection,
   and optional rolling checkpoint-score smoothing.
 - MLQDS can use a temporal base plus learned score fill through `mlqds_temporal_fraction`.
-- MLQDS now rank-normalizes each query-type head within each trajectory before
-  workload mixing, so mixed workloads are less sensitive to uncalibrated head
-  magnitudes.
+- MLQDS now uses explicit pure-workload scoring paths, avoiding hidden mixed
+  workload head calibration effects in the current range-focused baseline.
 - Result reporting now distinguishes query F1 from shape preservation through
   SED/PED, `LengthPres`, `F1xLen`, and explicit MLQDS gaps versus the main
   baselines.
@@ -344,7 +343,7 @@ The query generator is a critical part of the training pipeline. For the four-sp
 The current generator already has useful behavior:
 
 - supports all four query types
-- normalizes workload mixes
+- normalizes workload maps before pure workload execution
 - produces padded query feature tensors and type IDs
 - uses density-biased anchor sampling for range and kNN
 - keeps `n_queries` as a minimum when coverage mode is enabled
@@ -772,11 +771,12 @@ The existing layer already has important foundations:
 
 This is enough to reveal whether a run is promising or failing. It is not enough to claim that MLQDS beats typical algorithms across range, kNN, similarity, and clustering workloads.
 
-### Benchmark Matrix
+### Benchmark Grid
 
-The current experiment pipeline runs one model with one train workload mix and one eval workload mix.
+The current experiment pipeline runs one model with one pure train workload type
+and one pure eval workload type.
 
-For the sprint ambition, the core benchmark should be:
+For the sprint ambition, the core benchmark should be a specialist grid:
 
 ```text
 Train model       Eval: range   Eval: kNN   Eval: similarity   Eval: clustering
@@ -859,8 +859,8 @@ These are acceptable for small experiments, but larger 10-day and 30-day benchma
 Priority work:
 
 1. Add a four-specialist benchmark runner.
-2. Add a true train-model by eval-workload matrix.
-3. Evaluate all baselines in every matrix cell.
+2. Add a true train-model by eval-workload grid.
+3. Evaluate all baselines in every grid cell.
 4. Validate the true recursive Douglas-Peucker baseline on larger AIS runs.
 5. Document Oracle as a label Oracle.
 6. Add multi-seed aggregation with mean and standard deviation.

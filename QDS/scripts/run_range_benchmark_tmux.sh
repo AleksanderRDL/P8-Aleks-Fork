@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run_range_benchmark_tmux.sh [launcher options] [benchmark_matrix args...]
+Usage: scripts/run_range_benchmark_tmux.sh [launcher options] [benchmark_runner args...]
 
 Launch the range testing-baseline benchmark in tmux with a second pane logging
 lightweight system/GPU telemetry.
@@ -15,7 +15,7 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_matrix profile. Default: range_testing_baseline.
+  PROFILE                      benchmark_runner profile. Default: range_testing_baseline.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
@@ -29,7 +29,7 @@ Environment overrides:
   MONITOR_INTERVAL             Monitor sample interval in seconds. Default: 10.
   ATTACH                       Attach to tmux after start. Default: 1.
 
-Any remaining arguments are appended to the benchmark_matrix command.
+Any remaining arguments are appended to the benchmark_runner command.
 EOF
 }
 
@@ -118,7 +118,7 @@ rm -f "$(display_path "$monitor_log")" "$(display_path "$status_file")" "$(displ
 
 benchmark_cmd=(
   "$PYTHON"
-  -m src.experiments.benchmark_matrix
+  -m src.experiments.benchmark_runner
   --profile "$PROFILE"
   --workloads range
   --csv_path "$CSV_PATH"

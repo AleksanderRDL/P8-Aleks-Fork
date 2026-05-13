@@ -125,4 +125,4 @@ linked above.
 Experiment and benchmark outputs should stay under `artifacts/` unless there is
 a specific reason to use another local path. Start with
 [`artifacts/README.md`](artifacts/README.md), then the run-local `README.md`,
-`artifact_index.json`, or `benchmark_matrix.md`.
+`artifact_index.json`, or `benchmark_report.md`.

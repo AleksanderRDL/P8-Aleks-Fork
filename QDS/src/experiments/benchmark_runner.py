@@ -1,4 +1,4 @@
-"""Run range-focused benchmark matrices for AIS-QDS configuration tuning."""
+"""Run range-focused AIS-QDS benchmark profiles and write comparison reports."""
 
 from __future__ import annotations
 
@@ -43,8 +43,8 @@ DEFAULT_BASELINE_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE, include_
 
 
 @dataclass(frozen=True)
-class MatrixDataSources:
-    """Resolved CSV inputs for a benchmark matrix run."""
+class BenchmarkDataSources:
+    """Resolved CSV inputs for a benchmark run."""
 
     csv_path: str | None = None
     train_csv_path: str | None = None
@@ -64,7 +64,7 @@ class MatrixDataSources:
 
 
 @dataclass
-class MatrixChildResult:
+class BenchmarkChildResult:
     """Completed child process result with retained stdout tail, timings, and elapsed time."""
 
     returncode: int
@@ -102,7 +102,7 @@ def _append_stdout_tail(tail_chunks: deque[str], tail_chars: int, line: str, max
 
 
 def _append_timing_line(timings: dict[str, list[dict[str, Any]]], line: str) -> None:
-    """Parse one child stdout line into the matrix timing accumulator."""
+    """Parse one child stdout line into the benchmark timing accumulator."""
     phase_match = PHASE_DONE_RE.search(line)
     if phase_match:
         timings["phase_timings"].append(
@@ -140,7 +140,7 @@ def _run_capture_streaming(
     stdout_path: Path,
     *,
     max_stdout_chars: int = DEFAULT_CHILD_STDOUT_TAIL_CHARS,
-) -> MatrixChildResult:
+) -> BenchmarkChildResult:
     """Run a child command while streaming stdout to console and a log file."""
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -182,7 +182,7 @@ def _run_capture_streaming(
                 proc.wait()
         raise
     elapsed = time.perf_counter() - started
-    return MatrixChildResult(
+    return BenchmarkChildResult(
         returncode=returncode,
         stdout="".join(tail_chunks),
         stdout_truncated=stdout_truncated,
@@ -208,9 +208,9 @@ def _parse_name_list(raw: str | None, *, allowed: tuple[str, ...] | set[str], ar
 def _runner_environment_metadata() -> dict[str, Any]:
     """Return parent-process environment metadata with explicit runtime scope."""
     environment = _environment_metadata("off")
-    environment["scope"] = "benchmark_matrix_parent_process"
+    environment["scope"] = "benchmark_runner_parent_process"
     environment["note"] = (
-        "Torch precision fields in this block describe the benchmark_matrix parent process. "
+        "Torch precision fields in this block describe the benchmark runner parent process. "
         "Each child run applies the selected benchmark profile plus any --extra_args "
         "overrides; effective child runtime settings are recorded in "
         "rows[*].child_torch_runtime and in each child example_run.json."
@@ -247,8 +247,8 @@ def _assert_distinct_csv_sources(named_paths: dict[str, str | None]) -> None:
         seen[resolved] = label
 
 
-def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
-    """Resolve matrix CSV inputs, using three cleaned days for directory inputs."""
+def _resolve_data_sources(args: argparse.Namespace) -> BenchmarkDataSources:
+    """Resolve benchmark CSV inputs, using three cleaned days for directory inputs."""
     has_explicit_sources = bool(args.train_csv_path or args.validation_csv_path or args.eval_csv_path)
     if has_explicit_sources:
         if not args.train_csv_path or not args.eval_csv_path:
@@ -271,7 +271,7 @@ def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
             }
         )
         selected = (train_path, validation_path, eval_path) if validation_path else (train_path, eval_path)
-        return MatrixDataSources(
+        return BenchmarkDataSources(
             train_csv_path=train_path,
             validation_csv_path=validation_path,
             eval_csv_path=eval_path,
@@ -279,7 +279,7 @@ def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
         )
 
     if not args.csv_path:
-        return MatrixDataSources()
+        return BenchmarkDataSources()
 
     source_path = Path(args.csv_path)
     files = _cleaned_csv_files(args.csv_path)
@@ -288,27 +288,27 @@ def _resolve_data_sources(args: argparse.Namespace) -> MatrixDataSources:
             raise ValueError(f"Expected at least {MIN_REALISTIC_CSV_DAYS} cleaned CSV files in {args.csv_path}.")
         selected = tuple(str(path) for path in files[:MIN_REALISTIC_CSV_DAYS])
         _assert_distinct_csv_sources({"train": selected[0], "validation": selected[1], "eval": selected[2]})
-        return MatrixDataSources(
+        return BenchmarkDataSources(
             train_csv_path=selected[0],
             validation_csv_path=selected[1],
             eval_csv_path=selected[2],
             selected_cleaned_csv_files=selected,
         )
     if len(files) == 1:
-        return MatrixDataSources(csv_path=str(files[0]), selected_cleaned_csv_files=(str(files[0]),))
+        return BenchmarkDataSources(csv_path=str(files[0]), selected_cleaned_csv_files=(str(files[0]),))
     raise ValueError(f"Expected a cleaned CSV file or directory: {args.csv_path}")
 
 
 def _profile_args(
     profile: str,
     args: argparse.Namespace,
-    data_sources: MatrixDataSources | None = None,
+    data_sources: BenchmarkDataSources | None = None,
     *,
     include_refresh_cache: bool = True,
 ) -> list[str]:
-    """Return effective child CLI arguments for a matrix profile."""
+    """Return effective child CLI arguments for a benchmark profile."""
     if profile != DEFAULT_PROFILE:
-        raise ValueError(f"Unknown matrix profile: {profile}")
+        raise ValueError(f"Unknown benchmark profile: {profile}")
 
     data_sources = data_sources or _resolve_data_sources(args)
     if data_sources.train_csv_path and data_sources.eval_csv_path:
@@ -352,7 +352,7 @@ def _profile_settings(profile: str) -> dict[str, ProfileSetting]:
 
 
 def _child_run_dir(results_dir: Path, workload: str, run_label: str, workload_count: int) -> Path:
-    """Return the child experiment output directory for a matrix row."""
+    """Return the child experiment output directory for a benchmark row."""
     if workload_count == 1:
         return results_dir / run_label
     return results_dir / workload / run_label
@@ -458,8 +458,8 @@ def _target_budget_row(target_diagnostics: dict[str, Any], compression_ratio: An
     return best_row
 
 
-def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) -> list[dict[str, Any]]:
-    """Prebuild segmented AIS caches for all CSV sources used by the matrix."""
+def _warm_csv_caches(args: argparse.Namespace, data_sources: BenchmarkDataSources) -> list[dict[str, Any]]:
+    """Prebuild segmented AIS caches for all CSV sources used by the benchmark."""
     if not args.cache_dir or not data_sources.csv_sources or args.no_cache_warmup:
         return []
 
@@ -491,7 +491,7 @@ def _warm_csv_caches(args: argparse.Namespace, data_sources: MatrixDataSources) 
         rows.append(row)
         state = "hit" if result.cache_hit else "built"
         print(
-            "[matrix] cache warmup "
+            "[benchmark] cache warmup "
             f"{state}: {source} ({row['output_segment_count']} segments, {row['elapsed_seconds']:.2f}s)",
             flush=True,
         )
@@ -667,7 +667,7 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
-def _format_markdown_table(rows: list[dict[str, Any]]) -> str:
+def _format_report_table(rows: list[dict[str, Any]]) -> str:
     """Return a compact markdown comparison table."""
     columns = [
         "workload",
@@ -787,10 +787,10 @@ def _run_config(
     run_id: str,
     workloads: list[str],
     run_label: str,
-    data_sources: MatrixDataSources,
+    data_sources: BenchmarkDataSources,
     results_dir: Path,
 ) -> dict[str, Any]:
-    """Build a compact config file for a matrix run."""
+    """Build a compact config file for a benchmark run."""
     return {
         "schema_version": 1,
         "run_id": run_id,
@@ -872,7 +872,7 @@ def _index_entry(
     args: argparse.Namespace,
     workloads: list[str],
     run_label: str,
-    data_sources: MatrixDataSources,
+    data_sources: BenchmarkDataSources,
     results_dir: Path,
     rows: list[dict[str, Any]],
     git: dict[str, Any],
@@ -943,9 +943,9 @@ def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict
             "readme": str(results_dir / "README.md"),
             "run_config": str(results_dir / "run_config.json"),
             "run_status": str(results_dir / "run_status.json"),
-            "benchmark_matrix_json": str(results_dir / "benchmark_matrix.json"),
-            "benchmark_matrix_csv": str(results_dir / "benchmark_matrix.csv"),
-            "benchmark_matrix_markdown": str(results_dir / "benchmark_matrix.md"),
+            "benchmark_report_json": str(results_dir / "benchmark_report.json"),
+            "benchmark_report_csv": str(results_dir / "benchmark_report.csv"),
+            "benchmark_report_markdown": str(results_dir / "benchmark_report.md"),
             "artifact_index_json": str(results_dir / "artifact_index.json"),
             "family_runs_index_csv": str(_family_root(results_dir) / "runs_index.csv"),
             "family_runs_index_events_jsonl": str(_family_root(results_dir) / "runs_index_events.jsonl"),
@@ -985,10 +985,10 @@ def _artifact_index(results_dir: Path, artifact: dict[str, Any], rows: list[dict
 
 
 def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    """Return a short artifact guide for one benchmark matrix run."""
+    """Return a short artifact guide for one benchmark run."""
     run_id = artifact.get("run_id") or "(not set)"
     lines = [
-        "# QDS Benchmark Matrix Run",
+        "# QDS Benchmark Run",
         "",
         f"- Run ID: `{run_id}`",
         f"- Profile: `{artifact.get('profile')}`",
@@ -1000,9 +1000,9 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         "",
         "- `run_config.json` - compact benchmark configuration",
         "- `run_status.json` - current/final run status marker",
-        "- `benchmark_matrix.md` - compact comparison table",
-        "- `benchmark_matrix.csv` - comparison table as CSV",
-        "- `benchmark_matrix.json` - complete machine-readable matrix artifact",
+        "- `benchmark_report.md` - compact comparison table",
+        "- `benchmark_report.csv` - comparison table as CSV",
+        "- `benchmark_report.json` - complete machine-readable benchmark artifact",
         "- `artifact_index.json` - paths to logs and child run artifacts",
         "- `logs/console.log` - tmux/launcher console capture when launched through tmux",
         "- `logs/system_monitor.log` - RAM/GPU/system samples when launched through tmux",
@@ -1013,9 +1013,9 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
         "## Environment Scope",
         "",
         (
-            "`benchmark_matrix.json.environment` describes the parent benchmark-matrix process. "
+            "`benchmark_report.json.environment` describes the parent benchmark runner process. "
             "Effective child torch precision/AMP settings are recorded in "
-            "`benchmark_matrix.json.rows[*].child_torch_runtime` and in each child `example_run.json`."
+            "`benchmark_report.json.rows[*].child_torch_runtime` and in each child `example_run.json`."
         ),
         "",
         "## Child Runs",
@@ -1032,9 +1032,9 @@ def _format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]]
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build benchmark matrix CLI."""
+    """Build benchmark CLI."""
     parser = argparse.ArgumentParser(
-        description="Run a range-focused AIS-QDS benchmark matrix and write compact comparison tables.",
+        description="Run a range-focused AIS-QDS benchmark and write compact comparison tables.",
     )
     parser.add_argument("--profile", choices=PROFILE_CHOICES, default=DEFAULT_PROFILE)
     parser.add_argument("--workloads", type=str, default=",".join(DEFAULT_WORKLOADS))
@@ -1048,13 +1048,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--results_dir",
         type=str,
-        default="artifacts/benchmarks/range_testing_baseline/runs/manual_matrix",
+        default="artifacts/benchmarks/range_testing_baseline/runs/manual_benchmark",
     )
     parser.add_argument(
         "--run_id",
         type=str,
         default=None,
-        help="Optional human-readable run identifier recorded in benchmark_matrix.json and README.md.",
+        help="Optional human-readable run identifier recorded in benchmark_report.json and README.md.",
     )
     parser.add_argument(
         "--csv_path",
@@ -1103,13 +1103,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--continue_on_failure",
         action="store_true",
-        help="Continue remaining matrix runs after a child failure.",
+        help="Continue remaining benchmark runs after a child failure.",
     )
     return parser
 
 
 def main() -> None:
-    """Run the benchmark matrix."""
+    """Run the benchmark run."""
     args = _build_parser().parse_args()
     workloads = _parse_name_list(args.workloads, allowed=PURE_WORKLOADS, arg_name="--workloads")
     run_label = args.run_label or args.profile
@@ -1138,7 +1138,7 @@ def main() -> None:
         run_id=run_id,
         status="running",
         started_at_utc=started_at_utc,
-        message="benchmark matrix started",
+        message="benchmark run started",
     )
     _write_family_indexes(
         family_root,
@@ -1165,7 +1165,7 @@ def main() -> None:
             finished_at_utc=_utc_now(),
             exit_status=128 + int(signum),
             failures=failures,
-            message=f"benchmark matrix interrupted by {signal_name}",
+            message=f"benchmark run interrupted by {signal_name}",
         )
         _write_family_indexes(
             family_root,
@@ -1212,7 +1212,7 @@ def main() -> None:
                 str(args.f1_diagnostic_every),
                 *_split_extra_args(args.extra_args),
             ]
-            print(f"[matrix] {workload}/{run_label}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
+            print(f"[benchmark] {workload}/{run_label}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
             stdout_path = run_dir / "stdout.log"
             proc = _run_capture_streaming(command, cwd=_qds_root(), stdout_path=stdout_path)
             run_json_path = run_dir / "example_run.json"
@@ -1234,7 +1234,7 @@ def main() -> None:
             failures += int(proc.returncode != 0)
             if proc.returncode != 0:
                 print(
-                    f"[matrix] {workload}/{run_label} failed with returncode={proc.returncode}; "
+                    f"[benchmark] {workload}/{run_label} failed with returncode={proc.returncode}; "
                     f"see {stdout_path}",
                     flush=True,
                 )
@@ -1272,7 +1272,7 @@ def main() -> None:
     artifact = {
         "schema_version": 4,
         "timestamp_utc": _utc_now(),
-        "command": [sys.executable, "-m", "src.experiments.benchmark_matrix", *sys.argv[1:]],
+        "command": [sys.executable, "-m", "src.experiments.benchmark_runner", *sys.argv[1:]],
         "run_id": run_id,
         "artifact_root": str(results_dir),
         "family_root": str(family_root),
@@ -1303,12 +1303,12 @@ def main() -> None:
         finished_at_utc=finished_at_utc,
         exit_status=1 if failures else 0,
         failures=failures,
-        message=f"{failures} matrix run(s) failed" if failures else "benchmark matrix completed",
+        message=f"{failures} benchmark run(s) failed" if failures else "benchmark run completed",
     )
     artifact["run_status"] = status_payload
-    _write_json(results_dir / "benchmark_matrix.json", artifact)
-    _write_csv(results_dir / "benchmark_matrix.csv", rows)
-    _write_text(results_dir / "benchmark_matrix.md", _format_markdown_table(rows))
+    _write_json(results_dir / "benchmark_report.json", artifact)
+    _write_csv(results_dir / "benchmark_report.csv", rows)
+    _write_text(results_dir / "benchmark_report.md", _format_report_table(rows))
     index = _artifact_index(results_dir, artifact, rows)
     _write_json(results_dir / "artifact_index.json", index)
     _write_text(results_dir / "README.md", _format_artifact_readme(artifact, rows))
@@ -1326,9 +1326,9 @@ def main() -> None:
             git=git,
         ),
     )
-    print(f"[matrix] wrote {results_dir / 'benchmark_matrix.md'}", flush=True)
+    print(f"[benchmark] wrote {results_dir / 'benchmark_report.md'}", flush=True)
     if failures:
-        raise SystemExit(f"{failures} matrix run(s) failed. See {results_dir / 'benchmark_matrix.json'}.")
+        raise SystemExit(f"{failures} benchmark run(s) failed. See {results_dir / 'benchmark_report.json'}.")
 
 
 if __name__ == "__main__":

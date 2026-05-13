@@ -34,9 +34,9 @@ cd "$QDS_ROOT"
 
 paths=(
   artifacts/benchmarks/artifact_layout_smoke
-  artifacts/benchmarks/matrix_smoke
-  artifacts/benchmarks/matrix_smoke_csv
-  artifacts/benchmarks/smoke_range_matrix_patch
+  artifacts/benchmarks/benchmark_smoke
+  artifacts/benchmarks/benchmark_smoke_csv
+  artifacts/benchmarks/smoke_range_benchmark_patch
   artifacts/benchmarks/smoke_runtime
   artifacts/benchmarks/task7_smoke
   artifacts/benchmarks/task10_default_smoke
@@ -47,7 +47,7 @@ paths=(
   artifacts/benchmarks/task13_infbs1
   artifacts/benchmarks/task13_infbs4
   artifacts/benchmarks/tmux_layout_smoke
-  artifacts/cache/matrix_smoke_csv
+  artifacts/cache/benchmark_smoke_csv
   artifacts/cache/smoke_cleaned_csv
   artifacts/results/smoke_cleaned_csv
   artifacts/results/smoke_synthetic

@@ -525,7 +525,7 @@ Expected impact:
 
 Code targets:
 
-- `QDS/src/experiments/benchmark_matrix.py`
+- `QDS/src/experiments/benchmark_runner.py`
 - `MatrixVariant`
 - `QDS/src/experiments/benchmark_runtime.py`
 - `QDS/src/training/trajectory_batching.py`
@@ -542,9 +542,7 @@ Prepared implementation direction:
 
 - the default testing-baseline profile now uses `train_batch_size=64`
 - after the loss/diagnostic batching changes, benchmark `train_batch_size=128`
-- matrix variants are available:
-  - `tf32_bf16_bs64_inf32`
-  - `tf32_bf16_bs128_inf32`
+  through explicit CLI or queue-plan overrides
 - compare runtime, peak VRAM, best epoch, `RangeUseful`, and collapse warnings
 - keep inference batch size separate; inference can likely also increase if
   validation remains expensive
@@ -616,7 +614,7 @@ The first reporting cleanup pass is implemented:
 - workload generation metadata separates minimum requested queries, max query
   cap, final generated query count, target coverage, final coverage, and stop
   reason
-- benchmark matrix rows include temporal-random-fill usefulness,
+- benchmark run rows include temporal-random-fill usefulness,
   MLQDS-vs-random-fill usefulness, and temporal-oracle-fill usefulness gap
 - `range_residual_objective_summary.json` now combines learned-fill deltas,
   label-component mass fractions, and residual target mass split for one-run

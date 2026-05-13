@@ -12,7 +12,7 @@ ProfileSetting = int | float | str | bool | list[float] | None
 
 @dataclass(frozen=True)
 class BenchmarkProfile:
-    """Stable benchmark profile shape shared by matrix and runtime wrappers."""
+    """Stable benchmark profile shape shared by benchmark entry points."""
 
     name: str
     n_queries: int

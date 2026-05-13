@@ -12,7 +12,7 @@ trains MLQDS, evaluates baselines, and writes run artifacts.
 | `experiment_config.py` | Data, query, model, baseline, workload, and seed config dataclasses. |
 | `experiment_pipeline_helpers.py` | Split, workload generation, diagnostics reuse, training, evaluation, and result dumping. |
 | `benchmark_profiles.py` | Central benchmark profile constants such as `range_testing_baseline`. |
-| `benchmark_matrix.py` | Range-focused benchmark matrix runner. |
+| `benchmark_runner.py` | Range-focused benchmark runner. |
 | `benchmark_runtime.py` | Runtime wrapper for train/inference timing experiments. |
 | `run_ais_experiment.py` | Main train/evaluate entry point. |
 | `run_inference.py` | Evaluate a saved checkpoint on a CSV without retraining. |
@@ -24,7 +24,7 @@ Use `--help` on each entry point for the full current argument list.
 ```bash
 ../.venv/bin/python -m src.experiments.run_ais_experiment --help
 ../.venv/bin/python -m src.experiments.run_inference --help
-../.venv/bin/python -m src.experiments.benchmark_matrix --help
+../.venv/bin/python -m src.experiments.benchmark_runner --help
 ../.venv/bin/python -m src.experiments.benchmark_runtime --help
 ```
 
@@ -68,7 +68,7 @@ Experiment entrypoints train and evaluate one model per pure workload. Use
 
 ## Real-Usecase Range Profile
 
-`benchmark_matrix.py --profile range_testing_baseline` is the current benchmark
+`benchmark_runner.py --profile range_testing_baseline` is the current benchmark
 baseline. It selects the first three sorted cleaned CSV files from `--csv_path`
 as train/checkpoint-validation/eval days unless explicit paths are provided.
 
@@ -131,10 +131,10 @@ For `range_label_mode=usefulness`, label diagnostics also include
 is mostly driven by point, ship, crossing, temporal, gap, turn, or shape
 supervision. Component mass is reported before the final training-label clamp.
 
-Direct matrix run:
+Direct benchmark run:
 
 ```bash
-../.venv/bin/python -m src.experiments.benchmark_matrix \
+../.venv/bin/python -m src.experiments.benchmark_runner \
   --profile range_testing_baseline \
   --workloads range \
   --csv_path ../AISDATA/cleaned \
@@ -197,8 +197,8 @@ kernel markers. If a launcher observes an abnormal exit, it marks stale
 
 ## Artifacts And Timing
 
-For comparisons, start with `benchmark_matrix.md` or `benchmark_matrix.csv`.
-The matrix includes train-split usefulness-label component mass fractions so
+For comparisons, start with `benchmark_report.md` or `benchmark_report.csv`.
+The benchmark report includes train-split usefulness-label component mass fractions so
 quality deltas can be checked against the supervision mix used by that run.
 It also includes the training target residual label-mass fraction at the run
 compression ratio, which helps identify cases where the temporal base consumes
@@ -212,7 +212,7 @@ crossing-bracket preservation, temporal span, gap coverage, route-change
 coverage, and local shape fidelity.
 `learned_fill_diagnostics.json` compares MLQDS against the same temporal base
 with random fill and oracle-label fill, so failures can be separated into
-temporal-base, learned-fill, and scoring issues. The matrix CSV also reports
+temporal-base, learned-fill, and scoring issues. The benchmark CSV also reports
 temporal-random-fill usefulness, MLQDS-vs-random-fill usefulness, and the
 oracle-fill gap so residual-fill failures are visible in compact tables.
 `range_residual_objective_summary.json` collects the same learned-fill deltas
@@ -234,7 +234,7 @@ Artifact layout and cleanup rules live in
 [`../../artifacts/README.md`](../../artifacts/README.md).
 
 Use `benchmark_runtime.py` only for targeted train/inference timing studies
-such as batch-size sweeps. Use `benchmark_matrix.py` for model-quality
+such as batch-size sweeps. Use `benchmark_runner.py` for model-quality
 benchmark runs.
 
 ```bash

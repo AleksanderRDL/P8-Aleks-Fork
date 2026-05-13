@@ -25,9 +25,9 @@ artifacts/benchmarks/range_testing_baseline/
     run_config.json
     run_status.json
     artifact_index.json
-    benchmark_matrix.json
-    benchmark_matrix.csv
-    benchmark_matrix.md
+    benchmark_report.json
+    benchmark_report.csv
+    benchmark_report.md
     logs/
     <run_label>/
   queues/<queue_id>/

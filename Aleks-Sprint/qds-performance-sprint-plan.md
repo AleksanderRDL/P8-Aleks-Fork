@@ -186,7 +186,7 @@ Each benchmark artifact should include at least:
 - AMP/BF16/FP16 settings
 - model config
 - query config
-- train/eval workload mix
+- train/eval workload type
 - train batch size
 - inference batch size
 - phase timings
@@ -197,9 +197,9 @@ Each benchmark artifact should include at least:
 - collapse diagnostics
 - geometry metrics
 
-### Default Benchmark Matrix
+### Default Benchmark Run
 
-Use one explicit range testing-baseline matrix profile for model-quality decisions.
+Use one explicit range testing-baseline benchmark profile for model-quality decisions.
 The current values are intentionally maintained in `QDS/src/experiments/README.md`
 and `QDS/src/experiments/benchmark_profiles.py` to avoid this historical plan
 drifting from runnable defaults.
@@ -798,23 +798,23 @@ Post-phase benchmarking update, 2026-05-10:
 - Set checkpoint selection default to `f1` so restored checkpoints are selected
   by held-out retained-set query F1 rather than training loss. The
   `checkpoint_f1_variant=combined` option remains available for comparison.
-- Added `src.experiments.benchmark_matrix`, which runs pure-workload
-  configuration matrices and writes `benchmark_matrix.json`,
-  `benchmark_matrix.csv`, and `benchmark_matrix.md`.
-- Matrix variants compare FP32, TF32, BF16 autocast, larger train/inference
-  batches, and answer-vs-combined F1 checkpoint selection.
-- Verified a small smoke matrix over `range,knn` and two variants; all four
-  child runs completed and wrote compact comparison artifacts.
+- Added `src.experiments.benchmark_runner`, which runs pure-workload
+  profile-driven benchmark runs and writes `benchmark_report.json`,
+  `benchmark_report.csv`, and `benchmark_report.md`.
+- Benchmark comparisons now use the `range_testing_baseline` profile plus
+  explicit CLI or queue-plan overrides for targeted A/B changes.
+- Verified small smoke benchmark runs with explicit overrides; child runs
+  completed and wrote compact comparison artifacts.
 
 Range benchmark tightening, 2026-05-10:
 
-- Narrowed the benchmark matrix default to `range` only. kNN, similarity, and
+- Narrowed the benchmark run default to `range` only. kNN, similarity, and
   clustering remain available as explicit workloads, but they are shelved until
   the range-focused model reaches a stronger baseline.
-- Added cache warmup for cleaned-CSV matrix runs. When `--cache_dir` is set,
-  the matrix prebuilds the segmented Parquet caches before measured variants
-  and records warmup metadata in `benchmark_matrix.json`.
-- Updated the range testing-baseline matrix profile to use three cleaned CSV days:
+- Added cache warmup for cleaned-CSV benchmark runs. When `--cache_dir` is set,
+  the benchmark runner prebuilds the segmented Parquet caches before measured child runs
+  and records warmup metadata in `benchmark_report.json`.
+- Updated the range testing-baseline benchmark profile to use three cleaned CSV days:
   passing `--csv_path ../AISDATA/cleaned` selects the first three sorted cleaned
   files as train/checkpoint-validation/eval days. Explicit `--train_csv_path`,
   `--validation_csv_path`, and `--eval_csv_path` can be used to choose the days
@@ -826,11 +826,10 @@ Range benchmark tightening, 2026-05-10:
 
 ```bash
 cd QDS
-../.venv/bin/python -m src.experiments.benchmark_matrix \
+../.venv/bin/python -m src.experiments.benchmark_runner \
   --profile range_testing_baseline \
   --csv_path ../AISDATA/cleaned \
   --cache_dir artifacts/cache/range_testing_baseline \
-  --variants tf32_bf16_bs32_inf32 \
   --results_dir artifacts/benchmarks/range_testing_baseline/runs/manual_range_testing_baseline_a \
   --run_id manual_range_testing_baseline_a
 ```
@@ -866,8 +865,8 @@ make range-benchmark-tmux
   monitoring. Each launch writes one run directory under
   `artifacts/benchmarks/range_testing_baseline/runs/<run_id>/`.
   The run directory contains `README.md`, `run_config.json`,
-  `run_status.json`, `artifact_index.json`, `benchmark_matrix.{json,csv,md}`,
-  `logs/`, and `variants/<variant>/`. The benchmark family root also gets
+  `run_status.json`, `artifact_index.json`, `benchmark_report.{json,csv,md}`,
+  `logs/`, and `<run_label>/`. The benchmark family root also gets
   `runs_index.csv` and `runs_index_events.jsonl`.
   The monitor samples RAM/swap, disk, top RSS processes, GPU utilization, GPU
   memory, temperature, power, clocks, visible CUDA processes, and recent kernel
