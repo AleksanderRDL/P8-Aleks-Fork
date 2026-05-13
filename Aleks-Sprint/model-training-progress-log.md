@@ -14,3 +14,8 @@
   train from generated/historical workload supervision, compress without eval
   queries, freeze retained masks, then score held-out queries across the target
   coverage/compression grid.
+- Renamed the active workload-aware profile and default artifact/cache family
+  from `range_testing_baseline` to `range_workload_aware_diagnostic`. Renamed
+  multi-budget output files from `range_objective_audit` to
+  `range_compression_audit`, and renamed the learned residual-fill summary to
+  `range_learned_fill_summary`.

@@ -16,12 +16,12 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_runner profile. Default: range_testing_baseline.
+  PROFILE                      benchmark_runner profile. Default: range_workload_aware_diagnostic.
   WORKLOADS                    benchmark_runner --workloads value. Default: range.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
-                               artifacts/benchmarks/range_testing_baseline.
+                               artifacts/benchmarks/range_workload_aware_diagnostic.
   SEEDS                        Comma-separated seeds for default plan. Default: 42,43,44.
   CHILD_EXTRA_ARGS             String passed as benchmark_runner --extra_args for
                                every default-plan run. Example:
@@ -71,11 +71,11 @@ trim() {
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
 PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
-PROFILE="${PROFILE:-range_testing_baseline}"
+PROFILE="${PROFILE:-range_workload_aware_diagnostic}"
 WORKLOADS="${WORKLOADS:-range}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
-CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
+CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_aware_diagnostic}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_aware_diagnostic}"
 SEEDS="${SEEDS:-42,43,44}"
 CHILD_EXTRA_ARGS="${CHILD_EXTRA_ARGS:-}"
 PLAN_FILE="${PLAN_FILE:-}"

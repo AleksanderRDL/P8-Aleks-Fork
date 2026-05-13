@@ -65,10 +65,10 @@ Before expensive runs:
 make benchmark-preflight
 ```
 
-Launch one testing-baseline range benchmark in tmux:
+Launch one workload-aware diagnostic range benchmark in tmux:
 
 ```bash
-ATTACH=0 BENCHMARK_RUN_ID=range_testing_baseline_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_RUN_ID=range_workload_aware_diagnostic_a make range-benchmark-tmux
 ```
 
 Launch a sequential multi-seed queue:
@@ -86,7 +86,7 @@ make clean-smoke-artifacts
 make clean-smoke-artifacts CONFIRM=1
 ```
 
-The existing benchmark profile is `range_testing_baseline`: a range-only,
+The existing benchmark profile is `range_workload_aware_diagnostic`: a range-only,
 three-day cleaned-CSV profile with train, checkpoint-validation, and final-eval
 days and no loader caps by default. It is workload-aware today. Treat it as a
 diagnostic/teacher path until the workload-blind protocol exists. Keep exact

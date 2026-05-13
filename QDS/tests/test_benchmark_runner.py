@@ -32,7 +32,7 @@ from src.experiments.experiment_pipeline_helpers import _validation_query_count,
 
 
 def _profile_core_args() -> list[str]:
-    """Expected range_testing_baseline child args without data-source/cap flags."""
+    """Expected workload-aware diagnostic child args without data-source/cap flags."""
     return [
         "--n_queries",
         "80",

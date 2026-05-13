@@ -43,5 +43,6 @@ H + C -> single pure-workload score head -> logits[L]
   and 16 for the range-aware model.
 - Query features: 12 padded features from `src.queries.query_types.pad_query_features`.
 - Output: one pure-workload logit for each point.
-- Default query chunk size: 2048. Current testing-baseline range benchmarks keep the
-  workload below that so cross-attention runs as one exact query chunk.
+- Default query chunk size: 2048. Current workload-aware diagnostic range
+  benchmarks keep the workload below that so cross-attention runs as one exact
+  query chunk.

@@ -90,7 +90,7 @@ class ExperimentOutputs:
     metrics_dump: dict
     geometric_table: str = ""
     range_usefulness_table: str = ""
-    range_objective_audit_table: str = ""
+    range_compression_audit_table: str = ""
 
 
 def split_trajectories(
@@ -503,14 +503,14 @@ def _metric_value(metrics: MethodEvaluation | None, field_name: str) -> float | 
     return float(value) if value is not None else None
 
 
-def _range_residual_objective_summary(
+def _range_learned_fill_summary(
     *,
     learned_fill_diagnostics: dict[str, MethodEvaluation],
     training_target_diagnostics: dict[str, Any],
     range_diagnostics_summary: dict[str, Any],
     compression_ratio: float,
 ) -> dict[str, Any]:
-    """Build a compact run-level summary for residual-fill objective analysis."""
+    """Build a compact run-level summary for learned-fill diagnostics."""
     mlqds = learned_fill_diagnostics.get("MLQDS")
     random_fill = learned_fill_diagnostics.get("TemporalRandomFill")
     oracle_fill = learned_fill_diagnostics.get("TemporalOracleFill")
@@ -997,15 +997,15 @@ def run_experiment_pipeline(
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
     range_usefulness_table = print_range_usefulness_table(matched)
-    range_objective_audit: dict[str, dict[str, Any]] = {}
-    range_objective_audit_table = ""
+    range_compression_audit: dict[str, dict[str, Any]] = {}
+    range_compression_audit_table = ""
     audit_ratios = _range_audit_ratios(config)
     if audit_ratios:
         audit_methods = [*methods, *diagnostic_methods]
         if oracle_method is not None:
             audit_methods.append(oracle_method)
         audit_sections: list[str] = []
-        with _phase("range-objective-audit"):
+        with _phase("range-compression-audit"):
             for ratio in audit_ratios:
                 if abs(float(ratio) - float(config.model.compression_ratio)) <= 1e-9:
                     ratio_results = {
@@ -1030,11 +1030,11 @@ def run_experiment_pipeline(
                                 query_cache=eval_query_cache,
                             )
                 ratio_key = f"{float(ratio):.4f}"
-                range_objective_audit[ratio_key] = {
+                range_compression_audit[ratio_key] = {
                     name: _evaluation_metrics_payload(metrics) for name, metrics in ratio_results.items()
                 }
                 audit_sections.append(f"compression_ratio={ratio_key}\n{print_range_usefulness_table(ratio_results)}")
-        range_objective_audit_table = "\n\n".join(audit_sections)
+        range_compression_audit_table = "\n\n".join(audit_sections)
 
     with _phase("evaluate-shift"):
         train_name = _workload_name(train_workload_map)
@@ -1116,7 +1116,7 @@ def run_experiment_pipeline(
         workload_distribution_comparison = _range_workload_distribution_comparison(range_diagnostics_summary)
         _print_range_distribution_comparison(workload_distribution_comparison)
 
-    range_residual_objective_summary = _range_residual_objective_summary(
+    range_learned_fill_summary = _range_learned_fill_summary(
         learned_fill_diagnostics=learned_fill_diagnostics,
         training_target_diagnostics=trained.target_diagnostics,
         range_diagnostics_summary=range_diagnostics_summary,
@@ -1141,8 +1141,8 @@ def run_experiment_pipeline(
         "learned_fill_diagnostics": {
             name: _evaluation_metrics_payload(metrics) for name, metrics in learned_fill_diagnostics.items()
         },
-        "range_residual_objective_summary": range_residual_objective_summary,
-        "range_objective_audit": range_objective_audit,
+        "range_learned_fill_summary": range_learned_fill_summary,
+        "range_compression_audit": range_compression_audit,
         "shift": shift_pairs,
         "training_history": trained.history,
         "training_target_diagnostics": trained.target_diagnostics,
@@ -1202,17 +1202,17 @@ def run_experiment_pipeline(
             + "\n",
             encoding="utf-8",
         )
-        (out_dir / "range_residual_objective_summary.json").write_text(
-            json.dumps(range_residual_objective_summary, indent=2) + "\n",
+        (out_dir / "range_learned_fill_summary.json").write_text(
+            json.dumps(range_learned_fill_summary, indent=2) + "\n",
             encoding="utf-8",
         )
-        if range_objective_audit:
-            (out_dir / "range_objective_audit.json").write_text(
-                json.dumps(range_objective_audit, indent=2) + "\n",
+        if range_compression_audit:
+            (out_dir / "range_compression_audit.json").write_text(
+                json.dumps(range_compression_audit, indent=2) + "\n",
                 encoding="utf-8",
             )
-            (out_dir / "range_objective_audit_table.txt").write_text(
-                range_objective_audit_table + "\n",
+            (out_dir / "range_compression_audit_table.txt").write_text(
+                range_compression_audit_table + "\n",
                 encoding="utf-8",
             )
         (out_dir / "range_workload_diagnostics.json").write_text(
@@ -1280,7 +1280,7 @@ def run_experiment_pipeline(
         metrics_dump=dump,
         geometric_table=geometric_table,
         range_usefulness_table=range_usefulness_table,
-        range_objective_audit_table=range_objective_audit_table,
+        range_compression_audit_table=range_compression_audit_table,
     )
 
 

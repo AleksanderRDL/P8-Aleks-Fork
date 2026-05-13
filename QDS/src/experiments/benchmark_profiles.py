@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DEFAULT_PROFILE = "range_testing_baseline"
+DEFAULT_PROFILE = "range_workload_aware_diagnostic"
 PROFILE_CHOICES = (DEFAULT_PROFILE,)
 ProfileSetting = int | float | str | bool | list[float] | None
 RANGE_COVERAGE_SWEEP_TARGETS = (0.05, 0.10, 0.15, 0.30)
@@ -57,7 +57,8 @@ class BenchmarkProfile:
     range_label_mode: str
     range_boundary_prior_weight: float
 
-RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
+
+RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE = BenchmarkProfile(
     name=DEFAULT_PROFILE,
     n_queries=80,
     query_coverage=0.20,
@@ -100,7 +101,7 @@ RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
     range_boundary_prior_weight=0.0,
 )
 
-_PROFILES = {RANGE_TESTING_BASELINE_PROFILE.name: RANGE_TESTING_BASELINE_PROFILE}
+_PROFILES = {RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE.name: RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE}
 
 
 def benchmark_profile(name: str) -> BenchmarkProfile:
@@ -109,8 +110,6 @@ def benchmark_profile(name: str) -> BenchmarkProfile:
         return _PROFILES[name]
     except KeyError as exc:
         raise ValueError(f"Unknown benchmark profile: {name}") from exc
-
-
 
 
 def benchmark_profile_args(

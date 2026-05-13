@@ -44,7 +44,7 @@ components.
 
 `range_label_mode="point_f1"` keeps the old point-hit proxy for ablations.
 `range_boundary_prior_weight` remains available as an explicit optional prior,
-but the testing baseline keeps it at `0.0`.
+but the workload-aware diagnostic keeps it at `0.0`.
 
 These labels are additive approximations for training, not an exact optimizer
 for retained-set `RangeUseful`. The current workload-blind training redesign
@@ -90,7 +90,7 @@ fill, or label mix is dominating a run.
 
 Benchmark profile defaults are defined in
 [`../experiments/benchmark_profiles.py`](../experiments/benchmark_profiles.py).
-The current `range_testing_baseline` profile uses:
+The current `range_workload_aware_diagnostic` profile uses:
 
 - `train_batch_size=64`
 - `inference_batch_size=64`

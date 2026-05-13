@@ -571,7 +571,7 @@ def main() -> None:
         raise SystemExit("--checkpoint is required for --mode inference.")
     if args.mode in {"train", "both"} and not _extra_args_include_training_data_source(args.train_extra_args):
         raise SystemExit(
-            "--mode train/both with --profile range_testing_baseline requires --train_extra_args "
+            "--mode train/both with --profile range_workload_aware_diagnostic requires --train_extra_args "
             "containing --csv_path or --train_csv_path/--eval_csv_path."
         )
     try:

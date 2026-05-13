@@ -5,14 +5,14 @@ usage() {
   cat <<'EOF'
 Usage: scripts/benchmark_preflight.sh [options]
 
-Check local prerequisites before launching the range testing-baseline benchmark.
+Check local prerequisites before launching the range workload-aware diagnostic benchmark.
 
 Options:
   --session NAME       tmux session name. Default: qds-range-benchmark.
   --csv-path PATH      Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
-  --cache-dir PATH     Cache directory. Default: artifacts/cache/range_testing_baseline.
+  --cache-dir PATH     Cache directory. Default: artifacts/cache/range_workload_aware_diagnostic.
   --artifact-root PATH Benchmark family root. Default:
-                       artifacts/benchmarks/range_testing_baseline.
+                       artifacts/benchmarks/range_workload_aware_diagnostic.
   --python PATH        Python executable. Default: ../.venv/bin/python.
   --min-free-gb N      Required free space on artifact filesystem. Default: 20.
   --min-ram-gb N       Warn below this available RAM threshold. Default: 24.
@@ -28,8 +28,8 @@ EOF
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${SESSION:-qds-range-benchmark}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
-CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
+CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_aware_diagnostic}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_aware_diagnostic}"
 DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
 PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
 MIN_FREE_GB="${MIN_FREE_GB:-20}"
@@ -158,7 +158,7 @@ if [[ -d "$csv_abs" ]]; then
   fi
 elif [[ -f "$csv_abs" ]]; then
   ok "cleaned CSV file exists: $csv_abs"
-  warn "range testing-baseline profile normally expects a directory with three cleaned CSV days"
+  warn "range workload-aware diagnostic profile normally expects a directory with three cleaned CSV days"
 else
   fail "cleaned CSV path does not exist: $csv_abs"
 fi
@@ -241,7 +241,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
   if [[ "$dirty_count" -eq 0 ]]; then
     ok "git worktree is clean at ${git_commit:-unknown}"
   else
-    warn "git worktree has $dirty_count changed/untracked paths at ${git_commit:-unknown}; record or commit the exact code state before comparing testing-baseline runs"
+    warn "git worktree has $dirty_count changed/untracked paths at ${git_commit:-unknown}; record or commit the exact code state before comparing workload-aware diagnostic runs"
   fi
 else
   warn "git is unavailable or this is not a git worktree; code-state preflight skipped"

@@ -846,7 +846,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--results_dir",
         type=str,
-        default="artifacts/benchmarks/range_testing_baseline/runs/manual_benchmark",
+        default="artifacts/benchmarks/range_workload_aware_diagnostic/runs/manual_benchmark",
     )
     parser.add_argument(
         "--run_id",
@@ -860,7 +860,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Cleaned AIS CSV or directory. A directory selects the first three sorted "
-            "CSV files as train/validation/eval days for the range testing-baseline benchmark."
+            "CSV files as train/validation/eval days for the range workload-aware diagnostic benchmark."
         ),
     )
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)

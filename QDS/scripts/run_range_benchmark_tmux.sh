@@ -5,8 +5,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/run_range_benchmark_tmux.sh [launcher options] [benchmark_runner args...]
 
-Launch the range testing-baseline benchmark in tmux with a second pane logging
-lightweight system/GPU telemetry.
+Launch the range workload-aware diagnostic benchmark in tmux with a second pane
+logging lightweight system/GPU telemetry.
 
 Launcher options:
   --session NAME       tmux session name. Default: qds-range-benchmark.
@@ -15,11 +15,11 @@ Launcher options:
 
 Environment overrides:
   PYTHON                       Python executable. Default: ../.venv/bin/python.
-  PROFILE                      benchmark_runner profile. Default: range_testing_baseline.
+  PROFILE                      benchmark_runner profile. Default: range_workload_aware_diagnostic.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
   ARTIFACT_ROOT                Benchmark family directory. Default:
-                               artifacts/benchmarks/range_testing_baseline.
+                               artifacts/benchmarks/range_workload_aware_diagnostic.
   RUN_ID                       Run directory name. Default: timestamped slug.
   RESULTS_DIR                  Exact benchmark run directory. Overrides
                                ARTIFACT_ROOT/RUN_ID when set.
@@ -51,16 +51,16 @@ display_path() {
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
 PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
-PROFILE="${PROFILE:-range_testing_baseline}"
+PROFILE="${PROFILE:-range_workload_aware_diagnostic}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
-CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_testing_baseline}"
+CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_aware_diagnostic}"
 MAX_POINTS_PER_SEGMENT="${MAX_POINTS_PER_SEGMENT:-}"
 MAX_SEGMENTS="${MAX_SEGMENTS:-}"
 MAX_TRAJECTORIES="${MAX_TRAJECTORIES:-}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-10}"
 SESSION="${SESSION:-qds-range-benchmark}"
 ATTACH="${ATTACH:-1}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_aware_diagnostic}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_range_${PROFILE}_3day_full}"
 RESULTS_DIR="${RESULTS_DIR:-$ARTIFACT_ROOT/runs/$RUN_ID}"
 

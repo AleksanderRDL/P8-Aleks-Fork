@@ -50,10 +50,10 @@ Use `--cache_dir` on experiment/inference commands to enable it, and
 ## Multi-Day CSV Combination
 
 Use `python -m src.data.combine_days --input ... --output ...` for ad hoc
-multi-day experiments that need one combined CSV. The current testing-baseline
-benchmark normally uses separate train/eval CSV days instead. The utility
-preserves MMSIs so `load_ais_csv` can segment continuous vessels by timestamp
-gaps across file boundaries.
+multi-day experiments that need one combined CSV. The current workload-aware
+diagnostic benchmark normally uses separate train/eval CSV days instead. The
+utility preserves MMSIs so `load_ais_csv` can segment continuous vessels by
+timestamp gaps across file boundaries.
 
 ## Dataset Helpers
 

@@ -44,7 +44,7 @@ segmentation config.
 
 ## Legacy Workload-Aware Benchmark Baseline
 
-The implemented legacy profile is `range_testing_baseline`. It is a pure range
+The implemented legacy profile is `range_workload_aware_diagnostic`. It is a pure range
 workload profile for cleaned AIS CSV days. It remains useful for diagnostics,
 teacher experiments, and upper-bound comparisons, but it is not the final
 redesign protocol.
@@ -94,14 +94,14 @@ make benchmark-preflight
 Launch one profile run in tmux:
 
 ```bash
-ATTACH=0 BENCHMARK_RUN_ID=range_testing_baseline_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_RUN_ID=range_workload_aware_diagnostic_a make range-benchmark-tmux
 ```
 
 Launch a sequential queue:
 
 ```bash
 ATTACH=0 \
-  BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_testing_baseline/queues/my_plan.tsv \
+  BENCHMARK_PLAN_FILE=artifacts/benchmarks/range_workload_aware_diagnostic/queues/my_plan.tsv \
   BENCHMARK_CONTINUE_ON_FAILURE=1 \
   make range-benchmark-queue-tmux
 ```
@@ -109,9 +109,9 @@ ATTACH=0 \
 Queue plan rows are tab-separated:
 
 ```text
-range_testing_baseline_seed42	42
-range_testing_baseline_score_rank_tie_seed42	42	--mlqds_score_mode rank_tie
-range_testing_baseline_pairs192_seed42	42	--ranking_pairs_per_type 192
+range_workload_aware_diagnostic_seed42	42
+range_workload_aware_diagnostic_score_rank_tie_seed42	42	--mlqds_score_mode rank_tie
+range_workload_aware_diagnostic_pairs192_seed42	42	--ranking_pairs_per_type 192
 ```
 
 The queue launcher validates child args before tmux starts, so unsupported
@@ -135,11 +135,11 @@ Do not use this archived plan as workload-blind success evidence.
 
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_runner \
-  --profile range_testing_baseline \
+  --profile range_workload_aware_diagnostic \
   --workloads range \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_testing_baseline \
-  --results_dir artifacts/benchmarks/range_testing_baseline/runs/manual_a \
+  --cache_dir artifacts/cache/range_workload_aware_diagnostic \
+  --results_dir artifacts/benchmarks/range_workload_aware_diagnostic/runs/manual_a \
   --run_id manual_a
 ```
 
@@ -152,7 +152,7 @@ Estimate query count and coverage before changing footprint or target coverage:
 ```bash
 ../.venv/bin/python scripts/estimate_range_coverage.py \
   --csv_path ../AISDATA/cleaned \
-  --cache_dir artifacts/cache/range_testing_baseline \
+  --cache_dir artifacts/cache/range_workload_aware_diagnostic \
   --query_counts 80,384,512,640,1024,2048 \
   --sample_stride 20 \
   --target_coverage 0.20 \
@@ -187,7 +187,8 @@ Then inspect the child run files that explain behavior:
 - `range_usefulness_table.txt`
 - `range_workload_diagnostics.json`
 - `learned_fill_diagnostics.json`
-- `range_residual_objective_summary.json`
+- `range_learned_fill_summary.json`
+- `range_compression_audit.json`, when multi-budget audit ratios are enabled
 
 Artifact layout and cleanup rules live in
 [`../../artifacts/README.md`](../../artifacts/README.md). Metric definitions
@@ -202,8 +203,8 @@ benchmarking:
 ```bash
 ../.venv/bin/python -m src.experiments.benchmark_runtime \
   --mode train \
-  --profile range_testing_baseline \
-  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_testing_baseline" \
+  --profile range_workload_aware_diagnostic \
+  --train_extra_args "--train_csv_path ../AISDATA/cleaned/aisdk-2026-02-02_cleaned.csv --validation_csv_path ../AISDATA/cleaned/aisdk-2026-02-03_cleaned.csv --eval_csv_path ../AISDATA/cleaned/aisdk-2026-02-04_cleaned.csv --cache_dir artifacts/cache/range_workload_aware_diagnostic" \
   --train_batch_sizes 16,32,64 \
-  --results_dir artifacts/benchmarks/runtime_range_testing_baseline
+  --results_dir artifacts/benchmarks/runtime_range_workload_aware_diagnostic
 ```

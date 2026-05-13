@@ -1,4 +1,4 @@
-# Archived workload-aware diagnostic grid for range_testing_baseline.
+# Archived workload-aware diagnostic grid for range_workload_aware_diagnostic.
 # Format: run_id<TAB>seed<TAB>child_extra_args
 # Coverage targets: 5%, 10%, 15%, 30%.
 # Compression audit targets: 1%, 2%, 5%, 10%, 15%, 20%, 30%.

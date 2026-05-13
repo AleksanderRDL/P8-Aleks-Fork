@@ -17,9 +17,9 @@ BENCHMARK_CHILD_EXTRA_ARGS ?=
 BENCHMARK_PLAN_FILE ?=
 BENCHMARK_CONTINUE_ON_FAILURE ?= 0
 ATTACH ?=
-BENCHMARK_PROFILE ?= range_testing_baseline
-BENCHMARK_FAMILY ?= artifacts/benchmarks/range_testing_baseline
-BENCHMARK_CACHE ?= artifacts/cache/range_testing_baseline
+BENCHMARK_PROFILE ?= range_workload_aware_diagnostic
+BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_aware_diagnostic
+BENCHMARK_CACHE ?= artifacts/cache/range_workload_aware_diagnostic
 CONFIRM ?=
 
 .PHONY: help check-env install install-cpu install-cuda test typecheck smoke smoke-csv benchmark-preflight benchmark-queue-preflight list-runs clean-smoke-artifacts range-benchmark-tmux range-benchmark-queue-tmux
@@ -38,7 +38,7 @@ help:
 	@echo "  benchmark-queue-preflight  Check prerequisites using BENCHMARK_QUEUE_SESSION"
 	@echo "  list-runs   List benchmark runs from BENCHMARK_FAMILY"
 	@echo "  clean-smoke-artifacts  Dry-run smoke artifact cleanup; set CONFIRM=1 to delete"
-	@echo "  range-benchmark-tmux  Launch the range testing-baseline benchmark in tmux with monitoring"
+	@echo "  range-benchmark-tmux  Launch the range workload-aware diagnostic benchmark in tmux with monitoring"
 	@echo "  range-benchmark-queue-tmux  Launch a sequential multi-seed range benchmark queue in tmux"
 	@echo ""
 	@echo "Variables:"

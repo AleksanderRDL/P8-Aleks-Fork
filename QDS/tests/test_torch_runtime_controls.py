@@ -273,7 +273,7 @@ def test_parse_train_batch_sizes() -> None:
     assert _parse_train_batch_sizes(None) is None
 
 
-def test_runtime_profile_uses_testing_baseline_shape(tmp_path) -> None:
+def test_runtime_profile_uses_workload_aware_diagnostic_shape(tmp_path) -> None:
     args = _profile_train_args(DEFAULT_PROFILE, seed=42, results_dir=tmp_path / "run", checkpoint=tmp_path / "m.pt")
 
     assert "--n_queries" in args
