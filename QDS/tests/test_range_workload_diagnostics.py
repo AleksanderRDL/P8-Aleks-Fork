@@ -11,8 +11,8 @@ import torch
 from data.ais_loader import generate_synthetic_ais_data
 from experiments.experiment_config import build_experiment_config
 from queries.workload import TypedQueryWorkload
-from experiments.experiment_pipeline_helpers import _range_workload_diagnostics
 from experiments.range_cache import RangeRuntimeCache, prepare_range_label_cache as _prepare_range_label_cache
+from experiments.range_diagnostics import _range_workload_diagnostics
 from queries.query_generator import generate_typed_query_workload
 from queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
 from queries.workload_diagnostics import (

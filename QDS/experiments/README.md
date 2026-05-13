@@ -18,7 +18,11 @@ PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
 | --- | --- |
 | `experiment_cli.py` | Shared CLI parser. |
 | `experiment_config.py` | Structured config dataclasses. |
-| `experiment_pipeline_helpers.py` | End-to-end train/eval pipeline. |
+| `experiment_pipeline.py` | End-to-end train/eval orchestration. |
+| `experiment_data.py` | Train/selection/eval split and dataset construction. |
+| `experiment_workloads.py` | Workload map resolution and query workload generation. |
+| `experiment_methods.py` | Evaluation method construction and shift scoring. |
+| `experiment_outputs.py` | Experiment result payload and artifact writing. |
 | `range_diagnostics.py` | Range workload, learned-fill, and audit diagnostics. |
 | `benchmark_profiles.py` | Durable benchmark profile defaults. |
 | `benchmark_inputs.py` | Benchmark source resolution and profile argument construction. |

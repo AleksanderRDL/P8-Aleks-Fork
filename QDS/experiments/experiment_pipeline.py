@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from data.trajectory_dataset import TrajectoryDataset
 from evaluation.baselines import (
-    DouglasPeuckerMethod,
     Method,
     MLQDSMethod,
     OracleMethod,
-    ScoreHybridMethod,
-    UniformTemporalMethod,
 )
 from evaluation.evaluate_methods import evaluate_method
 from evaluation.metrics import MethodEvaluation
@@ -31,7 +25,17 @@ from evaluation.tables import (
     print_shift_table,
 )
 from experiments.experiment_config import ExperimentConfig, derive_seed_bundle
+from experiments.experiment_data import build_experiment_datasets, prepare_experiment_split
 from experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
+from experiments.experiment_methods import (
+    attach_range_geometry_scores,
+    build_learned_fill_methods,
+    build_primary_methods,
+    evaluate_shift_pairs,
+    prepare_eval_labels,
+    prepare_eval_query_cache,
+)
+from experiments.experiment_outputs import ExperimentOutputs, write_experiment_results
 from experiments.range_cache import (
     RangeRuntimeCache,
     prepare_range_label_cache,
@@ -47,15 +51,13 @@ from experiments.range_diagnostics import (
     _range_workload_diagnostics,
     _range_workload_distribution_comparison,
 )
-from experiments.workload_cache import (
-    coverage_name,
-    generate_typed_query_workload_for_config,
-    workload_cache_name,
+from experiments.experiment_workloads import (
+    _workload_name,
+    generate_experiment_workloads,
+    resolve_workload_maps,
 )
 from queries.query_types import single_workload_type
-from queries.workload import TypedQueryWorkload
 from simplification.mlqds_scoring import workload_type_head
-from training.importance_labels import compute_typed_importance_labels
 from training.train_model import train_model
 from training.checkpoints import ModelArtifacts, save_checkpoint
 from experiments.torch_runtime import (
@@ -76,64 +78,6 @@ def _phase(name: str):
     finally:
         dt = time.perf_counter() - t0
         print(f"[{name}] done in {dt:.2f}s", flush=True)
-
-
-@dataclass
-class ExperimentOutputs:
-    """Experiment run output payload. See experiments/README.md for details."""
-
-    matched_table: str
-    shift_table: str
-    metrics_dump: dict
-    geometric_table: str = ""
-    range_usefulness_table: str = ""
-    range_compression_audit_table: str = ""
-
-
-def split_trajectories(
-    trajectories: list[torch.Tensor],
-    train_fraction: float,
-    val_fraction: float,
-    seed: int,
-) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
-    """Deterministically split trajectories at trajectory level. See experiments/README.md for details."""
-    trajectory_count = len(trajectories)
-    generator = torch.Generator().manual_seed(int(seed))
-    permutation = torch.randperm(trajectory_count, generator=generator).tolist()
-
-    train_count = max(1, int(trajectory_count * train_fraction))
-    val_count = max(1, int(trajectory_count * val_fraction)) if trajectory_count - train_count > 1 else 0
-    test_count = max(1, trajectory_count - train_count - val_count)
-    if train_count + val_count + test_count > trajectory_count:
-        test_count = trajectory_count - train_count - val_count
-
-    train = [trajectories[i] for i in permutation[:train_count]]
-    val = [trajectories[i] for i in permutation[train_count : train_count + val_count]]
-    test = [trajectories[i] for i in permutation[train_count + val_count : train_count + val_count + test_count]]
-    if not test:
-        test = val if val else train
-    return train, val, test
-
-
-def _workload_name(workload_map: dict[str, float]) -> str:
-    """Build compact string name for a pure workload map."""
-    return ",".join(
-        f"{query_type}={weight:.1f}"
-        for query_type, weight in sorted(workload_map.items())
-    )
-
-
-def _normalized_coverage_target(value: float | None) -> float | None:
-    """Normalize coverage target for pipeline warnings."""
-    if value is None:
-        return None
-    target = float(value)
-    return target / 100.0 if target > 1.0 else target
-
-
-def _validation_query_count(config: ExperimentConfig) -> int:
-    """Use the same minimum query count for validation and final eval workloads."""
-    return max(1, int(config.query.n_queries))
 
 
 def run_experiment_pipeline(
@@ -175,152 +119,50 @@ def run_experiment_pipeline(
     validation_score_every = int(getattr(config.model, "validation_score_every", 0) or 0)
     needs_validation_score = selection_metric in {"score", "uniform_gap"} or validation_score_every > 0
     with _phase("split"):
-        selection_traj: list[torch.Tensor] | None = None
-        if eval_trajectories is None:
-            # Reproduce split_trajectories' permutation here so we can align the
-            # MMSI list with the test split (the helper itself doesn't carry ids).
-            trajectory_count = len(trajectories)
-            generator = torch.Generator().manual_seed(int(seeds.split_seed))
-            permutation = torch.randperm(trajectory_count, generator=generator).tolist()
-            train_count = max(1, int(trajectory_count * config.data.train_fraction))
-            val_count = (
-                max(1, int(trajectory_count * config.data.val_fraction))
-                if trajectory_count - train_count > 1
-                else 0
-            )
-            train_traj = [trajectories[i] for i in permutation[:train_count]]
-            _val_traj = [trajectories[i] for i in permutation[train_count : train_count + val_count]]
-            test_traj = [trajectories[i] for i in permutation[train_count + val_count :]]
-            if not test_traj:
-                test_traj = _val_traj if _val_traj else train_traj
-            selection_traj = _val_traj if needs_validation_score and _val_traj else None
-            if trajectory_mmsis is not None and len(trajectory_mmsis) == trajectory_count:
-                train_mmsis = [trajectory_mmsis[i] for i in permutation[:train_count]]
-                test_mmsis = [trajectory_mmsis[i] for i in permutation[train_count + val_count :]]
-                if not test_mmsis:
-                    test_mmsis = [trajectory_mmsis[i] for i in permutation[train_count : train_count + val_count]] or \
-                                 [trajectory_mmsis[i] for i in permutation[:train_count]]
-            else:
-                train_mmsis = None
-                test_mmsis = None
-            print(f"  split mode=single dataset  train={len(train_traj)}  test={len(test_traj)}", flush=True)
-        else:
-            train_traj = trajectories
-            test_traj = eval_trajectories
-            train_mmsis = trajectory_mmsis
-            test_mmsis = eval_trajectory_mmsis
-            if validation_trajectories is not None:
-                selection_traj = validation_trajectories if needs_validation_score else None
-            elif needs_validation_score:
-                train_count = len(train_traj)
-                generator = torch.Generator().manual_seed(int(seeds.split_seed))
-                permutation = torch.randperm(train_count, generator=generator).tolist()
-                val_count = max(1, int(train_count * config.data.val_fraction)) if train_count > 1 else 0
-                val_indices = set(permutation[:val_count])
-                selection_traj = [
-                    trajectory
-                    for trajectory_idx, trajectory in enumerate(train_traj)
-                    if trajectory_idx in val_indices
-                ]
-                train_traj = [
-                    trajectory
-                    for trajectory_idx, trajectory in enumerate(train_traj)
-                    if trajectory_idx not in val_indices
-                ]
-                if train_mmsis is not None and len(train_mmsis) == train_count:
-                    train_mmsis = [
-                        mmsi
-                        for trajectory_idx, mmsi in enumerate(train_mmsis)
-                        if trajectory_idx not in val_indices
-                    ]
-            print(f"  split mode=separate CSVs  train={len(train_traj)}  eval={len(test_traj)}", flush=True)
-        if selection_traj:
-            print(f"  checkpoint-selection validation={len(selection_traj)} trajectories", flush=True)
+        data_split = prepare_experiment_split(
+            config=config,
+            seeds=seeds,
+            trajectories=trajectories,
+            needs_validation_score=needs_validation_score,
+            trajectory_mmsis=trajectory_mmsis,
+            validation_trajectories=validation_trajectories,
+            eval_trajectories=eval_trajectories,
+            eval_trajectory_mmsis=eval_trajectory_mmsis,
+        )
+        train_traj = data_split.train_traj
+        test_traj = data_split.test_traj
+        selection_traj = data_split.selection_traj
+        train_mmsis = data_split.train_mmsis
+        test_mmsis = data_split.test_mmsis
 
     with _phase("build-datasets"):
-        train_ds = TrajectoryDataset(train_traj)
-        test_ds = TrajectoryDataset(test_traj)
-        selection_ds = TrajectoryDataset(selection_traj) if selection_traj else None
-        train_points = train_ds.get_all_points()
-        test_points = test_ds.get_all_points()
-        selection_points = selection_ds.get_all_points() if selection_ds is not None else None
-        train_boundaries = train_ds.get_trajectory_boundaries()
-        test_boundaries = test_ds.get_trajectory_boundaries()
-        selection_boundaries = selection_ds.get_trajectory_boundaries() if selection_ds is not None else None
+        datasets = build_experiment_datasets(data_split)
+        train_points = datasets.train_points
+        test_points = datasets.test_points
+        selection_points = datasets.selection_points
+        train_boundaries = datasets.train_boundaries
+        test_boundaries = datasets.test_boundaries
+        selection_boundaries = datasets.selection_boundaries
 
     with _phase("generate-workloads"):
-        # Front-load all kNN queries before proportional scheduling for training
-        # so kNN always gets its full quota even if n_queries is small.
-        knn_front_load = int(train_workload_map.get("knn", 0.0) * config.query.n_queries)
-        train_workload = generate_typed_query_workload_for_config(
-            trajectories=train_traj,
-            n_queries=config.query.n_queries,
-            workload_map=train_workload_map,
-            seed=seeds.train_query_seed,
-            front_load_knn=knn_front_load,
+        workloads = generate_experiment_workloads(
             config=config,
-            points=train_points,
-            boundaries=train_boundaries,
-            cache_label="train",
+            seeds=seeds,
+            train_traj=train_traj,
+            test_traj=test_traj,
+            selection_traj=selection_traj,
+            train_points=train_points,
+            test_points=test_points,
+            selection_points=selection_points,
+            train_boundaries=train_boundaries,
+            test_boundaries=test_boundaries,
+            selection_boundaries=selection_boundaries,
+            train_workload_map=train_workload_map,
+            eval_workload_map=eval_workload_map,
         )
-        eval_workload = generate_typed_query_workload_for_config(
-            trajectories=test_traj,
-            n_queries=config.query.n_queries,
-            workload_map=eval_workload_map,
-            seed=seeds.eval_query_seed,
-            config=config,
-            points=test_points,
-            boundaries=test_boundaries,
-            cache_label="eval",
-        )
-        selection_workload = None
-        if selection_traj:
-            selection_workload = generate_typed_query_workload_for_config(
-                trajectories=selection_traj,
-                n_queries=_validation_query_count(config),
-                workload_map=eval_workload_map,
-                seed=seeds.eval_query_seed + 17,
-                config=config,
-                points=selection_points,
-                boundaries=selection_boundaries,
-                cache_label="selection",
-            )
-        print(
-            f"  train_workload={len(train_workload.typed_queries)} queries  "
-            f"coverage={coverage_name(train_workload)}  cache={workload_cache_name(train_workload)}",
-            flush=True,
-        )
-        print(
-            f"  eval_workload={len(eval_workload.typed_queries)} queries  "
-            f"coverage={coverage_name(eval_workload)}  cache={workload_cache_name(eval_workload)}",
-            flush=True,
-        )
-        if selection_workload is not None:
-            print(
-                f"  selection_workload={len(selection_workload.typed_queries)} queries  "
-                f"coverage={coverage_name(selection_workload)}  cache={workload_cache_name(selection_workload)}",
-                flush=True,
-            )
-        target = _normalized_coverage_target(config.query.target_coverage)
-        if target is not None:
-            workloads_to_check = [("train", train_workload), ("eval", eval_workload)]
-            if selection_workload is not None:
-                workloads_to_check.append(("selection", selection_workload))
-            for label, workload in workloads_to_check:
-                coverage = float(workload.coverage_fraction or 0.0)
-                if coverage + 1e-9 < target:
-                    print(
-                        f"  WARNING: {label} workload stopped below requested coverage "
-                        f"({coverage:.2%} < {target:.2%}); raise --max_queries "
-                        "or query footprint to cover more points.",
-                        flush=True,
-                    )
-                elif label == "selection" and coverage > target + 0.05:
-                    print(
-                        f"  WARNING: {label} workload remains above requested coverage "
-                        f"({coverage:.2%} > {target:.2%}); lower --n_queries or query footprint.",
-                        flush=True,
-                    )
+        train_workload = workloads.train_workload
+        eval_workload = workloads.eval_workload
+        selection_workload = workloads.selection_workload
 
     range_diagnostics_summary: dict[str, Any] = {}
     range_diagnostics_rows: list[dict[str, Any]] = []
@@ -427,25 +269,12 @@ def run_experiment_pipeline(
                 f"workload={_workload_name(eval_workload_map)})",
                 flush=True,
             )
-    methods = [
-        MLQDSMethod(
-            name="MLQDS",
-            trained=trained,
-            workload=eval_workload,
-            workload_type=single_workload_type(eval_workload_map),
-            score_mode=config.model.mlqds_score_mode,
-            score_temperature=config.model.mlqds_score_temperature,
-            rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
-            temporal_fraction=config.model.mlqds_temporal_fraction,
-            diversity_bonus=config.model.mlqds_diversity_bonus,
-            hybrid_mode=config.model.mlqds_hybrid_mode,
-            range_geometry_blend=config.model.mlqds_range_geometry_blend,
-            inference_batch_size=config.model.inference_batch_size,
-            amp_mode=config.model.amp_mode,
-        ),
-        UniformTemporalMethod(),
-        DouglasPeuckerMethod(),
-    ]
+    methods = build_primary_methods(
+        trained=trained,
+        eval_workload=eval_workload,
+        eval_workload_map=eval_workload_map,
+        config=config,
+    )
 
     matched: dict[str, MethodEvaluation] = {}
     oracle_method: OracleMethod | None = None
@@ -459,53 +288,34 @@ def run_experiment_pipeline(
     run_oracle_baseline = bool(config.baselines.include_oracle and run_final_diagnostics)
     run_learned_fill_diagnostics = bool(eval_is_range_only and run_final_diagnostics)
     with _phase("eval-query-cache-prep"):
-        eval_query_cache = (
-            range_runtime_caches["eval"].query_cache
-            if eval_is_range_only
-            else None
+        eval_query_cache = prepare_eval_query_cache(
+            test_points=test_points,
+            test_boundaries=test_boundaries,
+            eval_workload=eval_workload,
+            eval_is_range_only=eval_is_range_only,
+            runtime_cache=range_runtime_caches["eval"],
         )
-        if eval_query_cache is None:
-            eval_query_cache = EvaluationQueryCache.for_workload(
-                test_points,
-                test_boundaries,
-                eval_workload.typed_queries,
-            )
-            if eval_is_range_only:
-                range_runtime_caches["eval"].query_cache = eval_query_cache
-        else:
-            eval_query_cache.validate(test_points, test_boundaries, eval_workload.typed_queries)
     if run_oracle_baseline or run_learned_fill_diagnostics or mlqds_range_geometry_blend > 0.0:
         with _phase("eval-label-prep"):
-            if eval_is_range_only:
-                prepared_eval_labels = prepare_range_label_cache(
-                    cache_label="eval",
-                    points=test_points,
-                    boundaries=test_boundaries,
-                    workload=eval_workload,
-                    workload_map=eval_workload_map,
-                    config=config,
-                    seed=seeds.eval_query_seed,
-                    runtime_cache=range_runtime_caches["eval"],
-                    range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
-                )
-                if prepared_eval_labels is not None:
-                    eval_labels, _ = prepared_eval_labels
-            elif run_oracle_baseline:
-                eval_labels, _ = compute_typed_importance_labels(
-                    points=test_points,
-                    boundaries=test_boundaries,
-                    typed_queries=eval_workload.typed_queries,
-                    seed=seeds.eval_query_seed,
-                    range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                    range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
-                )
+            eval_labels = prepare_eval_labels(
+                test_points=test_points,
+                test_boundaries=test_boundaries,
+                eval_workload=eval_workload,
+                eval_workload_map=eval_workload_map,
+                config=config,
+                seeds=seeds,
+                eval_is_range_only=eval_is_range_only,
+                run_oracle_baseline=run_oracle_baseline,
+                runtime_cache=range_runtime_caches["eval"],
+            )
     if mlqds_range_geometry_blend > 0.0:
         if eval_labels is None:
             raise RuntimeError("MLQDS range geometry blend requested but eval labels were not prepared.")
-        _, eval_type_id = workload_type_head(single_workload_type(eval_workload_map))
-        mlqds_method = methods[0]
-        if isinstance(mlqds_method, MLQDSMethod):
-            mlqds_method.range_geometry_scores = eval_labels[:, eval_type_id].float()
+        attach_range_geometry_scores(
+            methods=methods,
+            eval_labels=eval_labels,
+            eval_workload_map=eval_workload_map,
+        )
     with _phase("evaluate-matched"):
         for method in methods:
             with _phase(f"  eval {method.name}"):
@@ -542,25 +352,13 @@ def run_experiment_pipeline(
         if eval_labels is None:
             raise RuntimeError("Learned-fill diagnostics requested but eval labels were not prepared.")
         assert eval_labels is not None
-        _, eval_type_id = workload_type_head(single_workload_type(eval_workload_map))
-        random_generator = torch.Generator().manual_seed(int(seeds.eval_query_seed) + 404)
-        random_scores = torch.rand((test_points.shape[0],), generator=random_generator)
-        diagnostic_methods = [
-            ScoreHybridMethod(
-                name="TemporalRandomFill",
-                scores=random_scores,
-                temporal_fraction=config.model.mlqds_temporal_fraction,
-                diversity_bonus=config.model.mlqds_diversity_bonus,
-                hybrid_mode=config.model.mlqds_hybrid_mode,
-            ),
-            ScoreHybridMethod(
-                name="TemporalOracleFill",
-                scores=eval_labels[:, eval_type_id].float(),
-                temporal_fraction=config.model.mlqds_temporal_fraction,
-                diversity_bonus=config.model.mlqds_diversity_bonus,
-                hybrid_mode=config.model.mlqds_hybrid_mode,
-            ),
-        ]
+        diagnostic_methods = build_learned_fill_methods(
+            test_points=test_points,
+            eval_labels=eval_labels,
+            eval_workload_map=eval_workload_map,
+            config=config,
+            seeds=seeds,
+        )
         with _phase("learned-fill-diagnostics"):
             for method in diagnostic_methods:
                 with _phase(f"  fill {method.name}"):
@@ -618,41 +416,16 @@ def run_experiment_pipeline(
         range_compression_audit_table = "\n\n".join(audit_sections)
 
     with _phase("evaluate-shift"):
-        train_name = _workload_name(train_workload_map)
-        eval_name = _workload_name(eval_workload_map)
-        shift_pairs = {train_name: {eval_name: float(matched["MLQDS"].aggregate_f1)}}
-        if train_name == eval_name:
-            shift_pairs[train_name][train_name] = float(matched["MLQDS"].aggregate_f1)
-        else:
-            train_query_cache = EvaluationQueryCache.for_workload(
-                test_points,
-                test_boundaries,
-                train_workload.typed_queries,
-            )
-            shift_pairs[train_name][train_name] = float(
-                evaluate_method(
-                    method=MLQDSMethod(
-                        name="MLQDS",
-                        trained=trained,
-                        workload=train_workload,
-                        workload_type=single_workload_type(train_workload_map),
-                        score_mode=config.model.mlqds_score_mode,
-                        score_temperature=config.model.mlqds_score_temperature,
-                        rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
-                        temporal_fraction=config.model.mlqds_temporal_fraction,
-                        diversity_bonus=config.model.mlqds_diversity_bonus,
-                        hybrid_mode=config.model.mlqds_hybrid_mode,
-                        inference_batch_size=config.model.inference_batch_size,
-                        amp_mode=config.model.amp_mode,
-                    ),
-                    points=test_points,
-                    boundaries=test_boundaries,
-                    typed_queries=train_workload.typed_queries,
-                    workload_map=train_workload_map,
-                    compression_ratio=config.model.compression_ratio,
-                    query_cache=train_query_cache,
-                ).aggregate_f1
-            )
+        shift_pairs = evaluate_shift_pairs(
+            matched_mlqds_score=float(matched["MLQDS"].aggregate_f1),
+            trained=trained,
+            train_workload=train_workload,
+            train_workload_map=train_workload_map,
+            eval_workload_map=eval_workload_map,
+            config=config,
+            test_points=test_points,
+            test_boundaries=test_boundaries,
+        )
     shift_table = print_shift_table(shift_pairs)
 
     with _phase("range-diagnostics"):
@@ -764,51 +537,22 @@ def run_experiment_pipeline(
     }
 
     with _phase("write-results"):
-        out_dir = Path(results_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
-        (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
-        (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
-        (out_dir / "range_usefulness_table.txt").write_text(range_usefulness_table + "\n", encoding="utf-8")
-        if learned_fill_table:
-            (out_dir / "learned_fill_diagnostics_table.txt").write_text(
-                learned_fill_table + "\n",
-                encoding="utf-8",
-            )
-        (out_dir / "learned_fill_diagnostics.json").write_text(
-            json.dumps(
-                {name: _evaluation_metrics_payload(metrics) for name, metrics in learned_fill_diagnostics.items()},
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        out_dir = write_experiment_results(
+            results_dir=results_dir,
+            matched_table=matched_table,
+            shift_table=shift_table,
+            geometric_table=geometric_table,
+            range_usefulness_table=range_usefulness_table,
+            learned_fill_table=learned_fill_table,
+            learned_fill_diagnostics=learned_fill_diagnostics,
+            range_learned_fill_summary=range_learned_fill_summary,
+            range_compression_audit=range_compression_audit,
+            range_compression_audit_table=range_compression_audit_table,
+            range_diagnostics_summary=range_diagnostics_summary,
+            workload_distribution_comparison=workload_distribution_comparison,
+            range_diagnostics_rows=range_diagnostics_rows,
+            dump=dump,
         )
-        (out_dir / "range_learned_fill_summary.json").write_text(
-            json.dumps(range_learned_fill_summary, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        if range_compression_audit:
-            (out_dir / "range_compression_audit.json").write_text(
-                json.dumps(range_compression_audit, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            (out_dir / "range_compression_audit_table.txt").write_text(
-                range_compression_audit_table + "\n",
-                encoding="utf-8",
-            )
-        (out_dir / "range_workload_diagnostics.json").write_text(
-            json.dumps(range_diagnostics_summary, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        (out_dir / "range_workload_distribution_comparison.json").write_text(
-            json.dumps(workload_distribution_comparison, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        with open(out_dir / "range_query_diagnostics.jsonl", "w", encoding="utf-8") as f:
-            for row in range_diagnostics_rows:
-                f.write(json.dumps(row, sort_keys=True) + "\n")
-        with open(out_dir / "example_run.json", "w", encoding="utf-8") as f:
-            json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)
 
     if save_simplified_dir:
@@ -869,29 +613,3 @@ def run_experiment_pipeline(
         range_usefulness_table=range_usefulness_table,
         range_compression_audit_table=range_compression_audit_table,
     )
-
-
-def _workload_keyword_to_map(keyword: str | None) -> dict[str, float] | None:
-    """Translate a --workload keyword to a concrete pure workload map, or return None.
-
-    - "range"/"knn"/"similarity"/"clustering" -> 100% that type.
-    - anything else -> None (fall back to caller default).
-    """
-    if not keyword:
-        return None
-    k = keyword.strip().lower()
-    if k in {"mixed", "local_mixed", "global_mixed"}:
-        raise ValueError(
-            f"workload='{k}' is no longer supported for model runs; use one pure type: "
-            "range, knn, similarity, or clustering."
-        )
-    if k in {"range", "knn", "similarity", "clustering"}:
-        return {k: 1.0}
-    return None
-
-
-def resolve_workload_maps(workload_keyword: str | None = None) -> tuple[dict[str, float], dict[str, float]]:
-    """Return identical pure train/eval workload maps for one model run."""
-    keyword_map = _workload_keyword_to_map(workload_keyword)
-    workload_map = keyword_map if keyword_map is not None else {"range": 1.0}
-    return workload_map, workload_map

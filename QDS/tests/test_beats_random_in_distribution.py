@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from experiments.experiment_config import build_experiment_config
-from experiments.experiment_pipeline_helpers import run_experiment_pipeline
+from experiments.experiment_pipeline import run_experiment_pipeline
 
 
 def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:

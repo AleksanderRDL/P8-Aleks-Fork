@@ -9,7 +9,7 @@ from data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from data.trajectory_cache import load_or_build_ais_cache
 from experiments.experiment_cli import build_parser
 from experiments.experiment_config import build_experiment_config
-from experiments.experiment_pipeline_helpers import run_experiment_pipeline
+from experiments.experiment_pipeline import run_experiment_pipeline
 from experiments.torch_runtime import apply_torch_runtime_settings
 
 

@@ -28,7 +28,7 @@ from experiments.benchmark_runner import (
 )
 from experiments.benchmark_artifacts import index_entry, write_family_indexes
 from experiments.experiment_config import build_experiment_config
-from experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
+from experiments.experiment_workloads import _validation_query_count, resolve_workload_maps
 
 
 def _profile_core_args() -> list[str]:
