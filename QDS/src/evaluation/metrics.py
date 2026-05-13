@@ -80,7 +80,6 @@ class MethodEvaluation:
     geometric_distortion: dict[str, float] = field(default_factory=dict)
     avg_length_preserved: float = 1.0
     combined_query_shape_score: float = 0.0
-    range_boundary_f1: float = 0.0
     range_point_f1: float = 0.0
     range_ship_f1: float = 0.0
     range_ship_coverage: float = 0.0
@@ -94,11 +93,6 @@ class MethodEvaluation:
     range_usefulness_schema_version: int = 0
     range_audit: dict[str, Any] = field(default_factory=dict)
     retained_mask: torch.Tensor | None = None
-
-    @property
-    def avg_length_loss(self) -> float:
-        """Compatibility view for older result consumers: lower is better."""
-        return float(max(0.0, min(1.0, 1.0 - self.avg_length_preserved)))
 
 
 def _trajectory_sed_ped_km(
@@ -207,15 +201,6 @@ def compute_length_preservation(
     if total_orig_km <= 1e-9:
         return 1.0
     return float(max(0.0, min(1.0, total_simp_km / total_orig_km)))
-
-
-def compute_average_length_loss(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    retained_mask: torch.Tensor,
-) -> float:
-    """Compatibility wrapper returning length loss in [0, 1]."""
-    return float(1.0 - compute_length_preservation(points, boundaries, retained_mask))
 
 
 def _polyline_length_km(lats: torch.Tensor, lons: torch.Tensor) -> float:

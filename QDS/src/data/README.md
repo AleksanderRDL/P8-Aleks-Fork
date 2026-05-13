@@ -52,10 +52,8 @@ Use `--cache_dir` on experiment/inference commands to enable it, and
 Use `python -m src.data.combine_days --input ... --output ...` for ad hoc
 multi-day experiments that need one combined CSV. The current testing-baseline
 benchmark normally uses separate train/eval CSV days instead. The utility
-preserves MMSIs by default so `load_ais_csv` can segment continuous vessels by
-timestamp gaps across file boundaries. Use `--offset-mmsi-per-file` only for
-compatibility experiments where every input file should be treated as an
-isolated vessel set.
+preserves MMSIs so `load_ais_csv` can segment continuous vessels by timestamp
+gaps across file boundaries.
 
 ## Dataset Helpers
 

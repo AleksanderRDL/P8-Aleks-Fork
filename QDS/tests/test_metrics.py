@@ -931,7 +931,7 @@ def test_method_comparison_table_reports_canonical_baseline_diffs() -> None:
     assert "vs Random" not in table
 
 
-def test_length_preservation_and_legacy_loss_are_complements() -> None:
+def test_length_preservation_reports_preserved_path_length() -> None:
     points = torch.tensor(
         [
             [0.0, 0.0, 0.0, 1.0],
@@ -942,14 +942,4 @@ def test_length_preservation_and_legacy_loss_are_complements() -> None:
     )
     retained = torch.tensor([True, False, True])
 
-    preserved = compute_length_preservation(points, [(0, 3)], retained)
-    metrics = MethodEvaluation(
-        aggregate_f1=0.8,
-        per_type_f1={"range": 0.8},
-        compression_ratio=2.0 / 3.0,
-        latency_ms=0.0,
-        avg_length_preserved=preserved,
-    )
-
-    assert preserved == pytest.approx(1.0)
-    assert metrics.avg_length_loss == pytest.approx(0.0)
+    assert compute_length_preservation(points, [(0, 3)], retained) == pytest.approx(1.0)

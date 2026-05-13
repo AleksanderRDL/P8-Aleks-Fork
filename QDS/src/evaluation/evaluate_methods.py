@@ -677,7 +677,6 @@ def score_range_usefulness(
         "range_ship_f1": float(range_ship_f1),
         "range_ship_coverage": float(range_ship_coverage),
         "range_entry_exit_f1": float(range_entry_exit_f1),
-        "range_boundary_f1": float(range_entry_exit_f1),
         "range_crossing_f1": float(range_crossing_f1),
         "range_temporal_coverage": float(range_temporal_coverage),
         "range_gap_coverage": float(range_gap_coverage),
@@ -979,7 +978,6 @@ def evaluate_method(
         geometric_distortion=geometric,
         avg_length_preserved=avg_length_preserved,
         combined_query_shape_score=combined,
-        range_boundary_f1=boundary_f1,
         range_point_f1=float(range_audit.get("range_point_f1", per_type.get("range", 0.0))),
         range_ship_f1=float(range_audit.get("range_ship_f1", 0.0)),
         range_ship_coverage=float(range_audit.get("range_ship_coverage", 0.0)),
@@ -1011,14 +1009,14 @@ def _range_focused_results(results: dict[str, MethodEvaluation]) -> bool:
 
 
 def _range_point_metric(metrics: MethodEvaluation) -> float:
-    """Return the explicit range point metric with compatibility fallback."""
+    """Return the explicit range point metric, falling back for synthetic/test rows."""
     if int(metrics.range_audit.get("range_query_count", 0) or 0) > 0:
         return float(metrics.range_point_f1)
     return float(metrics.per_type_f1.get("range", metrics.aggregate_f1))
 
 
 def _range_usefulness_metric(metrics: MethodEvaluation) -> float:
-    """Return the explicit range usefulness metric with compatibility fallback."""
+    """Return the explicit range usefulness metric, falling back for synthetic/test rows."""
     if int(metrics.range_audit.get("range_query_count", 0) or 0) > 0:
         return float(metrics.range_usefulness_score)
     if metrics.range_usefulness_score > 0.0:
@@ -1051,7 +1049,7 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
     for name, metrics in results.items():
         primary = _range_point_metric(metrics) if range_focused else float(metrics.aggregate_f1)
         secondary = _range_usefulness_metric(metrics) if range_focused else float(metrics.aggregate_combined_f1)
-        entry_exit = float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1)
+        entry_exit = float(metrics.range_entry_exit_f1)
         lines.append(
             f"{name:<{col1}}"
             f"{primary:>{col2}.6f}"
@@ -1176,7 +1174,7 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
             f"{_range_point_metric(metrics):>{col2}.6f}"
             f"{metrics.range_ship_f1:>{col3}.6f}"
             f"{metrics.range_ship_coverage:>{col4}.6f}"
-            f"{float(metrics.range_entry_exit_f1 or metrics.range_boundary_f1):>{col5}.6f}"
+            f"{metrics.range_entry_exit_f1:>{col5}.6f}"
             f"{metrics.range_crossing_f1:>{col6}.6f}"
             f"{metrics.range_temporal_coverage:>{col7}.6f}"
             f"{metrics.range_gap_coverage:>{col8}.6f}"

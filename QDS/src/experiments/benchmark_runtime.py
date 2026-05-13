@@ -312,7 +312,6 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             "range_ship_f1": payload.get("range_ship_f1"),
             "range_ship_coverage": payload.get("range_ship_coverage"),
             "range_entry_exit_f1": payload.get("range_entry_exit_f1"),
-            "range_boundary_f1": payload.get("range_boundary_f1"),
             "range_crossing_f1": payload.get("range_crossing_f1"),
             "range_temporal_coverage": payload.get("range_temporal_coverage"),
             "range_gap_coverage": payload.get("range_gap_coverage"),

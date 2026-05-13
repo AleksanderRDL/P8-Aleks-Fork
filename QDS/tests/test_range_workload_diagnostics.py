@@ -231,7 +231,7 @@ def test_range_label_diagnostics_reports_component_mass() -> None:
     assert sum(float(value) for value in fractions.values()) == pytest.approx(1.0)
 
 
-def test_phase2_diagnostics_dump_is_json_serializable() -> None:
+def test_range_diagnostics_dump_is_json_serializable() -> None:
     points, boundaries = _points_and_boundaries()
     queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 2.5)]
 

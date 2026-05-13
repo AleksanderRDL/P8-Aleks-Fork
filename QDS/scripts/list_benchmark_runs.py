@@ -66,7 +66,7 @@ def main() -> int:
     if not args.all:
         rows = rows[: max(args.limit, 0)]
 
-    headers = ["status", "started", "run_id", "profile", "best_f1", "best_label", "results_dir"]
+    headers = ["status", "started", "run_id", "profile", "best_mlqds_f1", "best_label", "results_dir"]
     table_rows = []
     for row in rows:
         table_rows.append(

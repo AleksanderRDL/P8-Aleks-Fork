@@ -967,7 +967,7 @@ def _range_audit_ratios(config: ExperimentConfig) -> list[float]:
 
 
 def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
-    """Serialize method metrics with explicit range aliases."""
+    """Serialize method metrics with explicit range fields."""
     return {
         "aggregate_f1": metrics.aggregate_f1,
         "per_type_f1": metrics.per_type_f1,
@@ -978,14 +978,12 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "max_retained_point_gap": metrics.max_retained_point_gap,
         "geometric_distortion": metrics.geometric_distortion,
         "avg_length_preserved": metrics.avg_length_preserved,
-        "avg_length_loss": metrics.avg_length_loss,
         "combined_query_shape_score": metrics.combined_query_shape_score,
         "range_point_f1": metrics.range_point_f1,
         "pure_range_f1": metrics.range_point_f1,
         "range_ship_f1": metrics.range_ship_f1,
         "range_ship_coverage": metrics.range_ship_coverage,
         "range_entry_exit_f1": metrics.range_entry_exit_f1,
-        "range_boundary_f1": metrics.range_entry_exit_f1,
         "range_crossing_f1": metrics.range_crossing_f1,
         "range_temporal_coverage": metrics.range_temporal_coverage,
         "range_gap_coverage": metrics.range_gap_coverage,
