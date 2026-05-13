@@ -137,6 +137,14 @@ the cap is hit. Run artifacts record the final generated count and stop reason.
 ## Artifacts
 
 For comparisons, start with `benchmark_report.md` or `benchmark_report.csv`.
+The compact report uses explicit metric names:
+
+- `mlqds_primary_score` is the score selected for ranking benchmark rows. For
+  range runs this should be `range_usefulness`.
+- `mlqds_range_point_f1` is the retained in-query point F1.
+- `mlqds_range_usefulness` is the combined range usefulness audit score.
+- `mlqds_f1` is retained only as a legacy aggregate-F1 alias for older tooling.
+
 Then inspect the child run files that explain behavior:
 
 - `example_run.json`

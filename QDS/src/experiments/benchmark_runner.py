@@ -544,13 +544,19 @@ def _row_from_run(
     label_mass_fraction = train_label_diagnostics.get("component_positive_label_mass_fraction", {})
     target_diagnostics = (run_json or {}).get("training_target_diagnostics") or {}
     target_budget_row = _target_budget_row(target_diagnostics, model_config.get("compression_ratio"))
-    mlqds_f1 = mlqds.get("aggregate_f1")
-    mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds.get("pure_range_f1", mlqds_f1))
+    mlqds_aggregate_f1 = mlqds.get("aggregate_f1")
+    mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds.get("pure_range_f1", mlqds_aggregate_f1))
     mlqds_range_usefulness = mlqds.get("range_usefulness_score")
+    mlqds_primary_score = mlqds_range_usefulness if mlqds_range_usefulness is not None else mlqds_range_point_f1
+    mlqds_primary_metric = "range_usefulness" if mlqds_range_usefulness is not None else "range_point_f1"
     random_fill_range_usefulness = temporal_random_fill.get("range_usefulness_score")
     oracle_fill_range_usefulness = temporal_oracle_fill.get("range_usefulness_score")
-    uniform_f1 = uniform.get("aggregate_f1")
-    dp_f1 = dp.get("aggregate_f1")
+    uniform_aggregate_f1 = uniform.get("aggregate_f1")
+    uniform_range_point_f1 = uniform.get("range_point_f1", uniform.get("pure_range_f1", uniform_aggregate_f1))
+    uniform_range_usefulness = uniform.get("range_usefulness_score")
+    dp_aggregate_f1 = dp.get("aggregate_f1")
+    dp_range_point_f1 = dp.get("range_point_f1", dp.get("pure_range_f1", dp_aggregate_f1))
+    dp_range_usefulness = dp.get("range_usefulness_score")
     return {
         "workload": workload,
         "run_label": run_label,
@@ -564,8 +570,13 @@ def _row_from_run(
         "best_loss": (run_json or {}).get("best_loss"),
         "best_selection_score": (run_json or {}).get("best_selection_score", (run_json or {}).get("best_f1")),
         "best_f1": (run_json or {}).get("best_f1"),
-        "mlqds_f1": mlqds_f1,
+        "mlqds_primary_metric": mlqds_primary_metric,
+        "mlqds_primary_score": mlqds_primary_score,
+        "mlqds_aggregate_f1": mlqds_aggregate_f1,
+        "mlqds_answer_f1": mlqds_aggregate_f1,
+        "mlqds_f1": mlqds_aggregate_f1,
         "mlqds_range_point_f1": mlqds_range_point_f1,
+        "mlqds_range_usefulness": mlqds_range_usefulness,
         "mlqds_range_usefulness_score": mlqds_range_usefulness,
         "mlqds_type_f1": (mlqds.get("per_type_f1") or {}).get(workload),
         "mlqds_range_ship_f1": mlqds.get("range_ship_f1"),
@@ -578,16 +589,46 @@ def _row_from_run(
         "mlqds_range_shape_score": mlqds.get("range_shape_score"),
         "range_usefulness_schema_version": mlqds.get("range_usefulness_schema_version"),
         "final_metrics_mode": (run_json or {}).get("final_metrics_mode", baseline_config.get("final_metrics_mode")),
-        "uniform_f1": uniform_f1,
-        "douglas_peucker_f1": dp_f1,
+        "uniform_aggregate_f1": uniform_aggregate_f1,
+        "uniform_answer_f1": uniform_aggregate_f1,
+        "uniform_f1": uniform_aggregate_f1,
+        "uniform_range_point_f1": uniform_range_point_f1,
+        "uniform_range_usefulness": uniform_range_usefulness,
+        "uniform_range_usefulness_score": uniform_range_usefulness,
+        "douglas_peucker_aggregate_f1": dp_aggregate_f1,
+        "douglas_peucker_answer_f1": dp_aggregate_f1,
+        "douglas_peucker_f1": dp_aggregate_f1,
+        "douglas_peucker_range_point_f1": dp_range_point_f1,
+        "douglas_peucker_range_usefulness": dp_range_usefulness,
+        "douglas_peucker_range_usefulness_score": dp_range_usefulness,
         "mlqds_vs_uniform_f1": (
-            float(mlqds_f1) - float(uniform_f1)
-            if mlqds_f1 is not None and uniform_f1 is not None
+            float(mlqds_aggregate_f1) - float(uniform_aggregate_f1)
+            if mlqds_aggregate_f1 is not None and uniform_aggregate_f1 is not None
             else None
         ),
         "mlqds_vs_douglas_peucker_f1": (
-            float(mlqds_f1) - float(dp_f1)
-            if mlqds_f1 is not None and dp_f1 is not None
+            float(mlqds_aggregate_f1) - float(dp_aggregate_f1)
+            if mlqds_aggregate_f1 is not None and dp_aggregate_f1 is not None
+            else None
+        ),
+        "mlqds_vs_uniform_range_point_f1": (
+            float(mlqds_range_point_f1) - float(uniform_range_point_f1)
+            if mlqds_range_point_f1 is not None and uniform_range_point_f1 is not None
+            else None
+        ),
+        "mlqds_vs_douglas_peucker_range_point_f1": (
+            float(mlqds_range_point_f1) - float(dp_range_point_f1)
+            if mlqds_range_point_f1 is not None and dp_range_point_f1 is not None
+            else None
+        ),
+        "mlqds_vs_uniform_range_usefulness": (
+            float(mlqds_range_usefulness) - float(uniform_range_usefulness)
+            if mlqds_range_usefulness is not None and uniform_range_usefulness is not None
+            else None
+        ),
+        "mlqds_vs_douglas_peucker_range_usefulness": (
+            float(mlqds_range_usefulness) - float(dp_range_usefulness)
+            if mlqds_range_usefulness is not None and dp_range_usefulness is not None
             else None
         ),
         "mlqds_latency_ms": mlqds.get("latency_ms"),
@@ -703,10 +744,20 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "checkpoint_full_f1_every",
         "checkpoint_candidate_pool_size",
         "final_metrics_mode",
-        "mlqds_f1",
+        "mlqds_primary_metric",
+        "mlqds_primary_score",
+        "mlqds_aggregate_f1",
         "mlqds_range_point_f1",
-        "mlqds_range_usefulness_score",
+        "mlqds_range_usefulness",
         "range_usefulness_schema_version",
+        "uniform_range_point_f1",
+        "uniform_range_usefulness",
+        "douglas_peucker_range_point_f1",
+        "douglas_peucker_range_usefulness",
+        "mlqds_vs_uniform_range_point_f1",
+        "mlqds_vs_uniform_range_usefulness",
+        "mlqds_vs_douglas_peucker_range_point_f1",
+        "mlqds_vs_douglas_peucker_range_usefulness",
         "temporal_random_fill_range_usefulness_score",
         "mlqds_vs_temporal_random_fill_range_usefulness",
         "mlqds_range_ship_coverage",
@@ -714,10 +765,6 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "mlqds_range_crossing_f1",
         "mlqds_range_gap_coverage",
         "mlqds_range_turn_coverage",
-        "uniform_f1",
-        "douglas_peucker_f1",
-        "mlqds_vs_uniform_f1",
-        "mlqds_vs_douglas_peucker_f1",
         "mlqds_latency_ms",
         "best_epoch_collapse_warning",
         "collapse_warning_count",

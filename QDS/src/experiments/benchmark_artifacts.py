@@ -28,6 +28,11 @@ RUN_INDEX_FIELDS = [
     "max_segments",
     "max_trajectories",
     "results_dir",
+    "best_mlqds_primary_metric",
+    "best_mlqds_primary_score",
+    "best_mlqds_aggregate_f1",
+    "best_mlqds_range_point_f1",
+    "best_mlqds_range_usefulness",
     "best_mlqds_f1",
     "best_mlqds_run_label",
     "git_commit",
@@ -97,19 +102,78 @@ def write_status(
     return payload
 
 
-def _best_mlqds(rows: list[dict[str, Any]]) -> tuple[float | None, str | None]:
-    """Return the best MLQDS aggregate F1 and run label from completed rows."""
-    best_value: float | None = None
-    best_run_label: str | None = None
-    for row in rows:
-        value = row.get("mlqds_f1")
-        if value is None:
+def _first_float(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    """Return the first present numeric value for a set of row keys."""
+    for key in keys:
+        value = row.get(key)
+        if value in (None, ""):
             continue
-        numeric = float(value)
-        if best_value is None or numeric > best_value:
-            best_value = numeric
-            best_run_label = str(row.get("run_label"))
-    return best_value, best_run_label
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _inferred_primary_metric(row: dict[str, Any]) -> str | None:
+    """Infer the primary metric label for old rows that predate explicit schema fields."""
+    metric = row.get("mlqds_primary_metric")
+    if metric not in (None, ""):
+        return str(metric)
+    if (
+        row.get("mlqds_range_usefulness") not in (None, "")
+        or row.get("mlqds_range_usefulness_score") not in (None, "")
+    ):
+        return "range_usefulness"
+    if row.get("mlqds_range_point_f1") not in (None, ""):
+        return "range_point_f1"
+    if row.get("mlqds_aggregate_f1") not in (None, "") or row.get("mlqds_f1") not in (None, ""):
+        return "aggregate_f1"
+    return None
+
+
+def _best_mlqds(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return explicit best-MLQDS fields, selecting by primary benchmark score."""
+    best_row: dict[str, Any] | None = None
+    best_score: float | None = None
+    for row in rows:
+        score = _first_float(
+            row,
+            (
+                "mlqds_primary_score",
+                "mlqds_range_usefulness",
+                "mlqds_range_usefulness_score",
+                "mlqds_range_point_f1",
+                "mlqds_aggregate_f1",
+                "mlqds_f1",
+            ),
+        )
+        if score is None:
+            continue
+        if best_score is None or score > best_score:
+            best_score = score
+            best_row = row
+    if best_row is None:
+        return {
+            "primary_metric": None,
+            "primary_score": None,
+            "aggregate_f1": None,
+            "range_point_f1": None,
+            "range_usefulness": None,
+            "run_label": None,
+        }
+    aggregate_f1 = _first_float(best_row, ("mlqds_aggregate_f1", "mlqds_f1"))
+    return {
+        "primary_metric": _inferred_primary_metric(best_row),
+        "primary_score": best_score,
+        "aggregate_f1": aggregate_f1,
+        "range_point_f1": _first_float(best_row, ("mlqds_range_point_f1",)),
+        "range_usefulness": _first_float(
+            best_row,
+            ("mlqds_range_usefulness", "mlqds_range_usefulness_score"),
+        ),
+        "run_label": str(best_row.get("run_label")) if best_row.get("run_label") is not None else None,
+    }
 
 
 def index_entry(
@@ -125,7 +189,7 @@ def index_entry(
     git: dict[str, Any],
 ) -> dict[str, Any]:
     """Build one family-level index row."""
-    best_f1, best_run_label = _best_mlqds(rows)
+    best = _best_mlqds(rows)
     return {
         "run_id": run_id,
         "status": status_payload.get("status"),
@@ -145,8 +209,13 @@ def index_entry(
         "max_segments": args.max_segments,
         "max_trajectories": args.max_trajectories,
         "results_dir": str(results_dir),
-        "best_mlqds_f1": best_f1,
-        "best_mlqds_run_label": best_run_label,
+        "best_mlqds_primary_metric": best["primary_metric"],
+        "best_mlqds_primary_score": best["primary_score"],
+        "best_mlqds_aggregate_f1": best["aggregate_f1"],
+        "best_mlqds_range_point_f1": best["range_point_f1"],
+        "best_mlqds_range_usefulness": best["range_usefulness"],
+        "best_mlqds_f1": best["aggregate_f1"],
+        "best_mlqds_run_label": best["run_label"],
         "git_commit": git.get("commit"),
         "git_dirty": git.get("dirty"),
     }

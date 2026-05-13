@@ -20,7 +20,7 @@ def _short(value: str | None, width: int) -> str:
     return text[: width - 1] + "~"
 
 
-def _format_f1(value: str | None) -> str:
+def _format_score(value: str | None) -> str:
     if value in (None, ""):
         return ""
     try:
@@ -42,6 +42,14 @@ def _load_rows(path: Path) -> list[dict[str, str]]:
 
 def _sort_key(row: dict[str, str]) -> tuple[str, str]:
     return (row.get("started_at_utc") or "", row.get("run_id") or "")
+
+
+def _first(row: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 def main() -> int:
@@ -66,16 +74,33 @@ def main() -> int:
     if not args.all:
         rows = rows[: max(args.limit, 0)]
 
-    headers = ["status", "started", "run_id", "profile", "best_mlqds_f1", "best_label", "results_dir"]
+    headers = [
+        "status",
+        "started",
+        "run_id",
+        "profile",
+        "best_metric",
+        "best_score",
+        "range_point_f1",
+        "range_useful",
+        "best_label",
+        "results_dir",
+    ]
     table_rows = []
     for row in rows:
+        best_metric = _first(row, "best_mlqds_primary_metric")
+        if not best_metric and _first(row, "best_mlqds_f1"):
+            best_metric = "aggregate_f1"
         table_rows.append(
             [
                 _short(row.get("status"), 11),
                 _format_timestamp(row.get("started_at_utc")),
                 _short(row.get("run_id"), 40),
                 _short(row.get("profile"), 8),
-                _format_f1(row.get("best_mlqds_f1")),
+                _short(best_metric, 16),
+                _format_score(_first(row, "best_mlqds_primary_score", "best_mlqds_range_usefulness", "best_mlqds_f1")),
+                _format_score(_first(row, "best_mlqds_range_point_f1", "best_mlqds_f1")),
+                _format_score(_first(row, "best_mlqds_range_usefulness")),
                 _short(row.get("best_mlqds_run_label"), 16),
                 _short(row.get("results_dir"), 72),
             ]
