@@ -27,6 +27,7 @@ class BenchmarkProfile:
     query_chunk_size: int
     train_batch_size: int
     inference_batch_size: int
+    model_type: str
     compression_ratio: float
     epochs: int
     early_stopping_patience: int
@@ -46,7 +47,9 @@ class BenchmarkProfile:
     mlqds_score_mode: str
     mlqds_score_temperature: float
     mlqds_rank_confidence_weight: float
+    mlqds_range_geometry_blend: float
     mlqds_diversity_bonus: float
+    mlqds_hybrid_mode: str
     residual_label_mode: str
     f1_diagnostic_every: int
     range_label_mode: str
@@ -66,27 +69,30 @@ RANGE_TESTING_BASELINE_PROFILE = BenchmarkProfile(
     query_chunk_size=2048,
     train_batch_size=64,
     inference_batch_size=64,
+    model_type="range_aware",
     compression_ratio=0.05,
-    epochs=20,
+    epochs=8,
     early_stopping_patience=5,
     checkpoint_smoothing_window=1,
-    checkpoint_full_f1_every=2,
+    checkpoint_full_f1_every=4,
     checkpoint_candidate_pool_size=2,
     mlqds_temporal_fraction=0.25,
     workload="range",
-    checkpoint_selection_metric="f1",
+    checkpoint_selection_metric="uniform_gap",
     checkpoint_f1_variant="range_usefulness",
     float32_matmul_precision="high",
     allow_tf32=True,
     amp_mode="bf16",
     loss_objective="budget_topk",
-    budget_loss_ratios=(0.01, 0.02, 0.05, 0.10),
-    budget_loss_temperature=0.10,
+    budget_loss_ratios=(0.05, 0.10),
+    budget_loss_temperature=0.25,
     mlqds_score_mode="rank",
     mlqds_score_temperature=1.0,
     mlqds_rank_confidence_weight=0.15,
+    mlqds_range_geometry_blend=0.0,
     mlqds_diversity_bonus=0.0,
-    residual_label_mode="temporal",
+    mlqds_hybrid_mode="fill",
+    residual_label_mode="none",
     f1_diagnostic_every=1,
     range_label_mode="usefulness",
     range_boundary_prior_weight=0.0,
@@ -146,6 +152,8 @@ def benchmark_profile_args(
         str(profile.train_batch_size),
         "--inference_batch_size",
         str(profile.inference_batch_size),
+        "--model_type",
+        profile.model_type,
         "--max_queries",
         str(profile.query_chunk_size),
         "--compression_ratio",
@@ -174,8 +182,12 @@ def benchmark_profile_args(
         f"{profile.mlqds_score_temperature:.2f}",
         "--mlqds_rank_confidence_weight",
         f"{profile.mlqds_rank_confidence_weight:.2f}",
+        "--mlqds_range_geometry_blend",
+        f"{profile.mlqds_range_geometry_blend:.2f}",
         "--mlqds_diversity_bonus",
         f"{profile.mlqds_diversity_bonus:.2f}",
+        "--mlqds_hybrid_mode",
+        profile.mlqds_hybrid_mode,
         "--residual_label_mode",
         profile.residual_label_mode,
         "--range_label_mode",
@@ -218,6 +230,7 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "query_chunk_size": profile.query_chunk_size,
         "train_batch_size": profile.train_batch_size,
         "inference_batch_size": profile.inference_batch_size,
+        "model_type": profile.model_type,
         "compression_ratio": profile.compression_ratio,
         "epochs": profile.epochs,
         "early_stopping_patience": profile.early_stopping_patience,
@@ -234,7 +247,9 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "mlqds_score_mode": profile.mlqds_score_mode,
         "mlqds_score_temperature": profile.mlqds_score_temperature,
         "mlqds_rank_confidence_weight": profile.mlqds_rank_confidence_weight,
+        "mlqds_range_geometry_blend": profile.mlqds_range_geometry_blend,
         "mlqds_diversity_bonus": profile.mlqds_diversity_bonus,
+        "mlqds_hybrid_mode": profile.mlqds_hybrid_mode,
         "residual_label_mode": profile.residual_label_mode,
         "f1_diagnostic_every": profile.f1_diagnostic_every,
         "range_label_mode": profile.range_label_mode,

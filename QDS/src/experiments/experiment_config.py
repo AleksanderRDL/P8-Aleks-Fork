@@ -121,9 +121,11 @@ class ModelConfig:
     checkpoint_f1_variant: str = "range_usefulness"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
+    mlqds_hybrid_mode: str = "fill"
     mlqds_score_mode: str = "rank"
     mlqds_score_temperature: float = 1.0
     mlqds_rank_confidence_weight: float = 0.15
+    mlqds_range_geometry_blend: float = 0.0
     residual_label_mode: str = "temporal"
     range_label_mode: str = "usefulness"
     range_boundary_prior_weight: float = 0.0
@@ -258,9 +260,11 @@ def build_experiment_config(
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
+    mlqds_hybrid_mode: str = "fill",
     mlqds_score_mode: str = "rank",
     mlqds_score_temperature: float = 1.0,
     mlqds_rank_confidence_weight: float = 0.15,
+    mlqds_range_geometry_blend: float = 0.0,
     residual_label_mode: str = "temporal",
     range_label_mode: str = "usefulness",
     range_boundary_prior_weight: float = 0.0,
@@ -337,9 +341,11 @@ def build_experiment_config(
             checkpoint_f1_variant=checkpoint_f1_variant,
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
+            mlqds_hybrid_mode=mlqds_hybrid_mode,
             mlqds_score_mode=mlqds_score_mode,
             mlqds_score_temperature=mlqds_score_temperature,
             mlqds_rank_confidence_weight=mlqds_rank_confidence_weight,
+            mlqds_range_geometry_blend=mlqds_range_geometry_blend,
             residual_label_mode=residual_label_mode,
             range_label_mode=range_label_mode,
             range_boundary_prior_weight=range_boundary_prior_weight,

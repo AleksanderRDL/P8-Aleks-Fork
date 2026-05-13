@@ -57,9 +57,11 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         ranking_top_quantile=0.9,
         range_spatial_km=2.2,
         range_time_hours=6.0,
+        mlqds_hybrid_mode="swap",
         mlqds_score_mode="rank_confidence",
         mlqds_score_temperature=0.5,
         mlqds_rank_confidence_weight=0.3,
+        mlqds_range_geometry_blend=0.4,
         range_audit_compression_ratios=[0.01, 0.05],
         checkpoint_full_f1_every=3,
         checkpoint_candidate_pool_size=2,
@@ -88,9 +90,11 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.ranking_top_quantile == 0.9
     assert restored.query.range_spatial_km == 2.2
     assert restored.query.range_time_hours == 6.0
+    assert restored.model.mlqds_hybrid_mode == "swap"
     assert restored.model.mlqds_score_mode == "rank_confidence"
     assert restored.model.mlqds_score_temperature == 0.5
     assert restored.model.mlqds_rank_confidence_weight == 0.3
+    assert restored.model.mlqds_range_geometry_blend == 0.4
     assert restored.model.range_audit_compression_ratios == [0.01, 0.05]
     assert restored.model.checkpoint_selection_metric == "f1"
     assert restored.model.checkpoint_full_f1_every == 3
@@ -106,10 +110,14 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "0.70",
             "--mlqds_score_mode",
             "rank_confidence",
+            "--mlqds_hybrid_mode",
+            "swap",
             "--mlqds_score_temperature",
             "0.50",
             "--mlqds_rank_confidence_weight",
             "0.30",
+            "--mlqds_range_geometry_blend",
+            "0.40",
             "--range_audit_compression_ratios",
             "0.01,0.02,0.10",
             "--range_label_mode",
@@ -136,9 +144,11 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     cfg = build_experiment_config(
         ranking_pairs_per_type=args.ranking_pairs_per_type,
         ranking_top_quantile=args.ranking_top_quantile,
+        mlqds_hybrid_mode=args.mlqds_hybrid_mode,
         mlqds_score_mode=args.mlqds_score_mode,
         mlqds_score_temperature=args.mlqds_score_temperature,
         mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
+        mlqds_range_geometry_blend=args.mlqds_range_geometry_blend,
         range_audit_compression_ratios=args.range_audit_compression_ratios,
         range_label_mode=args.range_label_mode,
         loss_objective=args.loss_objective,
@@ -153,9 +163,11 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
 
     assert args.ranking_pairs_per_type == 64
     assert args.ranking_top_quantile == 0.70
+    assert args.mlqds_hybrid_mode == "swap"
     assert args.mlqds_score_mode == "rank_confidence"
     assert args.mlqds_score_temperature == 0.50
     assert args.mlqds_rank_confidence_weight == 0.30
+    assert args.mlqds_range_geometry_blend == 0.40
     assert args.range_audit_compression_ratios == [0.01, 0.02, 0.10]
     assert args.range_label_mode == "point_f1"
     assert args.loss_objective == "budget_topk"
@@ -168,9 +180,11 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.validation_csv_path == "validation.csv"
     assert cfg.model.ranking_pairs_per_type == 64
     assert cfg.model.ranking_top_quantile == 0.70
+    assert cfg.model.mlqds_hybrid_mode == "swap"
     assert cfg.model.mlqds_score_mode == "rank_confidence"
     assert cfg.model.mlqds_score_temperature == 0.50
     assert cfg.model.mlqds_rank_confidence_weight == 0.30
+    assert cfg.model.mlqds_range_geometry_blend == 0.40
     assert cfg.model.range_audit_compression_ratios == [0.01, 0.02, 0.10]
     assert cfg.model.range_label_mode == "point_f1"
     assert cfg.model.loss_objective == "budget_topk"
@@ -218,6 +232,7 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.model.mlqds_score_mode == "rank"
     assert restored.model.mlqds_score_temperature == 1.0
     assert restored.model.mlqds_rank_confidence_weight == 0.15
+    assert restored.model.mlqds_range_geometry_blend == 0.0
     assert restored.model.checkpoint_selection_metric == "f1"
     assert restored.model.checkpoint_f1_variant == "range_usefulness"
     assert restored.model.checkpoint_full_f1_every == 1
@@ -268,6 +283,7 @@ def test_runtime_profile_uses_testing_baseline_shape(tmp_path) -> None:
     assert args[args.index("--query_chunk_size") + 1] == "2048"
     assert args[args.index("--train_batch_size") + 1] == "64"
     assert args[args.index("--inference_batch_size") + 1] == "64"
+    assert args[args.index("--model_type") + 1] == "range_aware"
     assert args[args.index("--query_coverage") + 1] == "0.20"
     assert args[args.index("--range_spatial_km") + 1] == "2.2"
     assert args[args.index("--range_time_hours") + 1] == "5.0"
@@ -277,17 +293,19 @@ def test_runtime_profile_uses_testing_baseline_shape(tmp_path) -> None:
     assert args[args.index("--early_stopping_patience") + 1] == "5"
     assert args[args.index("--f1_diagnostic_every") + 1] == "1"
     assert args[args.index("--checkpoint_smoothing_window") + 1] == "1"
-    assert args[args.index("--checkpoint_full_f1_every") + 1] == "2"
+    assert args[args.index("--checkpoint_full_f1_every") + 1] == "4"
     assert args[args.index("--checkpoint_candidate_pool_size") + 1] == "2"
     assert args[args.index("--loss_objective") + 1] == "budget_topk"
-    assert args[args.index("--budget_loss_ratios") + 1] == "0.01,0.02,0.05,0.10"
-    assert args[args.index("--budget_loss_temperature") + 1] == "0.10"
+    assert args[args.index("--budget_loss_ratios") + 1] == "0.05,0.10"
+    assert args[args.index("--budget_loss_temperature") + 1] == "0.25"
     assert args[args.index("--mlqds_temporal_fraction") + 1] == "0.25"
     assert args[args.index("--mlqds_score_mode") + 1] == "rank"
     assert args[args.index("--mlqds_score_temperature") + 1] == "1.00"
     assert args[args.index("--mlqds_rank_confidence_weight") + 1] == "0.15"
+    assert args[args.index("--mlqds_range_geometry_blend") + 1] == "0.00"
     assert args[args.index("--mlqds_diversity_bonus") + 1] == "0.00"
-    assert args[args.index("--residual_label_mode") + 1] == "temporal"
+    assert args[args.index("--mlqds_hybrid_mode") + 1] == "fill"
+    assert args[args.index("--residual_label_mode") + 1] == "none"
     assert args[args.index("--range_label_mode") + 1] == "usefulness"
     assert args[args.index("--range_boundary_prior_weight") + 1] == "0.0"
     assert "--n_ships" not in args

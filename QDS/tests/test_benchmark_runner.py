@@ -22,6 +22,7 @@ from src.experiments.benchmark_runner import (
     _profile_args,
     _resolve_data_sources,
     _row_from_run,
+    _run_config,
     _run_capture_streaming,
     _runner_environment_metadata,
 )
@@ -62,26 +63,28 @@ def _profile_core_args() -> list[str]:
         "64",
         "--inference_batch_size",
         "64",
+        "--model_type",
+        "range_aware",
         "--max_queries",
         "2048",
         "--compression_ratio",
         "0.05",
         "--epochs",
-        "20",
+        "8",
         "--early_stopping_patience",
         "5",
         "--checkpoint_smoothing_window",
         "1",
         "--checkpoint_full_f1_every",
-        "2",
+        "4",
         "--checkpoint_candidate_pool_size",
         "2",
         "--loss_objective",
         "budget_topk",
         "--budget_loss_ratios",
-        "0.01,0.02,0.05,0.10",
+        "0.05,0.10",
         "--budget_loss_temperature",
-        "0.10",
+        "0.25",
         "--mlqds_temporal_fraction",
         "0.25",
         "--mlqds_score_mode",
@@ -90,16 +93,20 @@ def _profile_core_args() -> list[str]:
         "1.00",
         "--mlqds_rank_confidence_weight",
         "0.15",
+        "--mlqds_range_geometry_blend",
+        "0.00",
         "--mlqds_diversity_bonus",
         "0.00",
+        "--mlqds_hybrid_mode",
+        "fill",
         "--residual_label_mode",
-        "temporal",
+        "none",
         "--range_label_mode",
         "usefulness",
         "--range_boundary_prior_weight",
         "0.0",
         "--checkpoint_selection_metric",
-        "f1",
+        "uniform_gap",
         "--checkpoint_f1_variant",
         "range_usefulness",
     ]
@@ -136,15 +143,53 @@ def test_benchmark_environment_metadata_is_scoped_to_parent_process() -> None:
     assert "rows[*].child_torch_runtime" in environment["note"]
 
 
+def test_run_config_records_profile_checkpoint_selection_metric(tmp_path) -> None:
+    args = argparse.Namespace(
+        profile=DEFAULT_PROFILE,
+        seed=42,
+        cache_dir=None,
+        refresh_cache=False,
+        no_cache_warmup=False,
+        min_points_per_segment=4,
+        max_points_per_segment=None,
+        max_time_gap_seconds=3600.0,
+        max_segments=None,
+        max_trajectories=None,
+        f1_diagnostic_every=1,
+        extra_args=None,
+        continue_on_failure=False,
+    )
+    data_sources = BenchmarkDataSources(
+        train_csv_path="train.csv",
+        validation_csv_path="validation.csv",
+        eval_csv_path="eval.csv",
+        selected_cleaned_csv_files=("train.csv", "validation.csv", "eval.csv"),
+    )
+
+    payload = _run_config(
+        args=args,
+        run_id="run",
+        workloads=["range"],
+        run_label="label",
+        data_sources=data_sources,
+        results_dir=tmp_path,
+    )
+
+    assert payload["checkpoint_selection_metric"] == "uniform_gap"
+
+
 def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     run_json = {
         "config": {
             "model": {
+                "model_type": "range_aware",
                 "mlqds_temporal_fraction": 0.25,
                 "mlqds_diversity_bonus": 0.05,
+                "mlqds_hybrid_mode": "swap",
                 "mlqds_score_mode": "rank",
                 "mlqds_score_temperature": 1.0,
                 "mlqds_rank_confidence_weight": 0.15,
+                "mlqds_range_geometry_blend": 0.25,
                 "residual_label_mode": "temporal",
                 "range_label_mode": "usefulness",
                 "range_boundary_prior_weight": 0.0,
@@ -272,11 +317,15 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["child_tf32_matmul_allowed"] is True
     assert row["child_amp_enabled"] is True
     assert row["child_amp_dtype"] == "bfloat16"
+    assert row["model_type"] == "range_aware"
+    assert row["compression_ratio"] == 0.05
     assert row["mlqds_temporal_fraction"] == 0.25
     assert row["mlqds_diversity_bonus"] == 0.05
+    assert row["mlqds_hybrid_mode"] == "swap"
     assert row["mlqds_score_mode"] == "rank"
     assert row["mlqds_score_temperature"] == 1.0
     assert row["mlqds_rank_confidence_weight"] == 0.15
+    assert row["mlqds_range_geometry_blend"] == 0.25
     assert row["residual_label_mode"] == "temporal"
     assert row["range_label_mode"] == "usefulness"
     assert row["loss_objective"] == "budget_topk"

@@ -757,6 +757,8 @@ def run_experiment_pipeline(
     reset_cuda_peak_memory_stats()
     train_labels: tuple[torch.Tensor, torch.Tensor] | None = None
     selection_query_cache: EvaluationQueryCache | None = None
+    selection_geometry_scores: torch.Tensor | None = None
+    mlqds_range_geometry_blend = max(0.0, min(1.0, float(getattr(config.model, "mlqds_range_geometry_blend", 0.0))))
     with _phase("range-training-prep"):
         train_labels = prepare_range_training_cache(
             points=train_points,
@@ -779,6 +781,22 @@ def run_experiment_pipeline(
                 selection_workload.typed_queries,
             )
             range_runtime_caches["selection"].query_cache = selection_query_cache
+            if mlqds_range_geometry_blend > 0.0:
+                selection_labels = prepare_range_label_cache(
+                    cache_label="selection",
+                    points=selection_points,
+                    boundaries=selection_boundaries,
+                    workload=selection_workload,
+                    workload_map=eval_workload_map,
+                    config=config,
+                    seed=seeds.eval_query_seed + 17,
+                    runtime_cache=range_runtime_caches["selection"],
+                    range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
+                )
+                if selection_labels is not None:
+                    labels, _labelled_mask = selection_labels
+                    _, selection_type_id = workload_type_head(single_workload_type(eval_workload_map))
+                    selection_geometry_scores = labels[:, selection_type_id].float()
     if (
         train_labels is not None
         and len(range_only_queries(train_workload.typed_queries)) == len(train_workload.typed_queries)
@@ -801,6 +819,7 @@ def run_experiment_pipeline(
             precomputed_labels=train_labels,
             validation_points=selection_points,
             precomputed_validation_query_cache=selection_query_cache,
+            precomputed_validation_geometry_scores=selection_geometry_scores,
         )
     training_cuda_memory = cuda_memory_snapshot()
     if training_cuda_memory.get("available"):
@@ -838,6 +857,8 @@ def run_experiment_pipeline(
             rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
+            hybrid_mode=config.model.mlqds_hybrid_mode,
+            range_geometry_blend=config.model.mlqds_range_geometry_blend,
             inference_batch_size=config.model.inference_batch_size,
             amp_mode=config.model.amp_mode,
         ),
@@ -872,7 +893,7 @@ def run_experiment_pipeline(
                 range_runtime_caches["eval"].query_cache = eval_query_cache
         else:
             eval_query_cache.validate(test_points, test_boundaries, eval_workload.typed_queries)
-    if run_oracle_baseline or run_learned_fill_diagnostics:
+    if run_oracle_baseline or run_learned_fill_diagnostics or mlqds_range_geometry_blend > 0.0:
         with _phase("eval-label-prep"):
             if eval_is_range_only:
                 prepared_eval_labels = prepare_range_label_cache(
@@ -884,7 +905,7 @@ def run_experiment_pipeline(
                     config=config,
                     seed=seeds.eval_query_seed,
                     runtime_cache=range_runtime_caches["eval"],
-                    range_boundary_prior_weight=0.0,
+                    range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
                 )
                 if prepared_eval_labels is not None:
                     eval_labels, _ = prepared_eval_labels
@@ -895,8 +916,15 @@ def run_experiment_pipeline(
                     typed_queries=eval_workload.typed_queries,
                     seed=seeds.eval_query_seed,
                     range_label_mode=str(getattr(config.model, "range_label_mode", "usefulness")),
-                    range_boundary_prior_weight=0.0,
+                    range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
                 )
+    if mlqds_range_geometry_blend > 0.0:
+        if eval_labels is None:
+            raise RuntimeError("MLQDS range geometry blend requested but eval labels were not prepared.")
+        _, eval_type_id = workload_type_head(single_workload_type(eval_workload_map))
+        mlqds_method = methods[0]
+        if isinstance(mlqds_method, MLQDSMethod):
+            mlqds_method.range_geometry_scores = eval_labels[:, eval_type_id].float()
     with _phase("evaluate-matched"):
         for method in methods:
             with _phase(f"  eval {method.name}"):
@@ -942,12 +970,14 @@ def run_experiment_pipeline(
                 scores=random_scores,
                 temporal_fraction=config.model.mlqds_temporal_fraction,
                 diversity_bonus=config.model.mlqds_diversity_bonus,
+                hybrid_mode=config.model.mlqds_hybrid_mode,
             ),
             ScoreHybridMethod(
                 name="TemporalOracleFill",
                 scores=eval_labels[:, eval_type_id].float(),
                 temporal_fraction=config.model.mlqds_temporal_fraction,
                 diversity_bonus=config.model.mlqds_diversity_bonus,
+                hybrid_mode=config.model.mlqds_hybrid_mode,
             ),
         ]
         with _phase("learned-fill-diagnostics"):
@@ -1030,6 +1060,7 @@ def run_experiment_pipeline(
                         rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
                         temporal_fraction=config.model.mlqds_temporal_fraction,
                         diversity_bonus=config.model.mlqds_diversity_bonus,
+                        hybrid_mode=config.model.mlqds_hybrid_mode,
                         inference_batch_size=config.model.inference_batch_size,
                         amp_mode=config.model.amp_mode,
                     ),
@@ -1127,6 +1158,8 @@ def run_experiment_pipeline(
         "mlqds_score_mode": config.model.mlqds_score_mode,
         "mlqds_score_temperature": config.model.mlqds_score_temperature,
         "mlqds_rank_confidence_weight": config.model.mlqds_rank_confidence_weight,
+        "mlqds_range_geometry_blend": config.model.mlqds_range_geometry_blend,
+        "mlqds_hybrid_mode": config.model.mlqds_hybrid_mode,
         "oracle_diagnostic": {
             "kind": "additive_label_greedy",
             "enabled": run_oracle_baseline,
@@ -1212,6 +1245,7 @@ def run_experiment_pipeline(
                     rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
+                    hybrid_mode=config.model.mlqds_hybrid_mode,
                     inference_batch_size=config.model.inference_batch_size,
                     amp_mode=config.model.amp_mode,
                 )

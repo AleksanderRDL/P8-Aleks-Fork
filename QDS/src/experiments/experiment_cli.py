@@ -262,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--compression_ratio", type=float, default=0.2)
-    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware"])
+    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware", "range_aware"])
     parser.add_argument(
         "--workload",
         type=str,
@@ -361,6 +361,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Spacing bonus for MLQDS fill candidates away from temporal base points. Default 0.0 keeps learned score fill isolated.",
     )
     parser.add_argument(
+        "--mlqds_hybrid_mode",
+        type=str,
+        default="fill",
+        choices=["fill", "swap"],
+        help=(
+            "How temporal scaffolding and learned scores are combined. "
+            "'fill' reserves part of the budget for a temporal spine, then fills the rest. "
+            "'swap' starts from full uniform temporal sampling and replaces only the unprotected budget share."
+        ),
+    )
+    parser.add_argument(
         "--mlqds_score_mode",
         type=str,
         default="rank",
@@ -380,6 +391,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Blend weight for rank_confidence score mode. 0.0=pure rank, 1.0=pure zscore sigmoid.",
     )
     parser.add_argument(
+        "--mlqds_range_geometry_blend",
+        type=float,
+        default=0.0,
+        help=(
+            "Blend model scores with cached range usefulness labels before MLQDS retention. "
+            "0.0 uses model scores only; 1.0 uses range-geometry labels only."
+        ),
+    )
+    parser.add_argument(
         "--residual_label_mode",
         type=str,
         default="temporal",
@@ -393,7 +413,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=RANGE_LABEL_MODES,
         help=(
             "Range label construction mode. 'point_f1' is the old in-box point proxy; "
-            "'usefulness' adds ship, entry/exit, temporal-span, and local-shape label signal."
+            "'usefulness' adds audit-proxy signal; 'usefulness_balanced' rescales component "
+            "mass toward RangeUseful audit weights."
         ),
     )
     parser.add_argument(

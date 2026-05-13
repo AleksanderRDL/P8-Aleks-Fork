@@ -32,6 +32,12 @@ signal for point hits, ship presence, per-ship coverage, sampled entry/exit
 points, crossing brackets, in-query temporal span, gap coverage, turns, and
 shape. Cross-trajectory proximity is intentionally not used.
 
+`range_label_mode="usefulness_balanced"` uses the same per-component signals but
+rescales available component mass so the range column follows the `RangeUseful`
+audit weights more closely. It is meant for cases where raw support frequency
+overweights dense point-hit components relative to temporal, gap, turn, or shape
+components.
+
 `range_label_mode="point_f1"` keeps the old point-hit proxy for ablations.
 `range_boundary_prior_weight` remains available as an explicit optional prior,
 but the testing baseline keeps it at `0.0`.
@@ -50,6 +56,19 @@ for retained-set `RangeUseful`. The current objective reasoning lives in
   loss aligned with `mlqds_temporal_fraction`.
 - `loss_objective="ranking_bce"` is the legacy ranking/BCE ablation.
 - `pointwise_loss_weight` remains an auxiliary BCE term for both objectives.
+- `mlqds_hybrid_mode="fill"` is the legacy temporal-spine-plus-score-fill
+  simplifier. `mlqds_hybrid_mode="swap"` starts from the full uniform temporal
+  sample and swaps only the unprotected budget share for high-scoring learned
+  points.
+- `model_type="range_aware"` augments the point stream with range-query
+  relation features such as containment count, box proximity, center proximity,
+  and boundary proximity. These are model inputs, not retained-set labels, and
+  keep `mlqds_range_geometry_blend=0.0` in the learned baseline.
+- `mlqds_range_geometry_blend` is an explicit range-only escape hatch that
+  blends model scores with cached range-usefulness geometry labels before
+  simplification. At `1.0`, the retained set is geometry-driven rather than
+  transformer-driven; this is useful for isolating whether the model or the
+  scoring surface is the bottleneck.
 - `checkpoint_f1_variant="range_usefulness"` is the default selection target
   for range training. `answer` and `combined` are legacy diagnostics/ablations.
 - `checkpoint_full_f1_every` and `checkpoint_candidate_pool_size` let cheap

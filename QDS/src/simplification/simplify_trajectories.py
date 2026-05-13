@@ -68,6 +68,7 @@ def simplify_with_temporal_score_hybrid(
     compression_ratio: float,
     temporal_fraction: float = 0.50,
     diversity_bonus: float = 0.0,
+    hybrid_mode: str = "fill",
 ) -> torch.Tensor:
     """Retain a temporal coverage base, then fill remaining slots by learned score.
 
@@ -78,6 +79,9 @@ def simplify_with_temporal_score_hybrid(
     retained = torch.zeros(scores.shape[0], dtype=torch.bool, device=scores.device)
     base_fraction = min(1.0, max(0.0, float(temporal_fraction)))
     bonus = max(0.0, float(diversity_bonus))
+    mode = str(hybrid_mode).lower()
+    if mode not in {"fill", "swap"}:
+        raise ValueError("hybrid_mode must be 'fill' or 'swap'.")
 
     for tid, (start, end) in enumerate(boundaries):
         local = scores[start:end]
@@ -86,6 +90,27 @@ def simplify_with_temporal_score_hybrid(
             continue
         k_total = max(2, int(math.ceil(float(compression_ratio) * n)))
         k_total = min(k_total, n)
+        if mode == "swap":
+            base_idx = evenly_spaced_indices(n, k_total, scores.device)
+            retained[start + base_idx] = True
+            protected = min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
+            swap_count = min(k_total - protected, n - k_total)
+            if swap_count <= 0:
+                continue
+            removable_idx = base_idx[(base_idx != 0) & (base_idx != n - 1)]
+            swap_count = min(swap_count, int(removable_idx.numel()))
+            if swap_count <= 0:
+                continue
+
+            remove_pos = deterministic_topk_with_jitter(-local[removable_idx], k=swap_count, trajectory_id=tid)
+            remove_idx = removable_idx[remove_pos]
+            candidate_scores = local.clone()
+            candidate_scores[base_idx] = -float("inf")
+            add_idx = deterministic_topk_with_jitter(candidate_scores, k=swap_count, trajectory_id=tid)
+            retained[start + remove_idx] = False
+            retained[start + add_idx] = True
+            continue
+
         k_base = 0 if base_fraction <= 0.0 else min(k_total, max(2, int(math.ceil(k_total * base_fraction))))
         base_idx = evenly_spaced_indices(n, k_base, scores.device)
         retained[start + base_idx] = True

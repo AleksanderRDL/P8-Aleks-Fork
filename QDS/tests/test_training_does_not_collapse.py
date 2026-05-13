@@ -576,6 +576,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         workload="range",
         mlqds_temporal_fraction=0.25,
         mlqds_diversity_bonus=0.0,
+        mlqds_hybrid_mode="swap",
         mlqds_score_mode=score_mode,
         mlqds_score_temperature=0.75,
         mlqds_rank_confidence_weight=0.35,
@@ -630,6 +631,7 @@ def test_validation_query_f1_matches_final_mlqds_scoring(score_mode: str, monkey
         rank_confidence_weight=cfg.model.mlqds_rank_confidence_weight,
         temporal_fraction=cfg.model.mlqds_temporal_fraction,
         diversity_bonus=cfg.model.mlqds_diversity_bonus,
+        hybrid_mode=cfg.model.mlqds_hybrid_mode,
         inference_device="cpu",
         inference_batch_size=cfg.model.inference_batch_size,
     ).simplify(points, boundaries, cfg.model.compression_ratio)
@@ -663,6 +665,7 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
         workload="range",
         mlqds_temporal_fraction=0.25,
         mlqds_diversity_bonus=0.0,
+        mlqds_hybrid_mode="swap",
         mlqds_score_mode="rank",
         checkpoint_f1_variant="range_usefulness",
     )
@@ -713,6 +716,7 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
         score_mode=cfg.model.mlqds_score_mode,
         temporal_fraction=cfg.model.mlqds_temporal_fraction,
         diversity_bonus=cfg.model.mlqds_diversity_bonus,
+        hybrid_mode=cfg.model.mlqds_hybrid_mode,
         inference_device="cpu",
         inference_batch_size=cfg.model.inference_batch_size,
     ).simplify(points, boundaries, cfg.model.compression_ratio)

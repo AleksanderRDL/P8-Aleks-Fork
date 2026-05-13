@@ -66,13 +66,15 @@ def ensure_range_runtime_labels(
     if runtime_cache is not None and runtime_cache.labels is not None and runtime_cache.labelled_mask is not None:
         return runtime_cache.labels, runtime_cache.labelled_mask
 
-    if str(range_label_mode).lower() == "usefulness":
+    range_label_mode = str(range_label_mode).lower()
+    if range_label_mode in {"usefulness", "usefulness_balanced"}:
         labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
             seed=seed,
             range_boundary_prior_weight=range_boundary_prior_weight,
+            range_label_mode=range_label_mode,
         )
     else:
         labels, labelled_mask = compute_typed_importance_labels(
@@ -130,7 +132,11 @@ def range_diagnostics_cache_payload(
     range_boundary_prior_weight: float | None = None,
 ) -> dict[str, Any]:
     """Build the canonical cache key payload for range workload diagnostics."""
-    label_mode = str(range_label_mode if range_label_mode is not None else getattr(config.model, "range_label_mode", "usefulness"))
+    label_mode = str(
+        range_label_mode
+        if range_label_mode is not None
+        else getattr(config.model, "range_label_mode", "usefulness")
+    )
     prior_weight = float(
         range_boundary_prior_weight
         if range_boundary_prior_weight is not None
@@ -159,6 +165,15 @@ def range_diagnostics_cache_key(payload: dict[str, Any]) -> str:
     """Return a stable cache key for range diagnostics."""
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def range_label_cache_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the compression-independent subset needed for label tensor caching."""
+    label_payload = dict(payload)
+    label_payload["cache_kind"] = "range_labels"
+    label_payload.pop("compression_ratio", None)
+    label_payload.pop("duplicate_iou_threshold", None)
+    return label_payload
 
 
 def _range_diagnostics_cache_paths(config: ExperimentConfig, label: str, key: str) -> tuple[Path, Path] | None:
@@ -358,7 +373,8 @@ def prepare_range_label_cache(
         seed=seed,
         range_boundary_prior_weight=range_boundary_prior_weight,
     )
-    cache_key = range_diagnostics_cache_key(cache_payload)
+    cache_key = range_diagnostics_cache_key(range_label_cache_payload(cache_payload))
+    legacy_cache_key = range_diagnostics_cache_key(cache_payload)
     if _load_range_label_tensor_cache(
         config=config,
         label=cache_label,
@@ -368,20 +384,36 @@ def prepare_range_label_cache(
         assert runtime_cache.labels is not None
         assert runtime_cache.labelled_mask is not None
         return runtime_cache.labels, runtime_cache.labelled_mask
+    if legacy_cache_key != cache_key and _load_range_label_tensor_cache(
+        config=config,
+        label=cache_label,
+        key=legacy_cache_key,
+        runtime_cache=runtime_cache,
+    ):
+        _write_range_label_tensor_cache(
+            config=config,
+            label=cache_label,
+            key=cache_key,
+            runtime_cache=runtime_cache,
+        )
+        assert runtime_cache.labels is not None
+        assert runtime_cache.labelled_mask is not None
+        return runtime_cache.labels, runtime_cache.labelled_mask
 
-    range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness"))
+    range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness")).lower()
     prior_weight = float(
         range_boundary_prior_weight
         if range_boundary_prior_weight is not None
         else getattr(config.model, "range_boundary_prior_weight", 0.0)
     )
-    if range_label_mode.lower() == "usefulness":
+    if range_label_mode in {"usefulness", "usefulness_balanced"}:
         labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
             points=points,
             boundaries=boundaries,
             typed_queries=range_queries,
             seed=seed,
             range_boundary_prior_weight=prior_weight,
+            range_label_mode=range_label_mode,
         )
         runtime_cache.component_labels = component_labels
     else:

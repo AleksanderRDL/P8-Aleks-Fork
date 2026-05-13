@@ -177,9 +177,11 @@ def main() -> None:
         checkpoint_f1_variant=args.checkpoint_f1_variant,
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
+        mlqds_hybrid_mode=args.mlqds_hybrid_mode,
         mlqds_score_mode=args.mlqds_score_mode,
         mlqds_score_temperature=args.mlqds_score_temperature,
         mlqds_rank_confidence_weight=args.mlqds_rank_confidence_weight,
+        mlqds_range_geometry_blend=args.mlqds_range_geometry_blend,
         residual_label_mode=args.residual_label_mode,
         range_label_mode=args.range_label_mode,
         range_boundary_prior_weight=args.range_boundary_prior_weight,
@@ -234,9 +236,11 @@ def main() -> None:
         f"range_duplicate_iou_threshold={args.range_duplicate_iou_threshold}  "
         f"range_acceptance_max_attempts={args.range_acceptance_max_attempts}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
+        f"mlqds_hybrid_mode={args.mlqds_hybrid_mode}  "
         f"mlqds_score_mode={args.mlqds_score_mode}  "
         f"mlqds_score_temperature={args.mlqds_score_temperature}  "
         f"mlqds_rank_confidence_weight={args.mlqds_rank_confidence_weight}  "
+        f"mlqds_range_geometry_blend={args.mlqds_range_geometry_blend}  "
         f"residual_label_mode={args.residual_label_mode}  "
         f"range_label_mode={args.range_label_mode}  "
         f"range_boundary_prior_weight={args.range_boundary_prior_weight}  "

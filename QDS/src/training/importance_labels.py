@@ -10,11 +10,11 @@ import torch
 from src.evaluation.range_usefulness import RANGE_USEFULNESS_WEIGHTS
 from src.queries.query_executor import execute_typed_query
 from src.queries.range_geometry import segment_box_bracket_mask
-from src.queries.query_types import QUERY_NAME_TO_ID, NUM_QUERY_TYPES
+from src.queries.query_types import QUERY_NAME_TO_ID, QUERY_TYPE_ID_RANGE, NUM_QUERY_TYPES
 
 KNN_REPRESENTATIVES_PER_TRAJECTORY = 64
 SIMILARITY_REPRESENTATIVES_PER_TRAJECTORY = 64
-RANGE_LABEL_MODES = ("point_f1", "usefulness")
+RANGE_LABEL_MODES = ("point_f1", "usefulness", "usefulness_balanced")
 RANGE_USEFULNESS_LABEL_WEIGHTS = dict(RANGE_USEFULNESS_WEIGHTS)
 RANGE_USEFULNESS_LABEL_COMPONENTS = tuple(RANGE_USEFULNESS_LABEL_WEIGHTS.keys())
 
@@ -430,6 +430,41 @@ def _add_range_usefulness_labels(
             )
 
 
+def _balance_range_component_label_mass(
+    labels: torch.Tensor,
+    component_labels: dict[str, torch.Tensor],
+    type_idx: int,
+) -> None:
+    """Redistribute usefulness component mass to match the RangeUseful audit weights."""
+    masses: dict[str, float] = {}
+    total_mass = 0.0
+    available_weight = 0.0
+    for component_name in RANGE_USEFULNESS_LABEL_COMPONENTS:
+        values = component_labels[component_name][:, type_idx].clamp(min=0.0)
+        mass = float(values.sum().item())
+        masses[component_name] = mass
+        if mass > 1e-12:
+            total_mass += mass
+            available_weight += float(RANGE_USEFULNESS_LABEL_WEIGHTS[component_name])
+
+    if total_mass <= 1e-12 or available_weight <= 1e-12:
+        labels[:, type_idx] = torch.clamp(labels[:, type_idx], 0.0, 1.0)
+        return
+
+    balanced = torch.zeros_like(labels[:, type_idx])
+    for component_name in RANGE_USEFULNESS_LABEL_COMPONENTS:
+        values = component_labels[component_name][:, type_idx].clamp(min=0.0)
+        mass = masses[component_name]
+        if mass <= 1e-12:
+            component_labels[component_name][:, type_idx] = 0.0
+            continue
+        target_mass = total_mass * float(RANGE_USEFULNESS_LABEL_WEIGHTS[component_name]) / available_weight
+        scaled = values * float(target_mass / mass)
+        component_labels[component_name][:, type_idx] = scaled
+        balanced += scaled
+    labels[:, type_idx] = torch.clamp(balanced, 0.0, 1.0)
+
+
 def _knn_representative_support(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -537,12 +572,13 @@ def _compute_typed_importance_labels(
 
     n = points.shape[0]
     labels = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.float32, device=points.device)
+    needs_component_labels = return_range_components or range_label_mode == "usefulness_balanced"
     component_labels = (
         {
             component_name: torch.zeros_like(labels)
             for component_name in RANGE_USEFULNESS_LABEL_COMPONENTS
         }
-        if return_range_components and range_label_mode == "usefulness"
+        if needs_component_labels and range_label_mode in {"usefulness", "usefulness_balanced"}
         else None
     )
     labelled_mask = torch.zeros((n, NUM_QUERY_TYPES), dtype=torch.bool, device=points.device)
@@ -563,7 +599,7 @@ def _compute_typed_importance_labels(
 
         if qtype == "range":
             box_support = _box_mask(points, params)
-            if range_label_mode == "usefulness":
+            if range_label_mode in {"usefulness", "usefulness_balanced"}:
                 _add_range_usefulness_labels(
                     labels=labels,
                     points=points,
@@ -629,10 +665,18 @@ def _compute_typed_importance_labels(
     for type_idx in range(NUM_QUERY_TYPES):
         count = float(query_counts[type_idx].item())
         if count > 0.0:
-            labels[:, type_idx] = torch.clamp(labels[:, type_idx] / count, 0.0, 1.0)
+            labels[:, type_idx] = labels[:, type_idx] / count
             if component_labels is not None:
                 for component_values in component_labels.values():
                     component_values[:, type_idx] = component_values[:, type_idx] / count
+            if (
+                range_label_mode == "usefulness_balanced"
+                and component_labels is not None
+                and type_idx == QUERY_TYPE_ID_RANGE
+            ):
+                _balance_range_component_label_mass(labels, component_labels, type_idx)
+            else:
+                labels[:, type_idx] = torch.clamp(labels[:, type_idx], 0.0, 1.0)
             labelled_mask[:, type_idx] = True
 
     return labels, labelled_mask, component_labels
@@ -669,15 +713,19 @@ def compute_typed_importance_labels_with_range_components(
     typed_queries: list[dict[str, Any]],
     seed: int,
     range_boundary_prior_weight: float = 0.0,
+    range_label_mode: str = "usefulness",
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     """Compute usefulness labels plus per-component range label contributions."""
+    range_label_mode = str(range_label_mode).lower()
+    if range_label_mode not in {"usefulness", "usefulness_balanced"}:
+        raise ValueError("range_label_mode must be 'usefulness' or 'usefulness_balanced'.")
     labels, labelled_mask, component_labels = _compute_typed_importance_labels(
         points=points,
         boundaries=boundaries,
         typed_queries=typed_queries,
         seed=seed,
         range_boundary_prior_weight=range_boundary_prior_weight,
-        range_label_mode="usefulness",
+        range_label_mode=range_label_mode,
         return_range_components=True,
     )
     if component_labels is None:

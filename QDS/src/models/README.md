@@ -9,6 +9,7 @@ This module contains the query-conditioned trajectory encoder used by AIS-QDS.
 | `attention_utils.py` | Chunked cross-attention helper that lets points attend to typed query embeddings. |
 | `trajectory_qds_model.py` | Base transformer model and min-max normalization helper. |
 | `turn_aware_qds_model.py` | Same model architecture with the extra `turn_score` feature. |
+| `../training/model_features.py` | Builds baseline, turn-aware, and range-aware point feature matrices before model/scaler use. |
 
 ## Model Flow
 
@@ -32,7 +33,8 @@ H + C -> single pure-workload score head -> logits[L]
 
 ## Shapes And Defaults
 
-- Point features: 7 columns for the baseline model, 8 for the turn-aware model.
+- Point features: 7 columns for the baseline model, 8 for the turn-aware model,
+  and 16 for the range-aware model.
 - Query features: 12 padded features from `src.queries.query_types.pad_query_features`.
 - Output: one pure-workload logit for each point.
 - Default query chunk size: 2048. Current testing-baseline range benchmarks keep the

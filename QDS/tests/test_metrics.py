@@ -17,7 +17,7 @@ from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_leng
 from src.evaluation.query_cache import EvaluationQueryCache
 from src.evaluation.range_usefulness import range_usefulness_weight_summary
 from src.evaluation.tables import print_method_comparison_table, print_range_usefulness_table
-from src.simplification.mlqds_scoring import pure_workload_scores
+from src.simplification.mlqds_scoring import pure_workload_scores, simplify_mlqds_predictions
 from src.simplification.simplify_trajectories import simplify_with_scores, simplify_with_temporal_score_hybrid
 
 
@@ -357,6 +357,20 @@ def test_temporal_score_hybrid_zero_temporal_fraction_is_pure_score() -> None:
     )
 
     assert torch.where(retained)[0].tolist() == [4, 5, 6]
+
+
+def test_temporal_score_hybrid_swap_starts_from_full_uniform_and_replaces_low_score_base() -> None:
+    scores = torch.tensor([0.0, 3.0, -1.0, 0.0, 1.0, 10.0, 0.0, 1.0, 0.0, 0.0])
+    retained = simplify_with_temporal_score_hybrid(
+        scores=scores,
+        boundaries=[(0, 10)],
+        compression_ratio=0.5,
+        temporal_fraction=0.8,
+        diversity_bonus=0.0,
+        hybrid_mode="swap",
+    )
+
+    assert torch.where(retained)[0].tolist() == [0, 4, 5, 7, 9]
 
 
 def test_pure_workload_scores_rank_mode_is_canonical_per_trajectory() -> None:
@@ -942,3 +956,22 @@ def test_length_preservation_reports_preserved_path_length() -> None:
     retained = torch.tensor([True, False, True])
 
     assert compute_length_preservation(points, [(0, 3)], retained) == pytest.approx(1.0)
+
+
+def test_mlqds_range_geometry_blend_can_override_model_score_order() -> None:
+    predictions = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0], dtype=torch.float32)
+    geometry_scores = torch.tensor([0.0, 0.0, 10.0, 9.0, 0.0], dtype=torch.float32)
+    boundaries = [(0, 5)]
+
+    retained = simplify_mlqds_predictions(
+        predictions,
+        boundaries,
+        workload_type="range",
+        compression_ratio=0.4,
+        temporal_fraction=0.0,
+        diversity_bonus=0.0,
+        range_geometry_scores=geometry_scores,
+        range_geometry_blend=1.0,
+    )
+
+    assert retained.tolist() == [False, False, True, True, False]

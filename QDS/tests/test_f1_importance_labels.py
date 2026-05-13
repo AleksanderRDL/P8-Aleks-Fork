@@ -13,6 +13,7 @@ from src.queries.query_types import (
 )
 from src.training.importance_labels import (
     RANGE_USEFULNESS_LABEL_COMPONENTS,
+    RANGE_USEFULNESS_LABEL_WEIGHTS,
     compute_typed_importance_labels,
     compute_typed_importance_labels_with_range_components,
 )
@@ -271,6 +272,56 @@ def test_range_usefulness_component_labels_sum_to_training_labels() -> None:
     assert component_labels["range_crossing_f1"][3, QUERY_TYPE_ID_RANGE].item() > 0.0
     assert component_labels["range_point_f1"][0, QUERY_TYPE_ID_RANGE].item() == pytest.approx(0.0)
     assert component_labels["range_point_f1"][1, QUERY_TYPE_ID_RANGE].item() > 0.0
+
+
+def test_range_usefulness_balanced_component_mass_matches_audit_weights() -> None:
+    """Assert balanced usefulness mode rescales component mass without changing supports."""
+    points = torch.tensor(
+        [
+            [0.0, -2.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.2],
+            [2.0, 0.8, 0.8, 1.0, 0.0, 0.0, 0.0, 1.0],
+            [3.0, 0.0, -0.4, 1.0, 0.0, 0.0, 1.0, 0.3],
+            [4.0, 2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 5.0,
+            },
+        }
+    ]
+
+    labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
+        points,
+        [(0, 5)],
+        queries,
+        seed=1,
+        range_label_mode="usefulness_balanced",
+    )
+
+    masses = {
+        name: float(component_labels[name][:, QUERY_TYPE_ID_RANGE].sum().item())
+        for name in RANGE_USEFULNESS_LABEL_COMPONENTS
+    }
+    total_mass = sum(masses.values())
+    component_sum = torch.stack(
+        [component_labels[name][:, QUERY_TYPE_ID_RANGE] for name in RANGE_USEFULNESS_LABEL_COMPONENTS]
+    ).sum(dim=0)
+
+    assert bool(labelled_mask[:, QUERY_TYPE_ID_RANGE].all().item())
+    assert total_mass > 0.0
+    assert torch.allclose(labels[:, QUERY_TYPE_ID_RANGE], component_sum.clamp(max=1.0))
+    for component_name, expected_fraction in RANGE_USEFULNESS_LABEL_WEIGHTS.items():
+        assert masses[component_name] / total_mass == pytest.approx(expected_fraction, abs=1e-5)
 
 
 def test_range_usefulness_labels_preserve_point_component_mass() -> None:

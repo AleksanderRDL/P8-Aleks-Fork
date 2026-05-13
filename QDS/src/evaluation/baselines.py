@@ -19,6 +19,7 @@ from src.simplification.simplify_trajectories import (
 )
 from src.training.train_model import TrainingOutputs
 from src.training.inference import default_inference_device, windowed_predict
+from src.training.model_features import build_model_point_features_for_dim
 
 
 class Method(Protocol):
@@ -49,6 +50,9 @@ class MLQDSMethod:
     rank_confidence_weight: float = 0.15
     temporal_fraction: float = 0.50
     diversity_bonus: float = 0.0
+    hybrid_mode: str = "fill"
+    range_geometry_blend: float = 0.0
+    range_geometry_scores: torch.Tensor | None = None
     inference_device: str | torch.device | None = None
     amp_mode: str = "off"
     inference_batch_size: int = 16
@@ -66,19 +70,23 @@ class MLQDSMethod:
         if not self.workload.typed_queries:
             return torch.ones((points.shape[0],), dtype=torch.bool, device=points.device)
 
-        point_dim = self.trained.model.point_dim
-        p, q = self.trained.scaler.transform(points[:, :point_dim], self.workload.query_features)
-        device = torch.device(self.inference_device) if self.inference_device is not None else default_inference_device()
-        pred = windowed_predict(
-            model=self.trained.model,
-            norm_points=p,
-            boundaries=boundaries,
-            queries=q,
-            query_type_ids=self.workload.type_ids,
-            batch_size=self.inference_batch_size,
-            device=device,
-            amp_mode=self.amp_mode,
-        )
+        if self.range_geometry_blend >= 1.0 and self.range_geometry_scores is not None:
+            pred = torch.zeros((points.shape[0],), dtype=torch.float32, device=points.device)
+        else:
+            point_dim = self.trained.model.point_dim
+            model_points = build_model_point_features_for_dim(points, self.workload, point_dim)
+            p, q = self.trained.scaler.transform(model_points, self.workload.query_features)
+            device = torch.device(self.inference_device) if self.inference_device is not None else default_inference_device()
+            pred = windowed_predict(
+                model=self.trained.model,
+                norm_points=p,
+                boundaries=boundaries,
+                queries=q,
+                query_type_ids=self.workload.type_ids,
+                batch_size=self.inference_batch_size,
+                device=device,
+                amp_mode=self.amp_mode,
+            )
 
         return simplify_mlqds_predictions(
             pred,
@@ -87,9 +95,12 @@ class MLQDSMethod:
             compression_ratio,
             temporal_fraction=self.temporal_fraction,
             diversity_bonus=self.diversity_bonus,
+            hybrid_mode=self.hybrid_mode,
             score_mode=self.score_mode,
             score_temperature=self.score_temperature,
             rank_confidence_weight=self.rank_confidence_weight,
+            range_geometry_scores=self.range_geometry_scores,
+            range_geometry_blend=self.range_geometry_blend,
         )
 
 
@@ -121,6 +132,7 @@ class ScoreHybridMethod:
     scores: torch.Tensor
     temporal_fraction: float = 0.50
     diversity_bonus: float = 0.0
+    hybrid_mode: str = "fill"
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Retain temporal base points, then fill with supplied per-point scores."""
@@ -136,6 +148,7 @@ class ScoreHybridMethod:
             compression_ratio,
             temporal_fraction=self.temporal_fraction,
             diversity_bonus=self.diversity_bonus,
+            hybrid_mode=self.hybrid_mode,
         )
 
 

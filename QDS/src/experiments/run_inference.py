@@ -38,6 +38,8 @@ from src.evaluation.query_cache import EvaluationQueryCache
 from src.evaluation.tables import print_geometric_distortion_table, print_method_comparison_table, print_range_usefulness_table
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
+from src.simplification.mlqds_scoring import workload_type_head
+from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import TrainingOutputs
 from src.training.checkpoints import load_checkpoint
 from src.experiments.torch_runtime import (
@@ -350,6 +352,22 @@ def main() -> None:
         epochs_trained=int(artifacts.epochs_trained),
     )
 
+    range_geometry_scores = None
+    range_geometry_blend = float(getattr(saved_cfg.model, "mlqds_range_geometry_blend", 0.0))
+    if range_geometry_blend > 0.0:
+        if eval_workload_type != "range":
+            raise ValueError("Saved model requests range geometry blend, but inference workload is not range.")
+        labels, _labelled_mask = compute_typed_importance_labels(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=workload.typed_queries,
+            seed=int(args.seed),
+            range_label_mode=str(getattr(saved_cfg.model, "range_label_mode", "usefulness")),
+            range_boundary_prior_weight=float(getattr(saved_cfg.model, "range_boundary_prior_weight", 0.0)),
+        )
+        _, range_type_id = workload_type_head(eval_workload_type)
+        range_geometry_scores = labels[:, range_type_id].float()
+
     methods = [
         MLQDSMethod(
             name="MLQDS",
@@ -361,6 +379,9 @@ def main() -> None:
             rank_confidence_weight=float(getattr(saved_cfg.model, "mlqds_rank_confidence_weight", 0.15)),
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.0)),
+            hybrid_mode=str(getattr(saved_cfg.model, "mlqds_hybrid_mode", "fill")),
+            range_geometry_blend=range_geometry_blend,
+            range_geometry_scores=range_geometry_scores,
             inference_device=None if args.inference_device == "auto" else args.inference_device,
             inference_batch_size=inference_batch_size,
             amp_mode=amp_mode,

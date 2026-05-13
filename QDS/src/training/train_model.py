@@ -30,6 +30,7 @@ from src.training.checkpoint_selection import (
     selection_score,
 )
 from src.training.importance_labels import compute_typed_importance_labels
+from src.training.model_features import build_model_point_features, build_model_point_features_for_dim
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
 
@@ -684,8 +685,8 @@ def _predict_workload_logits(
     device: torch.device,
 ) -> torch.Tensor:
     """Predict per-point pure-workload scores for exact query-F1 diagnostics."""
-    point_dim = model.point_dim
-    norm_points, norm_queries = scaler.transform(points[:, :point_dim].float(), workload.query_features)
+    model_points = build_model_point_features_for_dim(points, workload, model.point_dim)
+    norm_points, norm_queries = scaler.transform(model_points, workload.query_features)
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
@@ -735,6 +736,7 @@ def _validation_checkpoint_scores(
     device: torch.device,
     validation_points: torch.Tensor | None = None,
     query_cache: Any | None = None,
+    range_geometry_scores: torch.Tensor | None = None,
 ) -> tuple[float, dict[str, float], dict[str, float]]:
     """Evaluate a checkpoint and return selected score plus explicit validation metrics."""
     from src.evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
@@ -756,9 +758,12 @@ def _validation_checkpoint_scores(
         model_config.compression_ratio,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.0)),
+        hybrid_mode=str(getattr(model_config, "mlqds_hybrid_mode", "fill")),
         score_mode=str(getattr(model_config, "mlqds_score_mode", "rank")),
         score_temperature=float(getattr(model_config, "mlqds_score_temperature", 1.0)),
         rank_confidence_weight=float(getattr(model_config, "mlqds_rank_confidence_weight", 0.15)),
+        range_geometry_scores=range_geometry_scores,
+        range_geometry_blend=float(getattr(model_config, "mlqds_range_geometry_blend", 0.0)),
     )
     answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
@@ -817,6 +822,7 @@ def _validation_query_f1(
     device: torch.device,
     validation_points: torch.Tensor | None = None,
     query_cache: Any | None = None,
+    range_geometry_scores: torch.Tensor | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Backward-compatible validation selector used by focused tests."""
     score, per_type, _metrics = _validation_checkpoint_scores(
@@ -830,6 +836,7 @@ def _validation_query_f1(
         device=device,
         validation_points=validation_points,
         query_cache=query_cache,
+        range_geometry_scores=range_geometry_scores,
     )
     return score, per_type
 
@@ -891,6 +898,7 @@ def train_model(
     precomputed_labels: tuple[torch.Tensor, torch.Tensor] | None = None,
     validation_points: torch.Tensor | None = None,
     precomputed_validation_query_cache: Any | None = None,
+    precomputed_validation_geometry_scores: torch.Tensor | None = None,
 ) -> TrainingOutputs:
     """Train one pure-workload model with trajectory-window ranking losses."""
     torch.manual_seed(int(seed))
@@ -898,8 +906,8 @@ def train_model(
         torch.cuda.manual_seed_all(int(seed))
 
     all_points = torch.cat(train_trajectories, dim=0)
-    point_dim = 8 if model_config.model_type == "turn_aware" else 7
-    points = all_points[:, :point_dim].float()
+    points = build_model_point_features(all_points, workload, model_config.model_type)
+    point_dim = int(points.shape[1])
 
     if precomputed_labels is None:
         labels, labelled_mask = compute_typed_importance_labels(
@@ -1393,6 +1401,7 @@ def train_model(
                     device=device,
                     validation_points=validation_points_for_f1,
                     query_cache=validation_query_cache,
+                    range_geometry_scores=precomputed_validation_geometry_scores,
                 )
                 epoch_timing["f1_s"] += time.perf_counter() - f1_t0
                 record_validation_stats(
@@ -1445,6 +1454,7 @@ def train_model(
                                 device=device,
                                 validation_points=validation_points_for_f1,
                                 query_cache=validation_query_cache,
+                                range_geometry_scores=precomputed_validation_geometry_scores,
                             )
                             record_validation_stats(
                                 candidate.stats,

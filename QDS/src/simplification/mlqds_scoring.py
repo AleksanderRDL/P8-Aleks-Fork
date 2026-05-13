@@ -128,9 +128,12 @@ def simplify_mlqds_predictions(
     compression_ratio: float,
     temporal_fraction: float,
     diversity_bonus: float,
+    hybrid_mode: str = "fill",
     score_mode: str = "rank",
     score_temperature: float = 1.0,
     rank_confidence_weight: float = 0.15,
+    range_geometry_scores: torch.Tensor | None = None,
+    range_geometry_blend: float = 0.0,
 ) -> torch.Tensor:
     """Simplify using canonical MLQDS score conversion and retained-mask logic."""
     scores = pure_workload_scores(
@@ -141,10 +144,29 @@ def simplify_mlqds_predictions(
         score_temperature=score_temperature,
         rank_confidence_weight=rank_confidence_weight,
     )
+    geometry_blend = max(0.0, min(1.0, float(range_geometry_blend)))
+    if geometry_blend > 0.0:
+        if range_geometry_scores is None:
+            raise ValueError("range_geometry_scores are required when range_geometry_blend > 0.")
+        if str(workload_type).lower() != "range":
+            raise ValueError("range_geometry_blend is only supported for range workloads.")
+        if int(range_geometry_scores.numel()) != int(scores.numel()):
+            raise ValueError(
+                "range_geometry_scores must match prediction count: "
+                f"got {int(range_geometry_scores.numel())}, expected {int(scores.numel())}."
+            )
+        geometry = pure_workload_scores(
+            range_geometry_scores.to(device=scores.device, dtype=scores.dtype),
+            boundaries,
+            workload_type,
+            score_mode="rank",
+        )
+        scores = (1.0 - geometry_blend) * scores + geometry_blend * geometry
     return simplify_with_temporal_score_hybrid(
         scores,
         boundaries,
         compression_ratio,
         temporal_fraction=temporal_fraction,
         diversity_bonus=diversity_bonus,
+        hybrid_mode=hybrid_mode,
     )
