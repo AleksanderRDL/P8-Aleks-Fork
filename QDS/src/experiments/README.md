@@ -42,10 +42,12 @@ CSV loading segments MMSI tracks by time gaps. The default
 `--cache_dir` persists post-segmentation Parquet data keyed by source file and
 segmentation config.
 
-## Current Benchmark Baseline
+## Legacy Workload-Aware Benchmark Baseline
 
-The active benchmark profile is `range_testing_baseline`. It is a pure range
-workload profile for cleaned AIS CSV days.
+The implemented legacy profile is `range_testing_baseline`. It is a pure range
+workload profile for cleaned AIS CSV days. It remains useful for diagnostics,
+teacher experiments, and upper-bound comparisons, but it is not the final
+redesign protocol.
 
 Important constraint: the current `model_type=range_aware` profile is
 workload-aware. It computes point/query relation features from the provided
@@ -115,17 +117,19 @@ range_testing_baseline_pairs192_seed42	42	--ranking_pairs_per_type 192
 The queue launcher validates child args before tmux starts, so unsupported
 overrides fail before an expensive run begins.
 
-The requested coverage/compression diagnostic grid is tracked at
-[`../../benchmark_plans/range_coverage_compression_grid.tsv`](../../benchmark_plans/range_coverage_compression_grid.tsv).
+The old workload-aware coverage/compression diagnostic grid is archived at
+[`../../benchmark_plans/archive/range_aware_coverage_compression_grid.tsv`](../../benchmark_plans/archive/range_aware_coverage_compression_grid.tsv).
 It runs coverage `5%,10%,15%,30%` and audits compression
-`1%,2%,5%,10%,15%,20%,30%` using the current workload-aware profile:
+`1%,2%,5%,10%,15%,20%,30%` using the `range_aware` profile:
 
 ```bash
 ATTACH=0 \
-  BENCHMARK_PLAN_FILE=benchmark_plans/range_coverage_compression_grid.tsv \
+  BENCHMARK_PLAN_FILE=benchmark_plans/archive/range_aware_coverage_compression_grid.tsv \
   BENCHMARK_CONTINUE_ON_FAILURE=1 \
   make range-benchmark-queue-tmux
 ```
+
+Do not use this archived plan as workload-blind success evidence.
 
 ## Direct CLI Example
 

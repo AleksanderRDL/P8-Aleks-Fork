@@ -176,6 +176,9 @@ def test_run_config_records_profile_checkpoint_selection_metric(tmp_path) -> Non
     )
 
     assert payload["checkpoint_selection_metric"] == "uniform_gap"
+    assert payload["profile_settings"]["profile_role"] == "workload_aware_diagnostic"
+    assert payload["profile_settings"]["final_product_claim"] is False
+    assert payload["profile_settings"]["workload_blind"] is False
     assert payload["profile_settings"]["range_coverage_sweep_targets"] == [0.05, 0.10, 0.15, 0.30]
     assert payload["profile_settings"]["range_compression_sweep_ratios"] == [
         0.01,

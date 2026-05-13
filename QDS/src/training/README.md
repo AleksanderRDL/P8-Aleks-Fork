@@ -16,21 +16,25 @@ fits the scaler, trains MLQDS, and persists checkpoint artifacts.
 | `train_model.py` | Loss objectives, diagnostics, and training loop. |
 | `training_pipeline.py` | Compatibility re-exports for older imports. |
 
-## Flow
+## Current Workload-Aware Flow
+
+This is the implemented flow today. The workload-blind redesign will need a
+separate path that can score and compress trajectories without query inputs.
 
 1. Build workload labels for the active pure workload.
 2. Fit `FeatureScaler` on training points and query features.
 3. Build padded windows that never cross trajectory boundaries.
-4. Train the query-conditioned model and checkpoint by validation selection
-   score.
+4. Train the currently implemented query-conditioned model and checkpoint by
+   validation selection score.
 5. Restore the best checkpoint for final evaluation/inference.
 
 ## Range Labels
 
-`range_label_mode="usefulness"` is the current default. It provides local proxy
-signal for point hits, ship presence, per-ship coverage, sampled entry/exit
-points, crossing brackets, in-query temporal span, gap coverage, turns, and
-shape. Cross-trajectory proximity is intentionally not used.
+`range_label_mode="usefulness"` is the current workload-aware default. It
+provides local proxy signal for point hits, ship presence, per-ship coverage,
+sampled entry/exit points, crossing brackets, in-query temporal span, gap
+coverage, turns, and shape. Cross-trajectory proximity is intentionally not
+used.
 
 `range_label_mode="usefulness_balanced"` uses the same per-component signals but
 rescales available component mass so the range column follows the `RangeUseful`

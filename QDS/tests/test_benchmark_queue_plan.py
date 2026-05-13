@@ -32,8 +32,13 @@ def test_queue_plan_validation_rejects_unknown_child_args(tmp_path: Path) -> Non
     assert "--definitely_not_a_real_arg" in errors[0]
 
 
-def test_tracked_range_coverage_compression_grid_plan_validates() -> None:
-    plan = Path(__file__).resolve().parents[1] / "benchmark_plans" / "range_coverage_compression_grid.tsv"
+def test_archived_range_aware_coverage_compression_grid_plan_validates() -> None:
+    plan = (
+        Path(__file__).resolve().parents[1]
+        / "benchmark_plans"
+        / "archive"
+        / "range_aware_coverage_compression_grid.tsv"
+    )
 
     assert validate_plan(plan) == []
 

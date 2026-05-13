@@ -1,6 +1,12 @@
 # Models Module
 
-This module contains the query-conditioned trajectory encoder used by AIS-QDS.
+This module contains the currently implemented query-conditioned trajectory
+encoder used by AIS-QDS.
+
+Important redesign context: these models are workload-aware because points
+attend to query embeddings during prediction. They are useful diagnostics and
+teacher candidates, but a final workload-blind range model must add a separate
+path that scores points without future query inputs.
 
 ## Files
 

@@ -86,10 +86,12 @@ make clean-smoke-artifacts
 make clean-smoke-artifacts CONFIRM=1
 ```
 
-The active benchmark profile is `range_testing_baseline`: a range-only, three-day
-cleaned-CSV profile with train, checkpoint-validation, and final-eval days and
-no loader caps by default. Keep exact benchmark
-settings in one place: [`src/experiments/README.md`](src/experiments/README.md).
+The existing benchmark profile is `range_testing_baseline`: a range-only,
+three-day cleaned-CSV profile with train, checkpoint-validation, and final-eval
+days and no loader caps by default. It is workload-aware today. Treat it as a
+diagnostic/teacher path until the workload-blind protocol exists. Keep exact
+benchmark settings in one place:
+[`src/experiments/README.md`](src/experiments/README.md).
 
 ## Dependencies
 

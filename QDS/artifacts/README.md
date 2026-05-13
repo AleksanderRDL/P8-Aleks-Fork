@@ -59,11 +59,15 @@ overwriting that run directory and index row is intentional.
 Safe cleanup targets:
 
 - `artifacts/results/smoke_*`
+- `artifacts/results/post_training_runtime_smoke`
 - `artifacts/benchmarks/*smoke*`
 - `artifacts/benchmarks/*layout_smoke*`
 - old task smoke directories such as `artifacts/benchmarks/task*_smoke`
   and `artifacts/benchmarks/task*_small`
 - caches created only for smoke runs
+- stale workload-aware diagnostic caches, especially
+  `artifacts/cache/range_testing_baseline/range_diagnostics/`, after their
+  report numbers are captured in notes
 
 Keep `artifacts/benchmarks/range_testing_baseline/` runs until their report
 rows have been reviewed or intentionally archived elsewhere.

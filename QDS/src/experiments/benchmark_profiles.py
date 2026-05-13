@@ -215,6 +215,9 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
     """Return compact profile settings recorded in run_config.json."""
     profile = benchmark_profile(name)
     return {
+        "profile_role": "workload_aware_diagnostic",
+        "final_product_claim": False,
+        "workload_blind": False,
         "data_mode": "three_cleaned_csv_days",
         "train_day": "first sorted cleaned CSV",
         "validation_day": "second sorted cleaned CSV",
