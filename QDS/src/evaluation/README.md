@@ -1,107 +1,72 @@
 # Evaluation Module
 
-This module compares query-aware ML simplification against temporal, geometric, and label-Oracle baselines, then reports per-type and aggregate query F1 where higher is better.
+This module evaluates retained-point sets for a pure workload and compares
+MLQDS against temporal, geometric, and oracle-style baselines.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `baselines.py` | Simplification methods: `MLQDSMethod`, `UniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
-| `metrics.py` | F1 functions and the `MethodEvaluation` container. |
-| `evaluate_methods.py` | Runs a method on flattened points and boundaries, caches reusable query results, then formats the comparison tables. |
+| `baselines.py` | `MLQDSMethod`, `UniformTemporalMethod`, `DouglasPeuckerMethod`, `OracleMethod`, and diagnostic score hybrids. |
+| `metrics.py` | F1 helpers and the `MethodEvaluation` container. |
+| `evaluate_methods.py` | Method execution, query-cache reuse, diagnostics, and comparison tables. |
 
 ## Methods
 
-- `MLQDSMethod` uses the trained model, persisted scaler, and eval workload to produce per-point scores for one explicit workload type. The default score mode rank-normalizes that score stream within each trajectory before simplification. Benchmarkable alternatives are `rank_tie`, `raw`, `sigmoid`, `temperature_sigmoid`, `zscore_sigmoid`, and `rank_confidence`. Model inference uses CUDA by default when available, while retained masks stay on the original point tensor device for evaluation.
-- `ScoreHybridMethod` is a diagnostic helper: it keeps the same temporal base as
-  MLQDS and fills the remaining budget with caller-supplied scores. Experiments
-  use it for random-fill and oracle-fill comparisons without adding those rows
-  to the main matched-method table.
-- `UniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
-- `DouglasPeuckerMethod` is a true recursive Douglas-Peucker baseline that keeps endpoints and repeatedly splits the current highest-error segment until the compression budget is filled.
-- `OracleMethod` is an additive-label greedy diagnostic. It uses oracle labels
-  for the explicit workload, but it is not an exact combinatorial optimizer for
-  final retained-set F1 or RangeUseful. For residual-fill analysis,
-  `TemporalOracleFill` is usually the more relevant reference because it uses
-  the same temporal base as MLQDS and fills only the learned budget with oracle
-  labels.
+- `MLQDSMethod` uses the trained model, persisted scaler, explicit workload
+  query set, canonical score conversion, and trajectory-local simplification.
+- `UniformTemporalMethod` keeps evenly spaced points per trajectory.
+- `DouglasPeuckerMethod` recursively keeps highest-error geometry points until
+  the compression budget is filled.
+- `OracleMethod` greedily keeps high additive-label points for the workload. It
+  is a diagnostic upper reference, not an exact combinatorial optimum.
+- `ScoreHybridMethod` supports residual-fill diagnostics by applying the same
+  temporal base as MLQDS and filling the learned budget with supplied scores.
 
-## Metrics
+## Range Metrics
 
-- Range queries report `RangePointF1`, the retained point-hit metric inside the
-  spatiotemporal box. Sparse point retention is measured by how much of the
-  original query-hit mass it preserves rather than by one retained point
-  recovering an entire trajectory. Exact duplicate AIS rows are counted as
-  separate point instances.
-- This range score is a useful retained-point proxy, not the full target for
-  range-query navigational usefulness. It does not directly score per-ship
-  interpretability, entry/exit preservation, or range-local trajectory shape.
-  See `../../../Aleks-Sprint/range-objective-redesign.md` for the current
-  objective-redesign conclusion.
-- `RangeUseful` is a versioned audit score combining `RangePointF1`, ship
-  presence, per-ship point coverage, entry/exit preservation, temporal span
-  coverage, in-query gap coverage, crossing-bracket preservation, route-change
-  preservation, and range-local path-shape preservation. It is reported
-  separately so it can guide objective redesign without pretending to be a
-  mathematically final target. Schema v7 weights are
-  `0.22/0.13/0.13/0.10/0.10/0.10/0.09/0.07/0.06` for point, ship presence,
-  ship coverage, sampled entry/exit, crossing brackets, temporal span, gap,
-  turn, and shape respectively. Grouped by intent, those weights are point
-  coverage `0.22`, ship representation `0.26`, boundary/crossing context
-  `0.20`, temporal/continuity `0.19`, and route fidelity `0.13`.
-- `EntryExitF1` is reported separately for range workloads. It measures
-  retained in-box boundary-crossing points and is a shape-preservation
-  diagnostic, not part of `RangePointF1`.
-- Audit component interpretation:
-  - `ShipF1` is ship presence only; one retained in-query point can recover a
-    ship.
-  - `ShipCov` averages point-subset F1 per hit ship, so dense ships do not hide
-    sparse representation of another queried ship.
-  - `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true box
-    crossings.
-  - `CrossingF1` scores AIS point pairs bracketing range-box boundary
-    crossings and between-sample pass-throughs. Fully inside segments are
-    handled by point and shape components instead of being counted as crossing
-    support.
-  - `TemporalCov` scores retained in-query time span. It intentionally does
-    not penalize large interior gaps when endpoints survive.
-  - `GapCov` scores the largest missing run between retained in-query points,
-    so endpoints-only simplifications no longer look complete on straight
-    tracks.
-  - `TurnCov` scores weighted coverage of route-change points inside the query,
-    using local curvature and persisted turn-score features when available.
-  - `ShapeScore` scores range-local route fidelity from SED/PED-style shortcut
-    error normalized by the original in-query segment scale. It is still a
-    proxy, but it now penalizes geometric shortcuts more directly than retained
-    path-length ratio.
-- kNN, similarity, and clustering queries report pure answer-set agreement as `AnswerF1`; `CombinedF1` additionally multiplies answer agreement by retained support-point quality for diagnostic comparison.
-- `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.
-- `clustering_f1(original_labels, simplified_labels)` - F1 over same-cluster trajectory co-membership pairs, ignoring noise label `-1`.
-- Retained point gap reports the average original-index spacing between consecutive retained points per trajectory. Lower values mean retained points are more evenly dense along the original trajectory, and the JSON output also includes normalized and max gap values.
-- `MethodEvaluation` stores aggregate F1, per-type F1, compression ratio, retained point gap, latency in milliseconds, geometry distortion, and length preservation. The legacy `avg_length_loss` property remains available as `1 - avg_length_preserved`.
+Range tables report two top-level scores:
+
+- `RangePointF1`: retained in-box point-hit F1. This is the old answer metric
+  renamed so tables no longer imply it captures full range usefulness.
+- `RangeUseful`: versioned range-local usefulness audit score. Current
+  components are point hits, ship presence, per-ship coverage, sampled
+  entry/exit support, crossing brackets, temporal span, gap coverage,
+  route-change coverage, and local shape fidelity.
+
+`RangeUseful` is the canonical checkpoint target for range training, but it is
+still an evolving audit objective rather than a mathematically final target.
+See [`../../../Aleks-Sprint/range-objective-redesign.md`](../../../Aleks-Sprint/range-objective-redesign.md)
+for the rationale.
+
+Important component semantics:
+
+- `ShipF1` asks whether each hit ship is represented at all.
+- `ShipCov` averages per-ship point-subset coverage so dense ships do not hide
+  sparse ship failures.
+- `EntryExitF1` uses sampled AIS entry/exit points, not interpolated true
+  boundary crossings.
+- `CrossingF1` scores AIS point pairs that bracket box-boundary crossings or
+  between-sample pass-throughs.
+- `TemporalCov` scores retained in-query time span.
+- `GapCov` penalizes large missing runs between retained in-query points.
+- `TurnCov` scores route-change support inside the query.
+- `ShapeScore` scores range-local route fidelity with shortcut-error style
+  geometry penalties.
+
+Non-range workloads still report answer-set `AnswerF1`/`CombinedF1` for
+legacy ablations, but the current benchmark workflow is range-only.
 
 ## Reporting
 
-- `evaluate_method` scores one method against one typed workload. Reuse an
-  `EvaluationQueryCache` when several methods share the same points,
-  boundaries, and query list.
-- `print_method_comparison_table` reports `RangePointF1`/`RangeUseful` for
-  range workloads and `AnswerF1`/`CombinedF1` for non-range answer-set
-  workloads.
-- `print_range_usefulness_table` reports the detailed range audit components.
-- `print_geometric_distortion_table` reports SED/PED, length preservation, and
+- `print_method_comparison_table` prints the compact method comparison.
+- `print_range_usefulness_table` prints range audit components.
+- `print_geometric_distortion_table` prints SED/PED, length preservation, and
   `F1xLen`.
-- Read F1 and length-preservation columns as higher-is-better. Read `AvgPtGap`
-  as lower-is-better.
+- `AvgPtGap` is lower-is-better; F1, usefulness, and length preservation are
+  higher-is-better.
 
-## Audit Caching
-
-Keep final benchmark audits exact. `EvaluationQueryCache` precomputes
-retained-independent per-query range support: full ship IDs, compact entry/exit
-indices, crossing brackets, in-query offsets, turn weights, full local time
-spans, and full local path lengths. It also caches adjacent-segment min/max
-geometry so crossing-bracket detection can filter candidate segments by query
-box before the exact intersection test.
-Reuse that cache across MLQDS, baselines, Oracle, and compression ratios. Only
-use sampled approximations for checkpoint-selection diagnostics when needed;
-final reported audit metrics should stay exact.
+Final benchmark audits should stay exact. `EvaluationQueryCache` precomputes
+retained-independent query support and is reused across MLQDS, baselines,
+oracle diagnostics, and compression-ratio audits. Sampling is acceptable for
+checkpoint diagnostics, not for final reported benchmark metrics.

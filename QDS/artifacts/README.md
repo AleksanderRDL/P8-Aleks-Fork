@@ -1,104 +1,69 @@
 # QDS Artifacts
 
-This directory is for local generated artifacts. Keep run output here, but do
-not commit benchmark payloads, caches, checkpoints, logs, or smoke leftovers.
-Only this README is tracked.
+This directory is for local generated outputs. Keep caches, checkpoints,
+benchmark logs, and smoke leftovers out of git; only this README should be
+tracked.
 
 ## Layout
 
-Use these top-level folders:
-
-- `benchmarks/` - benchmark families and one directory per benchmark attempt.
-- `cache/` - reusable loader/cache material such as segmented Parquet data.
-- `results/` - ad hoc experiment and smoke-run result directories.
-
-The recommended range benchmark family is:
-
 ```text
-artifacts/benchmarks/range_testing_baseline/
-  latest_run.txt
-  latest_queue.txt
-  runs_index.csv
-  runs_index_events.jsonl
-  runs/<run_id>/
-    README.md
-    run_config.json
-    run_status.json
-    artifact_index.json
-    benchmark_report.json
-    benchmark_report.csv
-    benchmark_report.md
-    logs/
-    <run_label>/
-  queues/<queue_id>/
-    queue_manifest.json
-    queue_plan.tsv
-    queue_status.jsonl
-    queue_summary.json
-    logs/
+artifacts/
+  benchmarks/
+    range_testing_baseline/
+      latest_run.txt
+      latest_queue.txt
+      runs_index.csv
+      runs_index_events.jsonl
+      runs/<run_id>/
+      queues/<queue_id>/
+  cache/
+  results/
 ```
 
-Read `runs_index.csv` first when comparing attempts. Read a run-local
-`artifact_index.json` or `README.md` first when looking for a specific child
-output, log, or diagnostic file. Queue directories are launch records for
-sequential batches; the comparable model-quality artifacts still live under
-`runs/<run_id>/`.
+- `benchmarks/` contains comparable benchmark families.
+- `cache/` contains reusable segmented trajectory and range diagnostic caches.
+- `results/` is for ad hoc smoke/manual experiment output.
 
-## Run IDs
+Within a benchmark run, start with `README.md`, `artifact_index.json`,
+`run_status.json`, `benchmark_report.md`, and `benchmark_report.csv`.
+Child experiment details live under the run-label subdirectory, usually
+`range_testing_baseline/`.
 
-Use stable, descriptive run IDs for benchmark attempts that may be compared
-later. Include the workload, profile, data span, point cap, and an iteration
-suffix when useful:
-
-```bash
-BENCHMARK_RUN_ID=range_testing_baseline_a make range-benchmark-tmux
-```
-
-Timestamped default IDs are fine for exploratory runs. Avoid reusing a run ID
-unless you intend to overwrite the previous run directory and family index row.
-
-## Routine Commands
-
-Run preflight before starting an expensive tmux benchmark:
+## Useful Commands
 
 ```bash
 make benchmark-preflight
 make benchmark-queue-preflight
-```
-
-Preflight checks tmux availability, Python/Torch import, cleaned CSV presence,
-artifact/cache write access, disk space, available RAM, swap, GPU visibility,
-and git worktree state. RAM/swap and dirty-git findings are warnings so the
-run can still proceed when the choice is intentional.
-
-List benchmark attempts in the active family:
-
-```bash
 make list-runs
-```
-
-Dry-run smoke artifact cleanup:
-
-```bash
 make clean-smoke-artifacts
-```
-
-Delete the known smoke/test artifact directories:
-
-```bash
 make clean-smoke-artifacts CONFIRM=1
 ```
 
-## Cleanup Rules
+Preflight checks tmux, Python/Torch, cleaned CSV availability, artifact/cache
+writes, disk, RAM, swap, GPU visibility, and dirty git state. RAM/swap and
+dirty-git findings are warnings so intentional runs can still proceed.
 
-It is safe to delete:
+## Run IDs
+
+Use descriptive run IDs for runs that may be compared later:
+
+```bash
+ATTACH=0 BENCHMARK_RUN_ID=range_testing_baseline_seed42_a make range-benchmark-tmux
+```
+
+Timestamped IDs are fine for exploratory runs. Avoid reusing a run ID unless
+overwriting that run directory and index row is intentional.
+
+## Cleanup
+
+Safe cleanup targets:
 
 - `artifacts/results/smoke_*`
 - `artifacts/benchmarks/*smoke*`
 - `artifacts/benchmarks/*layout_smoke*`
-- old task acceptance smoke runs such as `artifacts/benchmarks/task*_smoke`
+- old task smoke directories such as `artifacts/benchmarks/task*_smoke`
   and `artifacts/benchmarks/task*_small`
-- cache directories created only for smoke runs
+- caches created only for smoke runs
 
-Keep benchmark family roots that contain testing-baseline runs until their comparison
-tables and run notes have been reviewed.
+Keep `artifacts/benchmarks/range_testing_baseline/` runs until their report
+rows have been reviewed or intentionally archived elsewhere.

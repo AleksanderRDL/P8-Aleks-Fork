@@ -15,7 +15,7 @@ Options:
                        artifacts/benchmarks/range_testing_baseline.
   --python PATH        Python executable. Default: ../.venv/bin/python.
   --min-free-gb N      Required free space on artifact filesystem. Default: 20.
-  --min-ram-gb N       Warn below this available RAM threshold. Default: 32.
+  --min-ram-gb N       Warn below this available RAM threshold. Default: 24.
   --min-swap-gb N      Warn below this total swap threshold. Default: 8.
   -h, --help           Show this help.
 
@@ -33,7 +33,7 @@ ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_testing_baseline}"
 DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
 PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
 MIN_FREE_GB="${MIN_FREE_GB:-20}"
-MIN_AVAILABLE_RAM_GB="${MIN_AVAILABLE_RAM_GB:-32}"
+MIN_AVAILABLE_RAM_GB="${MIN_AVAILABLE_RAM_GB:-24}"
 MIN_SWAP_GB="${MIN_SWAP_GB:-8}"
 
 while [[ $# -gt 0 ]]; do

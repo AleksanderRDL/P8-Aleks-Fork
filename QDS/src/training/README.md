@@ -1,127 +1,81 @@
 # Training Module
 
-This module builds typed F1-contribution labels, batches trajectory-local windows, fits the shared scaler, trains the model, and persists the checkpoint artifacts used at inference time.
+This module builds range-usefulness labels, batches trajectory-local windows,
+fits the scaler, trains MLQDS, and persists checkpoint artifacts.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `importance_labels.py` | Build per-point, per-type F1 contribution labels and the labelled mask from typed queries. |
-| `trajectory_batching.py` | Slice flattened trajectories into fixed-length windows with padding metadata. |
-| `scaler.py` | Persisted min-max scaler for points and queries. |
-| `train_model.py` | Ranking-loss training loop, diagnostics, and forward helpers. |
-| `training_pipeline.py` | Checkpoint save/load helpers and deterministic prediction wrappers. |
+| `importance_labels.py` | Per-point workload labels and labelled masks. |
+| `trajectory_batching.py` | Fixed-length trajectory windows with padding metadata. |
+| `scaler.py` | Persisted min-max scaler for point/query features. |
+| `train_model.py` | Loss objectives, diagnostics, and training loop. |
+| `training_pipeline.py` | Checkpoint save/load and deterministic prediction helpers. |
 
-## Training Flow
+## Flow
 
-1. `compute_typed_importance_labels` turns the typed workload into per-point
-   label targets `labels[N,4]` and `labelled_mask[N,4]`.
-2. `FeatureScaler.fit` learns min-max stats from training points and query features, then normalizes both.
-3. `build_trajectory_windows` produces padded windows that never cross trajectory boundaries.
-4. `train_model` rescales sparse labels per type for optimization, then trains a
-   query-conditioned transformer with the active loss objective plus balanced
-   pointwise BCE supervision.
-5. `windowed_predict` and `forward_predict` reuse the same windowing logic for deterministic inference.
+1. Build workload labels for the active pure workload.
+2. Fit `FeatureScaler` on training points and query features.
+3. Build padded windows that never cross trajectory boundaries.
+4. Train the query-conditioned model and checkpoint by validation selection
+   score.
+5. Restore the best checkpoint for final evaluation/inference.
 
-## Label Construction
+## Range Labels
 
-- Range labels now support two explicit modes. `point_f1` is the old point-hit
-  proxy: every point inside a range query box receives the same singleton
-  retained-hit gain for that query. `usefulness` is the default training mode:
-  it adds local proxy signal for ship presence, per-ship coverage, sampled
-  entry/exit points, observed crossing brackets, in-query temporal span
-  endpoints, gap coverage, and local shape/turn points. Cross-trajectory
-  proximity is not used.
-- `range_boundary_prior_weight` is still available as an explicit point-hit
-  boundary prior, but the default testing-baseline path keeps it at `0.0` because
-  `usefulness` already reports entry/exit signal as a separate component.
-- These labels remain local/additive approximations. They are closer to
-  range-local retained-set usefulness than pure point hits, but they are not an
-  exact optimizer for multi-budget retained-set utility; see
-  `../../../Aleks-Sprint/range-objective-redesign.md`.
-- kNN and similarity labels execute the query on the original data, identify the original trajectory-ID answer set, and assign points the F1 gain of recovering one true-positive trajectory ID.
-- Range usefulness, similarity, and clustering labels can use the optional
-  `turn_score` feature as a small route-change prior.
-- Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs. Within a clustered query box, point mass is weighted by distance from the trajectory's in-box centroid.
-- Labels are averaged per query type and clamped to `[0, 1]`, so higher labels directly mean higher expected query F1 contribution.
-- Training keeps those raw labels for reporting and oracle diagnostics, but rescales each active type internally so tiny F1 gains still produce useful gradients.
-- The old speed-mass, distance-decay, interpolation, and speed-baseline heuristics are no longer used.
+`range_label_mode="usefulness"` is the current default. It provides local proxy
+signal for point hits, ship presence, per-ship coverage, sampled entry/exit
+points, crossing brackets, in-query temporal span, gap coverage, turns, and
+shape. Cross-trajectory proximity is intentionally not used.
 
-## Training Notes
+`range_label_mode="point_f1"` keeps the old point-hit proxy for ablations.
+`range_boundary_prior_weight` remains available as an explicit optional prior,
+but the testing baseline keeps it at `0.0`.
 
-- Current experiment entrypoints train one pure workload per model. The model
-  emits one score stream for that workload; per-type output heads are not part
-  of training or evaluation.
-- Windows never cross trajectory boundaries. Training prefilters windows with
-  no positive labels for any active workload type before the model forward; any
-  remaining per-type zero-positive lanes are still skipped for that type. The
-  pointwise BCE term samples zeros to avoid all-zero collapse.
-- `loss_objective="budget_topk"` is the default range objective. It trains the
-  score stream to capture high label mass inside soft top-k retained budgets
-  across `budget_loss_ratios` (`0.01,0.02,0.05,0.10` by default). This is closer
-  to the final simplification decision than the old local pair sampler. The
-  budget-top-k loss is computed across padded batch rows in one batched tensor
-  path; scalar helpers remain as correctness references in tests.
-- With `residual_label_mode="temporal"`, budget-top-k does not globally delete
-  temporal-spine labels once. It computes per-budget temporal-base masks and
-  trains the learned fill only on the points still controlled by the model at
-  each retained-point ratio. This keeps the multi-budget objective aligned with
-  `mlqds_temporal_fraction`.
-- Training artifacts include `training_target_diagnostics`, which records the
-  configured budget ratios, effective learned-fill ratios, temporal-base point
-  counts, remaining candidate counts, residual positive-label counts, and how
-  much positive label mass is consumed by the temporal spine versus left for
-  learned residual fill.
-- Range diagnostics also report component-level usefulness label mass for
-  `range_label_mode="usefulness"`. Use
-  `component_positive_label_mass_fraction` to check whether point, ship,
-  crossing, temporal, gap, turn, or shape supervision is unexpectedly
-  dominating the local proxy before running another benchmark. These component
-  masses are reported before the final `[0, 1]` training-label clamp so
-  saturation remains visible.
-- `loss_objective="ranking_bce"` keeps the legacy margin-ranking objective for
-  ablation. `pointwise_loss_weight` remains an auxiliary BCE term for both
-  objectives.
-- The configured epoch count is used literally, with a minimum of 1 epoch. The
-  returned model is restored to the best diagnostic epoch. `best_selection_score`
-  is the canonical selected validation score; `best_f1` remains as a legacy
-  compatibility alias.
+These labels are additive approximations for training, not an exact optimizer
+for retained-set `RangeUseful`. The current objective reasoning lives in
+[`../../../Aleks-Sprint/range-objective-redesign.md`](../../../Aleks-Sprint/range-objective-redesign.md).
+
+## Loss And Selection
+
+- `loss_objective="budget_topk"` is the default range loss. It trains the score
+  stream to concentrate label mass inside soft top-k budgets across
+  `budget_loss_ratios` (`0.01,0.02,0.05,0.10` by default).
+- `residual_label_mode="temporal"` computes a per-budget temporal-base mask and
+  trains only the learned fill that remains controlled by MLQDS. This keeps the
+  loss aligned with `mlqds_temporal_fraction`.
+- `loss_objective="ranking_bce"` is the legacy ranking/BCE ablation.
+- `pointwise_loss_weight` remains an auxiliary BCE term for both objectives.
 - `checkpoint_f1_variant="range_usefulness"` is the default selection target
-  for range training because it matches the range-local usefulness objective.
-  `"answer"` and `"combined"` remain legacy diagnostics for explicit ablations.
-  `uniform_gap`, `checkpoint_smoothing_window`, `checkpoint_full_f1_every`,
-  `checkpoint_candidate_pool_size`, and `early_stopping_patience` are explicit
-  selection stabilizers. `checkpoint_full_f1_every=1` keeps exact validation
-  every eligible epoch. Higher values keep cheap-diagnostic candidate snapshots
-  and run exact validation only on the best candidates in each validation round;
-  the first epoch is not forced through full validation unless it lands on that
-  cadence.
-- Validation selection uses the same canonical MLQDS score conversion as final
-  evaluation: one explicit workload score stream, `mlqds_score_mode`, and the
-  temporal/diversity retained-mask simplifier. History rows report
-  `val_selection_score` plus explicit `val_range_point_f1` and
-  `val_range_usefulness` fields so range-usefulness checkpointing is not
-  mislabeled as generic query F1. Range usefulness is versioned in audit JSON
-  because component weights may change during objective redesign.
-- AIS-scale stability knobs: `lr`, `pointwise_loss_weight`,
-  `gradient_clip_norm`, `train_batch_size`, `inference_batch_size`,
-  `query_chunk_size`, `float32_matmul_precision`, `allow_tf32`, and `amp_mode`.
-  Benchmark changes by retained-set F1, epoch time, and peak memory together.
-- Epoch diagnostics record `epoch_forward_seconds`, `epoch_loss_seconds`,
-  `epoch_backward_seconds`, `epoch_diagnostic_seconds`,
-  `epoch_f1_seconds`, and filtered-window counts for bottleneck analysis.
-- Testing-baseline profiling showed the old ranking loss could dominate epoch time
-  while optimizing a local proxy. The budget-top-k objective is the first loss
-  redesign step; judge it by retained-set `RangeUseful`/`RangePointF1` across
-  compression ratios before further tuning.
-- Defaults: `window_length=512`, `window_stride=256`,
-  `query_chunk_size=2048`, `float32_matmul_precision="highest"`,
-  `allow_tf32=False`, and `amp_mode="off"`. The testing-baseline benchmark
-  profile overrides these with its range baseline runtime settings.
+  for range training. `answer` and `combined` are legacy diagnostics/ablations.
+- `checkpoint_full_f1_every` and `checkpoint_candidate_pool_size` let cheap
+  diagnostics produce candidates between exact validation epochs.
+
+Training artifacts include `training_target_diagnostics`, epoch timing fields,
+selected validation scores, and range-label component mass fractions. Use those
+before changing the objective; they show whether the temporal base, residual
+fill, or label mix is dominating a run.
+
+## Runtime Knobs
+
+Benchmark profile defaults are defined in
+[`../experiments/benchmark_profiles.py`](../experiments/benchmark_profiles.py).
+The current `range_testing_baseline` profile uses:
+
+- `train_batch_size=64`
+- `inference_batch_size=64`
+- `query_chunk_size=2048`
+- `allow_tf32=True`
+- `amp_mode="bf16"`
+
+Library-level defaults are more conservative so direct CLI calls remain
+portable. Benchmark quality should be compared by `RangeUseful`,
+`RangePointF1`, epoch time, and memory use together.
 
 ## Persistence
 
 - `ModelArtifacts` stores the trained model, scaler, and experiment config.
-- `save_checkpoint` writes the model state, scaler stats, and config.
-- `load_checkpoint` reconstructs the correct model class, reloads the scaler, and puts the model into eval mode.
-- `save_training_summary` stores the diagnostics history as JSON.
+- `save_checkpoint` writes model state, scaler stats, and config.
+- `load_checkpoint` reconstructs the model, reloads the scaler, and returns it
+  in eval mode.

@@ -43,7 +43,8 @@ This module defines the typed query format, workload generator, and concrete que
   30% uniform points. Similarity and clustering use uniform anchors.
 - Range footprint can be dataset-relative (`range_spatial_fraction`,
   `range_time_fraction`) or absolute (`range_spatial_km`, `range_time_hours`).
-  Real-usecase profiles prefer absolute half-windows for day-to-day stability.
+  The current testing baseline uses absolute half-windows for day-to-day
+  stability.
 - `range_footprint_jitter` randomizes footprint size. Benchmark profiles set it
   to `0.0` for exact, reproducible footprints.
 - `target_coverage` is point-level query-signal coverage. With `max_queries`
