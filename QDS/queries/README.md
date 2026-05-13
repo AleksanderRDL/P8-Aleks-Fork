@@ -1,6 +1,10 @@
 # Queries Module
 
-Defines typed query formats, workload generation, and query execution.
+Defines range query formats, workload generation, and query execution.
+
+Range is the active product/query surface. Historical kNN, similarity, and
+clustering code may still exist in the package until it is removed, but it is
+legacy and should not shape new training, evaluation, or benchmark design.
 
 ## Files
 
@@ -9,7 +13,7 @@ Defines typed query formats, workload generation, and query execution.
 | `workload.py` | `TypedQueryWorkload` container. |
 | `query_types.py` | Query IDs, pure workload validation, feature padding. |
 | `query_generator.py` | Deterministic workload generation. |
-| `query_executor.py` | Range, kNN, similarity, and clustering execution. |
+| `query_executor.py` | Range query execution. |
 | `range_geometry.py` | Shared range-box and geographic distance helpers. |
 | `workload_diagnostics.py` | Range workload quality and label diagnostics. |
 
@@ -18,11 +22,8 @@ Defines typed query formats, workload generation, and query execution.
 | Type | ID | Meaning |
 | --- | --- | --- |
 | `range` | 0 | Spatiotemporal box; range evaluation also scores retained point support. |
-| `knn` | 1 | Nearest distinct trajectories around an anchor and time window. |
-| `similarity` | 2 | Reference-snippet similarity inside a centroid/radius/time filter. |
-| `clustering` | 3 | DBSCAN labels over trajectory representatives inside a box. |
 
-Workloads are pure: one active query type per model, e.g. `{"range": 1.0}`.
+Workloads are range-only for active experiments, e.g. `{"range": 1.0}`.
 `pad_query_features` converts typed query dicts into `[M, 12]` features plus
 `[M]` type IDs.
 
@@ -39,8 +40,7 @@ Range generation controls:
 - `target_coverage`: point-level query-signal coverage target.
 - `max_queries`: optional cap when generation continues past `n_queries`.
 
-Range and kNN anchors use density-biased sampling mixed with uniform sampling.
-Similarity and clustering currently use uniform anchors.
+Range anchors use density-biased sampling mixed with uniform sampling.
 
 Use `scripts/estimate_range_coverage.py` before changing query count,
 footprint, or coverage targets.
@@ -48,9 +48,6 @@ footprint, or coverage targets.
 ## Execution
 
 - `execute_range_query`: trajectory IDs with points inside the box.
-- `execute_knn_query`: nearest distinct trajectory IDs in the time window.
-- `execute_similarity_query`: ranked trajectory IDs; evaluation consumes set F1.
-- `execute_clustering_query`: per-trajectory cluster labels.
 - `execute_typed_query`: dispatch by the query `type` field.
 
 The generator defines the future-query prior for workload-blind training. Do

@@ -107,6 +107,22 @@ Always report:
 `RangeUseful` is the best current aggregate but still a versioned proxy. Report
 components so wins and regressions are inspectable.
 
+`GapCov` currently means index/count continuity: the largest run of missing
+in-query point positions is normalized by the number of in-query points. This is
+simple and stable, but it can misrepresent irregular AIS sampling. A missing run
+of ten dense points is not equivalent to a missing run spanning hours or many
+kilometers.
+
+Required `GapCov` ablation:
+
+- keep current count-normalized `GapCov` as the baseline metric
+- add `GapCovTime`: largest missing time span normalized by full in-query time span
+- add `GapCovDistance`: largest missing along-track distance span normalized by
+  full in-query path length
+- Maybe `gap_min` = min(`gap_time`, `gap_distance`) if strict continuity is important
+- compare variants by final `RangeUseful`, component regressions, and checkpoint
+  decisions before changing the default aggregate
+
 ## Baselines And Diagnostics
 
 Final baselines:
@@ -234,6 +250,32 @@ Use later if independent labels are too weak.
 
 This is more aligned but more expensive.
 
+### Pretraining
+
+Pretraining is allowed only if it improves blind range compression without
+leaking validation/eval queries into compression.
+
+Relevant pretraining candidates:
+
+- trajectory-dynamics pretraining: mask or predict local deltas, speed, heading,
+  turn score, and gap structure before supervised range training
+- range-teacher distillation pretraining: aggregate many query-aware teacher
+  scores over train workloads, then initialize the blind student from that target
+- component curriculum: train first on simpler range components such as temporal
+  coverage, entry/exit, turn, gap, and shape, then fine-tune on the full
+  `RangeUseful` target
+
+Low-priority pretraining:
+
+- generic reconstruction or autoencoding unless it proves transfer to
+  `RangeUseful`
+- any objective that mostly teaches point density without improving boundary,
+  gap, shape, or ship-level utility
+
+Decision rule: add pretraining only after the first blind pipeline exists, and
+keep it only if it improves held-out blind `RangeUseful` at the target
+compression ratios after the same checkpointing protocol.
+
 ## Loss And Checkpointing
 
 Loss should match retained-budget use:
@@ -274,6 +316,20 @@ Generator variants to test:
 - overlap limits to avoid near-duplicate queries
 - held-out seeds and held-out generator settings
 
+Time-domain rule for scale-up:
+
+- Training queries on multi-day data must look structurally identical to
+  single-day eval queries when eval remains day-based.
+- Add an `anchor_day` time-domain mode: sample an anchor point, then clamp
+  `t_start` / `t_end` to the calendar/source-file day containing that anchor.
+- Prefer absolute time half-windows such as `range_time_hours=5.0` over
+  dataset-relative time fractions for final range experiments.
+- Do not let multi-day train bounds silently create multi-day query windows.
+
+This is not cosmetic. If train queries can span multiple days but eval queries
+cannot, the model learns a different query prior than the one used for final
+claims.
+
 First A/B set:
 
 - fixed footprint
@@ -292,9 +348,14 @@ Protocol:
 Targets:
 
 - generate multiple train workloads per train day
+- support `anchor_day` query time-domain generation for multi-day train data
 - aggregate usefulness or teacher signal per point
 - cache labels with schema version
 - report component mass
+- add count/time/distance `GapCov` label and metric variants behind explicit
+  config
+- add optional task-aligned pretraining stage only after the first blind model
+  protocol is working
 
 Benchmarks:
 
@@ -343,9 +404,13 @@ query access.
 
 1. Implement workload-blind evaluation protocol.
 2. Build expected-usefulness aggregated labels.
-3. Train the first blind range model.
-4. Evaluate the coverage/compression grid.
-5. Compare against uniform, Douglas-Peucker, temporal random fill, and
+3. Add `anchor_day` query time-domain support before scaling to multi-day train
+   datasets.
+4. Train the first blind range model.
+5. Evaluate the coverage/compression grid.
+6. Compare against uniform, Douglas-Peucker, temporal random fill, and
    `range_aware` as a workload-aware upper bound.
-6. Inspect component gaps and label mass before increasing model size.
-7. Add distillation if expected-usefulness labels are too weak.
+7. Inspect component gaps, including count/time/distance `GapCov`, and label
+   mass before increasing model size.
+8. Add task-aligned pretraining or distillation if expected-usefulness
+   labels are too weak.
