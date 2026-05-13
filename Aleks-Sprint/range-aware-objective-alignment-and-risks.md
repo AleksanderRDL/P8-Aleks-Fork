@@ -6,6 +6,26 @@ This note explains why the new `range_aware` model aligns better with the
 range-query objective, what changed versus the earlier local-label setup, and
 what risks remain.
 
+## Updated Constraint: Workload-Blind Compression
+
+The final product requirement is to compress once before knowing future user
+queries. Under that requirement, the current `range_aware` setup is not a final
+solution because it computes point-query relation features from the workload
+available at inference time.
+
+This is broader than `range_aware`. The current `baseline` and `turn_aware`
+model paths also use query cross-attention at inference, so they are
+query-conditioned too. `range_aware` made the dependency explicit and stronger;
+it did not create the whole dependency from nothing.
+
+The `range_aware` experiments remain useful as diagnostics:
+
+- they show the value available when query geometry is known
+- they expose which range-usefulness components are recoverable
+- they provide an upper-bound style comparison for workload-aware QDS
+
+They should not be used as proof of workload-blind compression quality.
+
 ## Target Objective
 
 The project objective is not generic trajectory simplification. The target user
@@ -75,6 +95,9 @@ the intended range-query workload.
 This is aligned with workload-aware QDS: the workload is part of the
 simplification problem, not an after-the-fact hidden test.
 
+It is not aligned with workload-blind compression, where future range queries
+are unknown when the retained set is chosen.
+
 ## Supervision Versus Inference
 
 Training/supervision:
@@ -121,6 +144,10 @@ Current benchmark interpretation:
 That is transductive/workload-aware inference. It is valid only if the product
 claim is explicitly "simplify for this known range workload" or "query-workload
 aware simplification." It should not be marketed as workload-blind compression.
+
+Given the updated product requirement, the final benchmark protocol must be
+different: compress the eval dataset first without eval queries, then score the
+already-retained set on held-out eval queries.
 
 ## Downsides And Risks
 
@@ -236,3 +263,7 @@ not free computationally. The result should be described as:
 "A range-workload-aware simplification model that uses known range workload
 geometry at inference to retain points that better preserve range-query
 answers."
+
+For the actual workload-blind target, this must pivot toward a model that
+learns a general retention prior from historical/generated range workloads but
+does not receive the future eval workload before compression.

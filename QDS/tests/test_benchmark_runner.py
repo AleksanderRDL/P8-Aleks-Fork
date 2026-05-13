@@ -176,6 +176,16 @@ def test_run_config_records_profile_checkpoint_selection_metric(tmp_path) -> Non
     )
 
     assert payload["checkpoint_selection_metric"] == "uniform_gap"
+    assert payload["profile_settings"]["range_coverage_sweep_targets"] == [0.05, 0.10, 0.15, 0.30]
+    assert payload["profile_settings"]["range_compression_sweep_ratios"] == [
+        0.01,
+        0.02,
+        0.05,
+        0.10,
+        0.15,
+        0.20,
+        0.30,
+    ]
 
 
 def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:

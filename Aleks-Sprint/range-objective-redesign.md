@@ -9,6 +9,12 @@ The end goal is to train a pure range-workload model that simplifies large AIS
 trajectory datasets at multiple compression rates while preserving the
 navigational usefulness of the data returned by realistic range queries.
 
+Important deployment constraint: the final target is workload-blind
+compression. The system must compress once before knowing the future user
+queries. Query-conditioned or eval-workload-conditioned simplification can be
+used as a diagnostic or upper-bound experiment, but it is not the final product
+claim.
+
 ## Target User Outcome
 
 A user runs a spatiotemporal range query and receives simplified AIS points
@@ -40,10 +46,30 @@ least:
 - 2%
 - 5%
 - 10%
+- 15%
+- 20%
+- 30%
 
 The goal is to measure how far the model can hold up as compression becomes
 more aggressive and whether query-driven training improves quality at each
 budget.
+
+## Query Coverage Targets
+
+Range-query workload evaluations should include these point-coverage targets:
+
+- 5%
+- 10%
+- 15%
+- 30%
+
+These are workload-generation coverage targets, not retained-point compression
+budgets. They test whether the trained simplifier remains useful when future
+range queries are sparse/selective versus broader/less selective.
+
+Because the final target is workload-blind compression, these query workloads
+must be held out from the compression decision when making final model-quality
+claims. They are evaluation workloads, not inference-time inputs.
 
 ## Current Metric And Audit
 

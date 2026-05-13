@@ -32,6 +32,12 @@ def test_queue_plan_validation_rejects_unknown_child_args(tmp_path: Path) -> Non
     assert "--definitely_not_a_real_arg" in errors[0]
 
 
+def test_tracked_range_coverage_compression_grid_plan_validates() -> None:
+    plan = Path(__file__).resolve().parents[1] / "benchmark_plans" / "range_coverage_compression_grid.tsv"
+
+    assert validate_plan(plan) == []
+
+
 def test_queue_launcher_script_keeps_failure_marking_and_parses() -> None:
     script = Path(__file__).resolve().parents[1] / "scripts" / "run_benchmark_queue_tmux.sh"
 

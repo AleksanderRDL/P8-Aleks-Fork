@@ -45,18 +45,27 @@ segmentation config.
 ## Current Benchmark Baseline
 
 The active benchmark profile is `range_testing_baseline`. It is a pure range
-workload profile for cleaned AIS CSV days:
+workload profile for cleaned AIS CSV days.
+
+Important constraint: the current `model_type=range_aware` profile is
+workload-aware. It computes point/query relation features from the provided
+range workload before retaining points. Treat it as a diagnostic and upper-bound
+style profile until a workload-blind compressor is implemented. The final target
+is to compress once before future user queries are known.
 
 | Area | Default |
 | --- | --- |
 | Data split | first three sorted cleaned CSVs = train, validation, eval |
 | Workload | range only |
-| Query generation | minimum `80`, target `20%` coverage, cap `2048` |
+| Query generation | minimum `80`, default target `20%` coverage, cap `2048` |
+| Required coverage sweep | `5%,10%,15%,30%` |
 | Range footprint | `range_spatial_km=2.2`, `range_time_hours=5.0`, no jitter |
-| Compression | `5%` retained points |
-| Training | `20` epochs, early stopping patience `5` |
+| Primary compression | `5%` retained points |
+| Required compression sweep | `1%,2%,5%,10%,15%,20%,30%` |
+| Training | `8` epochs, early stopping patience `5` |
 | Checkpoint target | `checkpoint_f1_variant=range_usefulness` |
-| Loss | `budget_topk` over budgets `1%,2%,5%,10%` |
+| Checkpoint selection | `checkpoint_selection_metric=uniform_gap`, full F1 every `4` epochs, candidate pool `2` |
+| Loss | `budget_topk` over training budgets `5%,10%` |
 | MLQDS simplification | score mode `rank`, temporal fraction `0.25` |
 | Runtime | TF32 enabled, BF16 AMP, train/inference batch size `64` |
 | Query chunking | `query_chunk_size=2048`, also used as `max_queries` |
@@ -65,6 +74,12 @@ workload profile for cleaned AIS CSV days:
 Keep durable baseline defaults in `benchmark_profiles.py`. For experiments,
 use profile overrides in queue rows or `BENCHMARK_CHILD_EXTRA_ARGS`; promote an
 override into a named profile only when it becomes a repeated baseline.
+
+The sweep constants are recorded by `benchmark_profile_settings()` as
+`range_coverage_sweep_targets` and `range_compression_sweep_ratios`. They are
+reporting/evaluation targets, not a promise that every routine benchmark run
+executes the full grid. The full grid can be expensive, especially at higher
+coverage.
 
 ## Running Benchmarks
 
@@ -100,6 +115,18 @@ range_testing_baseline_pairs192_seed42	42	--ranking_pairs_per_type 192
 The queue launcher validates child args before tmux starts, so unsupported
 overrides fail before an expensive run begins.
 
+The requested coverage/compression diagnostic grid is tracked at
+[`../../benchmark_plans/range_coverage_compression_grid.tsv`](../../benchmark_plans/range_coverage_compression_grid.tsv).
+It runs coverage `5%,10%,15%,30%` and audits compression
+`1%,2%,5%,10%,15%,20%,30%` using the current workload-aware profile:
+
+```bash
+ATTACH=0 \
+  BENCHMARK_PLAN_FILE=benchmark_plans/range_coverage_compression_grid.tsv \
+  BENCHMARK_CONTINUE_ON_FAILURE=1 \
+  make range-benchmark-queue-tmux
+```
+
 ## Direct CLI Example
 
 ```bash
@@ -133,6 +160,10 @@ Estimate query count and coverage before changing footprint or target coverage:
 `query_coverage` is point-level query-signal coverage. When `max_queries` is
 larger than `n_queries`, generation continues until the target is reached or
 the cap is hit. Run artifacts record the final generated count and stop reason.
+
+For final workload-blind claims, generate evaluation workloads only after the
+retained set has already been chosen. Do not pass eval queries into the model or
+feature builder before compression.
 
 ## Artifacts
 

@@ -5,6 +5,11 @@
 This sweep tests the strict learned range-aware profile across range-query
 coverage targets and retained-point compression ratios.
 
+Updated product caveat: these results are workload-aware. The model receives
+the evaluation workload before retaining points through `range_aware`
+point/query relation features. The numbers are valid for workload-aware QDS and
+as diagnostics, but they are not final evidence for workload-blind compression.
+
 Fixed settings:
 
 - `model_type=range_aware`
@@ -19,6 +24,11 @@ Caveat: each coverage target trains one model at the profile's normal 5%
 primary compression setting, then audits that model at multiple compression
 ratios. This measures robustness across budgets; it is not separate retraining
 for every compression target.
+
+The requested forward grid is now:
+
+- coverage targets: `0.05,0.10,0.15,0.30`
+- compression targets: `0.01,0.02,0.05,0.10,0.15,0.20,0.30`
 
 ## Main Grid
 
@@ -97,14 +107,17 @@ primary compression ratio lower.
 
 ## Recommendations
 
-- Keep `query_coverage=0.20` as the practical default. It is a strong middle
-  target and already has warm caches.
-- Treat 40% coverage as a stress test. It still wins, but the quality margin
-  and runtime both get worse.
-- Use `range_audit_compression_ratios=0.01,0.02,0.05,0.10` for final reporting,
-  but not for every iteration. It adds real cost.
+- Keep `query_coverage=0.20` only as the current workload-aware diagnostic
+  default. It is a strong middle target and already has warm caches.
+- For the next reported sweep, use the requested coverage grid
+  `0.05,0.10,0.15,0.30` instead of the old `0.10,0.20,0.40` grid.
+- Use compression audit ratios `0.01,0.02,0.05,0.10,0.15,0.20,0.30` for final
+  reporting, but not for every iteration. It adds real cost.
 - Do not assume separate low-compression retraining improves results. Test it,
   but the first evidence says the 5% primary model generalizes well down to 2%.
 - The next useful optimization target is high-coverage range label/diagnostic
   preparation. Coverage 40% spent about 940s on train labels, 829s on eval
   labels, and 876s on diagnostics.
+- Build a workload-blind protocol before making product claims: compress first
+  without eval queries, then evaluate the frozen retained set on held-out range
+  workloads.

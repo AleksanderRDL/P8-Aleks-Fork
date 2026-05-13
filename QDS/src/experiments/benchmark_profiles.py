@@ -8,6 +8,8 @@ from dataclasses import dataclass
 DEFAULT_PROFILE = "range_testing_baseline"
 PROFILE_CHOICES = (DEFAULT_PROFILE,)
 ProfileSetting = int | float | str | bool | list[float] | None
+RANGE_COVERAGE_SWEEP_TARGETS = (0.05, 0.10, 0.15, 0.30)
+RANGE_COMPRESSION_SWEEP_RATIOS = (0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30)
 
 
 @dataclass(frozen=True)
@@ -257,4 +259,6 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "mlqds_temporal_fraction": profile.mlqds_temporal_fraction,
         "range_boundary_prior_weight": profile.range_boundary_prior_weight,
         "range_boundary_prior_enabled": profile.range_boundary_prior_weight > 0.0,
+        "range_coverage_sweep_targets": list(RANGE_COVERAGE_SWEEP_TARGETS),
+        "range_compression_sweep_ratios": list(RANGE_COMPRESSION_SWEEP_RATIOS),
     }
