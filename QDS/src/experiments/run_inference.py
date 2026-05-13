@@ -33,17 +33,13 @@ from src.evaluation.baselines import (
     MLQDSMethod,
     UniformTemporalMethod,
 )
-from src.evaluation.evaluate_methods import (
-    EvaluationQueryCache,
-    evaluate_method,
-    print_geometric_distortion_table,
-    print_method_comparison_table,
-    print_range_usefulness_table,
-)
+from src.evaluation.evaluate_methods import evaluate_method
+from src.evaluation.query_cache import EvaluationQueryCache
+from src.evaluation.tables import print_geometric_distortion_table, print_method_comparison_table, print_range_usefulness_table
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.training.train_model import TrainingOutputs
-from src.training.training_pipeline import load_checkpoint
+from src.training.checkpoints import load_checkpoint
 from src.experiments.torch_runtime import (
     AMP_MODE_CHOICES,
     FLOAT32_MATMUL_PRECISION_CHOICES,

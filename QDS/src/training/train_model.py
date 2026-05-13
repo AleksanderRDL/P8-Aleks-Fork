@@ -10,7 +10,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
+from src.experiments.experiment_config import ModelConfig
+from src.queries.workload import TypedQueryWorkload
 from src.experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
@@ -22,6 +23,12 @@ from src.queries.query_types import (
 )
 from src.simplification.mlqds_scoring import simplify_mlqds_predictions
 from src.simplification.simplify_trajectories import evenly_spaced_indices
+from src.training.checkpoint_selection import (
+    CheckpointCandidate,
+    record_validation_stats,
+    selection_from_stats,
+    selection_score,
+)
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
@@ -536,19 +543,6 @@ def _model_state_on_cpu(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-@dataclass
-class _CheckpointCandidate:
-    """Candidate snapshot awaiting exact validation in a full-F1 round."""
-
-    epoch_number: int
-    epoch_index: int
-    cheap_score: float
-    loss: float
-    state_dict: dict[str, torch.Tensor]
-    stats: dict[str, float]
-    avg_tau: float
-
-
 def _ranking_loss_for_type(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -588,130 +582,6 @@ def _ranking_loss_for_type(
 
     sign = torch.sign(target[a_idx] - target[b_idx])
     return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), int(a_idx.numel())
-
-
-def _selection_score(avg_tau: float, pred_std: float, loss: float | None = None) -> float:
-    """Score checkpoint quality while strongly penalizing collapsed predictions."""
-    collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
-    if loss is None:
-        return float(avg_tau - collapse_penalty)
-    return float(-float(loss) + 1e-3 * avg_tau - collapse_penalty)
-
-
-def _f1_selection_score(query_f1: float, pred_std: float) -> float:
-    """Score checkpoints by final query-F1 while rejecting collapsed predictions."""
-    collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
-    return float(query_f1 - collapse_penalty)
-
-
-def _normalized_workload_map(workload_map: dict[str, float]) -> dict[str, float]:
-    """Normalize a pure workload map into the fixed query-type key set."""
-    names = ["range", "knn", "similarity", "clustering"]
-    normalized = normalize_pure_workload_map(workload_map)
-    return {name: float(normalized.get(name, 0.0)) for name in names}
-
-
-def _uniform_type_deficit(
-    per_type_f1: dict[str, float],
-    uniform_per_type: dict[str, float],
-    workload_map: dict[str, float],
-) -> float:
-    """Weighted amount by which a checkpoint loses to fair uniform per type."""
-    type_weights = _normalized_workload_map(workload_map)
-    return float(
-        sum(
-            type_weights[name] * max(0.0, float(uniform_per_type.get(name, 0.0)) - float(per_type_f1.get(name, 0.0)))
-            for name in type_weights
-        )
-    )
-
-
-def _uniform_gap_selection_score(
-    query_f1: float,
-    per_type_f1: dict[str, float],
-    uniform_f1: float,
-    uniform_per_type: dict[str, float],
-    workload_map: dict[str, float],
-    pred_std: float,
-    aggregate_gap_weight: float = 0.5,
-    type_penalty_weight: float = 1.0,
-) -> float:
-    """Score checkpoints by held-out F1 while penalizing losses to fair uniform."""
-    collapse_penalty = 1.0 if pred_std < 1e-3 else 0.0
-    aggregate_gap = float(query_f1) - float(uniform_f1)
-    type_deficit = _uniform_type_deficit(per_type_f1, uniform_per_type, workload_map)
-    return float(
-        float(query_f1)
-        + float(aggregate_gap_weight) * aggregate_gap
-        - float(type_penalty_weight) * type_deficit
-        - collapse_penalty
-    )
-
-
-def _record_validation_stats(
-    stats: dict[str, float],
-    *,
-    validation_score: float,
-    per_type_f1: dict[str, float],
-    validation_metrics: dict[str, float],
-    validation_uniform_result: tuple[float, dict[str, float]] | None,
-    validation_workload_map: dict[str, float] | None,
-) -> None:
-    """Attach exact validation metrics to an epoch stats row."""
-    stats["val_selection_score"] = float(validation_score)
-    for metric_name, metric_value in validation_metrics.items():
-        stats[f"val_{metric_name}"] = float(metric_value)
-    for type_name, value in per_type_f1.items():
-        stats[f"val_selection_score_{type_name}"] = float(value)
-    if validation_uniform_result is not None:
-        uniform_f1, uniform_per_type = validation_uniform_result
-        stats["val_uniform_f1"] = float(uniform_f1)
-        stats["val_query_uniform_gap"] = float(validation_score - uniform_f1)
-        stats["val_query_type_deficit"] = _uniform_type_deficit(
-            per_type_f1,
-            uniform_per_type,
-            validation_workload_map or {},
-        )
-        for type_name, value in uniform_per_type.items():
-            stats[f"val_uniform_f1_{type_name}"] = float(value)
-            stats[f"val_selection_score_gap_{type_name}"] = float(per_type_f1.get(type_name, 0.0) - value)
-
-
-def _selection_from_stats(
-    *,
-    stats: dict[str, float],
-    avg_tau: float,
-    selection_metric: str,
-    validation_uniform_result: tuple[float, dict[str, float]] | None,
-    validation_workload_map: dict[str, float] | None,
-    model_config: ModelConfig,
-) -> float | None:
-    """Return the active checkpoint selection score for one stats row."""
-    if (
-        selection_metric == "uniform_gap"
-        and "val_selection_score" in stats
-        and validation_uniform_result is not None
-    ):
-        uniform_f1, uniform_per_type = validation_uniform_result
-        per_type_f1 = {
-            name: stats.get(f"val_selection_score_{name}", 0.0)
-            for name in ["range", "knn", "similarity", "clustering"]
-        }
-        return _uniform_gap_selection_score(
-            query_f1=stats["val_selection_score"],
-            per_type_f1=per_type_f1,
-            uniform_f1=uniform_f1,
-            uniform_per_type=uniform_per_type,
-            workload_map=validation_workload_map or {},
-            pred_std=stats["pred_std"],
-            aggregate_gap_weight=float(getattr(model_config, "checkpoint_uniform_gap_weight", 0.5)),
-            type_penalty_weight=float(getattr(model_config, "checkpoint_type_penalty_weight", 1.0)),
-        )
-    if selection_metric == "f1" and "val_selection_score" in stats:
-        return _f1_selection_score(stats["val_selection_score"], stats["pred_std"])
-    if selection_metric in {"f1", "uniform_gap"}:
-        return None
-    return _selection_score(avg_tau, stats["pred_std"], stats["loss"])
 
 
 def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -> torch.Tensor:
@@ -1205,7 +1075,7 @@ def train_model(
     validation_points_for_f1: torch.Tensor | None = None
     validation_query_cache: Any | None = None
     if has_validation_f1:
-        from src.evaluation.evaluate_methods import EvaluationQueryCache
+        from src.evaluation.query_cache import EvaluationQueryCache
 
         assert validation_trajectories is not None
         assert validation_boundaries is not None
@@ -1263,7 +1133,7 @@ def train_model(
     smoothing_window = max(1, int(getattr(model_config, "checkpoint_smoothing_window", 1) or 1))
     checkpoint_full_f1_every = max(1, int(getattr(model_config, "checkpoint_full_f1_every", 1) or 1))
     checkpoint_candidate_pool_size = max(1, int(getattr(model_config, "checkpoint_candidate_pool_size", 1) or 1))
-    checkpoint_candidates: list[_CheckpointCandidate] = []
+    checkpoint_candidates: list[CheckpointCandidate] = []
     selection_history: list[float] = []
     best_selection = float("-inf")
     best_loss = float("inf")
@@ -1282,7 +1152,7 @@ def train_model(
             "diagnostic_s": 0.0,
             "f1_s": 0.0,
         }
-        evaluated_checkpoint_candidates: list[_CheckpointCandidate] = []
+        evaluated_checkpoint_candidates: list[CheckpointCandidate] = []
         model.train()
         epoch_loss = torch.tensor(0.0, device=device)
         positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
@@ -1525,7 +1395,7 @@ def train_model(
                     query_cache=validation_query_cache,
                 )
                 epoch_timing["f1_s"] += time.perf_counter() - f1_t0
-                _record_validation_stats(
+                record_validation_stats(
                     stats,
                     validation_score=validation_score,
                     per_type_f1=per_type_f1,
@@ -1535,7 +1405,7 @@ def train_model(
                 )
             if has_validation_f1 and f1_due and selection_metric in {"f1", "uniform_gap"}:
                 stats["checkpoint_f1_candidate"] = 1.0
-                stats["checkpoint_candidate_cheap_score"] = _selection_score(
+                stats["checkpoint_candidate_cheap_score"] = selection_score(
                     candidate_avg_tau,
                     stats["pred_std"],
                     stats["loss"],
@@ -1543,7 +1413,7 @@ def train_model(
                 stats["checkpoint_full_f1_due"] = 1.0 if full_f1_due else 0.0
                 if use_checkpoint_candidate_pool:
                     checkpoint_candidates.append(
-                        _CheckpointCandidate(
+                        CheckpointCandidate(
                             epoch_number=epoch + 1,
                             epoch_index=epoch,
                             cheap_score=float(stats["checkpoint_candidate_cheap_score"]),
@@ -1576,7 +1446,7 @@ def train_model(
                                 validation_points=validation_points_for_f1,
                                 query_cache=validation_query_cache,
                             )
-                            _record_validation_stats(
+                            record_validation_stats(
                                 candidate.stats,
                                 validation_score=validation_score,
                                 per_type_f1=per_type_f1,
@@ -1630,7 +1500,7 @@ def train_model(
             validation_round_improved = False
             if evaluated_checkpoint_candidates:
                 for candidate in sorted(evaluated_checkpoint_candidates, key=lambda item: item.epoch_number):
-                    candidate_selection = _selection_from_stats(
+                    candidate_selection = selection_from_stats(
                         stats=candidate.stats,
                         avg_tau=candidate.avg_tau,
                         selection_metric=selection_metric,
@@ -1674,7 +1544,7 @@ def train_model(
                     smoothed_selection = float(stats["selection_score_smoothed"])
                     is_new_best_model = bool(stats.get("checkpoint_promoted", 0.0))
             else:
-                selection = _selection_from_stats(
+                selection = selection_from_stats(
                     stats=stats,
                     avg_tau=avg_tau,
                     selection_metric=selection_metric,

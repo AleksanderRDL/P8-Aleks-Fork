@@ -10,7 +10,8 @@ import torch
 from src.experiments.experiment_config import build_experiment_config
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.training.scaler import FeatureScaler
-from src.training.training_pipeline import ModelArtifacts, forward_predict, load_checkpoint, save_checkpoint, windowed_predict
+from src.training.checkpoints import ModelArtifacts, load_checkpoint, save_checkpoint
+from src.training.inference import forward_predict, windowed_predict
 
 
 def test_scaler_persisted(tmp_path: Path) -> None:

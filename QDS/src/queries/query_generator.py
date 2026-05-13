@@ -7,8 +7,8 @@ from typing import Any
 
 import torch
 
-from src.experiments.experiment_config import TypedQueryWorkload
 from src.queries.query_types import normalize_pure_workload_map, pad_query_features
+from src.queries.workload import TypedQueryWorkload
 from src.queries.workload_diagnostics import range_query_diagnostic
 
 DENSITY_ANCHOR_PROBABILITY = 0.70

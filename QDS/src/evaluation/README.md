@@ -9,7 +9,9 @@ MLQDS against temporal, geometric, and oracle-style baselines.
 | --- | --- |
 | `baselines.py` | `MLQDSMethod`, `UniformTemporalMethod`, `DouglasPeuckerMethod`, `OracleMethod`, and diagnostic score hybrids. |
 | `metrics.py` | F1 helpers and the `MethodEvaluation` container. |
-| `evaluate_methods.py` | Method execution, query-cache reuse, diagnostics, and comparison tables. |
+| `query_cache.py` | Reusable retained-independent query/audit caches. |
+| `evaluate_methods.py` | Method execution and retained-mask scoring. |
+| `tables.py` | Fixed-width comparison and audit tables. |
 
 ## Methods
 

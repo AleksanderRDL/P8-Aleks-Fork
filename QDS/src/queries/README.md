@@ -6,6 +6,7 @@ This module defines the typed query format, workload generator, and concrete que
 
 | File | Purpose |
 | --- | --- |
+| `workload.py` | `TypedQueryWorkload` container shared by generation, training, and evaluation. |
 | `query_types.py` | Query type IDs, pure workload validation, and padded query feature conversion. |
 | `query_generator.py` | Deterministic typed workload generation from a trajectory set. |
 | `query_executor.py` | Concrete range, kNN, similarity, and clustering query execution. |

@@ -10,8 +10,11 @@ fits the scaler, trains MLQDS, and persists checkpoint artifacts.
 | `importance_labels.py` | Per-point workload labels and labelled masks. |
 | `trajectory_batching.py` | Fixed-length trajectory windows with padding metadata. |
 | `scaler.py` | Persisted min-max scaler for point/query features. |
+| `checkpoint_selection.py` | Checkpoint candidate scoring and validation-stat bookkeeping. |
+| `checkpoints.py` | Checkpoint save/load and `ModelArtifacts`. |
+| `inference.py` | Deterministic persisted-model prediction helpers. |
 | `train_model.py` | Loss objectives, diagnostics, and training loop. |
-| `training_pipeline.py` | Checkpoint save/load and deterministic prediction helpers. |
+| `training_pipeline.py` | Compatibility re-exports for older imports. |
 
 ## Flow
 
@@ -79,3 +82,5 @@ portable. Benchmark quality should be compared by `RangeUseful`,
 - `save_checkpoint` writes model state, scaler stats, and config.
 - `load_checkpoint` reconstructs the model, reloads the scaler, and returns it
   in eval mode.
+- New code should import persistence helpers from `checkpoints.py` and
+  prediction helpers from `inference.py`.

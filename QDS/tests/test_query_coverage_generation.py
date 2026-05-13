@@ -8,7 +8,7 @@ import torch
 
 from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
 from src.experiments.experiment_config import build_experiment_config
-from src.experiments.experiment_pipeline_helpers import _generate_typed_query_workload_for_config
+from src.experiments.workload_cache import generate_typed_query_workload_for_config
 from src.queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
 from src.queries.query_generator import generate_typed_query_workload, point_coverage_mask_for_query
 
@@ -205,7 +205,7 @@ def test_configured_workload_expands_to_max_queries_when_target_needs_more_queri
         range_time_fraction=0.01,
     )
 
-    workload = _generate_typed_query_workload_for_config(
+    workload = generate_typed_query_workload_for_config(
         trajectories=trajectories,
         n_queries=4,
         workload_map={"range": 1.0},
@@ -236,7 +236,7 @@ def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> N
         range_time_fraction=0.05,
     )
 
-    first = _generate_typed_query_workload_for_config(
+    first = generate_typed_query_workload_for_config(
         trajectories=trajectories,
         n_queries=6,
         workload_map={"range": 1.0},
@@ -244,7 +244,7 @@ def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> N
         config=cfg,
         cache_label="train",
     )
-    second = _generate_typed_query_workload_for_config(
+    second = generate_typed_query_workload_for_config(
         trajectories=trajectories,
         n_queries=6,
         workload_map={"range": 1.0},

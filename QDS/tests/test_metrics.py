@@ -7,17 +7,16 @@ import torch
 
 from src.evaluation.baselines import OracleMethod, UniformTemporalMethod
 from src.evaluation.evaluate_methods import (
-    EvaluationQueryCache,
     _retained_point_gap_stats,
     evaluate_method,
-    print_method_comparison_table,
-    print_range_usefulness_table,
     score_range_boundary_preservation,
     score_range_usefulness,
     score_retained_mask,
 )
 from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
+from src.evaluation.query_cache import EvaluationQueryCache
 from src.evaluation.range_usefulness import range_usefulness_weight_summary
+from src.evaluation.tables import print_method_comparison_table, print_range_usefulness_table
 from src.simplification.mlqds_scoring import pure_workload_scores
 from src.simplification.simplify_trajectories import simplify_with_scores, simplify_with_temporal_score_hybrid
 

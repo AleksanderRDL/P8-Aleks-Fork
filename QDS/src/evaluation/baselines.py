@@ -10,7 +10,7 @@ from typing import Protocol
 import numpy as np
 import torch
 
-from src.experiments.experiment_config import TypedQueryWorkload
+from src.queries.workload import TypedQueryWorkload
 from src.simplification.mlqds_scoring import simplify_mlqds_predictions, workload_type_head
 from src.simplification.simplify_trajectories import (
     evenly_spaced_indices,
@@ -18,7 +18,7 @@ from src.simplification.simplify_trajectories import (
     simplify_with_scores,
 )
 from src.training.train_model import TrainingOutputs
-from src.training.training_pipeline import default_inference_device, windowed_predict
+from src.training.inference import default_inference_device, windowed_predict
 
 
 class Method(Protocol):

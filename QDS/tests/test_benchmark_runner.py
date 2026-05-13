@@ -18,15 +18,14 @@ from src.experiments.benchmark_runner import (
     PURE_WORKLOADS,
     _child_run_dir,
     _format_report_table,
-    _index_entry,
     _parse_name_list,
     _profile_args,
     _resolve_data_sources,
     _row_from_run,
     _run_capture_streaming,
     _runner_environment_metadata,
-    _write_family_indexes,
 )
+from src.experiments.benchmark_artifacts import index_entry, write_family_indexes
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import _validation_query_count, resolve_workload_maps
 
@@ -476,9 +475,9 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
         "failures": 0,
     }
 
-    _write_family_indexes(
+    write_family_indexes(
         tmp_path,
-        _index_entry(
+        index_entry(
             run_id="run-a",
             status_payload=running_status,
             args=args,
@@ -490,9 +489,9 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
             git=git,
         ),
     )
-    _write_family_indexes(
+    write_family_indexes(
         tmp_path,
-        _index_entry(
+        index_entry(
             run_id="run-a",
             status_payload=completed_status,
             args=args,

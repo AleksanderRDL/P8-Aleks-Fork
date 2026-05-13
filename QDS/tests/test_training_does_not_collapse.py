@@ -12,6 +12,11 @@ from src.evaluation.evaluate_methods import score_range_usefulness, score_retain
 from src.experiments.experiment_config import build_experiment_config
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.queries.query_generator import generate_typed_query_workload
+from src.training.checkpoint_selection import (
+    f1_selection_score as _f1_selection_score,
+    selection_score as _selection_score,
+    uniform_gap_selection_score as _uniform_gap_selection_score,
+)
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.train_model import (
@@ -25,11 +30,8 @@ from src.training.train_model import (
     _budget_topk_temporal_residual_loss,
     _budget_topk_temporal_residual_loss_rows,
     _filter_supervised_windows,
-    _f1_selection_score,
     _ranking_loss_for_type,
-    _selection_score,
     _single_active_type_id,
-    _uniform_gap_selection_score,
     _validation_query_f1,
     train_model,
 )

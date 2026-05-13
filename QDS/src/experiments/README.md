@@ -9,8 +9,11 @@ pure query workload, train MLQDS, evaluate baselines, and write artifacts.
 | --- | --- |
 | `experiment_cli.py` | Shared `argparse` parser for train/eval commands. |
 | `experiment_config.py` | Structured config dataclasses. |
-| `experiment_pipeline_helpers.py` | Split, workload, training, evaluation, and artifact helpers. |
+| `experiment_pipeline_helpers.py` | End-to-end orchestration for one train/eval run. |
+| `workload_cache.py` | Persistent typed-workload generation cache. |
+| `range_cache.py` | Range diagnostics and range-label cache helpers. |
 | `benchmark_profiles.py` | Named benchmark profile constants. |
+| `benchmark_artifacts.py` | Benchmark status files, family indexes, and artifact guide writers. |
 | `benchmark_runner.py` | Range benchmark runner for profiles and queued overrides. |
 | `benchmark_runtime.py` | Targeted train/inference timing experiments. |
 | `run_ais_experiment.py` | Main train/evaluate entry point. |

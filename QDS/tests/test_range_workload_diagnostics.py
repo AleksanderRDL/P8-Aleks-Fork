@@ -9,12 +9,10 @@ import pytest
 import torch
 
 from src.data.ais_loader import generate_synthetic_ais_data
-from src.experiments.experiment_config import TypedQueryWorkload, build_experiment_config
-from src.experiments.experiment_pipeline_helpers import (
-    RangeRuntimeCache,
-    _prepare_range_label_cache,
-    _range_workload_diagnostics,
-)
+from src.experiments.experiment_config import build_experiment_config
+from src.queries.workload import TypedQueryWorkload
+from src.experiments.experiment_pipeline_helpers import _range_workload_diagnostics
+from src.experiments.range_cache import RangeRuntimeCache, prepare_range_label_cache as _prepare_range_label_cache
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import QUERY_TYPE_ID_RANGE, pad_query_features
 from src.queries.workload_diagnostics import (
