@@ -7,7 +7,6 @@ This folder contains the local PostGIS service definition and initialization SQL
 - `schema.sql`: AIS tables and indexes.
 - `smoke_test_db.py`: DB connectivity/PostGIS sanity check.
 - `import_ais_csv.py`: cleaned AIS CSV import utility.
-- `run_range_query.py`: range query validation utility.
 
 Cleaned AIS CSVs are expected under `../AISDATA/cleaned/`. When
 `import_ais_csv.py` receives only a filename, it resolves that filename against

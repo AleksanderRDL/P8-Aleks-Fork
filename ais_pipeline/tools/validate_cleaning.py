@@ -34,24 +34,13 @@ from ais_pipeline.environment.spark_environment import (
     configure_pyspark_python,
     configure_spark_environment,
 )
+from ais_pipeline.geo import KNOTS_TO_KMH, haversine_km
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
 AISDATA_DIR = REPO_ROOT / "AISDATA"
 CHECKPOINT_DIR = REPO_ROOT / "spark_temp" / "checkpoints"
-
-EARTH_RADIUS_KM = 6371.0
-KNOTS_TO_KMH = 1.852
-
-
-def haversine_km(lat1, lon1, lat2, lon2):
-    d_lat = F.radians(lat2 - lat1)
-    d_lon = F.radians(lon2 - lon1)
-    a = (F.sin(d_lat / 2) ** 2
-         + F.cos(F.radians(lat1)) * F.cos(F.radians(lat2))
-         * F.sin(d_lon / 2) ** 2)
-    return EARTH_RADIUS_KM * 2 * F.atan2(F.sqrt(a), F.sqrt(F.lit(1.0) - a))
 
 
 def build_spark():
@@ -101,9 +90,8 @@ def run_pipeline_before_outliers(spark, input_path):
     df = trim_stationary.trim_stationary(df)
     df = ship_type.fill_ship_type(df)
     df = ship_type.remove_undefined_ship_type(df)
-    df = remove_shiptypes.remove_shiptypes(df)
 
-    return df
+    return remove_shiptypes.remove_shiptypes(df)
 
 
 def compute_max_consecutive_gap(df):
@@ -159,7 +147,7 @@ def tag_deleted_rows(before_df, after_df):
     exp_km = prev_sog * KNOTS_TO_KMH * time_h
     margin = base_margin * (1.0 + time_scale * time_h)
 
-    tagged = (
+    return (
         tagged
         .withColumn("_dist_prev_km", F.round(dist_prev, 4))
         .withColumn("_dist_next_km", F.round(dist_next, 4))
@@ -172,7 +160,6 @@ def tag_deleted_rows(before_df, after_df):
                      F.when(time_h > 0,
                             F.round(dist_prev / (time_h * KNOTS_TO_KMH), 2)))
     )
-    return tagged
 
 
 def main():

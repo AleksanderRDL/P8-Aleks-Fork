@@ -10,7 +10,7 @@ AIS data tooling and query-driven trajectory simplification research.
 | Database tools | [`db/`](db/) | Local PostGIS setup, CSV import, and range-query checks. |
 | QDS research | [`QDS/`](QDS/) | ML trajectory simplification, benchmarks, and redesign work. |
 | Data folders | [`AISDATA/`](AISDATA/) | Raw and cleaned AIS source data. |
-| Sprint notes | [`Aleks-Sprint/`](Aleks-Sprint/) | Active QDS redesign reference and short progress log. |
+| Sprint notes | [`Sprint/`](Sprint/) | Active QDS redesign reference and short progress log. |
 
 ## Quick Start
 
@@ -19,7 +19,7 @@ Root cleaning pipeline:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 python main.py
 ```
 
@@ -44,7 +44,7 @@ make db-query QUERY_ARGS="--help"
 ## Documentation
 
 - [`QDS/README.md`](QDS/README.md): QDS usage and where to look next.
-- [`Aleks-Sprint/range-training-redesign.md`](Aleks-Sprint/range-training-redesign.md): current range-training redesign.
+- [`Sprint/range-training-redesign.md`](Sprint/range-training-redesign.md): current range-training redesign.
 - [`AISDATA/README.md`](AISDATA/README.md): data folder conventions.
 - [`ais_pipeline/README.md`](ais_pipeline/README.md): cleaning pipeline layout.
 - [`db/README.md`](db/README.md): database lifecycle and scripts.
