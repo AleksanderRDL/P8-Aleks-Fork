@@ -3,7 +3,7 @@
 Owns CLI parsing, config construction, benchmark profiles, run orchestration,
 and artifact writing.
 
-Commands below assume the current directory is `QDS/`:
+Commands below assume the current directory is `Range_QDS/`:
 
 ```bash
 PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
@@ -57,7 +57,7 @@ post-segmentation tensors with `--cache_dir`.
 `--train_max_segments`, `--validation_max_segments`, and `--eval_max_segments`
 can override it per split; unset split caps fall back to `--max_segments`.
 
-## Active Profiles
+## Active Legacy Profiles
 
 `range_workload_aware_diagnostic` is the workload-aware diagnostic profile. It
 uses `model_type=range_aware`, so it may see the supplied range workload during
@@ -77,6 +77,11 @@ floor for final claims unless you explicitly want a high-query workload
 setting; a large floor can keep adding duplicate or near-duplicate queries after
 coverage is already reached.
 
+All profiles in this section are legacy diagnostics. They report
+RangeUsefulLegacy and scalar-target behavior, and `final_success_allowed=false`.
+The planned `range_workload_v1_*` profiles are reserved names and fail clearly
+until the query-driven rework implements them.
+
 | Setting | Value |
 | --- | --- |
 | Workload | range only |
@@ -85,7 +90,7 @@ coverage is already reached.
 | Compression | default `5%`; required sweep `1%,2%,5%,10%,15%,20%,30%` |
 | Range footprint | `2.2 km`, `5.0 h`, jitter `0.0`, `anchor_day` time clamp |
 | Training | `8` epochs, early stopping patience `5`, `budget_topk` loss |
-| Checkpointing | `checkpoint_score_variant=range_usefulness`, `checkpoint_selection_metric=uniform_gap` |
+| Checkpointing | legacy `checkpoint_score_variant=range_usefulness`, `checkpoint_selection_metric=uniform_gap` |
 | Runtime | BF16 AMP, TF32 allowed, train/inference batch size `64`, query chunk `2048` |
 
 Keep durable defaults in `benchmark_profiles.py`. Use queue rows or
@@ -171,10 +176,15 @@ Artifact layout and cleanup rules live in [`../../artifacts/README.md`](../../ar
 
 ## Workload-Blind Rule
 
-For final workload-blind claims, choose retained masks before generating or
+For diagnostic workload-blind claims, choose retained masks before generating or
 passing eval queries into the model, feature builder, or checkpoint selector.
 Current workload-blind profiles record protocol flags in `example_run.json` and
 benchmark rows. Treat a run as invalid for final claims if
 `workload_blind_protocol.primary_masks_frozen_before_eval_query_scoring` or
 `workload_blind_protocol.audit_masks_frozen_before_eval_query_scoring` is
 false.
+
+Final product claims remain unavailable until `QueryUsefulV1`,
+`range_workload_v1`, and `workload_blind_range_v2` exist. Reports must keep old
+RangeUseful outputs under `legacy_range_useful_summary`, not
+`final_claim_summary`.

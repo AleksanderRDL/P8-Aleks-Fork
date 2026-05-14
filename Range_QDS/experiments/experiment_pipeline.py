@@ -61,7 +61,7 @@ from simplification.mlqds_scoring import workload_type_head
 from simplification.simplify_trajectories import temporal_hybrid_selector_budget_diagnostics
 from training.train_model import train_model
 from training.checkpoints import ModelArtifacts, save_checkpoint
-from training.model_features import is_workload_blind_model_type
+from training.model_features import is_workload_blind_model_type, model_type_metadata
 from training.teacher_distillation import (
     build_range_teacher_config,
     distill_range_teacher_labels,
@@ -241,6 +241,11 @@ def run_experiment_pipeline(
         "enabled": False,
         "mode": str(getattr(config.model, "range_teacher_distillation_mode", "none")),
     }
+    if range_training_target_mode == "query_useful_v1_factorized":
+        raise RuntimeError(
+            "QueryUsefulV1 factorized targets are not implemented yet. "
+            "See Range_QDS/docs/query-driven-rework-guide.md."
+        )
     selection_query_cache: EvaluationQueryCache | None = None
     selection_geometry_scores: torch.Tensor | None = None
     mlqds_range_geometry_blend = max(0.0, min(1.0, float(getattr(config.model, "mlqds_range_geometry_blend", 0.0))))
@@ -650,7 +655,7 @@ def run_experiment_pipeline(
                 "'query_residual_frequency', 'set_utility_frequency', 'local_swap_utility_frequency', "
                 "'local_swap_gain_cost_frequency', 'structural_retained_frequency', "
                 "'component_retained_frequency', or "
-                "'continuity_retained_frequency'."
+                "'continuity_retained_frequency', or 'query_useful_v1_factorized'."
             )
     range_target_balance_mode = str(getattr(config.model, "range_target_balance_mode", "none")).lower()
     if range_target_balance_mode != "none":
@@ -672,6 +677,14 @@ def run_experiment_pipeline(
                 f"trajectories={range_target_balance_diagnostics['balanced_trajectory_count']}",
                 flush=True,
             )
+    if range_training_target_mode != "query_useful_v1_factorized":
+        range_training_target_transform.setdefault("target_family", "legacy_range_useful_scalar")
+        range_training_target_transform.setdefault("final_success_allowed", False)
+        range_training_target_transform.setdefault(
+            "legacy_reason",
+            "Old RangeUseful/scalar-target diagnostic path. "
+            "Not valid for query-driven rework acceptance.",
+        )
     with _phase(f"train-model ({config.model.epochs} epochs)"):
         trained = train_model(
             train_trajectories=train_traj,
@@ -1003,9 +1016,43 @@ def run_experiment_pipeline(
         range_diagnostics_summary=range_diagnostics_summary,
         compression_ratio=float(config.model.compression_ratio),
     )
+    final_claim_summary = {
+        "primary_metric": None,
+        "status": "not_available_until_query_useful_v1",
+        "final_success_allowed": False,
+        "reason": "Old RangeUseful/RangeUsefulLegacy outputs are diagnostic only.",
+    }
+    uniform_eval = matched.get("uniform")
+    douglas_peucker_eval = matched.get("DouglasPeucker")
+    legacy_range_useful_summary = {
+        "metric": "RangeUsefulLegacy",
+        "schema": "range_usefulness_schema_version",
+        "diagnostic_only": True,
+        "mlqds_score": matched["MLQDS"].range_usefulness_score,
+        "uniform_score": uniform_eval.range_usefulness_score if uniform_eval is not None else None,
+        "douglas_peucker_score": (
+            douglas_peucker_eval.range_usefulness_score
+            if douglas_peucker_eval is not None
+            else None
+        ),
+    }
+    learning_causality_summary = {
+        "selector_diagnostics_present": bool(selector_budget_diagnostics),
+        "training_fit_diagnostics_present": bool(trained.fit_diagnostics),
+        "legacy_temporal_hybrid_selector": True,
+        "final_success_allowed": False,
+    }
 
     dump = {
         "config": config.to_dict(),
+        "final_claim_summary": final_claim_summary,
+        "diagnostic_summary": {
+            "legacy_range_useful_available": True,
+            "range_component_diagnostics_available": True,
+            "workload_blind_protocol_available": True,
+        },
+        "legacy_range_useful_summary": legacy_range_useful_summary,
+        "learning_causality_summary": learning_causality_summary,
         "workload": single_workload_type(eval_workload_map),
         "train_query_count": len(train_workload.typed_queries),
         "train_label_workload_count": len(train_label_workloads),
@@ -1035,6 +1082,7 @@ def run_experiment_pipeline(
         "training_target_diagnostics": trained.target_diagnostics,
         "training_fit_diagnostics": trained.fit_diagnostics,
         "range_training_target_transform": range_training_target_transform,
+        "model_metadata": model_type_metadata(config.model.model_type),
         "range_target_balance": range_target_balance_diagnostics,
         "range_training_label_aggregation": range_training_label_aggregation,
         "teacher_distillation": teacher_distillation_diagnostics,

@@ -12,6 +12,7 @@ with baseline and diagnostic methods.
 | `query_cache.py` | Retained-independent query/audit cache. |
 | `evaluate_methods.py` | Method execution and retained-mask scoring. |
 | `tables.py` | Text tables for reports. |
+| `query_useful_v1.py` | Placeholder for the future primary query-driven metric. |
 
 ## Methods
 
@@ -24,12 +25,15 @@ with baseline and diagnostic methods.
 
 ## Range Metrics
 
-Primary range scores:
+Current range diagnostics:
 
-- `RangeUseful`: current aggregate range usefulness audit and preferred range
-  checkpoint target.
+- `RangeUsefulLegacy`: retained old aggregate range usefulness audit for
+  diagnostics and artifact comparability. It is not the primary metric for the
+  query-driven rework and cannot support final acceptance by itself.
 - `RangePointF1`: retained in-box point-hit F1. Useful, but too narrow for
   final claims.
+- `QueryUsefulV1`: planned primary metric for `range_workload_v1`. It is not
+  implemented in this checkpoint.
 
 Range audit components:
 
@@ -46,7 +50,7 @@ Range audit components:
 | `TurnCov` | Route-change support. |
 | `ShapeScore` | Range-local route fidelity. |
 
-`RangeUseful` remains count-gap based for schema 7. New runs also emit
+`RangeUsefulLegacy` remains count-gap based for schema 7. New runs also emit
 diagnostic aggregate variants that replace only the gap term:
 `range_usefulness_gap_time_score`, `range_usefulness_gap_distance_score`, and
 `range_usefulness_gap_min_score`.
@@ -57,6 +61,9 @@ diagnostic ablations. Current benchmark work is range-only.
 ## Reporting Rules
 
 - Final benchmark audits should use exact retained-mask scoring.
+- `final_claim_summary` must stay unavailable until `QueryUsefulV1` is
+  implemented. Old RangeUseful results belong under
+  `legacy_range_useful_summary`.
 - Checkpoint diagnostics may use cheaper sampling where explicitly configured.
 - `EvaluationQueryCache` should be reused across MLQDS, baselines, oracle
   diagnostics, and compression-ratio audits.

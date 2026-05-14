@@ -17,8 +17,8 @@ BENCHMARK_PLAN_FILE ?=
 BENCHMARK_CONTINUE_ON_FAILURE ?= 0
 ATTACH ?=
 BENCHMARK_PROFILE ?= range_workload_aware_diagnostic
-BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_aware_diagnostic
-BENCHMARK_CACHE ?= artifacts/cache/range_workload_aware_diagnostic
+BENCHMARK_FAMILY ?= artifacts/benchmarks/legacy_range_workload_aware_diagnostic
+BENCHMARK_CACHE ?= artifacts/cache/legacy_range_workload_aware_diagnostic
 CONFIRM ?=
 
 .PHONY: help check-env install lint test typecheck smoke smoke-csv benchmark-preflight benchmark-queue-preflight list-runs clean-smoke-artifacts range-benchmark-tmux range-benchmark-queue-tmux
@@ -65,7 +65,7 @@ install:
 	cd $(REPO_ROOT) && $(PYTHON) -m pip install -e ".[dev]"
 
 lint:
-	cd $(REPO_ROOT) && $(PYTHON) -m ruff check QDS
+	$(PYTHON) -m ruff check data evaluation experiments models queries simplification training scripts tests
 
 test:
 	$(PYTHON) -m pytest tests

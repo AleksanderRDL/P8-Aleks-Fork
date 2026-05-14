@@ -7,14 +7,18 @@ before future range queries are known, then score the frozen retained set.
 The implemented strong range profile is currently
 `range_workload_aware_diagnostic`. It is useful as a diagnostic/teacher path,
 but it is not final workload-blind evidence.
+The canonical redesign source of truth is
+[`docs/query-driven-rework-guide.md`](docs/query-driven-rework-guide.md), with
+checkpoint state in
+[`docs/query-driven-rework-progress.md`](docs/query-driven-rework-progress.md).
 
 ## Setup
 
-Run commands from `QDS/`. Use a canonical venv path; Python 3.14 warns if the
+Run commands from `Range_QDS/`. Use a canonical venv path; Python 3.14 warns if the
 interpreter path contains `..`.
 
 ```bash
-cd QDS
+cd Range_QDS
 PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
 (cd .. && "$PYTHON" -m pip install -e ".[dev]")
 make check-env
@@ -52,7 +56,7 @@ Direct CLI example:
 
 | Need | File |
 | --- | --- |
-| Redesign objective and acceptance criteria | [`../Sprint/range-training-redesign.md`](../Sprint/range-training-redesign.md) |
+| Redesign objective and acceptance criteria | [`docs/query-driven-rework-guide.md`](docs/query-driven-rework-guide.md) |
 | Code layout | [`CODE_LAYOUT.md`](CODE_LAYOUT.md) |
 | Benchmark profile, CLI modes, artifact names | [`experiments/README.md`](experiments/README.md) |
 | Generated artifact layout and cleanup | [`artifacts/README.md`](artifacts/README.md) |

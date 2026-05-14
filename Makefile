@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 REPO_ROOT := $(abspath .)
-QDS_DIR := $(REPO_ROOT)/QDS
+RANGE_QDS_DIR := $(REPO_ROOT)/Range_QDS
 PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 BOOTSTRAP_PYTHON ?= python3
 QDS_PYTHON ?= $(PYTHON)
@@ -40,22 +40,22 @@ pipeline:
 	$(PYTHON) main.py
 
 qds-check-env:
-	$(MAKE) -C $(QDS_DIR) check-env PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) check-env PYTHON="$(QDS_PYTHON)"
 
 lint:
-	$(MAKE) -C $(QDS_DIR) lint PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) lint PYTHON="$(QDS_PYTHON)"
 
 test:
-	$(MAKE) -C $(QDS_DIR) test PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) test PYTHON="$(QDS_PYTHON)"
 
 typecheck:
-	$(MAKE) -C $(QDS_DIR) typecheck PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) typecheck PYTHON="$(QDS_PYTHON)"
 
 smoke:
-	$(MAKE) -C $(QDS_DIR) smoke PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) smoke PYTHON="$(QDS_PYTHON)"
 
 smoke-csv:
-	$(MAKE) -C $(QDS_DIR) smoke-csv PYTHON="$(QDS_PYTHON)" CLEANED_CSV="$(CLEANED_CSV)"
+	$(MAKE) -C $(RANGE_QDS_DIR) smoke-csv PYTHON="$(QDS_PYTHON)" CLEANED_CSV="$(CLEANED_CSV)"
 
 db-up:
 	docker compose -f db/compose.yaml up -d

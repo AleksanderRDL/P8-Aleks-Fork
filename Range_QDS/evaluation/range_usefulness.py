@@ -1,4 +1,8 @@
-"""Shared RangeUseful audit constants."""
+"""Shared RangeUsefulLegacy audit constants.
+
+This aggregate is retained for diagnostics and artifact comparability. It is
+not the final acceptance metric for the query-driven rework.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,11 @@ from collections.abc import Mapping
 
 RANGE_USEFULNESS_SCHEMA_VERSION = 7
 RANGE_USEFULNESS_GAP_ABLATION_VERSION = 1
+RANGE_USEFULNESS_FINAL_SUCCESS_ALLOWED = False
+RANGE_USEFULNESS_LEGACY_REASON = (
+    "Old RangeUseful/scalar-target diagnostic path. "
+    "Not valid for query-driven rework acceptance."
+)
 
 RANGE_USEFULNESS_WEIGHTS: dict[str, float] = {
     "range_point_f1": 0.22,

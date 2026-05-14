@@ -14,7 +14,10 @@ checkpoints, and persists model artifacts.
 | `checkpoints.py` | Save/load `ModelArtifacts`. |
 | `inference.py` | Deterministic persisted-model prediction. |
 | `training_losses.py` | Budget, ranking, pointwise, and temporal-residual losses. |
-| `training_targets.py` | Target scaling and temporal-residual labels. |
+| `training_targets.py` | Legacy RangeUseful/scalar target transforms and dispatch constants. |
+| `query_useful_targets.py` | Placeholder for future factorized QueryUsefulV1 labels. |
+| `query_prior_fields.py` | Placeholder for train-derived query-prior fields. |
+| `factorized_target_diagnostics.py` | Placeholder for future factorized-label diagnostics. |
 | `training_diagnostics.py` | Target diagnostics and rank-correlation helpers. |
 | `training_epoch.py` | One-epoch forward/loss/backward optimization pass. |
 | `training_validation.py` | Validation scoring for checkpoint selection. |
@@ -34,7 +37,7 @@ The implemented strong path is workload-aware:
 5. Restore the best checkpoint for final evaluation.
 
 This is not the final workload-blind protocol. The redesign target is in
-[`../../Sprint/range-training-redesign.md`](../../Sprint/range-training-redesign.md).
+[`../docs/query-driven-rework-guide.md`](../docs/query-driven-rework-guide.md).
 
 ## Labels
 
@@ -52,7 +55,12 @@ This is not the final workload-blind protocol. The redesign target is in
 
 Labels are additive training targets. They are not exact retained-set optimizers.
 
-Training target transforms:
+Legacy training target transforms:
+
+All current `range_training_target_mode` values except
+`query_useful_v1_factorized` are legacy RangeUseful/scalar diagnostics. They
+are useful for regression and teacher experiments, but they are not
+final-success eligible for the query-driven rework.
 
 - `range_training_target_mode="retained_frequency"`: converts usefulness labels
   into oracle retained-set membership frequency across configured budgets.
@@ -154,8 +162,9 @@ Training target transforms:
   trajectory, then allocate the remaining retained-point budget globally by
   learned score. This is workload-blind but should be treated as a diagnostic
   until it beats global random and preserves sensible trajectory geometry.
-- `checkpoint_score_variant="range_usefulness"`: default range checkpoint
-  target. `answer` and `combined` are diagnostics.
+- `checkpoint_score_variant="range_usefulness"`: legacy range diagnostic target.
+  It is retained for old-profile comparability, not final rework acceptance.
+  `answer` and `combined` are diagnostics.
 - `checkpoint_selection_metric="uniform_gap"`: validation score minus fair
   uniform score, with active-type deficit penalties.
 - `training_fit_diagnostics`: post-training, train-data-only student-fit
@@ -189,6 +198,9 @@ Training target transforms:
   Treat this as a diagnostic target unless it beats the base retained-frequency
   target on held-out days; the first 30% guarded slice diffused label mass and
   underperformed uniform.
+- `range_training_target_mode="query_useful_v1_factorized"` is reserved for the
+  future QueryUsefulV1 target family. Selecting it fails deliberately in this
+  checkpoint.
 
 ## Model Inputs
 
@@ -203,6 +215,8 @@ distance position, adjacent time/distance gaps, heading/speed deltas, curvature,
 and endpoint flags. `model_type="range_prior_clock_density"` adds query-free
 clock-time and current-day spatial density/sparsity features to that context
 set. These blind variants do not consume query boxes.
+Those density/sparsity features are current-split point-cloud context features.
+They are not train-derived query-prior fields.
 `model_type="segment_context_range"` is a query-free structural scorer inspired
 by MLSimp's globality/uniqueness framing. It uses the same 28-column
 `range_prior_clock_density` feature input, then adds fixed trajectory-order
@@ -217,8 +231,8 @@ testing whether overlapping window position noise is hurting target fit.
 It stores normalized train-day route-context, circular clock-time, spatial
 density/sparsity features, and retained-frequency targets, then scores future
 points by inverse-distance KNN. It is workload-blind at compression time, but it
-is not a neural student; treat it as a historical prior baseline/candidate, not
-proof that the transformer learned the target. `historical_prior_clock_weight`
+is not a neural student; treat it as a historical-prior KNN diagnostic/teacher,
+not proof that a trainable model learned the target. `historical_prior_clock_weight`
 and `historical_prior_density_weight` control the KNN distance weights assigned
 to clock-time and density/sparsity dimensions without changing the retained-mask
 protocol. Clock weighting defaults to `0.0` because the first dense diagnostic
@@ -243,7 +257,7 @@ slice in the KNN distance. Keep this as a diagnostic feature path: the initial
 as an explicit neural input feature. It appends the KNN prior score to each
 point's blind feature vector and trains a normal blind scorer on top. This is
 still workload-blind at eval, but it must be compared against the standalone
-`historical_prior` diagnostic to prove the trainable layer is adding value.
+`historical_prior` KNN diagnostic to prove the trainable layer is adding value.
 The first guarded 30% check did not add value, so keep it in diagnostic status.
 
 Workload-blind point features deliberately replace absolute timestamp with

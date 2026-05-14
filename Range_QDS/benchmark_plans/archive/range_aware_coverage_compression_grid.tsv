@@ -1,0 +1,7 @@
+# Archived legacy range-aware diagnostic queue.
+# run_id	seed	child_extra_args
+range_aware_c05_r01	42	--query_coverage 0.05 --compression_ratio 0.01
+range_aware_c05_r02	42	--query_coverage 0.05 --compression_ratio 0.02
+range_aware_c10_r05	42	--query_coverage 0.10 --compression_ratio 0.05
+range_aware_c20_r10	42	--query_coverage 0.20 --compression_ratio 0.10
+range_aware_c30_r20	42	--query_coverage 0.30 --compression_ratio 0.20

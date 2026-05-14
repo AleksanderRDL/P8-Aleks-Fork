@@ -238,6 +238,7 @@ def train_model(
         temporal_residual_label_mode=temporal_residual_label_mode,
         loss_objective=loss_objective,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+        range_training_target_mode=str(getattr(model_config, "range_training_target_mode", "point_value")),
     )
     if budget_ratios != configured_budget_ratios:
         print(

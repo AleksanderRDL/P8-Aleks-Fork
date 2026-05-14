@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = [".", "QDS"]
+where = [".", "Range_QDS"]
 include = [
     "ais_pipeline*",
     "data*",
@@ -38,11 +38,11 @@ include = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["QDS/tests"]
-pythonpath = [".", "QDS"]
+testpaths = ["Range_QDS/tests"]
+pythonpath = [".", "Range_QDS"]
 
 [tool.ruff]
-src = [".", "QDS"]
+src = [".", "Range_QDS"]
 exclude = [
     ".git",
     ".ruff_cache",
