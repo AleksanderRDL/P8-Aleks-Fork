@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from training.model_features import is_workload_blind_model_type
+from training.model_features import is_workload_blind_model_type, model_type_metadata
 
 LOW_COMPRESSION_THRESHOLD = 0.05 + 1e-9
 MIN_MATCHED_LEARNED_SLOT_FRACTION_FOR_BLIND_CLAIM = 0.25
@@ -660,6 +660,8 @@ def _row_from_run(
     target_diagnostics = (run_json or {}).get("training_target_diagnostics") or {}
     target_transform = (run_json or {}).get("range_training_target_transform") or {}
     fit_diagnostics = (run_json or {}).get("training_fit_diagnostics") or {}
+    final_claim_summary = (run_json or {}).get("final_claim_summary") or {}
+    legacy_range_useful_summary = (run_json or {}).get("legacy_range_useful_summary") or {}
     eval_selector_diagnostics = ((run_json or {}).get("selector_budget_diagnostics") or {}).get("eval") or {}
     target_budget_row = _target_budget_row(target_diagnostics, model_config.get("compression_ratio"))
     selector_budget_row = _selector_budget_row(eval_selector_diagnostics, model_config.get("compression_ratio"))
@@ -737,6 +739,9 @@ def _row_from_run(
         "epoch_diagnostic_mean_seconds": _mean_history_value(run_json, "epoch_diagnostic_seconds"),
         "epoch_validation_score_mean_seconds": _mean_history_value(run_json, "epoch_validation_score_seconds"),
         "single_cell_range_status": single_cell_range_status,
+        "final_claim_status": final_claim_summary.get("status", "not_available_until_query_useful_v1"),
+        "final_success_allowed": bool(final_claim_summary.get("final_success_allowed", False)),
+        "legacy_range_useful_diagnostic_only": bool(legacy_range_useful_summary.get("diagnostic_only", True)),
         **selector_claim_evidence,
         "workload_blind_candidate": is_workload_blind_model_type(model_config.get("model_type")),
         "workload_blind_protocol_enabled": workload_blind_protocol.get("enabled"),
@@ -900,6 +905,10 @@ def _row_from_run(
         "min_pred_std": collapse_summary["min_pred_std"],
         "best_epoch_pred_std": collapse_summary["best_epoch_pred_std"],
         "model_type": model_config.get("model_type"),
+        **{
+            f"model_metadata_{key}": value
+            for key, value in model_type_metadata(str(model_config.get("model_type", ""))).items()
+        },
         "historical_prior_k": model_config.get("historical_prior_k"),
         "historical_prior_clock_weight": model_config.get("historical_prior_clock_weight"),
         "historical_prior_mmsi_weight": model_config.get("historical_prior_mmsi_weight"),
@@ -1024,6 +1033,8 @@ def _row_from_run(
         "train_label_mass_range_shape_score": label_mass_fraction.get("range_shape_score"),
         "train_target_positive_label_mass": target_diagnostics.get("positive_label_mass"),
         "range_target_transform_mode": target_transform.get("mode"),
+        "range_target_transform_target_family": target_transform.get("target_family"),
+        "range_target_transform_final_success_allowed": target_transform.get("final_success_allowed"),
         "range_target_transform_positive_label_count": target_transform.get("positive_label_count"),
         "range_target_transform_positive_label_fraction": target_transform.get("positive_label_fraction"),
         "range_target_transform_positive_label_mass": target_transform.get("positive_label_mass"),
@@ -1094,6 +1105,9 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "peak_allocated_mb",
         "best_selection_score",
         "single_cell_range_status",
+        "final_claim_status",
+        "final_success_allowed",
+        "legacy_range_useful_diagnostic_only",
         "selector_claim_status",
         "selector_claim_has_material_learned_budget",
         "selector_claim_min_learned_slot_fraction",
@@ -1175,6 +1189,10 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "selection_query_target_shortfall",
         "selection_query_extra_after_target_reached",
         "model_type",
+        "model_metadata_model_family",
+        "model_metadata_trainable_final_candidate",
+        "model_metadata_requires_ablation_against_standalone_knn",
+        "model_metadata_final_success_allowed",
         "historical_prior_k",
         "historical_prior_clock_weight",
         "historical_prior_mmsi_weight",
@@ -1224,6 +1242,8 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "train_label_mass_range_turn_coverage",
         "train_label_mass_range_shape_score",
         "range_target_transform_mode",
+        "range_target_transform_target_family",
+        "range_target_transform_final_success_allowed",
         "range_target_transform_positive_label_fraction",
         "range_target_transform_positive_label_mass",
         "range_target_transform_base_positive_label_mass",

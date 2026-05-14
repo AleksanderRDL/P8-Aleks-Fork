@@ -45,7 +45,7 @@ These rules stay from the original redesign and should remain enforced by tests 
 - Eval query boundary-distance features.
 - Query cross-attention at eval compression time.
 - Checkpoint selection using final eval-query performance.
-- Treating `range_aware` as final workload-blind success.
+- Treating the query-conditioned `range_aware` diagnostic as workload-blind product success.
 
 ### Required artifact flags
 
@@ -59,7 +59,7 @@ workload_blind_protocol:
   eval_queries_seen_by_feature_builder: false
   eval_queries_seen_by_selector: false
   checkpoint_selected_on_eval_queries: false
-  range_aware_used_as_final_model: false
+  query_conditioned_range_aware_used_for_product_acceptance: false
 ```
 
 ---
@@ -1154,8 +1154,8 @@ Highest-priority files or equivalent modules:
 ### Workload generation
 
 ```text
-QDS/queries/range_workloads.py
-QDS/queries/query_generator.py
+Range_QDS/queries/range_workloads.py
+Range_QDS/queries/query_generator.py
 ```
 
 Inspect/rework:
@@ -1173,9 +1173,9 @@ Inspect/rework:
 ### Metrics
 
 ```text
-QDS/evaluation/range_usefulness.py
-QDS/evaluation/range_metrics.py
-QDS/evaluation/benchmark_metrics.py
+Range_QDS/evaluation/range_usefulness.py
+Range_QDS/evaluation/range_metrics.py
+Range_QDS/evaluation/benchmark_metrics.py
 ```
 
 Inspect/rework:
@@ -1191,9 +1191,9 @@ Inspect/rework:
 ### Target construction
 
 ```text
-QDS/training/training_targets.py
-QDS/training/range_targets.py
-QDS/training/teacher_distillation.py
+Range_QDS/training/training_targets.py
+Range_QDS/training/range_targets.py
+Range_QDS/training/teacher_distillation.py
 ```
 
 Inspect/rework:
@@ -1210,9 +1210,9 @@ Inspect/rework:
 ### Feature builder and prior fields
 
 ```text
-QDS/training/model_features.py
-QDS/training/feature_builder.py
-QDS/training/query_prior_fields.py   # recommended new module
+Range_QDS/training/model_features.py
+Range_QDS/training/feature_builder.py
+Range_QDS/training/query_prior_fields.py   # recommended new module
 ```
 
 Inspect/rework:
@@ -1227,9 +1227,9 @@ Inspect/rework:
 ### Model path
 
 ```text
-QDS/models/range_prior*.py
-QDS/models/workload_blind_range_v2.py # recommended new model
-QDS/models/historical_prior*.py
+Range_QDS/models/range_prior*.py
+Range_QDS/models/workload_blind_range_v2.py # recommended new model
+Range_QDS/models/historical_prior*.py
 ```
 
 Inspect/rework:
@@ -1243,10 +1243,10 @@ Inspect/rework:
 ### Selector/simplification
 
 ```text
-QDS/simplification/simplify_trajectories.py
-QDS/simplification/mlqds_scoring.py
-QDS/simplification/selectors.py
-QDS/simplification/learned_segment_budget.py # recommended new module
+Range_QDS/simplification/simplify_trajectories.py
+Range_QDS/simplification/mlqds_scoring.py
+Range_QDS/simplification/selectors.py
+Range_QDS/simplification/learned_segment_budget.py # recommended new module
 ```
 
 Inspect/rework:
@@ -1262,10 +1262,10 @@ Inspect/rework:
 ### Benchmark/reporting
 
 ```text
-QDS/experiments/benchmark_runner.py
-QDS/experiments/benchmark_profiles.py
-QDS/experiments/benchmark_report.py
-QDS/experiments/experiment_pipeline.py
+Range_QDS/experiments/benchmark_runner.py
+Range_QDS/experiments/benchmark_profiles.py
+Range_QDS/experiments/benchmark_report.py
+Range_QDS/experiments/experiment_pipeline.py
 ```
 
 Inspect/rework:
@@ -1505,7 +1505,7 @@ continue_if:
 ### Evaluation
 
 - [ ] Run full coverage/compression grid.
-- [ ] Compare only against uniform and DP for final product claim.
+- [ ] Do not treat comparison only against uniform and DP as enough for product acceptance.
 - [ ] Report causal ablations separately.
 - [ ] Report old `RangeUseful`, geometry, length, runtime, latency.
 - [ ] Report held-out seed/day/profile-jitter results.

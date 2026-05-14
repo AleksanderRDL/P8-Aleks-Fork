@@ -24,6 +24,7 @@ def _training_target_diagnostics(
     temporal_residual_label_mode: str,
     loss_objective: str,
     temporal_fraction: float,
+    range_training_target_mode: str = "point_value",
 ) -> dict[str, Any]:
     """Summarize the effective supervised target after residual masking."""
     active = labelled_mask[:, workload_type_id].bool()
@@ -35,6 +36,13 @@ def _training_target_diagnostics(
     total_positive_label_mass = float(values[positive].sum().item()) if bool(positive.any().item()) else 0.0
     diagnostics: dict[str, Any] = {
         "workload_type_id": int(workload_type_id),
+        "range_training_target_mode": str(range_training_target_mode),
+        "target_family": "legacy_range_useful_scalar",
+        "final_success_allowed": False,
+        "legacy_reason": (
+            "Old RangeUseful/scalar-target diagnostic path. "
+            "Not valid for query-driven rework acceptance."
+        ),
         "temporal_residual_label_mode": str(temporal_residual_label_mode),
         "loss_objective": str(loss_objective),
         "mlqds_temporal_fraction": float(temporal_fraction),

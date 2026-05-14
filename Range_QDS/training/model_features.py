@@ -52,11 +52,69 @@ HISTORICAL_PRIOR_MODEL_TYPES = frozenset(
     ("historical_prior", "historical_prior_mmsi", "historical_prior_student")
 )
 NONPARAMETRIC_HISTORICAL_PRIOR_MODEL_TYPES = frozenset(("historical_prior", "historical_prior_mmsi"))
+MODEL_TYPE_METADATA: dict[str, dict[str, object]] = {
+    "baseline": {
+        "model_family": "legacy_query_aware_diagnostic",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "turn_aware": {
+        "model_family": "legacy_query_aware_diagnostic",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "range_aware": {
+        "model_family": "legacy_query_aware_diagnostic",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "workload_blind_range": {
+        "model_family": "legacy_workload_blind_scalar_scorer",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "range_prior": {
+        "model_family": "legacy_workload_blind_scalar_scorer",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "range_prior_clock_density": {
+        "model_family": "legacy_workload_blind_scalar_scorer",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "segment_context_range": {
+        "model_family": "legacy_workload_blind_scalar_scorer",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "historical_prior": {
+        "model_family": "historical_prior_knn",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "historical_prior_mmsi": {
+        "model_family": "historical_prior_knn",
+        "trainable_final_candidate": False,
+        "final_success_allowed": False,
+    },
+    "historical_prior_student": {
+        "model_family": "historical_prior_student",
+        "trainable_final_candidate": True,
+        "requires_ablation_against_standalone_knn": True,
+        "final_success_allowed": False,
+    },
+}
 
 
 def is_workload_blind_model_type(model_type: str) -> bool:
     """Return whether the configured model must not consume query features at inference."""
     return str(model_type).lower() in WORKLOAD_BLIND_MODEL_TYPES
+
+
+def model_type_metadata(model_type: str) -> dict[str, object]:
+    """Return final-claim guardrail metadata for a configured model type."""
+    return dict(MODEL_TYPE_METADATA.get(str(model_type).lower(), {}))
 
 
 def _range_relation_features(points: torch.Tensor, typed_queries: list[dict[str, Any]]) -> torch.Tensor:

@@ -16,6 +16,7 @@ query-free scoring path.
 | `turn_aware_qds_model.py` | Same architecture with `turn_score`. |
 | `workload_blind_qds_model.py` | Query-free range scorer used by workload-blind students. |
 | `historical_prior_qds_model.py` | Query-free KNN historical-prior diagnostic model and prior-assisted student. |
+| `workload_blind_range_v2.py` | Placeholder for the future factorized query-driven model. |
 | `../training/model_features.py` | Baseline, turn-aware, range-aware, and workload-blind point features. |
 
 ## Flow
@@ -49,3 +50,30 @@ to point features -> point encoder -> score head.
   `historical_prior_mmsi` uses 27 columns by adding a deterministic query-free
   MMSI hash to the historical-prior slice.
 - Query features are 12 padded columns from `pad_query_features`.
+
+## Rework Classification
+
+Legacy query-aware diagnostics:
+- `baseline`
+- `turn_aware`
+- `range_aware`
+
+Legacy workload-blind scalar scorers:
+- `workload_blind_range`
+- `range_prior`
+- `range_prior_clock_density`
+- `segment_context_range`
+
+Historical-prior diagnostics:
+- `historical_prior`
+- `historical_prior_mmsi`
+- `historical_prior_student`
+
+`historical_prior` and `historical_prior_mmsi` are KNN diagnostics/teachers and
+are not final learned-model success. `historical_prior_student` is trainable,
+but it requires an ablation against the standalone KNN prior before it can claim
+learned value. The planned final rework model is `workload_blind_range_v2`; it
+is only a placeholder in this checkpoint.
+
+Current density/sparsity feature columns are current-split point-cloud context
+features. Do not call them train-derived query-prior fields.

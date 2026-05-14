@@ -11,11 +11,38 @@ DEFAULT_PROFILE = "range_workload_aware_diagnostic"
 BLIND_EXPECTED_USEFULNESS_PROFILE = "range_workload_blind_expected_usefulness"
 BLIND_RETAINED_FREQUENCY_PROFILE = "range_workload_blind_retained_frequency"
 BLIND_TEACHER_DISTILL_PROFILE = "range_workload_blind_teacher_distill"
+LEGACY_PROFILE_REASON = (
+    "Old RangeUseful/scalar-target diagnostic path. "
+    "Not valid for query-driven rework acceptance."
+)
+LEGACY_RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE_NAME = DEFAULT_PROFILE
+LEGACY_RANGE_WORKLOAD_BLIND_EXPECTED_USEFULNESS_PROFILE_NAME = BLIND_EXPECTED_USEFULNESS_PROFILE
+LEGACY_RANGE_WORKLOAD_BLIND_RETAINED_FREQUENCY_PROFILE_NAME = BLIND_RETAINED_FREQUENCY_PROFILE
+LEGACY_RANGE_WORKLOAD_BLIND_TEACHER_DISTILL_PROFILE_NAME = BLIND_TEACHER_DISTILL_PROFILE
+RANGE_WORKLOAD_V1_PREDICTABILITY_AUDIT_PROFILE = "range_workload_v1_predictability_audit"
+RANGE_WORKLOAD_V1_PRIORFIELD_ONLY_PROFILE = "range_workload_v1_priorfield_only"
+RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE = "range_workload_v1_workload_blind_v2"
+RANGE_WORKLOAD_V1_MILD_JITTER_PROFILE = "range_workload_v1_mild_jitter"
+RANGE_WORKLOAD_V1_OOD_DIAGNOSTIC_PROFILE = "range_workload_v1_ood_diagnostics"
+UNIMPLEMENTED_REWORK_PROFILES = frozenset(
+    {
+        RANGE_WORKLOAD_V1_PREDICTABILITY_AUDIT_PROFILE,
+        RANGE_WORKLOAD_V1_PRIORFIELD_ONLY_PROFILE,
+        RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE,
+        RANGE_WORKLOAD_V1_MILD_JITTER_PROFILE,
+        RANGE_WORKLOAD_V1_OOD_DIAGNOSTIC_PROFILE,
+    }
+)
 PROFILE_CHOICES = (
     DEFAULT_PROFILE,
     BLIND_EXPECTED_USEFULNESS_PROFILE,
     BLIND_RETAINED_FREQUENCY_PROFILE,
     BLIND_TEACHER_DISTILL_PROFILE,
+    RANGE_WORKLOAD_V1_PREDICTABILITY_AUDIT_PROFILE,
+    RANGE_WORKLOAD_V1_PRIORFIELD_ONLY_PROFILE,
+    RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE,
+    RANGE_WORKLOAD_V1_MILD_JITTER_PROFILE,
+    RANGE_WORKLOAD_V1_OOD_DIAGNOSTIC_PROFILE,
 )
 ProfileSetting = int | float | str | bool | list[float] | list[str] | None
 RANGE_COVERAGE_SWEEP_TARGETS = (0.05, 0.10, 0.15, 0.30)
@@ -93,6 +120,8 @@ class BenchmarkProfile:
     range_boundary_prior_weight: float
     range_teacher_distillation_mode: str
     range_teacher_epochs: int
+    final_success_allowed: bool = False
+    legacy_reason: str = LEGACY_PROFILE_REASON
     mlqds_stratified_center_weight: float = 0.0
 
 
@@ -354,6 +383,10 @@ _PROFILES = {
 
 def benchmark_profile(name: str) -> BenchmarkProfile:
     """Return a known benchmark profile by name."""
+    if name in UNIMPLEMENTED_REWORK_PROFILES:
+        raise ValueError(
+            "Profile not implemented yet. See Range_QDS/docs/query-driven-rework-guide.md."
+        )
     try:
         return _PROFILES[name]
     except KeyError as exc:
@@ -522,11 +555,15 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
     )
     return {
         "profile_role": profile_role,
-        "final_product_candidate": bool(workload_blind),
+        "profile_legacy_diagnostic": True,
+        "legacy_reason": profile.legacy_reason,
+        "primary_metric_family": "RangeUsefulLegacy",
+        "final_success_allowed": bool(profile.final_success_allowed),
+        "final_product_candidate": False,
         "final_product_claim": False,
         "final_product_claim_gate": (
-            "Requires workload-blind protocol, material learned selector budget, "
-            "and RangeUseful wins across the coverage/compression report grid."
+            "Unavailable until range_workload_v1 and QueryUsefulV1 are implemented. "
+            "RangeUsefulLegacy wins are diagnostics only."
         ),
         "workload_blind": bool(workload_blind),
         "data_mode": "three_cleaned_csv_days",

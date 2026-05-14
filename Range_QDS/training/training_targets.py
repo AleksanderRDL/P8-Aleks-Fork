@@ -24,6 +24,24 @@ from training.model_features import (
 )
 from training.training_losses import _safe_quantile
 
+LEGACY_RANGE_TARGET_MODES = frozenset(
+    {
+        "point_value",
+        "retained_frequency",
+        "global_budget_retained_frequency",
+        "historical_prior_retained_frequency",
+        "structural_retained_frequency",
+        "component_retained_frequency",
+        "continuity_retained_frequency",
+        "marginal_coverage_frequency",
+        "query_spine_frequency",
+        "query_residual_frequency",
+        "set_utility_frequency",
+        "local_swap_utility_frequency",
+        "local_swap_gain_cost_frequency",
+    }
+)
+QUERY_USEFUL_V1_TARGET_MODES = frozenset({"query_useful_v1_factorized"})
 RANGE_TRAINING_TARGET_MODES = (
     "point_value",
     "retained_frequency",
@@ -38,6 +56,7 @@ RANGE_TRAINING_TARGET_MODES = (
     "set_utility_frequency",
     "local_swap_utility_frequency",
     "local_swap_gain_cost_frequency",
+    "query_useful_v1_factorized",
 )
 RANGE_TARGET_BALANCE_MODES = ("none", "trajectory_unit_mass")
 RANGE_CONTINUITY_TARGET_WEIGHTS = {
