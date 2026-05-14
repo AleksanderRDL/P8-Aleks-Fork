@@ -6,7 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "p8-ais-qds"
 version = "0.1.0"
 description = "AIS cleaning and query-driven simplification research utilities."
-requires-python = ">=3.12"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy==2.4.4",
+    "pandas==3.0.3",
+    "psycopg[binary]==3.3.4",
+    "pyarrow==24.0.0",
+    "pyspark==4.1.1",
+    "python-dotenv==1.2.2",
+    "torch==2.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright==1.1.409",
+    "pytest==9.0.3",
+    "ruff==0.15.13",
+]
 
 [tool.setuptools.packages.find]
 where = [".", "QDS"]
@@ -24,3 +40,17 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["QDS/tests"]
 pythonpath = [".", "QDS"]
+
+[tool.ruff]
+src = [".", "QDS"]
+exclude = [
+    ".git",
+    ".ruff_cache",
+    ".venv",
+    "AISDATA",
+    "artifacts",
+    "spark_temp",
+]
+
+[tool.ruff.lint]
+select = ["F", "E9"]

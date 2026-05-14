@@ -16,7 +16,7 @@ interpreter path contains `..`.
 ```bash
 cd QDS
 PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
-"$PYTHON" -m pip install -r ../requirements.txt
+(cd .. && "$PYTHON" -m pip install -e ".[dev]")
 make check-env
 make test
 ```
@@ -25,6 +25,7 @@ make test
 
 ```bash
 make typecheck
+make lint
 make smoke
 make smoke-csv CLEANED_CSV=../AISDATA/cleaned/<file-or-directory>
 make benchmark-preflight
@@ -51,7 +52,7 @@ Direct CLI example:
 
 | Need | File |
 | --- | --- |
-| Redesign objective and acceptance criteria | [`../Aleks-Sprint/range-training-redesign.md`](../Aleks-Sprint/range-training-redesign.md) |
+| Redesign objective and acceptance criteria | [`../Sprint/range-training-redesign.md`](../Sprint/range-training-redesign.md) |
 | Code layout | [`CODE_LAYOUT.md`](CODE_LAYOUT.md) |
 | Benchmark profile, CLI modes, artifact names | [`experiments/README.md`](experiments/README.md) |
 | Generated artifact layout and cleanup | [`artifacts/README.md`](artifacts/README.md) |
@@ -63,8 +64,8 @@ Direct CLI example:
 
 ## Requirements
 
-Use the root [`../requirements.txt`](../requirements.txt). QDS is the dominant
-workstream, so dependency management is centralized at repo root.
+Dependency source of truth lives in root [`../pyproject.toml`](../pyproject.toml).
+Install with `pip install -e ".[dev]"` from the repo root.
 
 ## Output Policy
 

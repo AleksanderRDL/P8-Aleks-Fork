@@ -21,12 +21,13 @@ BENCHMARK_FAMILY ?= artifacts/benchmarks/range_workload_aware_diagnostic
 BENCHMARK_CACHE ?= artifacts/cache/range_workload_aware_diagnostic
 CONFIRM ?=
 
-.PHONY: help check-env install test typecheck smoke smoke-csv benchmark-preflight benchmark-queue-preflight list-runs clean-smoke-artifacts range-benchmark-tmux range-benchmark-queue-tmux
+.PHONY: help check-env install lint test typecheck smoke smoke-csv benchmark-preflight benchmark-queue-preflight list-runs clean-smoke-artifacts range-benchmark-tmux range-benchmark-queue-tmux
 
 help:
 	@echo "Targets:"
 	@echo "  check-env   Print Python/package versions and run pip check"
-	@echo "  install     Install root requirements.txt into PYTHON"
+	@echo "  install     Install the root project with dev dependencies into PYTHON"
+	@echo "  lint        Run Ruff correctness lint"
 	@echo "  test        Run the QDS pytest suite"
 	@echo "  typecheck   Run Pyright on TYPECHECK_PATHS"
 	@echo "  smoke       Run a tiny synthetic training/evaluation experiment"
@@ -58,10 +59,13 @@ help:
 check-env:
 	$(PYTHON) -V
 	$(PYTHON) -m pip check
-	$(PYTHON) -c 'from importlib.metadata import version; import numpy, pandas, pyarrow, pyright, pyspark, pytest, torch; print("torch", torch.__version__); print("numpy", numpy.__version__); print("pandas", pandas.__version__); print("pyarrow", pyarrow.__version__); print("pyspark", pyspark.__version__); print("python-dotenv", version("python-dotenv")); print("psycopg", version("psycopg")); print("pytest", pytest.__version__); print("pyright", pyright.__version__)'
+	$(PYTHON) -c 'from importlib.metadata import version; import numpy, pandas, pyarrow, pyright, pyspark, pytest, torch; print("torch", torch.__version__); print("numpy", numpy.__version__); print("pandas", pandas.__version__); print("pyarrow", pyarrow.__version__); print("pyspark", pyspark.__version__); print("python-dotenv", version("python-dotenv")); print("psycopg", version("psycopg")); print("pytest", pytest.__version__); print("pyright", pyright.__version__); print("ruff", version("ruff"))'
 
 install:
-	$(PYTHON) -m pip install -r $(REPO_ROOT)/requirements.txt
+	cd $(REPO_ROOT) && $(PYTHON) -m pip install -e ".[dev]"
+
+lint:
+	cd $(REPO_ROOT) && $(PYTHON) -m ruff check QDS
 
 test:
 	$(PYTHON) -m pytest tests

@@ -2,19 +2,21 @@ SHELL := /bin/bash
 
 REPO_ROOT := $(abspath .)
 QDS_DIR := $(REPO_ROOT)/QDS
-PYTHON ?= python
-QDS_PYTHON ?= $(REPO_ROOT)/.venv/bin/python
+PYTHON ?= $(REPO_ROOT)/.venv/bin/python
+BOOTSTRAP_PYTHON ?= python3
+QDS_PYTHON ?= $(PYTHON)
 CSV ?=
 QUERY_ARGS ?= --help
 
-.PHONY: help setup install pipeline qds-check-env test typecheck smoke smoke-csv db-up db-down db-reset db-logs db-smoke db-import db-query
+.PHONY: help setup install pipeline qds-check-env lint test typecheck smoke smoke-csv db-up db-down db-reset db-logs db-smoke db-import db-query
 
 help:
 	@echo "Targets:"
 	@echo "  setup            Create .venv and install Python dependencies"
-	@echo "  install          Install Python dependencies into current interpreter"
+	@echo "  install          Install the project with dev dependencies into PYTHON"
 	@echo "  pipeline         Run AIS cleaning pipeline"
 	@echo "  qds-check-env    Print QDS Python/package versions and run pip check"
+	@echo "  lint             Run QDS Ruff correctness lint"
 	@echo "  test             Run the QDS pytest suite"
 	@echo "  typecheck        Run QDS Pyright"
 	@echo "  smoke            Run a tiny QDS synthetic training/evaluation experiment"
@@ -28,17 +30,20 @@ help:
 	@echo "  db-query         Run range query script (override with QUERY_ARGS=...)"
 
 setup:
-	$(PYTHON) -m venv .venv
-	. .venv/bin/activate && python -m pip install -r requirements.txt
+	$(BOOTSTRAP_PYTHON) -m venv .venv
+	$(REPO_ROOT)/.venv/bin/python -m pip install -e ".[dev]"
 
 install:
-	$(PYTHON) -m pip install -r requirements.txt
+	$(PYTHON) -m pip install -e ".[dev]"
 
 pipeline:
 	$(PYTHON) main.py
 
 qds-check-env:
 	$(MAKE) -C $(QDS_DIR) check-env PYTHON="$(QDS_PYTHON)"
+
+lint:
+	$(MAKE) -C $(QDS_DIR) lint PYTHON="$(QDS_PYTHON)"
 
 test:
 	$(MAKE) -C $(QDS_DIR) test PYTHON="$(QDS_PYTHON)"
