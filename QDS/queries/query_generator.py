@@ -18,6 +18,12 @@ DENSITY_GRID_BINS = 64
 DEFAULT_RANGE_SPATIAL_FRACTION = 0.08
 DEFAULT_RANGE_TIME_FRACTION = 0.15
 DEFAULT_RANGE_FOOTPRINT_JITTER = 0.5
+DEFAULT_RANGE_TIME_DOMAIN_MODE = "dataset"
+DEFAULT_RANGE_ANCHOR_MODE = "mixed_density"
+RANGE_TIME_DOMAIN_MODES = ("dataset", "anchor_day")
+RANGE_ANCHOR_MODES = ("mixed_density", "dense", "uniform", "sparse")
+SECONDS_PER_DAY = 24.0 * 3600.0
+EPOCH_LIKE_SECONDS = 366.0 * SECONDS_PER_DAY
 
 
 def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
@@ -59,6 +65,54 @@ def _density_anchor_weights(points: torch.Tensor, bins: int = DENSITY_GRID_BINS)
     return weights / total
 
 
+def _sparse_anchor_weights(points: torch.Tensor, bins: int = DENSITY_GRID_BINS) -> torch.Tensor:
+    """Return per-point weights that sample occupied spatial cells more evenly."""
+    if points.shape[0] == 0:
+        return torch.empty((0,), dtype=torch.float32, device=points.device)
+
+    bin_count = max(1, int(bins))
+    lat = points[:, 1]
+    lon = points[:, 2]
+    lat_min = lat.min()
+    lon_min = lon.min()
+    lat_span = torch.clamp(lat.max() - lat_min, min=1e-6)
+    lon_span = torch.clamp(lon.max() - lon_min, min=1e-6)
+
+    lat_bins = torch.clamp(((lat - lat_min) / lat_span * (bin_count - 1)).long(), 0, bin_count - 1)
+    lon_bins = torch.clamp(((lon - lon_min) / lon_span * (bin_count - 1)).long(), 0, bin_count - 1)
+    bin_ids = lat_bins * bin_count + lon_bins
+    cell_counts = torch.bincount(bin_ids.cpu(), minlength=bin_count * bin_count).to(
+        device=points.device,
+        dtype=torch.float32,
+    )
+    weights = 1.0 / torch.clamp(cell_counts[bin_ids], min=1.0)
+    total = weights.sum()
+    if float(total.item()) <= 0.0:
+        return torch.ones((points.shape[0],), dtype=torch.float32, device=points.device) / max(1, points.shape[0])
+    return weights / total
+
+
+def _normalize_range_anchor_mode(mode: str) -> str:
+    """Normalize range-query anchor sampling mode names."""
+    normalized = str(mode).strip().lower()
+    if normalized not in RANGE_ANCHOR_MODES:
+        raise ValueError(f"range_anchor_mode must be one of {RANGE_ANCHOR_MODES}; got {mode!r}.")
+    return normalized
+
+
+def _anchor_weights_for_mode(points: torch.Tensor, mode: str) -> tuple[torch.Tensor | None, float]:
+    """Return optional point weights and use probability for the configured anchor mode."""
+    normalized = _normalize_range_anchor_mode(mode)
+    if normalized == "uniform":
+        return None, 0.0
+    if normalized == "sparse":
+        return _sparse_anchor_weights(points), 1.0
+    weights = _density_anchor_weights(points)
+    if normalized == "dense":
+        return weights, 1.0
+    return weights, DENSITY_ANCHOR_PROBABILITY
+
+
 def _weighted_sample_one(
     weights: torch.Tensor,
     generator: torch.Generator,
@@ -86,8 +140,8 @@ def _sample_anchor_point(
     points: torch.Tensor,
     generator: torch.Generator,
     candidate_mask: torch.Tensor | None = None,
-    density_weights: torch.Tensor | None = None,
-    density_probability: float = DENSITY_ANCHOR_PROBABILITY,
+    anchor_weights: torch.Tensor | None = None,
+    anchor_weight_probability: float = 1.0,
 ) -> torch.Tensor:
     """Sample one point row from the cloud. See queries/README.md for details."""
     if candidate_mask is not None and bool(candidate_mask.any().item()):
@@ -95,20 +149,21 @@ def _sample_anchor_point(
     else:
         candidate_indices = None
 
-    use_density = (
-        density_weights is not None
-        and density_weights.numel() == points.shape[0]
-        and float(torch.rand(1, generator=generator).item()) < float(density_probability)
+    use_weighted = (
+        anchor_weights is not None
+        and anchor_weights.numel() == points.shape[0]
+        and float(torch.rand(1, generator=generator).item()) < float(anchor_weight_probability)
     )
-    if use_density:
-        assert density_weights is not None
+    if use_weighted:
+        if anchor_weights is None:
+            raise RuntimeError("Weighted anchor sampling requested without anchor weights.")
         if candidate_indices is not None:
-            candidate_weights = density_weights[candidate_indices].float()
+            candidate_weights = anchor_weights[candidate_indices].float()
             if float(candidate_weights.sum().item()) > 0.0:
                 sampled_candidate_offset = _weighted_sample_one(candidate_weights, generator)
                 return points[int(candidate_indices[sampled_candidate_offset].item())]
         else:
-            weights = density_weights.float()
+            weights = anchor_weights.float()
             if float(weights.sum().item()) > 0.0:
                 sampled_point_idx = _weighted_sample_one(weights, generator)
                 return points[sampled_point_idx]
@@ -132,19 +187,65 @@ def _jitter_scale(generator: torch.Generator, jitter: float) -> float:
     return max(1e-6, scale)
 
 
+def _normalize_range_time_domain_mode(mode: str) -> str:
+    """Normalize range-query time-domain mode names."""
+    normalized = str(mode).strip().lower()
+    if normalized not in RANGE_TIME_DOMAIN_MODES:
+        raise ValueError(
+            f"range_time_domain_mode must be one of {RANGE_TIME_DOMAIN_MODES}; got {mode!r}."
+        )
+    return normalized
+
+
+def _anchor_day_time_bounds(anchor_time: float, bounds: dict[str, float]) -> tuple[float, float]:
+    """Return the 24-hour time domain containing the anchor point.
+
+    AIS tensors usually carry seconds relative to the loaded CSV minimum. If a
+    caller passes epoch-like seconds, align to calendar UTC day boundaries;
+    otherwise align to 24-hour source-file chunks from the dataset lower bound.
+    """
+    dataset_min = float(bounds["t_min"])
+    dataset_max = float(bounds["t_max"])
+    if dataset_max <= dataset_min:
+        return dataset_min, dataset_max
+
+    if dataset_min >= EPOCH_LIKE_SECONDS:
+        day_start = math.floor(float(anchor_time) / SECONDS_PER_DAY) * SECONDS_PER_DAY
+    else:
+        day_offset = max(0.0, float(anchor_time) - dataset_min)
+        day_start = dataset_min + math.floor(day_offset / SECONDS_PER_DAY) * SECONDS_PER_DAY
+    day_end = day_start + SECONDS_PER_DAY
+    return max(dataset_min, day_start), min(dataset_max, day_end)
+
+
+def _query_time_bounds_for_mode(
+    anchor_time: float,
+    bounds: dict[str, float],
+    range_time_domain_mode: str,
+) -> tuple[float, float]:
+    """Return the allowed temporal clamp bounds for one range query."""
+    mode = _normalize_range_time_domain_mode(range_time_domain_mode)
+    if mode == "dataset":
+        return float(bounds["t_min"]), float(bounds["t_max"])
+    return _anchor_day_time_bounds(float(anchor_time), bounds)
+
+
 def _make_range_query(
     points: torch.Tensor,
     bounds: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
-    density_weights: torch.Tensor | None = None,
+    anchor_weights: torch.Tensor | None = None,
+    anchor_weight_probability: float = 1.0,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
     range_spatial_km: float | None = None,
     range_time_hours: float | None = None,
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
+    range_time_domain_mode: str = DEFAULT_RANGE_TIME_DOMAIN_MODE,
 ) -> dict[str, Any]:
     """Generate one range query. See queries/README.md for details."""
+    time_domain_mode = _normalize_range_time_domain_mode(range_time_domain_mode)
     spatial_fraction = float(range_spatial_fraction)
     time_fraction = float(range_time_fraction)
     spatial_km = None if range_spatial_km is None else float(range_spatial_km)
@@ -155,7 +256,13 @@ def _make_range_query(
         raise ValueError("range_spatial_km must be positive when provided.")
     if time_hours is not None and time_hours <= 0.0:
         raise ValueError("range_time_hours must be positive when provided.")
-    anchor_point = _sample_anchor_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
+    anchor_point = _sample_anchor_point(
+        points,
+        generator,
+        candidate_mask=anchor_mask,
+        anchor_weights=anchor_weights,
+        anchor_weight_probability=anchor_weight_probability,
+    )
     lat_jitter = _jitter_scale(generator, range_footprint_jitter)
     lon_jitter = _jitter_scale(generator, range_footprint_jitter)
     time_jitter = _jitter_scale(generator, range_footprint_jitter)
@@ -170,6 +277,8 @@ def _make_range_query(
         t_w = time_fraction * (bounds["t_max"] - bounds["t_min"]) * time_jitter
     else:
         t_w = time_hours * 3600.0 * time_jitter
+    anchor_time = float(anchor_point[0].item())
+    time_min, time_max = _query_time_bounds_for_mode(anchor_time, bounds, time_domain_mode)
     return {
         "type": "range",
         "params": {
@@ -177,8 +286,8 @@ def _make_range_query(
             "lat_max": float(min(bounds["lat_max"], anchor_point[1].item() + lat_w)),
             "lon_min": float(max(bounds["lon_min"], anchor_point[2].item() - lon_w)),
             "lon_max": float(min(bounds["lon_max"], anchor_point[2].item() + lon_w)),
-            "t_start": float(max(bounds["t_min"], anchor_point[0].item() - t_w)),
-            "t_end": float(min(bounds["t_max"], anchor_point[0].item() + t_w)),
+            "t_start": float(max(time_min, anchor_time - t_w)),
+            "t_end": float(min(time_max, anchor_time + t_w)),
         },
     }
 
@@ -222,6 +331,21 @@ def _normalize_target_coverage(target_coverage: float | None) -> float | None:
     if target <= 0.0 or target > 1.0:
         raise ValueError("target_coverage must be a fraction in (0, 1] or a percent in (0, 100].")
     return target
+
+
+def _normalize_coverage_overshoot(range_max_coverage_overshoot: float | None) -> float | None:
+    """Normalize coverage overshoot tolerances supplied as fractions or percentages."""
+    if range_max_coverage_overshoot is None:
+        return None
+    tolerance = float(range_max_coverage_overshoot)
+    if tolerance > 1.0:
+        if tolerance <= 100.0:
+            tolerance = tolerance / 100.0
+        else:
+            raise ValueError("range_max_coverage_overshoot must be a non-negative fraction or percent.")
+    if tolerance < 0.0:
+        raise ValueError("range_max_coverage_overshoot must be non-negative when provided.")
+    return tolerance
 
 
 def _finalize_workload(
@@ -361,6 +485,8 @@ def generate_typed_query_workload(
     range_spatial_km: float | None = None,
     range_time_hours: float | None = None,
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
+    range_time_domain_mode: str = DEFAULT_RANGE_TIME_DOMAIN_MODE,
+    range_anchor_mode: str = DEFAULT_RANGE_ANCHOR_MODE,
     range_min_point_hits: int | None = None,
     range_max_point_hit_fraction: float | None = None,
     range_min_trajectory_hits: int | None = None,
@@ -368,18 +494,28 @@ def generate_typed_query_workload(
     range_max_box_volume_fraction: float | None = None,
     range_duplicate_iou_threshold: float | None = None,
     range_acceptance_max_attempts: int | None = None,
+    range_max_coverage_overshoot: float | None = None,
 ) -> TypedQueryWorkload:
     """Generate a range-query workload and padded feature tensor. See queries/README.md for details."""
+    time_domain_mode = _normalize_range_time_domain_mode(range_time_domain_mode)
+    anchor_mode = _normalize_range_anchor_mode(range_anchor_mode)
     points = torch.cat(trajectories, dim=0)
     bounds = _dataset_bounds(points)
     boundaries = boundaries_from_trajectories(trajectories)
 
     normalize_pure_workload_map(workload_map)
     generator = torch.Generator().manual_seed(int(seed))
-    density_weights = _density_anchor_weights(points)
+    anchor_weights, anchor_weight_probability = _anchor_weights_for_mode(points, anchor_mode)
 
     coverage_target = _normalize_target_coverage(target_coverage)
-    acceptance_enabled = _range_acceptance_enabled(
+    coverage_overshoot = _normalize_coverage_overshoot(range_max_coverage_overshoot)
+    coverage_guard_enabled = coverage_target is not None and coverage_overshoot is not None
+    max_allowed_coverage = (
+        min(1.0, float(coverage_target) + float(coverage_overshoot))
+        if coverage_guard_enabled and coverage_target is not None and coverage_overshoot is not None
+        else None
+    )
+    query_acceptance_enabled = _range_acceptance_enabled(
         range_min_point_hits,
         range_max_point_hit_fraction,
         range_min_trajectory_hits,
@@ -387,6 +523,7 @@ def generate_typed_query_workload(
         range_max_box_volume_fraction,
         range_duplicate_iou_threshold,
     )
+    acceptance_enabled = query_acceptance_enabled or coverage_guard_enabled
     requested_for_attempts = max(1, int(n_queries))
     default_max_attempts = 50 * requested_for_attempts if acceptance_enabled else None
     max_range_attempts = (
@@ -398,6 +535,13 @@ def generate_typed_query_workload(
         raise ValueError("range_acceptance_max_attempts must be positive when provided.")
     range_acceptance = _range_acceptance_state(acceptance_enabled, max_range_attempts, requested_for_attempts)
     accepted_range_queries: list[dict[str, Any]] = []
+
+    def commit_query(query: dict[str, Any]) -> None:
+        """Record a query as accepted after all filters have passed."""
+        if not acceptance_enabled:
+            return
+        range_acceptance["accepted"] = int(range_acceptance["accepted"]) + 1
+        accepted_range_queries.append({"params": query["params"], "query_index": len(accepted_range_queries)})
 
     def build_query(anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
         """Build one query, applying optional range acceptance filters."""
@@ -411,14 +555,16 @@ def generate_typed_query_workload(
             bounds,
             generator,
             anchor_mask=anchor_mask,
-            density_weights=density_weights,
+            anchor_weights=anchor_weights,
+            anchor_weight_probability=anchor_weight_probability,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
             range_spatial_km=range_spatial_km,
             range_time_hours=range_time_hours,
             range_footprint_jitter=range_footprint_jitter,
+            range_time_domain_mode=time_domain_mode,
         )
-        if not acceptance_enabled:
+        if not query_acceptance_enabled:
             return query
         accepted, reason = _accept_range_query(
             query,
@@ -436,8 +582,6 @@ def generate_typed_query_workload(
         if not accepted:
             _record_rejection(range_acceptance, reason)
             return None
-        range_acceptance["accepted"] = int(range_acceptance["accepted"]) + 1
-        accepted_range_queries.append({"params": query["params"], "query_index": len(accepted_range_queries)})
         return query
 
     if coverage_target is not None:
@@ -446,6 +590,8 @@ def generate_typed_query_workload(
             raise ValueError("max_queries must be positive when target_coverage is set.")
         generated_queries: list[dict[str, Any]] = []
         covered = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+        target_reached_query_count: int | None = None
+        coverage_at_target_reached: float | None = None
 
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
         stop_reason = "max_queries_reached"
@@ -462,8 +608,28 @@ def generate_typed_query_workload(
                     stop_reason = "range_acceptance_exhausted"
                     break
                 continue
+            query_mask = point_coverage_mask_for_query(points, query)
+            if coverage_guard_enabled and max_allowed_coverage is not None:
+                candidate_coverage = (
+                    float((covered | query_mask).float().mean().item()) if points.shape[0] > 0 else 0.0
+                )
+                if candidate_coverage > max_allowed_coverage:
+                    _record_rejection(range_acceptance, "coverage_overshoot")
+                    if (
+                        max_range_attempts is not None
+                        and int(range_acceptance.get("attempts", 0)) >= max_range_attempts
+                    ):
+                        range_acceptance["exhausted"] = True
+                        stop_reason = "range_coverage_guard_exhausted"
+                        break
+                    continue
+            commit_query(query)
             generated_queries.append(query)
-            covered |= point_coverage_mask_for_query(points, query)
+            covered |= query_mask
+            new_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
+            if target_reached_query_count is None and new_coverage >= coverage_target:
+                target_reached_query_count = int(len(generated_queries))
+                coverage_at_target_reached = float(new_coverage)
 
         final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
         if (
@@ -478,7 +644,24 @@ def generate_typed_query_workload(
             "requested_queries": int(requested_queries),
             "max_queries": int(query_limit),
             "target_coverage": float(coverage_target),
+            "range_time_domain_mode": time_domain_mode,
+            "range_anchor_mode": anchor_mode,
+            "range_spatial_fraction": float(range_spatial_fraction),
+            "range_time_fraction": float(range_time_fraction),
+            "range_spatial_km": None if range_spatial_km is None else float(range_spatial_km),
+            "range_time_hours": None if range_time_hours is None else float(range_time_hours),
+            "range_footprint_jitter": float(range_footprint_jitter),
+            "range_max_coverage_overshoot": coverage_overshoot,
+            "coverage_guard_enabled": bool(coverage_guard_enabled),
+            "max_allowed_coverage": max_allowed_coverage,
             "stop_reason": stop_reason,
+            "target_reached_query_count": target_reached_query_count,
+            "coverage_at_target_reached": coverage_at_target_reached,
+            "extra_queries_after_target_reached": (
+                int(len(generated_queries) - target_reached_query_count)
+                if target_reached_query_count is not None
+                else None
+            ),
         }
         return _finalize_workload(
             points,
@@ -491,14 +674,16 @@ def generate_typed_query_workload(
         )
 
     generated_queries: list[dict[str, Any]] = []
+    requested_queries = max(0, int(n_queries))
     stop_reason = "fixed_count_completed"
-    for _ in range(int(n_queries)):
+    while len(generated_queries) < requested_queries:
         query = build_query()
         if query is None:
             if range_acceptance.get("exhausted"):
                 stop_reason = "range_acceptance_exhausted"
                 break
             continue
+        commit_query(query)
         generated_queries.append(query)
 
     return _finalize_workload(
@@ -509,10 +694,20 @@ def generate_typed_query_workload(
             "range_acceptance": range_acceptance,
             "query_generation": {
                 "mode": "fixed_count",
-                "minimum_queries": int(n_queries),
-                "requested_queries": int(n_queries),
-                "max_queries": int(n_queries),
+                "minimum_queries": requested_queries,
+                "requested_queries": requested_queries,
+                "max_queries": requested_queries,
                 "target_coverage": None,
+                "range_time_domain_mode": time_domain_mode,
+                "range_anchor_mode": anchor_mode,
+                "range_spatial_fraction": float(range_spatial_fraction),
+                "range_time_fraction": float(range_time_fraction),
+                "range_spatial_km": None if range_spatial_km is None else float(range_spatial_km),
+                "range_time_hours": None if range_time_hours is None else float(range_time_hours),
+                "range_footprint_jitter": float(range_footprint_jitter),
+                "range_max_coverage_overshoot": coverage_overshoot,
+                "coverage_guard_enabled": False,
+                "max_allowed_coverage": None,
                 "stop_reason": stop_reason,
             },
         },

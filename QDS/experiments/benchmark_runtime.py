@@ -314,10 +314,17 @@ def _matched_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             "range_crossing_f1": payload.get("range_crossing_f1"),
             "range_temporal_coverage": payload.get("range_temporal_coverage"),
             "range_gap_coverage": payload.get("range_gap_coverage"),
+            "range_gap_time_coverage": payload.get("range_gap_time_coverage"),
+            "range_gap_distance_coverage": payload.get("range_gap_distance_coverage"),
+            "range_gap_min_coverage": payload.get("range_gap_min_coverage"),
             "range_turn_coverage": payload.get("range_turn_coverage"),
             "range_shape_score": payload.get("range_shape_score"),
             "range_usefulness_score": payload.get("range_usefulness_score"),
+            "range_usefulness_gap_time_score": payload.get("range_usefulness_gap_time_score"),
+            "range_usefulness_gap_distance_score": payload.get("range_usefulness_gap_distance_score"),
+            "range_usefulness_gap_min_score": payload.get("range_usefulness_gap_min_score"),
             "range_usefulness_schema_version": payload.get("range_usefulness_schema_version"),
+            "range_usefulness_gap_ablation_version": payload.get("range_usefulness_gap_ablation_version"),
         }
     config = run_json.get("config", {})
     model_config = config.get("model", {}) if isinstance(config, dict) else {}
@@ -417,6 +424,12 @@ def _batch_size_sweep_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any
                 ),
                 "mlqds_range_gap_coverage": (
                     mlqds.get("range_gap_coverage") if isinstance(mlqds, dict) else None
+                ),
+                "mlqds_range_gap_time_coverage": (
+                    mlqds.get("range_gap_time_coverage") if isinstance(mlqds, dict) else None
+                ),
+                "mlqds_range_gap_distance_coverage": (
+                    mlqds.get("range_gap_distance_coverage") if isinstance(mlqds, dict) else None
                 ),
                 "mlqds_range_turn_coverage": (
                     mlqds.get("range_turn_coverage") if isinstance(mlqds, dict) else None

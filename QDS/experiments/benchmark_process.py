@@ -111,7 +111,8 @@ def _run_capture_streaming(
     )
     try:
         with open(stdout_path, "w", encoding="utf-8") as log:
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("benchmark child stdout pipe was not created.")
             for line in proc.stdout:
                 tail_chars, line_truncated = _append_stdout_tail(tail_chunks, tail_chars, line, max_stdout_chars)
                 stdout_truncated = stdout_truncated or line_truncated

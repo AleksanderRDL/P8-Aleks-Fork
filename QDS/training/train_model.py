@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -11,8 +12,10 @@ from torch.amp.grad_scaler import GradScaler
 from experiments.experiment_config import ModelConfig
 from queries.workload import TypedQueryWorkload
 from experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
+from models.historical_prior_qds_model import HistoricalPriorRangeQDSModel, HistoricalPriorStudentRangeQDSModel
 from models.trajectory_qds_model import TrajectoryQDSModel
 from models.turn_aware_qds_model import TurnAwareQDSModel
+from models.workload_blind_qds_model import SegmentContextRangeQDSModel, WorkloadBlindRangeQDSModel
 from queries.query_types import (
     ID_TO_QUERY_NAME,
     NUM_QUERY_TYPES,
@@ -24,12 +27,24 @@ from training.checkpoint_selection import (
     selection_score,
 )
 from training.importance_labels import compute_typed_importance_labels
-from training.model_features import build_model_point_features
-from training.training_diagnostics import _discriminative_sample, _kendall_tau, _training_target_diagnostics
+from training.model_features import (
+    HISTORICAL_PRIOR_MODEL_TYPES,
+    NONPARAMETRIC_HISTORICAL_PRIOR_MODEL_TYPES,
+    build_model_point_features,
+    is_workload_blind_model_type,
+)
+from training.inference import windowed_predict
+from training.training_diagnostics import (
+    _discriminative_sample,
+    _kendall_tau,
+    _training_target_diagnostics,
+    train_target_fit_diagnostics,
+)
 from training.training_epoch import _train_one_epoch
 from training.training_losses import (
     _budget_loss_ratios,
     _effective_budget_loss_ratios,
+    _effective_temporal_residual_label_mode,
     _safe_quantile,
     _temporal_base_masks_for_budget_ratios,
 )
@@ -48,6 +63,45 @@ from training.scaler import FeatureScaler
 from training.trajectory_batching import batch_windows, build_trajectory_windows
 
 
+def _historical_prior_support_mask(
+    targets: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    support_ratio: float,
+) -> torch.Tensor:
+    """Return a per-trajectory top-target support mask for historical priors."""
+    ratio = min(1.0, max(0.0, float(support_ratio)))
+    support_mask = torch.zeros((int(targets.shape[0]),), dtype=torch.bool, device=targets.device)
+    if ratio >= 1.0:
+        support_mask[:] = True
+        return support_mask
+    if ratio <= 0.0:
+        return support_mask
+
+    for start, end in boundaries:
+        point_count = int(end - start)
+        if point_count <= 0:
+            continue
+        keep_count = min(point_count, max(1, int(math.ceil(ratio * point_count))))
+        if keep_count >= point_count:
+            support_mask[start:end] = True
+            continue
+        local_targets = targets[start:end].float()
+        local_indices = torch.topk(local_targets, k=keep_count, largest=True).indices
+        support_mask[start + local_indices] = True
+    return support_mask
+
+
+def _require_validation_inputs(
+    validation_trajectories: list[torch.Tensor] | None,
+    validation_boundaries: list[tuple[int, int]] | None,
+    validation_workload: TypedQueryWorkload | None,
+) -> tuple[list[torch.Tensor], list[tuple[int, int]], TypedQueryWorkload]:
+    """Return validation inputs after enforcing the checkpoint-score contract."""
+    if validation_trajectories is None or validation_boundaries is None or validation_workload is None:
+        raise RuntimeError("Validation scoring requested without complete validation inputs.")
+    return validation_trajectories, validation_boundaries, validation_workload
+
+
 def train_model(
     train_trajectories: list[torch.Tensor],
     train_boundaries: list[tuple[int, int]],
@@ -63,6 +117,8 @@ def train_model(
     validation_points: torch.Tensor | None = None,
     precomputed_validation_query_cache: Any | None = None,
     precomputed_validation_geometry_scores: torch.Tensor | None = None,
+    train_trajectory_source_ids: list[int] | None = None,
+    train_trajectory_mmsis: list[int] | None = None,
 ) -> TrainingOutputs:
     """Train one pure-workload model with trajectory-window ranking losses."""
     torch.manual_seed(int(seed))
@@ -70,7 +126,25 @@ def train_model(
         torch.cuda.manual_seed_all(int(seed))
 
     all_points = torch.cat(train_trajectories, dim=0)
-    points = build_model_point_features(all_points, workload, model_config.model_type)
+    train_point_source_ids: torch.Tensor | None = None
+    if train_trajectory_source_ids is not None:
+        if len(train_trajectory_source_ids) != len(train_boundaries):
+            raise ValueError(
+                "train_trajectory_source_ids must match train_boundaries length: "
+                f"got {len(train_trajectory_source_ids)} ids for {len(train_boundaries)} boundaries."
+            )
+        train_point_source_ids = torch.empty((int(all_points.shape[0]),), dtype=torch.long)
+        for source_id, (start, end) in zip(train_trajectory_source_ids, train_boundaries, strict=True):
+            if int(source_id) < 0:
+                raise ValueError("train_trajectory_source_ids must be non-negative.")
+            train_point_source_ids[start:end] = int(source_id)
+    points = build_model_point_features(
+        all_points,
+        workload,
+        model_config.model_type,
+        boundaries=train_boundaries,
+        trajectory_mmsis=train_trajectory_mmsis,
+    )
     point_dim = int(points.shape[1])
 
     if precomputed_labels is None:
@@ -89,12 +163,33 @@ def train_model(
                 "precomputed_labels must match flattened training points and query type count: "
                 f"expected {expected_shape}, got labels={tuple(labels.shape)} mask={tuple(labelled_mask.shape)}"
             )
-    temporal_residual_label_mode = str(getattr(model_config, "temporal_residual_label_mode", "none")).lower()
-    if temporal_residual_label_mode not in {"none", "temporal"}:
+    run_tag = "main"
+    requested_temporal_residual_label_mode = str(
+        getattr(model_config, "temporal_residual_label_mode", "none")
+    ).lower()
+    if requested_temporal_residual_label_mode not in {"none", "temporal"}:
         raise ValueError("temporal_residual_label_mode must be 'none' or 'temporal'.")
+    temporal_residual_label_mode = _effective_temporal_residual_label_mode(
+        model_config,
+        requested_temporal_residual_label_mode,
+    )
+    if requested_temporal_residual_label_mode != temporal_residual_label_mode:
+        print(
+            f"  [{run_tag}] temporal_residual_label_mode={requested_temporal_residual_label_mode} "
+            f"ignored for mlqds_hybrid_mode={getattr(model_config, 'mlqds_hybrid_mode', 'fill')}; "
+            f"using {temporal_residual_label_mode}",
+            flush=True,
+        )
     loss_objective = str(getattr(model_config, "loss_objective", "budget_topk")).lower()
-    if loss_objective not in {"ranking_bce", "budget_topk"}:
-        raise ValueError("loss_objective must be 'ranking_bce' or 'budget_topk'.")
+    if loss_objective not in {"ranking_bce", "budget_topk", "stratified_budget_topk", "pointwise_bce"}:
+        raise ValueError(
+            "loss_objective must be 'ranking_bce', 'budget_topk', "
+            "'stratified_budget_topk', or 'pointwise_bce'."
+        )
+    if loss_objective == "stratified_budget_topk" and str(
+        getattr(model_config, "mlqds_hybrid_mode", "fill")
+    ).lower() != "stratified":
+        raise ValueError("loss_objective='stratified_budget_topk' requires mlqds_hybrid_mode='stratified'.")
     configured_budget_ratios = _budget_loss_ratios(model_config)
     budget_ratios = configured_budget_ratios
     temporal_residual_budget_masks: tuple[tuple[float, float, torch.Tensor], ...] = ()
@@ -123,40 +218,16 @@ def train_model(
         )
     training_target = _scaled_training_target_for_type(labels, labelled_mask, workload_type_id)
     training_labelled_mask = labelled_mask[:, workload_type_id]
-
-    scaler = FeatureScaler.fit(points, workload.query_features)
-    norm_points, norm_queries = scaler.transform(points, workload.query_features)
-
-    model_cls = TurnAwareQDSModel if model_config.model_type == "turn_aware" else TrajectoryQDSModel
-    model = model_cls(
-        point_dim=point_dim,
-        query_dim=norm_queries.shape[1],
-        embed_dim=model_config.embed_dim,
-        num_heads=model_config.num_heads,
-        num_layers=model_config.num_layers,
-        type_embed_dim=model_config.type_embed_dim,
-        query_chunk_size=model_config.query_chunk_size,
-        dropout=model_config.dropout,
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    norm_points_dev = norm_points.to(device)
-    norm_queries_dev = norm_queries.to(device)
-    type_ids_dev = workload.type_ids.to(device)
-    training_target_dev = training_target.to(device)
-    labelled_mask_dev = training_labelled_mask.to(device)
-    base_type_weights = _workload_map_tensor(
+    base_type_weights_cpu = _workload_map_tensor(
         train_workload_map or _query_frequency_workload_map(workload),
-        device=device,
+        device=torch.device("cpu"),
     )
-    active_type_id = _single_active_type_id(base_type_weights)
+    active_type_id = _single_active_type_id(base_type_weights_cpu)
     if active_type_id != workload_type_id:
         raise ValueError("Training workload map and workload query type must refer to the same pure workload.")
     active_type_ids = [active_type_id]
     amp_mode = normalize_amp_mode(getattr(model_config, "amp_mode", "off"))
     budget_loss_temperature = float(getattr(model_config, "budget_loss_temperature", 0.10))
-    run_tag = "main"
     target_diagnostics = _training_target_diagnostics(
         labels=labels,
         labelled_mask=labelled_mask,
@@ -185,6 +256,163 @@ def train_model(
             f"residual_pos={row['residual_positive_label_count']}",
             flush=True,
         )
+
+    scaler = FeatureScaler.fit(points, workload.query_features)
+    norm_points, norm_queries = scaler.transform(points, workload.query_features)
+
+    uses_historical_prior = model_config.model_type in HISTORICAL_PRIOR_MODEL_TYPES
+    if model_config.model_type in NONPARAMETRIC_HISTORICAL_PRIOR_MODEL_TYPES:
+        model_cls = HistoricalPriorRangeQDSModel
+    elif model_config.model_type == "historical_prior_student":
+        model_cls = HistoricalPriorStudentRangeQDSModel
+    elif model_config.model_type == "segment_context_range":
+        model_cls = SegmentContextRangeQDSModel
+    elif is_workload_blind_model_type(model_config.model_type):
+        model_cls = WorkloadBlindRangeQDSModel
+    elif model_config.model_type == "turn_aware":
+        model_cls = TurnAwareQDSModel
+    else:
+        model_cls = TrajectoryQDSModel
+    model_kwargs = {
+        "point_dim": point_dim,
+        "query_dim": norm_queries.shape[1],
+        "embed_dim": model_config.embed_dim,
+        "num_heads": model_config.num_heads,
+        "num_layers": model_config.num_layers,
+        "type_embed_dim": model_config.type_embed_dim,
+        "query_chunk_size": model_config.query_chunk_size,
+        "dropout": model_config.dropout,
+    }
+    if uses_historical_prior:
+        model_kwargs["historical_prior_k"] = int(getattr(model_config, "historical_prior_k", 32))
+        model_kwargs["historical_prior_clock_weight"] = float(
+            getattr(model_config, "historical_prior_clock_weight", 0.0)
+        )
+        model_kwargs["historical_prior_mmsi_weight"] = float(
+            getattr(model_config, "historical_prior_mmsi_weight", 1.0)
+        )
+        model_kwargs["historical_prior_density_weight"] = float(
+            getattr(model_config, "historical_prior_density_weight", 1.0)
+        )
+        model_kwargs["historical_prior_min_target"] = float(
+            getattr(model_config, "historical_prior_min_target", 0.0)
+        )
+        model_kwargs["historical_prior_source_aggregation"] = str(
+            getattr(model_config, "historical_prior_source_aggregation", "none")
+        )
+    model: torch.nn.Module = model_cls(**model_kwargs)
+    if uses_historical_prior:
+        if not isinstance(model, (HistoricalPriorRangeQDSModel, HistoricalPriorStudentRangeQDSModel)):
+            raise TypeError(f"{model_config.model_type} did not build a historical-prior model.")
+        historical_model = model
+        prior_points = norm_points
+        prior_targets = training_target
+        support_ratio = min(1.0, max(0.0, float(getattr(model_config, "historical_prior_support_ratio", 1.0))))
+        support_mask = _historical_prior_support_mask(
+            targets=training_target,
+            boundaries=train_boundaries,
+            support_ratio=support_ratio,
+        )
+        if not bool(support_mask.any().item()):
+            raise ValueError("historical_prior_support_ratio removed every training point.")
+        prior_points = prior_points[support_mask]
+        prior_targets = prior_targets[support_mask]
+        prior_source_ids = train_point_source_ids[support_mask] if train_point_source_ids is not None else None
+        target_diagnostics["historical_prior_support_ratio"] = float(support_ratio)
+        target_diagnostics["historical_prior_support_pre_min_count"] = int(prior_targets.shape[0])
+        target_diagnostics["historical_prior_support_pre_min_fraction"] = float(
+            int(prior_targets.shape[0]) / max(1, int(training_target.shape[0]))
+        )
+        target_diagnostics["historical_prior_min_target"] = float(
+            getattr(model_config, "historical_prior_min_target", 0.0)
+        )
+        historical_model.set_prior(prior_points, prior_targets, source_ids=prior_source_ids)
+        target_diagnostics["historical_prior_stored_support_count"] = int(historical_model.historical_targets.shape[0])
+        target_diagnostics["historical_prior_stored_support_fraction"] = float(
+            int(historical_model.historical_targets.shape[0]) / max(1, int(training_target.shape[0]))
+        )
+        stored_sources = torch.unique(historical_model.historical_source_ids).numel()
+        target_diagnostics["historical_prior_source_aggregation"] = str(
+            getattr(model_config, "historical_prior_source_aggregation", "none")
+        )
+        target_diagnostics["historical_prior_source_count"] = int(stored_sources)
+    if model_config.model_type in NONPARAMETRIC_HISTORICAL_PRIOR_MODEL_TYPES:
+        history = [
+            {
+                "epoch": 0.0,
+                "loss": 0.0,
+                "pred_std": float(training_target.std(unbiased=False).item()),
+                f"positive_fraction_t{workload_type_id}": float(
+                    target_diagnostics.get("positive_label_fraction", 0.0)
+                ),
+                f"label_p95_t{workload_type_id}": float(_safe_quantile(training_target[training_labelled_mask], 0.95).item())
+                if bool(training_labelled_mask.any().item())
+                else 0.0,
+                f"kendall_tau_t{workload_type_id}": 1.0,
+                "raw_training_window_count": 0.0,
+                "trained_training_window_count": 0.0,
+                "filtered_zero_window_count": 0.0,
+            }
+        ]
+        fit_t0 = time.perf_counter()
+        try:
+            with torch.no_grad():
+                train_predictions = model(
+                    norm_points.unsqueeze(0),
+                    queries=None,
+                    query_type_ids=None,
+                ).squeeze(0)
+            fit_diagnostics = train_target_fit_diagnostics(
+                predictions=train_predictions,
+                target=training_target,
+                labelled_mask=training_labelled_mask,
+                boundaries=train_boundaries,
+                model_config=model_config,
+                workload_type=ID_TO_QUERY_NAME.get(workload_type_id, str(workload_type_id)),
+                seed=seed,
+            )
+            fit_diagnostics["seconds"] = float(time.perf_counter() - fit_t0)
+            fit_diagnostics["model_fits_stored_train_support"] = True
+            matched_delta = fit_diagnostics.get("matched_mlqds_vs_uniform_target_recall")
+            low_delta = fit_diagnostics.get("low_budget_mean_mlqds_vs_uniform_target_recall")
+            matched_text = f"{float(matched_delta):+.4f}" if matched_delta is not None else "n/a"
+            low_text = f"{float(low_delta):+.4f}" if low_delta is not None else "n/a"
+            print(
+                f"  [{run_tag}] historical_prior_train_target_fit "
+                f"tau={fit_diagnostics.get('score_target_kendall_tau', 0.0):+.3f} "
+                f"matched_delta={matched_text} low_delta={low_text} "
+                f"({fit_diagnostics['seconds']:.2f}s)",
+                flush=True,
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic must not mask fitted prior.
+            fit_diagnostics = {
+                "enabled": False,
+                "error": str(exc),
+                "seconds": float(time.perf_counter() - fit_t0),
+                "model_fits_stored_train_support": True,
+            }
+            print(f"  [{run_tag}] historical_prior_train_target_fit failed: {exc}", flush=True)
+        return TrainingOutputs(
+            model=model.eval(),
+            scaler=scaler,
+            labels=labels,
+            labelled_mask=labelled_mask,
+            history=history,
+            epochs_trained=0,
+            best_epoch=0,
+            best_loss=0.0,
+            best_selection_score=0.0,
+            target_diagnostics=target_diagnostics,
+            fit_diagnostics=fit_diagnostics,
+        )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    norm_points_dev = norm_points.to(device)
+    norm_queries_dev = norm_queries.to(device)
+    type_ids_dev = workload.type_ids.to(device)
+    training_target_dev = training_target.to(device)
+    labelled_mask_dev = training_labelled_mask.to(device)
     if temporal_residual_budget_masks:
         temporal_residual_budget_masks = tuple(
             (total_ratio, effective_ratio, base_mask.to(device=device, non_blocking=True))
@@ -207,6 +435,7 @@ def train_model(
         training_target=training_target,
         labelled_mask=training_labelled_mask,
         active_type_id=active_type_id,
+        require_positive=loss_objective != "pointwise_bce",
     )
     if int(prefiltered_zero_windows.sum().item()) > 0:
         filtered_parts = []
@@ -252,9 +481,11 @@ def train_model(
     if has_validation_score:
         from evaluation.query_cache import EvaluationQueryCache
 
-        assert validation_trajectories is not None
-        assert validation_boundaries is not None
-        assert validation_workload is not None
+        validation_trajectories, validation_boundaries, validation_workload = _require_validation_inputs(
+            validation_trajectories,
+            validation_boundaries,
+            validation_workload,
+        )
         validation_points_for_score = (
             validation_points
             if validation_points is not None
@@ -275,9 +506,11 @@ def train_model(
             validation_query_cache = precomputed_validation_query_cache
     validation_uniform_result: tuple[float, dict[str, float]] | None = None
     if selection_metric == "uniform_gap" and has_validation_score:
-        assert validation_trajectories is not None
-        assert validation_boundaries is not None
-        assert validation_workload is not None
+        validation_trajectories, validation_boundaries, validation_workload = _require_validation_inputs(
+            validation_trajectories,
+            validation_boundaries,
+            validation_workload,
+        )
         validation_uniform_result = _validation_uniform_score(
             trajectories=validation_trajectories,
             boundaries=validation_boundaries,
@@ -475,9 +708,11 @@ def train_model(
             ) and not use_checkpoint_candidate_pool
             if should_run_validation_score:
                 score_t0 = time.perf_counter()
-                assert validation_trajectories is not None
-                assert validation_boundaries is not None
-                assert validation_workload is not None
+                validation_trajectories, validation_boundaries, validation_workload = _require_validation_inputs(
+                    validation_trajectories,
+                    validation_boundaries,
+                    validation_workload,
+                )
                 validation_score, per_type_score, validation_metrics = _validation_checkpoint_scores(
                     model=model,
                     scaler=scaler,
@@ -524,9 +759,11 @@ def train_model(
                     checkpoint_candidates = checkpoint_candidates[:checkpoint_candidate_pool_size]
                     if full_score_due and checkpoint_candidates:
                         score_t0 = time.perf_counter()
-                        assert validation_trajectories is not None
-                        assert validation_boundaries is not None
-                        assert validation_workload is not None
+                        validation_trajectories, validation_boundaries, validation_workload = _require_validation_inputs(
+                            validation_trajectories,
+                            validation_boundaries,
+                            validation_workload,
+                        )
                         current_state_dict = _model_state_on_cpu(model)
                         for candidate in sorted(checkpoint_candidates, key=lambda item: item.epoch_number):
                             candidate_t0 = time.perf_counter()
@@ -767,6 +1004,49 @@ def train_model(
             f"val_selection_score={best_selection_score:.6f})",
             flush=True,
         )
+    fit_t0 = time.perf_counter()
+    fit_diagnostics: dict[str, Any] = {}
+    try:
+        train_predictions = windowed_predict(
+            model=model,
+            norm_points=norm_points,
+            boundaries=train_boundaries,
+            queries=norm_queries,
+            query_type_ids=workload.type_ids,
+            window_length=model_config.window_length,
+            window_stride=model_config.window_stride,
+            batch_size=max(1, int(getattr(model_config, "inference_batch_size", train_batch_size))),
+            device=device,
+            amp_mode=amp_mode,
+        )
+        fit_diagnostics = train_target_fit_diagnostics(
+            predictions=train_predictions,
+            target=training_target,
+            labelled_mask=training_labelled_mask,
+            boundaries=train_boundaries,
+            model_config=model_config,
+            workload_type=ID_TO_QUERY_NAME.get(workload_type_id, str(workload_type_id)),
+            seed=seed,
+        )
+        fit_diagnostics["seconds"] = float(time.perf_counter() - fit_t0)
+        matched_delta = fit_diagnostics.get("matched_mlqds_vs_uniform_target_recall")
+        low_delta = fit_diagnostics.get("low_budget_mean_mlqds_vs_uniform_target_recall")
+        matched_text = f"{float(matched_delta):+.4f}" if matched_delta is not None else "n/a"
+        low_text = f"{float(low_delta):+.4f}" if low_delta is not None else "n/a"
+        print(
+            f"  [{run_tag}] train_target_fit "
+            f"tau={fit_diagnostics.get('score_target_kendall_tau', 0.0):+.3f} "
+            f"matched_delta={matched_text} low_delta={low_text} "
+            f"({fit_diagnostics['seconds']:.2f}s)",
+            flush=True,
+        )
+    except Exception as exc:  # pragma: no cover - diagnostic must not mask training result.
+        fit_diagnostics = {
+            "enabled": False,
+            "error": str(exc),
+            "seconds": float(time.perf_counter() - fit_t0),
+        }
+        print(f"  [{run_tag}] train_target_fit failed: {exc}", flush=True)
     return TrainingOutputs(
         model=model,
         scaler=scaler,
@@ -778,4 +1058,5 @@ def train_model(
         best_loss=best_loss,
         best_selection_score=best_selection_score,
         target_diagnostics=target_diagnostics,
+        fit_diagnostics=fit_diagnostics,
     )

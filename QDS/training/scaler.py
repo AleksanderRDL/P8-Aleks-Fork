@@ -47,6 +47,13 @@ class FeatureScaler:
             query_max=self.query_max.to(queries.device),
         )
 
+    def transform_points(self, points: torch.Tensor) -> torch.Tensor:
+        """Transform point features without reading query tensors."""
+        eps = 1e-6
+        point_min = self.point_min.to(points.device)
+        point_max = self.point_max.to(points.device)
+        return (points - point_min) / torch.clamp(point_max - point_min, min=eps)
+
     def to_dict(self) -> dict:
         """Serialize scaler statistics. See training/README.md for details."""
         return {

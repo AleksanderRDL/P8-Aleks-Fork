@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from experiments.benchmark_profiles import (
-    DEFAULT_PROFILE,
     ProfileSetting,
     benchmark_profile_args,
     benchmark_profile_settings,
 )
 from experiments.benchmark_runtime import _environment_metadata
+from experiments.cli_utils import split_csv_path_list
 
 PURE_WORKLOADS = ("range",)
 DEFAULT_WORKLOADS = ("range",)
 MIN_REALISTIC_CSV_DAYS = 3
-DEFAULT_PROFILE_ARGS = benchmark_profile_args(DEFAULT_PROFILE, include_checkpoint_selection=True)
 
 
 @dataclass(frozen=True)
@@ -34,12 +34,22 @@ class BenchmarkDataSources:
     @property
     def csv_sources(self) -> tuple[str, ...]:
         """Return unique CSV sources used by the run."""
-        candidates = [self.csv_path, self.train_csv_path, self.validation_csv_path, self.eval_csv_path]
+        candidates = [
+            self.csv_path,
+            *split_csv_path_list(self.train_csv_path),
+            *split_csv_path_list(self.validation_csv_path),
+            *split_csv_path_list(self.eval_csv_path),
+        ]
         values: list[str] = []
         for candidate in candidates:
             if candidate and candidate not in values:
                 values.append(candidate)
         return tuple(values)
+
+
+def _join_csv_path_list(paths: tuple[str, ...]) -> str | None:
+    """Serialize explicit train CSV paths for child CLI forwarding."""
+    return ",".join(paths) if paths else None
 
 def _parse_name_list(raw: str | None, *, allowed: tuple[str, ...] | set[str], arg_name: str) -> list[str]:
     """Parse a comma-separated list and validate all names."""
@@ -80,7 +90,7 @@ def _cleaned_csv_files(path: str | Path) -> list[Path]:
         raise ValueError(f"No cleaned CSV files found in directory: {source}")
     return files
 
-def _assert_distinct_csv_sources(named_paths: dict[str, str | None]) -> None:
+def _assert_distinct_csv_sources(named_paths: Mapping[str, str | None]) -> None:
     """Reject duplicate train/validation/eval CSV paths to prevent split leakage."""
     seen: dict[Path, str] = {}
     for label, value in named_paths.items():
@@ -97,31 +107,41 @@ def _resolve_data_sources(args: argparse.Namespace) -> BenchmarkDataSources:
     """Resolve benchmark CSV inputs, using three cleaned days for directory inputs."""
     has_explicit_sources = bool(args.train_csv_path or args.validation_csv_path or args.eval_csv_path)
     if has_explicit_sources:
-        if not args.train_csv_path or not args.eval_csv_path:
+        train_paths = split_csv_path_list(args.train_csv_path)
+        if not train_paths or not args.eval_csv_path:
             raise ValueError("--train_csv_path and --eval_csv_path must be supplied together.")
         if args.csv_path:
             raise ValueError("--csv_path cannot be combined with explicit train/validation/eval CSV paths.")
-        train_path = str(Path(args.train_csv_path))
-        validation_path = str(Path(args.validation_csv_path)) if args.validation_csv_path else None
-        eval_path = str(Path(args.eval_csv_path))
-        for source in (train_path, validation_path, eval_path):
-            if source is None:
-                continue
+        train_paths = tuple(str(Path(path)) for path in train_paths)
+        validation_paths = tuple(str(Path(path)) for path in split_csv_path_list(args.validation_csv_path))
+        eval_paths = tuple(str(Path(path)) for path in split_csv_path_list(args.eval_csv_path))
+        if not eval_paths:
+            raise ValueError("--train_csv_path and --eval_csv_path must be supplied together.")
+        validation_path = _join_csv_path_list(validation_paths)
+        eval_path = _join_csv_path_list(eval_paths)
+        for source in (*train_paths, *validation_paths, *eval_paths):
             if not Path(source).is_file():
                 raise FileNotFoundError(f"CSV path does not exist or is not a file: {source}")
-        _assert_distinct_csv_sources(
-            {
-                "train": train_path,
-                "validation": validation_path,
-                "eval": eval_path,
-            }
-        )
-        selected = (train_path, validation_path, eval_path) if validation_path else (train_path, eval_path)
+        named_sources = {
+            **{
+                ("train" if len(train_paths) == 1 else f"train[{idx}]"): path
+                for idx, path in enumerate(train_paths)
+            },
+            **{
+                ("validation" if len(validation_paths) == 1 else f"validation[{idx}]"): path
+                for idx, path in enumerate(validation_paths)
+            },
+            **{
+                ("eval" if len(eval_paths) == 1 else f"eval[{idx}]"): path
+                for idx, path in enumerate(eval_paths)
+            },
+        }
+        _assert_distinct_csv_sources(named_sources)
         return BenchmarkDataSources(
-            train_csv_path=train_path,
+            train_csv_path=_join_csv_path_list(train_paths),
             validation_csv_path=validation_path,
             eval_csv_path=eval_path,
-            selected_cleaned_csv_files=tuple(source for source in selected if source is not None),
+            selected_cleaned_csv_files=(*train_paths, *validation_paths, *eval_paths),
         )
 
     if not args.csv_path:
@@ -152,10 +172,8 @@ def _profile_args(
     include_refresh_cache: bool = True,
 ) -> list[str]:
     """Return effective child CLI arguments for a benchmark profile."""
-    if profile != DEFAULT_PROFILE:
-        raise ValueError(f"Unknown benchmark profile: {profile}")
-
     data_sources = data_sources or _resolve_data_sources(args)
+    child_profile_args = benchmark_profile_args(profile, include_checkpoint_selection=True)
     if data_sources.train_csv_path and data_sources.eval_csv_path:
         profile_args = [
             "--train_csv_path",
@@ -166,13 +184,13 @@ def _profile_args(
         profile_args += [
             "--eval_csv_path",
             data_sources.eval_csv_path,
-            *DEFAULT_PROFILE_ARGS,
+            *child_profile_args,
         ]
     elif data_sources.csv_path:
-        profile_args = ["--csv_path", data_sources.csv_path, *DEFAULT_PROFILE_ARGS]
+        profile_args = ["--csv_path", data_sources.csv_path, *child_profile_args]
     else:
         raise ValueError(
-            f"{DEFAULT_PROFILE} requires --csv_path or --train_csv_path/--eval_csv_path."
+            f"{profile} requires --csv_path or --train_csv_path/--eval_csv_path."
         )
 
     if data_sources.csv_sources:

@@ -7,10 +7,16 @@ from pathlib import Path
 import torch
 
 from data.ais_loader import generate_synthetic_ais_data, load_ais_csv
-from experiments.experiment_config import build_experiment_config
+from experiments.experiment_config import build_experiment_config, derive_seed_bundle
+from experiments.experiment_workloads import generate_experiment_workloads
 from experiments.workload_cache import generate_typed_query_workload_for_config
 from queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
-from queries.query_generator import generate_typed_query_workload, point_coverage_mask_for_query
+from queries.query_generator import (
+    _dataset_bounds,
+    _make_range_query,
+    generate_typed_query_workload,
+    point_coverage_mask_for_query,
+)
 
 
 def _density_test_trajectories() -> list[torch.Tensor]:
@@ -72,6 +78,44 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
     assert generation["final_query_count"] == 25
     assert generation["type_counts"] == {"range": 25}
     assert generation["stop_reason"] == "target_coverage_reached"
+    assert generation["target_reached_query_count"] is not None
+    assert 1 <= generation["target_reached_query_count"] <= 25
+    assert generation["coverage_at_target_reached"] >= 0.01
+    assert generation["extra_queries_after_target_reached"] == (
+        25 - generation["target_reached_query_count"]
+    )
+
+
+def test_coverage_overshoot_guard_rejects_over_broad_queries() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=24, seed=782)
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=3,
+        target_coverage=0.01,
+        max_queries=8,
+        range_spatial_fraction=1.0,
+        range_time_fraction=1.0,
+        range_footprint_jitter=0.0,
+        range_acceptance_max_attempts=5,
+        range_max_coverage_overshoot=0.01,
+    )
+
+    assert workload.coverage_fraction == 0.0
+    assert len(workload.typed_queries) == 0
+    assert workload.generation_diagnostics is not None
+    generation = workload.generation_diagnostics["query_generation"]
+    acceptance = workload.generation_diagnostics["range_acceptance"]
+    assert generation["coverage_guard_enabled"] is True
+    assert abs(float(generation["max_allowed_coverage"]) - 0.02) < 1e-9
+    assert generation["stop_reason"] == "range_coverage_guard_exhausted"
+    assert generation["target_reached_query_count"] is None
+    assert generation["extra_queries_after_target_reached"] is None
+    assert acceptance["enabled"] is True
+    assert acceptance["exhausted"] is True
+    assert acceptance["rejection_reasons"]["coverage_overshoot"] == 5
 
 
 def test_smaller_range_fraction_reduces_query_footprint() -> None:
@@ -131,6 +175,80 @@ def test_range_footprint_jitter_can_be_disabled() -> None:
     for query in workload.typed_queries:
         params = query["params"]
         assert params["t_end"] - params["t_start"] <= 12.0 * 3600.0
+
+
+def test_anchor_day_time_domain_clamps_queries_to_anchor_day() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 55.0, 12.0, 1.0],
+            [90_000.0, 55.0, 12.0, 1.0],
+            [172_800.0, 55.0, 12.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    generator = torch.Generator().manual_seed(3)
+    bounds = _dataset_bounds(points)
+    anchor_mask = torch.tensor([False, True, False])
+
+    dataset_query = _make_range_query(
+        points,
+        bounds,
+        generator,
+        anchor_mask=anchor_mask,
+        range_spatial_km=1.0,
+        range_time_hours=30.0,
+        range_footprint_jitter=0.0,
+        range_time_domain_mode="dataset",
+    )
+    anchor_day_query = _make_range_query(
+        points,
+        bounds,
+        generator,
+        anchor_mask=anchor_mask,
+        range_spatial_km=1.0,
+        range_time_hours=30.0,
+        range_footprint_jitter=0.0,
+        range_time_domain_mode="anchor_day",
+    )
+
+    dataset_params = dataset_query["params"]
+    anchor_day_params = anchor_day_query["params"]
+    assert dataset_params["t_start"] == 0.0
+    assert dataset_params["t_end"] == 172_800.0
+    assert anchor_day_params["t_start"] == 86_400.0
+    assert anchor_day_params["t_end"] == 172_800.0
+
+
+def test_generated_anchor_day_workload_records_time_domain_mode() -> None:
+    trajectories = [
+        torch.tensor(
+            [
+                [0.0, 55.0, 12.0, 1.0],
+                [10_000.0, 55.1, 12.1, 1.0],
+                [90_000.0, 55.2, 12.2, 1.0],
+                [100_000.0, 55.3, 12.3, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+    ]
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=20,
+        workload_map={"range": 1.0},
+        seed=14,
+        range_spatial_km=5.0,
+        range_time_hours=20.0,
+        range_footprint_jitter=0.0,
+        range_time_domain_mode="anchor_day",
+    )
+
+    assert workload.generation_diagnostics is not None
+    generation = workload.generation_diagnostics["query_generation"]
+    assert generation["range_time_domain_mode"] == "anchor_day"
+    for query in workload.typed_queries:
+        params = query["params"]
+        assert params["t_end"] - params["t_start"] <= 86_400.0
 
 
 def test_sampled_range_coverage_estimator_returns_reproducible_rows() -> None:
@@ -224,6 +342,45 @@ def test_configured_workload_expands_to_max_queries_when_target_needs_more_queri
     assert generation["stop_reason"] == "max_queries_reached"
 
 
+def test_workload_generation_warns_when_train_or_eval_coverage_overshoots(capsys) -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=24, seed=782)
+    points = torch.cat(trajectories, dim=0)
+    boundaries: list[tuple[int, int]] = []
+    cursor = 0
+    for trajectory in trajectories:
+        next_cursor = cursor + int(trajectory.shape[0])
+        boundaries.append((cursor, next_cursor))
+        cursor = next_cursor
+    cfg = build_experiment_config(
+        n_queries=4,
+        query_coverage=0.01,
+        max_queries=8,
+        workload="range",
+        range_spatial_fraction=1.0,
+        range_time_fraction=1.0,
+    )
+
+    generate_experiment_workloads(
+        config=cfg,
+        seeds=derive_seed_bundle(782),
+        train_traj=trajectories,
+        test_traj=trajectories,
+        selection_traj=None,
+        train_points=points,
+        test_points=points,
+        selection_points=None,
+        train_boundaries=boundaries,
+        test_boundaries=boundaries,
+        selection_boundaries=None,
+        train_workload_map={"range": 1.0},
+        eval_workload_map={"range": 1.0},
+    )
+
+    output = capsys.readouterr().out
+    assert "WARNING: train_r0 workload remains above requested coverage" in output
+    assert "WARNING: eval workload remains above requested coverage" in output
+
+
 def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> None:
     trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=24, seed=462)
     cfg = build_experiment_config(
@@ -260,6 +417,192 @@ def test_configured_workload_uses_persistent_workload_cache(tmp_path: Path) -> N
     assert Path(second_cache["path"]).exists()
     assert first.typed_queries == second.typed_queries
     assert torch.equal(first.query_features, second.query_features)
+
+    anchor_cfg = build_experiment_config(
+        n_queries=6,
+        query_coverage=0.10,
+        max_queries=20,
+        workload="range",
+        cache_dir=str(tmp_path / "cache"),
+        range_spatial_fraction=0.05,
+        range_time_fraction=0.05,
+        range_time_domain_mode="anchor_day",
+    )
+    anchor = generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_map={"range": 1.0},
+        seed=12,
+        config=anchor_cfg,
+        cache_label="train",
+    )
+    anchor_cache = (anchor.generation_diagnostics or {})["workload_cache"]
+    assert anchor_cache["hit"] is False
+    assert anchor_cache["key"] != first_cache["key"]
+
+    sparse_cfg = build_experiment_config(
+        n_queries=6,
+        query_coverage=0.10,
+        max_queries=20,
+        workload="range",
+        cache_dir=str(tmp_path / "cache"),
+        range_spatial_fraction=0.05,
+        range_time_fraction=0.05,
+        range_anchor_mode="sparse",
+    )
+    sparse = generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_map={"range": 1.0},
+        seed=12,
+        config=sparse_cfg,
+        cache_label="train",
+    )
+    sparse_cache = (sparse.generation_diagnostics or {})["workload_cache"]
+    assert sparse_cache["hit"] is False
+    assert sparse_cache["key"] != first_cache["key"]
+
+    override = generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_map={"range": 1.0},
+        seed=12,
+        config=cfg,
+        cache_label="train_sparse_override",
+        range_anchor_mode="sparse",
+    )
+    override_diagnostics = override.generation_diagnostics or {}
+    override_cache = override_diagnostics["workload_cache"]
+    override_generation = override_diagnostics["query_generation"]
+    assert override_generation["range_anchor_mode"] == "sparse"
+    assert override_cache["hit"] is False
+    assert override_cache["key"] != first_cache["key"]
+
+    guarded_cfg = build_experiment_config(
+        n_queries=6,
+        query_coverage=0.10,
+        max_queries=20,
+        workload="range",
+        cache_dir=str(tmp_path / "cache"),
+        range_spatial_fraction=0.05,
+        range_time_fraction=0.05,
+        range_max_coverage_overshoot=0.02,
+    )
+    guarded = generate_typed_query_workload_for_config(
+        trajectories=trajectories,
+        n_queries=6,
+        workload_map={"range": 1.0},
+        seed=12,
+        config=guarded_cfg,
+        cache_label="train",
+    )
+    guarded_diagnostics = guarded.generation_diagnostics or {}
+    guarded_cache = guarded_diagnostics["workload_cache"]
+    guarded_generation = guarded_diagnostics["query_generation"]
+    assert guarded_generation["range_max_coverage_overshoot"] == 0.02
+    assert guarded_generation["coverage_guard_enabled"] is True
+    assert guarded_cache["hit"] is False
+    assert guarded_cache["key"] != first_cache["key"]
+
+
+def test_train_workload_replicates_can_cycle_anchor_modes() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=4, n_points_per_ship=32, seed=731)
+    points = torch.cat(trajectories, dim=0)
+    boundaries: list[tuple[int, int]] = []
+    cursor = 0
+    for trajectory in trajectories:
+        next_cursor = cursor + int(trajectory.shape[0])
+        boundaries.append((cursor, next_cursor))
+        cursor = next_cursor
+
+    cfg = build_experiment_config(
+        n_queries=8,
+        query_coverage=0.15,
+        max_queries=20,
+        workload="range",
+        range_spatial_fraction=0.10,
+        range_time_fraction=0.10,
+        range_anchor_mode="mixed_density",
+        range_train_workload_replicates=3,
+        range_train_anchor_modes=["mixed_density", "sparse"],
+    )
+
+    workloads = generate_experiment_workloads(
+        config=cfg,
+        seeds=derive_seed_bundle(19),
+        train_traj=trajectories,
+        test_traj=trajectories,
+        selection_traj=None,
+        train_points=points,
+        test_points=points,
+        selection_points=None,
+        train_boundaries=boundaries,
+        test_boundaries=boundaries,
+        selection_boundaries=None,
+        train_workload_map={"range": 1.0},
+        eval_workload_map={"range": 1.0},
+    )
+
+    train_modes = [
+        (workload.generation_diagnostics or {})["query_generation"]["range_anchor_mode"]
+        for workload in workloads.train_label_workloads
+    ]
+    eval_mode = (workloads.eval_workload.generation_diagnostics or {})["query_generation"]["range_anchor_mode"]
+    assert train_modes == ["mixed_density", "sparse", "mixed_density"]
+    assert eval_mode == "mixed_density"
+
+
+def test_train_workload_replicates_can_cycle_footprint_families() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=4, n_points_per_ship=32, seed=732)
+    points = torch.cat(trajectories, dim=0)
+    boundaries: list[tuple[int, int]] = []
+    cursor = 0
+    for trajectory in trajectories:
+        next_cursor = cursor + int(trajectory.shape[0])
+        boundaries.append((cursor, next_cursor))
+        cursor = next_cursor
+
+    cfg = build_experiment_config(
+        n_queries=8,
+        query_coverage=0.15,
+        max_queries=20,
+        workload="range",
+        range_spatial_km=2.2,
+        range_time_hours=5.0,
+        range_footprint_jitter=0.0,
+        range_time_domain_mode="anchor_day",
+        range_train_workload_replicates=4,
+        range_train_footprints=["1.1:2.5", "2.2:5.0", "4.4:10.0"],
+    )
+
+    workloads = generate_experiment_workloads(
+        config=cfg,
+        seeds=derive_seed_bundle(20),
+        train_traj=trajectories,
+        test_traj=trajectories,
+        selection_traj=None,
+        train_points=points,
+        test_points=points,
+        selection_points=None,
+        train_boundaries=boundaries,
+        test_boundaries=boundaries,
+        selection_boundaries=None,
+        train_workload_map={"range": 1.0},
+        eval_workload_map={"range": 1.0},
+    )
+
+    train_footprints = [
+        (
+            (workload.generation_diagnostics or {})["query_generation"]["range_spatial_km"],
+            (workload.generation_diagnostics or {})["query_generation"]["range_time_hours"],
+        )
+        for workload in workloads.train_label_workloads
+    ]
+    eval_generation = (workloads.eval_workload.generation_diagnostics or {})["query_generation"]
+
+    assert train_footprints == [(1.1, 2.5), (2.2, 5.0), (4.4, 10.0), (1.1, 2.5)]
+    assert eval_generation["range_spatial_km"] == 2.2
+    assert eval_generation["range_time_hours"] == 5.0
 
 
 def test_coverage_generation_allows_overlapping_query_hits() -> None:
@@ -319,3 +662,31 @@ def test_range_generation_biases_dense_regions() -> None:
         dense += int(_near_dense_region(lat_center, lon_center))
 
     assert dense / len(workload.typed_queries) >= 0.70
+
+
+def test_range_anchor_modes_expose_dense_uniform_and_sparse_priors() -> None:
+    trajectories = _density_test_trajectories()
+
+    def dense_fraction(anchor_mode: str) -> float:
+        workload = generate_typed_query_workload(
+            trajectories=trajectories,
+            n_queries=160,
+            workload_map={"range": 1.0},
+            seed=101,
+            range_anchor_mode=anchor_mode,
+        )
+        dense = 0
+        for query in workload.typed_queries:
+            params = query["params"]
+            lat_center = 0.5 * (float(params["lat_min"]) + float(params["lat_max"]))
+            lon_center = 0.5 * (float(params["lon_min"]) + float(params["lon_max"]))
+            dense += int(_near_dense_region(lat_center, lon_center))
+        return dense / len(workload.typed_queries)
+
+    dense_ratio = dense_fraction("dense")
+    uniform_ratio = dense_fraction("uniform")
+    sparse_ratio = dense_fraction("sparse")
+
+    assert dense_ratio > uniform_ratio
+    assert uniform_ratio > sparse_ratio
+    assert sparse_ratio < 0.50

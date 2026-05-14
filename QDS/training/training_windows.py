@@ -22,11 +22,25 @@ def _window_has_positive_supervision(
     return bool((labelled_mask[valid_indices] & (training_target[valid_indices] > 0)).any().item())
 
 
+def _window_has_labelled_supervision(
+    window: TrajectoryBatch,
+    labelled_mask: torch.Tensor,
+) -> bool:
+    """Return whether a pure-workload window has any labelled point."""
+    global_indices = window.global_indices.reshape(-1)
+    valid_points = global_indices >= 0
+    if not bool(valid_points.any().item()):
+        return False
+    valid_indices = global_indices[valid_points].to(device=labelled_mask.device, dtype=torch.long)
+    return bool(labelled_mask[valid_indices].any().item())
+
+
 def _filter_supervised_windows(
     windows: list[TrajectoryBatch],
     training_target: torch.Tensor,
     labelled_mask: torch.Tensor,
     active_type_id: int,
+    require_positive: bool = True,
 ) -> tuple[list[TrajectoryBatch], torch.Tensor]:
     """Drop windows that cannot contribute loss for the active pure workload."""
     if not windows:
@@ -35,7 +49,12 @@ def _filter_supervised_windows(
     kept: list[TrajectoryBatch] = []
     filtered_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
     for window in windows:
-        if _window_has_positive_supervision(window, training_target, labelled_mask):
+        contributes_loss = (
+            _window_has_positive_supervision(window, training_target, labelled_mask)
+            if require_positive
+            else _window_has_labelled_supervision(window, labelled_mask)
+        )
+        if contributes_loss:
             kept.append(window)
             continue
         filtered_zero_windows[active_type_id] += 1

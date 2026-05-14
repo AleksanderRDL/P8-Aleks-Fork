@@ -97,6 +97,27 @@ def _balanced_pointwise_loss_rows(
     return row_loss, active_rows
 
 
+def _pointwise_bce_loss_rows(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return unbalanced pointwise BCE for every valid supervised point."""
+    if pred.ndim != 2 or target.shape != pred.shape or valid_mask.shape != pred.shape:
+        raise ValueError("pred, target, and valid_mask must have matching shape [batch, window_length].")
+
+    per_element = F.binary_cross_entropy_with_logits(
+        pred,
+        target.clamp(0.0, 1.0),
+        reduction="none",
+    )
+    valid_float = valid_mask.to(dtype=per_element.dtype)
+    active_rows = valid_mask.any(dim=1)
+    denom = valid_float.sum(dim=1).clamp(min=1.0)
+    row_loss = (per_element * valid_float).sum(dim=1) / denom
+    return row_loss, active_rows
+
+
 def _budget_topk_recall_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -199,6 +220,138 @@ def _budget_topk_recall_loss_rows(
     return row_loss, active_rows
 
 
+def _budget_stratified_recall_loss_rows(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    budget_ratios: tuple[float, ...],
+    temperature: float,
+    center_weight: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return loss matching the stratified retained-mask selector.
+
+    The stratified selector always keeps endpoints, then picks one learned-score
+    point inside each interior trajectory-order stratum. A global soft top-k
+    loss trains the wrong decision surface for that selector, so this loss
+    optimizes soft target-mass capture within each stratum independently.
+    """
+    if pred.ndim != 2 or target.shape != pred.shape or valid_mask.shape != pred.shape:
+        raise ValueError("pred, target, and valid_mask must have matching shape [batch, window_length].")
+
+    batch_size, window_length = pred.shape
+    nonnegative_target = target.clamp(min=0.0)
+    row_loss_sum = pred.new_zeros((batch_size,))
+    row_loss_count = torch.zeros((batch_size,), dtype=torch.long, device=pred.device)
+    softmax_temperature = max(float(temperature), 1e-4)
+    center_penalty = max(0.0, float(center_weight))
+
+    for row in range(batch_size):
+        valid_idx = torch.where(valid_mask[row])[0]
+        valid_count = int(valid_idx.numel())
+        if valid_count < 3:
+            continue
+        row_targets = nonnegative_target[row, valid_idx]
+        if not bool((row_targets > 0.0).any().item()):
+            continue
+
+        for raw_ratio in budget_ratios:
+            ratio = min(1.0, max(0.0, float(raw_ratio)))
+            if ratio <= 0.0:
+                continue
+            keep_count = min(valid_count, max(2, int(math.ceil(ratio * valid_count))))
+            interior_count = valid_count - 2
+            interior_slots = keep_count - 2
+            if interior_slots <= 0 or interior_slots >= interior_count:
+                continue
+
+            ratio_loss_sum = pred.new_tensor(0.0)
+            ratio_loss_count = 0
+            for slot in range(interior_slots):
+                left = 1 + int(math.floor(slot * interior_count / interior_slots))
+                right = 1 + int(math.floor((slot + 1) * interior_count / interior_slots))
+                if right <= left:
+                    continue
+                candidate_idx = valid_idx[left:right]
+                candidate_targets = nonnegative_target[row, candidate_idx]
+                ideal_mass = candidate_targets.max().detach()
+                if float(ideal_mass.item()) <= 1e-12:
+                    continue
+
+                candidate_scores = pred[row, candidate_idx]
+                if center_penalty > 0.0 and int(candidate_idx.numel()) > 1:
+                    local_positions = torch.arange(left, right, dtype=pred.dtype, device=pred.device)
+                    center = 0.5 * float(left + right - 1)
+                    denom = max(1.0, 0.5 * float(right - left))
+                    center_distance = torch.abs(local_positions - center) / denom
+                    candidate_scores = candidate_scores - center_penalty * center_distance
+                soft_choice = torch.softmax(candidate_scores / softmax_temperature, dim=0)
+                captured_mass = (soft_choice * candidate_targets).sum()
+                recall = (captured_mass / ideal_mass.clamp(min=1e-6)).clamp(0.0, 1.0)
+                ratio_loss_sum = ratio_loss_sum + (1.0 - recall)
+                ratio_loss_count += 1
+
+            if ratio_loss_count > 0:
+                row_loss_sum[row] = row_loss_sum[row] + ratio_loss_sum / float(ratio_loss_count)
+                row_loss_count[row] += 1
+
+    active_rows = row_loss_count > 0
+    row_loss = row_loss_sum / row_loss_count.clamp(min=1).float()
+    return row_loss, active_rows
+
+
+def _budget_temporal_cdf_loss_rows(
+    pred: torch.Tensor,
+    valid_mask: torch.Tensor,
+    budget_ratios: tuple[float, ...],
+    temperature: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return per-row soft top-k temporal distribution loss.
+
+    This regularizer discourages budgeted soft-retention mass from collapsing
+    into one local cluster. It compares the cumulative soft-keep mass over the
+    valid trajectory order to a uniform temporal CDF.
+    """
+    if pred.ndim != 2 or valid_mask.shape != pred.shape:
+        raise ValueError("pred and valid_mask must have matching shape [batch, window_length].")
+
+    batch_size, window_length = pred.shape
+    valid_counts = valid_mask.sum(dim=1)
+    active_base = valid_counts >= 3
+    if not bool(active_base.any().item()):
+        return pred.new_zeros((batch_size,)), active_base
+
+    score_sortable = pred.masked_fill(~valid_mask, float("-inf"))
+    sorted_score = torch.sort(score_sortable, dim=1, descending=True).values
+    valid_float = valid_mask.to(dtype=pred.dtype)
+    valid_rank = valid_float.cumsum(dim=1)
+    target_cdf = valid_rank / valid_counts.clamp(min=1).to(dtype=pred.dtype).unsqueeze(1)
+    soft_keep_temperature = max(float(temperature), 1e-4)
+
+    row_loss_sum = pred.new_zeros((batch_size,))
+    row_loss_count = torch.zeros((batch_size,), dtype=torch.long, device=pred.device)
+    for raw_ratio in budget_ratios:
+        ratio = min(1.0, max(0.0, float(raw_ratio)))
+        if ratio <= 0.0:
+            continue
+        keep_count = torch.ceil(valid_counts.float() * ratio).to(dtype=torch.long).clamp(min=1, max=window_length)
+        active = active_base & (keep_count < valid_counts)
+        if not bool(active.any().item()):
+            continue
+
+        threshold = sorted_score.gather(1, (keep_count - 1).unsqueeze(1)).squeeze(1).detach()
+        soft_keep = torch.sigmoid((pred - threshold.unsqueeze(1)) / soft_keep_temperature) * valid_float
+        soft_keep = soft_keep * (keep_count.float() / soft_keep.sum(dim=1).clamp(min=1e-6)).unsqueeze(1)
+        soft_keep = soft_keep.clamp(max=1.0)
+        keep_cdf = soft_keep.cumsum(dim=1) / keep_count.float().clamp(min=1.0).unsqueeze(1)
+        ratio_loss = (((keep_cdf - target_cdf) ** 2) * valid_float).sum(dim=1) / valid_counts.clamp(min=1).float()
+        row_loss_sum = torch.where(active, row_loss_sum + ratio_loss, row_loss_sum)
+        row_loss_count = torch.where(active, row_loss_count + 1, row_loss_count)
+
+    active_rows = row_loss_count > 0
+    row_loss = row_loss_sum / row_loss_count.clamp(min=1).float()
+    return row_loss, active_rows
+
+
 def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
     """Return configured retained-budget ratios for budget-aware loss."""
     raw = getattr(model_config, "budget_loss_ratios", None) or []
@@ -212,10 +365,29 @@ def _budget_loss_ratios(model_config: ModelConfig) -> tuple[float, ...]:
     return tuple(ratios)
 
 
+def _effective_temporal_residual_label_mode(
+    model_config: ModelConfig,
+    temporal_residual_label_mode: str,
+) -> str:
+    """Return the temporal-residual mode that matches the final selector.
+
+    Stratified and global-budget selection have no reserved temporal base.
+    Treating them as if they did makes training optimize a residual candidate
+    set that inference never constructs.
+    """
+    mode = str(temporal_residual_label_mode).lower()
+    if mode != "temporal":
+        return mode
+    hybrid_mode = str(getattr(model_config, "mlqds_hybrid_mode", "fill")).lower()
+    if hybrid_mode in {"stratified", "global_budget"}:
+        return "none"
+    return "temporal"
+
+
 def _effective_budget_loss_ratios(model_config: ModelConfig, temporal_residual_label_mode: str) -> tuple[float, ...]:
     """Return retained-budget ratios in the candidate set the model actually controls."""
     ratios = _budget_loss_ratios(model_config)
-    if temporal_residual_label_mode != "temporal":
+    if _effective_temporal_residual_label_mode(model_config, temporal_residual_label_mode) != "temporal":
         return ratios
 
     temporal_fraction = min(1.0, max(0.0, float(getattr(model_config, "mlqds_temporal_fraction", 0.0))))

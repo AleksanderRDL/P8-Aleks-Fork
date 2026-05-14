@@ -200,6 +200,41 @@ def test_range_acceptance_keeps_requested_query_count_when_possible() -> None:
     assert generation["exhausted"] is False
 
 
+def test_fixed_count_range_acceptance_retries_rejected_candidates() -> None:
+    cluster = torch.tensor(
+        [[float(idx), 0.0001 * float(idx), 0.0001 * float(idx), 1.0] for idx in range(30)],
+        dtype=torch.float32,
+    )
+    trajectories = [cluster]
+    for idx in range(10):
+        trajectories.append(
+            torch.tensor([[float(idx), 1.0 + 0.5 * float(idx), 1.0 + 0.5 * float(idx), 1.0]], dtype=torch.float32)
+        )
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=8,
+        workload_map={"range": 1.0},
+        seed=4,
+        range_spatial_fraction=0.02,
+        range_time_fraction=0.05,
+        range_anchor_mode="uniform",
+        range_max_point_hit_fraction=0.10,
+        range_acceptance_max_attempts=80,
+    )
+
+    assert workload.generation_diagnostics is not None
+    generation = workload.generation_diagnostics["range_acceptance"]
+    query_generation = workload.generation_diagnostics["query_generation"]
+    assert len(workload.typed_queries) == 8
+    assert generation["accepted"] == 8
+    assert generation["rejected"] >= 1
+    assert generation["attempts"] > 8
+    assert generation["exhausted"] is False
+    assert query_generation["final_query_count"] == 8
+    assert query_generation["stop_reason"] == "fixed_count_completed"
+
+
 def test_range_label_diagnostics_reports_positive_fraction() -> None:
     points, boundaries = _points_and_boundaries()
     queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 1.5)]
@@ -386,6 +421,55 @@ def test_eval_range_label_cache_reuses_tensor_cache(tmp_path: Path) -> None:
     assert second_cache.component_labels is not None
     assert torch.equal(second_cache.labels, first_cache.labels)
     assert second_cache.labelled_mask is not None
+
+
+def test_ship_balanced_range_label_cache_keeps_component_labels(tmp_path: Path) -> None:
+    points, boundaries = _points_and_boundaries()
+    queries = [_range_query(-1.0, 1.0, -1.0, 1.0, -1.0, 2.5)]
+    features, type_ids = pad_query_features(queries)
+    workload = TypedQueryWorkload(
+        query_features=features,
+        typed_queries=queries,
+        type_ids=type_ids,
+        coverage_fraction=0.60,
+        covered_points=3,
+        total_points=5,
+    )
+    cfg = build_experiment_config(
+        cache_dir=str(tmp_path / "cache"),
+        range_diagnostics_mode="cached",
+        compression_ratio=0.4,
+        workload="range",
+        range_label_mode="usefulness_ship_balanced",
+    )
+
+    first_cache = RangeRuntimeCache()
+    assert _prepare_range_label_cache(
+        cache_label="eval",
+        points=points,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map={"range": 1.0},
+        config=cfg,
+        seed=123,
+        runtime_cache=first_cache,
+        range_boundary_prior_weight=0.0,
+    ) is not None
+    assert first_cache.component_labels is not None
+
+    second_cache = RangeRuntimeCache()
+    assert _prepare_range_label_cache(
+        cache_label="eval",
+        points=points,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map={"range": 1.0},
+        config=cfg,
+        seed=123,
+        runtime_cache=second_cache,
+        range_boundary_prior_weight=0.0,
+    ) is not None
+    assert second_cache.component_labels is not None
 
 
 def test_range_label_cache_key_ignores_compression_ratio(tmp_path: Path) -> None:

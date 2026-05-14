@@ -9,9 +9,10 @@ def _range_focused_results(results: dict[str, MethodEvaluation]) -> bool:
     """Return true when a result table represents a pure range workload."""
     saw_range = False
     for metrics in results.values():
-        if int(metrics.range_audit.get("range_query_count", 0) or 0) > 0:
-            saw_range = True
-        elif set(metrics.per_type_f1) <= {"range"} and "range" in metrics.per_type_f1:
+        if (
+            int(metrics.range_audit.get("range_query_count", 0) or 0) > 0
+            or set(metrics.per_type_f1) <= {"range"} and "range" in metrics.per_type_f1
+        ):
             saw_range = True
         for qtype, value in metrics.per_type_f1.items():
             if qtype != "range" and abs(float(value)) > 1e-12:
@@ -163,7 +164,8 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
 def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
     """Render detailed range usefulness audit components."""
-    col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = 24, 14, 10, 10, 13, 11, 13, 10, 10, 12, 13
+    col1, col2, col3, col4, col5, col6, col7 = 24, 14, 10, 10, 13, 11, 13
+    col8, col9, col10, col11, col12, col13 = 10, 10, 10, 10, 12, 13
     header = (
         f"{'Method':<{col1}}"
         f"{'RangePointF1':>{col2}}"
@@ -173,9 +175,11 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
         f"{'CrossingF1':>{col6}}"
         f"{'TemporalCov':>{col7}}"
         f"{'GapCov':>{col8}}"
-        f"{'TurnCov':>{col9}}"
-        f"{'ShapeScore':>{col10}}"
-        f"{'RangeUseful':>{col11}}"
+        f"{'GapTime':>{col9}}"
+        f"{'GapDist':>{col10}}"
+        f"{'TurnCov':>{col11}}"
+        f"{'ShapeScore':>{col12}}"
+        f"{'RangeUseful':>{col13}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -188,9 +192,11 @@ def print_range_usefulness_table(results: dict[str, MethodEvaluation]) -> str:
             f"{metrics.range_crossing_f1:>{col6}.6f}"
             f"{metrics.range_temporal_coverage:>{col7}.6f}"
             f"{metrics.range_gap_coverage:>{col8}.6f}"
-            f"{metrics.range_turn_coverage:>{col9}.6f}"
-            f"{metrics.range_shape_score:>{col10}.6f}"
-            f"{_range_usefulness_metric(metrics):>{col11}.6f}"
+            f"{metrics.range_gap_time_coverage:>{col9}.6f}"
+            f"{metrics.range_gap_distance_coverage:>{col10}.6f}"
+            f"{metrics.range_turn_coverage:>{col11}.6f}"
+            f"{metrics.range_shape_score:>{col12}.6f}"
+            f"{_range_usefulness_metric(metrics):>{col13}.6f}"
         )
     return "\n".join(lines)
 
@@ -224,7 +230,7 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
 
 def print_shift_table(shift_grid: dict[str, dict[str, float]]) -> str:
     """Render train-workload to eval-workload aggregate F1 matrix table."""
-    eval_cols = sorted({k for row in shift_grid.values() for k in row.keys()})
+    eval_cols = sorted({k for row in shift_grid.values() for k in row})
     col_w = 22
     header_label = "Train\\Eval"
     line = f"{header_label:<{col_w}}" + "".join(f"{c:>{col_w}}" for c in eval_cols)

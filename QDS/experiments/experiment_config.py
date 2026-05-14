@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 LCG_MULTIPLIER = 6364136223846793005
+DEFAULT_BUDGET_LOSS_RATIOS = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30]
+DEFAULT_BUDGET_LOSS_TEMPERATURE = 0.25
+VALIDATION_SPLIT_MODES = ("random", "source_stratified")
 
 
 @dataclass
@@ -18,6 +21,9 @@ class DataConfig:
     max_points_per_segment: int | None = None
     max_time_gap_seconds: float | None = 3600.0
     max_segments: int | None = None
+    train_max_segments: int | None = None
+    validation_max_segments: int | None = None
+    eval_max_segments: int | None = None
     max_trajectories: int | None = None
     csv_path: str | None = None
     train_csv_path: str | None = None
@@ -29,6 +35,7 @@ class DataConfig:
     seed: int = 42
     train_fraction: float = 0.70
     val_fraction: float = 0.15
+    validation_split_mode: str = "random"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See experiments/README.md for details."""
@@ -52,6 +59,10 @@ class QueryConfig:
     range_spatial_km: float | None = None
     range_time_hours: float | None = None
     range_footprint_jitter: float = 0.5
+    range_time_domain_mode: str = "dataset"
+    range_anchor_mode: str = "mixed_density"
+    range_train_anchor_modes: list[str] = field(default_factory=list)
+    range_train_footprints: list[str] = field(default_factory=list)
     workload: str = "range"
     range_min_point_hits: int | None = None
     range_max_point_hit_fraction: float | None = None
@@ -60,6 +71,8 @@ class QueryConfig:
     range_max_box_volume_fraction: float | None = None
     range_duplicate_iou_threshold: float | None = None
     range_acceptance_max_attempts: int | None = None
+    range_max_coverage_overshoot: float | None = None
+    range_train_workload_replicates: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See experiments/README.md for details."""
@@ -68,7 +81,26 @@ class QueryConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueryConfig":
         """Deserialize config from a dictionary. See experiments/README.md for details."""
-        return cls(**data)
+        payload = dict(data)
+        raw_train_anchor_modes = payload.get("range_train_anchor_modes", [])
+        if isinstance(raw_train_anchor_modes, str):
+            payload["range_train_anchor_modes"] = [
+                item.strip() for item in raw_train_anchor_modes.split(",") if item.strip()
+            ]
+        elif raw_train_anchor_modes is None:
+            payload["range_train_anchor_modes"] = []
+        else:
+            payload["range_train_anchor_modes"] = list(raw_train_anchor_modes)
+        raw_train_footprints = payload.get("range_train_footprints", [])
+        if isinstance(raw_train_footprints, str):
+            payload["range_train_footprints"] = [
+                item.strip() for item in raw_train_footprints.split(",") if item.strip()
+            ]
+        elif raw_train_footprints is None:
+            payload["range_train_footprints"] = []
+        else:
+            payload["range_train_footprints"] = list(raw_train_footprints)
+        return cls(**payload)
 
 
 @dataclass
@@ -87,13 +119,21 @@ class ModelConfig:
     lr: float = 5e-4
     compression_ratio: float = 0.2
     model_type: str = "baseline"
+    historical_prior_k: int = 32
+    historical_prior_clock_weight: float = 0.0
+    historical_prior_mmsi_weight: float = 1.0
+    historical_prior_density_weight: float = 1.0
+    historical_prior_min_target: float = 0.0
+    historical_prior_support_ratio: float = 1.0
+    historical_prior_source_aggregation: str = "none"
     rank_margin: float = 0.05
     ranking_pairs_per_type: int = 96
     ranking_top_quantile: float = 0.80
     pointwise_loss_weight: float = 0.25
     loss_objective: str = "budget_topk"
-    budget_loss_ratios: list[float] = field(default_factory=lambda: [0.01, 0.02, 0.05, 0.10])
-    budget_loss_temperature: float = 0.10
+    budget_loss_ratios: list[float] = field(default_factory=lambda: list(DEFAULT_BUDGET_LOSS_RATIOS))
+    budget_loss_temperature: float = DEFAULT_BUDGET_LOSS_TEMPERATURE
+    temporal_distribution_loss_weight: float = 0.0
     gradient_clip_norm: float = 1.0
     l2_score_weight: float = 1e-4
     early_stopping_patience: int = 0
@@ -112,13 +152,33 @@ class ModelConfig:
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
     mlqds_hybrid_mode: str = "fill"
+    mlqds_stratified_center_weight: float = 0.0
+    mlqds_min_learned_swaps: int = 0
     mlqds_score_mode: str = "rank"
     mlqds_score_temperature: float = 1.0
     mlqds_rank_confidence_weight: float = 0.15
     mlqds_range_geometry_blend: float = 0.0
-    temporal_residual_label_mode: str = "temporal"
+    temporal_residual_label_mode: str = "none"
     range_label_mode: str = "usefulness"
+    range_training_target_mode: str = "point_value"
+    range_target_balance_mode: str = "none"
+    range_replicate_target_aggregation: str = "label_mean"
+    range_component_target_blend: float = 1.0
+    range_temporal_target_blend: float = 0.0
+    range_structural_target_blend: float = 0.25
+    range_structural_target_source_mode: str = "blend"
+    range_target_budget_weight_power: float = 0.0
+    range_marginal_target_radius_scale: float = 0.50
+    range_query_spine_fraction: float = 0.10
+    range_query_spine_mass_mode: str = "hit_group"
+    range_query_residual_multiplier: float = 1.0
+    range_query_residual_mass_mode: str = "query"
+    range_set_utility_multiplier: float = 1.0
+    range_set_utility_candidate_limit: int = 128
+    range_set_utility_mass_mode: str = "gain"
     range_boundary_prior_weight: float = 0.0
+    range_teacher_distillation_mode: str = "none"
+    range_teacher_epochs: int = 4
     range_audit_compression_ratios: list[float] = field(default_factory=list)
     float32_matmul_precision: str = "highest"
     allow_tf32: bool = False
@@ -201,6 +261,9 @@ def build_experiment_config(
     max_points_per_segment: int | None = None,
     max_time_gap_seconds: float | None = 3600.0,
     max_segments: int | None = None,
+    train_max_segments: int | None = None,
+    validation_max_segments: int | None = None,
+    eval_max_segments: int | None = None,
     max_trajectories: int | None = None,
     n_queries: int = 128,
     query_coverage: float | None = None,
@@ -210,6 +273,10 @@ def build_experiment_config(
     range_spatial_km: float | None = None,
     range_time_hours: float | None = None,
     range_footprint_jitter: float = 0.5,
+    range_time_domain_mode: str = "dataset",
+    range_anchor_mode: str = "mixed_density",
+    range_train_anchor_modes: list[str] | None = None,
+    range_train_footprints: list[str] | None = None,
     range_min_point_hits: int | None = None,
     range_max_point_hit_fraction: float | None = None,
     range_min_trajectory_hits: int | None = None,
@@ -217,14 +284,21 @@ def build_experiment_config(
     range_max_box_volume_fraction: float | None = None,
     range_duplicate_iou_threshold: float | None = None,
     range_acceptance_max_attempts: int | None = None,
+    range_max_coverage_overshoot: float | None = None,
+    range_train_workload_replicates: int = 1,
     epochs: int = 6,
     lr: float = 5e-4,
+    embed_dim: int = 64,
+    num_heads: int = 4,
+    num_layers: int = 3,
+    dropout: float = 0.1,
     ranking_pairs_per_type: int = 96,
     ranking_top_quantile: float = 0.80,
     pointwise_loss_weight: float = 0.25,
     loss_objective: str = "budget_topk",
     budget_loss_ratios: list[float] | None = None,
-    budget_loss_temperature: float = 0.10,
+    budget_loss_temperature: float = DEFAULT_BUDGET_LOSS_TEMPERATURE,
+    temporal_distribution_loss_weight: float = 0.0,
     gradient_clip_norm: float = 1.0,
     compression_ratio: float = 0.2,
     csv_path: str | None = None,
@@ -234,7 +308,15 @@ def build_experiment_config(
     cache_dir: str | None = None,
     refresh_cache: bool = False,
     range_diagnostics_mode: str = "full",
+    validation_split_mode: str = "random",
     model_type: str = "baseline",
+    historical_prior_k: int = 32,
+    historical_prior_clock_weight: float = 0.0,
+    historical_prior_mmsi_weight: float = 1.0,
+    historical_prior_density_weight: float = 1.0,
+    historical_prior_min_target: float = 0.0,
+    historical_prior_support_ratio: float = 1.0,
+    historical_prior_source_aggregation: str = "none",
     workload: str = "range",
     seed: int = 42,
     early_stopping_patience: int = 0,
@@ -254,13 +336,33 @@ def build_experiment_config(
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
     mlqds_hybrid_mode: str = "fill",
+    mlqds_stratified_center_weight: float = 0.0,
+    mlqds_min_learned_swaps: int = 0,
     mlqds_score_mode: str = "rank",
     mlqds_score_temperature: float = 1.0,
     mlqds_rank_confidence_weight: float = 0.15,
     mlqds_range_geometry_blend: float = 0.0,
     temporal_residual_label_mode: str | None = None,
     range_label_mode: str = "usefulness",
+    range_training_target_mode: str = "point_value",
+    range_target_balance_mode: str = "none",
+    range_replicate_target_aggregation: str = "label_mean",
+    range_component_target_blend: float = 1.0,
+    range_temporal_target_blend: float = 0.0,
+    range_structural_target_blend: float = 0.25,
+    range_structural_target_source_mode: str = "blend",
+    range_target_budget_weight_power: float = 0.0,
+    range_marginal_target_radius_scale: float = 0.50,
+    range_query_spine_fraction: float = 0.10,
+    range_query_spine_mass_mode: str = "hit_group",
+    range_query_residual_multiplier: float = 1.0,
+    range_query_residual_mass_mode: str = "query",
+    range_set_utility_multiplier: float = 1.0,
+    range_set_utility_candidate_limit: int = 128,
+    range_set_utility_mass_mode: str = "gain",
     range_boundary_prior_weight: float = 0.0,
+    range_teacher_distillation_mode: str = "none",
+    range_teacher_epochs: int = 4,
     range_audit_compression_ratios: list[float] | None = None,
     final_metrics_mode: str = "diagnostic",
     float32_matmul_precision: str = "highest",
@@ -277,6 +379,9 @@ def build_experiment_config(
             max_points_per_segment=max_points_per_segment,
             max_time_gap_seconds=max_time_gap_seconds,
             max_segments=max_segments,
+            train_max_segments=train_max_segments,
+            validation_max_segments=validation_max_segments,
+            eval_max_segments=eval_max_segments,
             max_trajectories=max_trajectories,
             csv_path=csv_path,
             train_csv_path=train_csv_path,
@@ -285,6 +390,7 @@ def build_experiment_config(
             cache_dir=cache_dir,
             refresh_cache=refresh_cache,
             range_diagnostics_mode=range_diagnostics_mode,
+            validation_split_mode=validation_split_mode,
             seed=seed,
         ),
         query=QueryConfig(
@@ -296,6 +402,10 @@ def build_experiment_config(
             range_spatial_km=range_spatial_km,
             range_time_hours=range_time_hours,
             range_footprint_jitter=range_footprint_jitter,
+            range_time_domain_mode=range_time_domain_mode,
+            range_anchor_mode=range_anchor_mode,
+            range_train_anchor_modes=list(range_train_anchor_modes or []),
+            range_train_footprints=list(range_train_footprints or []),
             range_min_point_hits=range_min_point_hits,
             range_max_point_hit_fraction=range_max_point_hit_fraction,
             range_min_trajectory_hits=range_min_trajectory_hits,
@@ -303,20 +413,34 @@ def build_experiment_config(
             range_max_box_volume_fraction=range_max_box_volume_fraction,
             range_duplicate_iou_threshold=range_duplicate_iou_threshold,
             range_acceptance_max_attempts=range_acceptance_max_attempts,
+            range_max_coverage_overshoot=range_max_coverage_overshoot,
+            range_train_workload_replicates=range_train_workload_replicates,
             workload=workload,
         ),
         model=ModelConfig(
             epochs=epochs,
             lr=lr,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            dropout=dropout,
             ranking_pairs_per_type=ranking_pairs_per_type,
             ranking_top_quantile=ranking_top_quantile,
             pointwise_loss_weight=pointwise_loss_weight,
             loss_objective=loss_objective,
-            budget_loss_ratios=list(budget_loss_ratios or [0.01, 0.02, 0.05, 0.10]),
+            budget_loss_ratios=list(budget_loss_ratios or DEFAULT_BUDGET_LOSS_RATIOS),
             budget_loss_temperature=budget_loss_temperature,
+            temporal_distribution_loss_weight=temporal_distribution_loss_weight,
             gradient_clip_norm=gradient_clip_norm,
             compression_ratio=compression_ratio,
             model_type=model_type,
+            historical_prior_k=historical_prior_k,
+            historical_prior_clock_weight=historical_prior_clock_weight,
+            historical_prior_mmsi_weight=historical_prior_mmsi_weight,
+            historical_prior_density_weight=historical_prior_density_weight,
+            historical_prior_min_target=historical_prior_min_target,
+            historical_prior_support_ratio=historical_prior_support_ratio,
+            historical_prior_source_aggregation=historical_prior_source_aggregation,
             early_stopping_patience=early_stopping_patience,
             train_batch_size=train_batch_size,
             inference_batch_size=inference_batch_size,
@@ -334,13 +458,33 @@ def build_experiment_config(
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             mlqds_hybrid_mode=mlqds_hybrid_mode,
+            mlqds_stratified_center_weight=mlqds_stratified_center_weight,
+            mlqds_min_learned_swaps=mlqds_min_learned_swaps,
             mlqds_score_mode=mlqds_score_mode,
             mlqds_score_temperature=mlqds_score_temperature,
             mlqds_rank_confidence_weight=mlqds_rank_confidence_weight,
             mlqds_range_geometry_blend=mlqds_range_geometry_blend,
-            temporal_residual_label_mode=temporal_residual_label_mode or "temporal",
+            temporal_residual_label_mode=temporal_residual_label_mode or "none",
             range_label_mode=range_label_mode,
+            range_training_target_mode=range_training_target_mode,
+            range_target_balance_mode=range_target_balance_mode,
+            range_replicate_target_aggregation=range_replicate_target_aggregation,
+            range_component_target_blend=range_component_target_blend,
+            range_temporal_target_blend=range_temporal_target_blend,
+            range_structural_target_blend=range_structural_target_blend,
+            range_structural_target_source_mode=range_structural_target_source_mode,
+            range_target_budget_weight_power=range_target_budget_weight_power,
+            range_marginal_target_radius_scale=range_marginal_target_radius_scale,
+            range_query_spine_fraction=range_query_spine_fraction,
+            range_query_spine_mass_mode=range_query_spine_mass_mode,
+            range_query_residual_multiplier=range_query_residual_multiplier,
+            range_query_residual_mass_mode=range_query_residual_mass_mode,
+            range_set_utility_multiplier=range_set_utility_multiplier,
+            range_set_utility_candidate_limit=range_set_utility_candidate_limit,
+            range_set_utility_mass_mode=range_set_utility_mass_mode,
             range_boundary_prior_weight=range_boundary_prior_weight,
+            range_teacher_distillation_mode=range_teacher_distillation_mode,
+            range_teacher_epochs=range_teacher_epochs,
             range_audit_compression_ratios=list(range_audit_compression_ratios or []),
             float32_matmul_precision=float32_matmul_precision,
             allow_tf32=allow_tf32,

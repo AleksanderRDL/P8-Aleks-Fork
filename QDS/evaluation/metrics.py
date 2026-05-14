@@ -52,10 +52,17 @@ class MethodEvaluation:
     range_crossing_f1: float = 0.0
     range_temporal_coverage: float = 0.0
     range_gap_coverage: float = 0.0
+    range_gap_time_coverage: float = 0.0
+    range_gap_distance_coverage: float = 0.0
+    range_gap_min_coverage: float = 0.0
     range_turn_coverage: float = 0.0
     range_shape_score: float = 0.0
     range_usefulness_score: float = 0.0
+    range_usefulness_gap_time_score: float = 0.0
+    range_usefulness_gap_distance_score: float = 0.0
+    range_usefulness_gap_min_score: float = 0.0
     range_usefulness_schema_version: int = 0
+    range_usefulness_gap_ablation_version: int = 0
     range_audit: dict[str, Any] = field(default_factory=dict)
     retained_mask: torch.Tensor | None = None
 
@@ -181,6 +188,24 @@ def _polyline_length_km(lats: torch.Tensor, lons: torch.Tensor) -> float:
     a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat_rad[:-1]) * torch.cos(lat_rad[1:]) * torch.sin(dlon / 2.0) ** 2
     c = 2.0 * torch.atan2(torch.sqrt(a), torch.sqrt(torch.clamp(1.0 - a, min=1e-9)))
     return float((radius_km * c).sum().item())
+
+
+def _cumulative_polyline_length_km(lats: torch.Tensor, lons: torch.Tensor) -> torch.Tensor:
+    """Return cumulative haversine path length at each point in km."""
+    n = int(lats.numel())
+    if n <= 0:
+        return torch.empty((0,), dtype=torch.float32, device=lats.device)
+    if n == 1:
+        return torch.zeros((1,), dtype=torch.float32, device=lats.device)
+    radius_km = 6371.0
+    lat_rad = torch.deg2rad(lats.float())
+    lon_rad = torch.deg2rad(lons.float())
+    dlat = lat_rad[1:] - lat_rad[:-1]
+    dlon = lon_rad[1:] - lon_rad[:-1]
+    a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat_rad[:-1]) * torch.cos(lat_rad[1:]) * torch.sin(dlon / 2.0) ** 2
+    c = 2.0 * torch.atan2(torch.sqrt(a), torch.sqrt(torch.clamp(1.0 - a, min=1e-9)))
+    segment_km = radius_km * c
+    return torch.cat([torch.zeros((1,), dtype=torch.float32, device=lats.device), segment_km.cumsum(dim=0)])
 
 
 def compute_geometric_distortion(

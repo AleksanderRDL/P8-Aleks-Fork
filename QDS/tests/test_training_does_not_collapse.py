@@ -10,8 +10,10 @@ from data.trajectory_dataset import TrajectoryDataset
 from evaluation.baselines import MLQDSMethod
 from evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
 from experiments.experiment_config import build_experiment_config
+from models.historical_prior_qds_model import HistoricalPriorRangeQDSModel
 from models.trajectory_qds_model import TrajectoryQDSModel
 from queries.query_generator import generate_typed_query_workload
+from queries.query_types import NUM_QUERY_TYPES, QUERY_TYPE_ID_RANGE
 from training.checkpoint_selection import (
     validation_score_selection_score as _validation_score_selection_score,
     selection_score as _selection_score,
@@ -30,6 +32,7 @@ from training.training_losses import (
     _effective_budget_loss_ratios,
     _ranking_loss_for_type,
 )
+from training.training_diagnostics import train_target_fit_diagnostics
 from training.training_outputs import TrainingOutputs
 from training.training_setup import _single_active_type_id
 from training.training_targets import _apply_temporal_residual_labels
@@ -62,6 +65,25 @@ def test_temporal_residual_budget_ratios_match_learned_fill_budget() -> None:
     )
     assert _effective_budget_loss_ratios(cfg.model, "none") == pytest.approx((0.01, 0.02, 0.05, 0.10))
 
+    stratified_cfg = build_experiment_config(
+        compression_ratio=0.05,
+        budget_loss_ratios=[0.01, 0.02, 0.05, 0.10],
+        mlqds_hybrid_mode="stratified",
+        mlqds_temporal_fraction=0.75,
+    )
+    assert _effective_budget_loss_ratios(stratified_cfg.model, "temporal") == pytest.approx(
+        (0.01, 0.02, 0.05, 0.10)
+    )
+    global_cfg = build_experiment_config(
+        compression_ratio=0.05,
+        budget_loss_ratios=[0.01, 0.02, 0.05, 0.10],
+        mlqds_hybrid_mode="global_budget",
+        mlqds_temporal_fraction=0.75,
+    )
+    assert _effective_budget_loss_ratios(global_cfg.model, "temporal") == pytest.approx(
+        (0.01, 0.02, 0.05, 0.10)
+    )
+
 
 def test_selection_score_uses_loss_before_tau_proxy() -> None:
     """Assert checkpoint selection does not restore a worse-loss epoch solely from noisy tau."""
@@ -69,6 +91,36 @@ def test_selection_score_uses_loss_before_tau_proxy() -> None:
     lower_loss = _selection_score(avg_tau=-0.1, pred_std=0.1, loss=0.10)
 
     assert lower_loss > proxy_best
+
+
+def test_train_target_fit_diagnostics_reports_budget_target_recall() -> None:
+    """Assert train-target fit diagnostics compare learned masks to uniform masks."""
+    target = torch.tensor([0.0, 0.1, 1.0, 0.9, 0.2, 0.0], dtype=torch.float32)
+    predictions = target.clone()
+    labelled_mask = torch.ones_like(target, dtype=torch.bool)
+    cfg = build_experiment_config(
+        compression_ratio=0.5,
+        budget_loss_ratios=[0.5],
+        workload="range",
+        mlqds_hybrid_mode="fill",
+        mlqds_temporal_fraction=0.0,
+    )
+
+    diagnostics = train_target_fit_diagnostics(
+        predictions=predictions,
+        target=target,
+        labelled_mask=labelled_mask,
+        boundaries=[(0, int(target.numel()))],
+        model_config=cfg.model,
+        workload_type="range",
+        seed=12,
+    )
+
+    assert diagnostics["enabled"] is True
+    assert diagnostics["score_target_kendall_tau"] > 0.9
+    assert diagnostics["matched_mlqds_target_recall"] == pytest.approx(1.0)
+    assert diagnostics["matched_mlqds_vs_uniform_target_recall"] > 0.0
+    assert diagnostics["budget_rows"][0]["mlqds_target_mass"] > diagnostics["budget_rows"][0]["uniform_target_mass"]
 
 
 def test_validation_score_selection_score_penalizes_collapsed_predictions() -> None:
@@ -406,6 +458,25 @@ def test_filter_supervised_windows_removes_zero_positive_training_windows() -> N
     assert len(windows) == 3
     assert len(kept) == 1
     assert int(filtered[0].item()) == 2
+
+
+def test_filter_supervised_windows_can_keep_zero_labelled_windows_for_pointwise_objective() -> None:
+    points = torch.arange(24, dtype=torch.float32).reshape(12, 2)
+    windows = build_trajectory_windows(points, boundaries=[(0, 4), (4, 12)], window_length=4, stride=4)
+    targets = torch.zeros((12,), dtype=torch.float32)
+    labelled_mask = torch.ones((12,), dtype=torch.bool)
+
+    kept, filtered = _filter_supervised_windows(
+        windows=windows,
+        training_target=targets,
+        labelled_mask=labelled_mask,
+        active_type_id=0,
+        require_positive=False,
+    )
+
+    assert len(windows) == 3
+    assert len(kept) == 3
+    assert int(filtered[0].item()) == 0
 
 
 def test_training_records_validation_selection_score() -> None:
@@ -753,6 +824,132 @@ def test_training_accepts_precomputed_importance_labels() -> None:
     assert out.epochs_trained == 1
 
 
+def test_historical_prior_training_returns_fitted_prior_and_diagnostics() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=12, seed=822)
+    ds = TrajectoryDataset(trajectories)
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=823,
+    )
+    cfg = build_experiment_config(
+        epochs=3,
+        n_queries=4,
+        workload="range",
+        model_type="historical_prior",
+        historical_prior_k=2,
+        compression_ratio=0.5,
+    )
+
+    out = train_model(
+        train_trajectories=trajectories,
+        train_boundaries=boundaries,
+        workload=workload,
+        model_config=cfg.model,
+        seed=824,
+    )
+
+    assert isinstance(out.model, HistoricalPriorRangeQDSModel)
+    assert out.epochs_trained == 0
+    assert out.best_epoch == 0
+    assert out.history
+    assert out.target_diagnostics["workload_type_id"] == 0
+    assert "positive_fraction_t0" in out.history[0]
+    assert out.fit_diagnostics["enabled"] is True
+    assert out.fit_diagnostics["model_fits_stored_train_support"] is True
+    assert out.fit_diagnostics["matched_mlqds_target_recall"] is not None
+    assert out.model.historical_features.shape[0] == ds.get_all_points().shape[0]
+    scores = out.model(
+        out.model.historical_features[:4].unsqueeze(0),
+        queries=None,
+        query_type_ids=None,
+    )
+    assert torch.isfinite(scores).all()
+
+
+def test_historical_prior_training_caps_support_per_trajectory() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=12, seed=825)
+    ds = TrajectoryDataset(trajectories)
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=826,
+    )
+    points = ds.get_all_points()
+    labels = torch.zeros((points.shape[0], NUM_QUERY_TYPES), dtype=torch.float32)
+    labelled_mask = torch.zeros_like(labels, dtype=torch.bool)
+    labelled_mask[:, QUERY_TYPE_ID_RANGE] = True
+    for start, end in boundaries:
+        labels[start:end, QUERY_TYPE_ID_RANGE] = torch.linspace(0.0, 1.0, steps=end - start)
+    cfg = build_experiment_config(
+        epochs=3,
+        n_queries=4,
+        workload="range",
+        model_type="historical_prior",
+        historical_prior_k=2,
+        historical_prior_support_ratio=0.25,
+        compression_ratio=0.5,
+    )
+
+    out = train_model(
+        train_trajectories=trajectories,
+        train_boundaries=boundaries,
+        workload=workload,
+        model_config=cfg.model,
+        seed=827,
+        precomputed_labels=(labels, labelled_mask),
+    )
+
+    assert isinstance(out.model, HistoricalPriorRangeQDSModel)
+    assert out.model.historical_features.shape[0] == 9
+    assert out.target_diagnostics["historical_prior_support_pre_min_count"] == 9
+    assert out.target_diagnostics["historical_prior_stored_support_count"] == 9
+
+
+def test_historical_prior_training_preserves_train_source_ids() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=12, seed=828)
+    ds = TrajectoryDataset(trajectories)
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=829,
+    )
+    cfg = build_experiment_config(
+        epochs=1,
+        n_queries=4,
+        workload="range",
+        model_type="historical_prior",
+        historical_prior_k=2,
+        historical_prior_source_aggregation="mean",
+        compression_ratio=0.5,
+    )
+    source_ids = [0, 0, 1]
+
+    out = train_model(
+        train_trajectories=trajectories,
+        train_boundaries=boundaries,
+        workload=workload,
+        model_config=cfg.model,
+        seed=830,
+        train_trajectory_source_ids=source_ids,
+    )
+
+    assert isinstance(out.model, HistoricalPriorRangeQDSModel)
+    expected = torch.cat([
+        torch.full((end - start,), source_id, dtype=torch.long)
+        for source_id, (start, end) in zip(source_ids, boundaries, strict=True)
+    ])
+    assert torch.equal(out.model.historical_source_ids, expected)
+    assert out.target_diagnostics["historical_prior_source_aggregation"] == "mean"
+    assert out.target_diagnostics["historical_prior_source_count"] == 2
+
+
 def test_ranking_bce_objective_keeps_rank_signal(synthetic_dataset) -> None:
     """Assert the ranking_bce objective preserves its rank-signal invariant."""
     trajectories, _ = synthetic_dataset
@@ -780,6 +977,40 @@ def test_ranking_bce_objective_keeps_rank_signal(synthetic_dataset) -> None:
 
     best_range_tau = max(row["kendall_tau_t0"] for row in diagnostics)
     assert best_range_tau > 0.15
+
+
+def test_pointwise_bce_objective_trains_on_range_labels(synthetic_dataset) -> None:
+    """Assert the direct pointwise objective is accepted by the trainer."""
+    trajectories, _ = synthetic_dataset
+    ds = TrajectoryDataset(trajectories)
+    boundaries = ds.get_trajectory_boundaries()
+
+    cfg = build_experiment_config(epochs=1, n_queries=24, workload="range", loss_objective="pointwise_bce")
+    cfg.model.embed_dim = 16
+    cfg.model.num_heads = 2
+    cfg.model.num_layers = 1
+    cfg.model.query_chunk_size = 8
+    cfg.model.window_length = 8
+    cfg.model.window_stride = 4
+    cfg.model.train_batch_size = 2
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=24,
+        workload_map={"range": 1.0},
+        seed=78,
+    )
+    out = train_model(
+        train_trajectories=trajectories,
+        train_boundaries=boundaries,
+        workload=workload,
+        model_config=cfg.model,
+        seed=78,
+    )
+
+    assert out.history
+    assert out.history[-1]["loss"] > 0.0
+    assert out.fit_diagnostics["enabled"] is True
+    assert out.fit_diagnostics["matched_mlqds_target_recall"] is not None
 
 
 def test_range_coverage_training_keeps_score_spread(synthetic_dataset) -> None:

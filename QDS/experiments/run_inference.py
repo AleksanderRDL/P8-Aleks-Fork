@@ -38,8 +38,9 @@ from evaluation.baselines import (
 from evaluation.evaluate_methods import evaluate_method
 from evaluation.query_cache import EvaluationQueryCache
 from evaluation.tables import print_geometric_distortion_table, print_method_comparison_table, print_range_usefulness_table
+from experiments.cli_utils import normalized_gap_arg
 from experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
-from queries.query_generator import generate_typed_query_workload
+from queries.query_generator import RANGE_ANCHOR_MODES, RANGE_TIME_DOMAIN_MODES, generate_typed_query_workload
 from simplification.mlqds_scoring import workload_type_head
 from training.importance_labels import compute_typed_importance_labels
 from training.training_outputs import TrainingOutputs
@@ -52,14 +53,6 @@ from experiments.torch_runtime import (
     normalize_amp_mode,
     torch_runtime_snapshot,
 )
-
-
-def _normalized_gap_arg(value: float | None) -> float | None:
-    """Normalize CLI gap controls so <=0 disables time-gap segmentation."""
-    if value is None:
-        return None
-    value = float(value)
-    return None if value <= 0.0 else value
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -119,6 +112,24 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="Random +/- fraction applied to range query spatial and temporal half-windows. 0.0 makes footprints fixed.",
+    )
+    p.add_argument(
+        "--range_max_coverage_overshoot",
+        type=float,
+        default=None,
+        help="Reject candidate range boxes that would exceed --query_coverage plus this absolute tolerance. Accepts fractions or percents.",
+    )
+    p.add_argument(
+        "--range_time_domain_mode",
+        choices=RANGE_TIME_DOMAIN_MODES,
+        default="dataset",
+        help="Use 'anchor_day' to clamp each generated range query to its anchor's 24-hour day.",
+    )
+    p.add_argument(
+        "--range_anchor_mode",
+        choices=RANGE_ANCHOR_MODES,
+        default="mixed_density",
+        help="Anchor sampling prior for generated range queries.",
     )
     p.add_argument(
         "--workload",
@@ -268,7 +279,7 @@ def main() -> None:
     load_kwargs = {
         "min_points_per_segment": args.min_points_per_segment,
         "max_points_per_segment": args.max_points_per_segment,
-        "max_time_gap_seconds": _normalized_gap_arg(args.max_time_gap_seconds),
+        "max_time_gap_seconds": normalized_gap_arg(args.max_time_gap_seconds),
         "max_segments": args.max_segments,
     }
     cache_payload = None
@@ -324,6 +335,9 @@ def main() -> None:
         range_spatial_km=args.range_spatial_km,
         range_time_hours=args.range_time_hours,
         range_footprint_jitter=args.range_footprint_jitter,
+        range_max_coverage_overshoot=args.range_max_coverage_overshoot,
+        range_time_domain_mode=args.range_time_domain_mode,
+        range_anchor_mode=args.range_anchor_mode,
     )
     coverage_msg = ""
     if workload.coverage_fraction is not None:
@@ -378,8 +392,11 @@ def main() -> None:
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.0)),
             hybrid_mode=str(getattr(saved_cfg.model, "mlqds_hybrid_mode", "fill")),
+            stratified_center_weight=float(getattr(saved_cfg.model, "mlqds_stratified_center_weight", 0.0)),
+            min_learned_swaps=int(getattr(saved_cfg.model, "mlqds_min_learned_swaps", 0)),
             range_geometry_blend=range_geometry_blend,
             range_geometry_scores=range_geometry_scores,
+            trajectory_mmsis=trajectory_mmsis,
             inference_device=None if args.inference_device == "auto" else args.inference_device,
             inference_batch_size=inference_batch_size,
             amp_mode=amp_mode,
@@ -437,6 +454,21 @@ def main() -> None:
         "query_coverage": workload.coverage_fraction,
         "covered_points": workload.covered_points,
         "total_points": workload.total_points,
+        "query_config": {
+            "n_queries": int(args.n_queries),
+            "target_coverage": args.query_coverage,
+            "max_queries": args.max_queries,
+            "range_spatial_fraction": args.range_spatial_fraction,
+            "range_time_fraction": args.range_time_fraction,
+            "range_spatial_km": args.range_spatial_km,
+            "range_time_hours": args.range_time_hours,
+            "range_footprint_jitter": args.range_footprint_jitter,
+            "range_max_coverage_overshoot": args.range_max_coverage_overshoot,
+            "range_time_domain_mode": args.range_time_domain_mode,
+            "range_anchor_mode": args.range_anchor_mode,
+            "seed": int(args.seed),
+        },
+        "workload_generation_diagnostics": workload.generation_diagnostics,
         "data_audit": {
             **data_audit.to_dict(),
             **({"cache": cache_payload} if cache_payload is not None else {}),
@@ -464,10 +496,17 @@ def main() -> None:
                 "range_crossing_f1": m.range_crossing_f1,
                 "range_temporal_coverage": m.range_temporal_coverage,
                 "range_gap_coverage": m.range_gap_coverage,
+                "range_gap_time_coverage": m.range_gap_time_coverage,
+                "range_gap_distance_coverage": m.range_gap_distance_coverage,
+                "range_gap_min_coverage": m.range_gap_min_coverage,
                 "range_turn_coverage": m.range_turn_coverage,
                 "range_shape_score": m.range_shape_score,
                 "range_usefulness_score": m.range_usefulness_score,
+                "range_usefulness_gap_time_score": m.range_usefulness_gap_time_score,
+                "range_usefulness_gap_distance_score": m.range_usefulness_gap_distance_score,
+                "range_usefulness_gap_min_score": m.range_usefulness_gap_min_score,
                 "range_usefulness_schema_version": m.range_usefulness_schema_version,
+                "range_usefulness_gap_ablation_version": m.range_usefulness_gap_ablation_version,
                 "range_audit": m.range_audit,
             }
             for name, m in results.items()

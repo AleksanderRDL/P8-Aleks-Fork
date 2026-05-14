@@ -26,6 +26,8 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert "TemporalRandomFill" not in out.metrics_dump["matched"]
     assert "TemporalRandomFill" in out.metrics_dump["learned_fill_diagnostics"]
     assert "TemporalOracleFill" in out.metrics_dump["learned_fill_diagnostics"]
+    assert "GlobalRandomBudget" in out.metrics_dump["learned_fill_diagnostics"]
+    assert "GlobalOracleBudget" in out.metrics_dump["learned_fill_diagnostics"]
     assert "training_target_diagnostics" in out.metrics_dump
     assert "range_learned_fill_summary" in out.metrics_dump
     assert "workload_distribution_comparison" in out.metrics_dump

@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from data.ais_loader import load_ais_csv
 from data.trajectory_cache import load_or_build_ais_cache
 from queries.coverage_estimator import RangeCoverageEstimate, best_query_count, estimate_range_coverage
+from queries.query_generator import RANGE_ANCHOR_MODES, RANGE_TIME_DOMAIN_MODES
 
 
 def _parse_int_list(value: str) -> list[int]:
@@ -110,6 +111,14 @@ def main() -> int:
     parser.add_argument("--range_spatial_km", type=float, default=2.2)
     parser.add_argument("--range_time_hours", type=float, default=5.0)
     parser.add_argument("--range_footprint_jitter", type=float, default=0.0)
+    parser.add_argument(
+        "--range_max_coverage_overshoot",
+        type=float,
+        default=None,
+        help="Reject generated range boxes that would exceed target coverage plus this absolute tolerance. Accepts fractions or percents.",
+    )
+    parser.add_argument("--range_time_domain_mode", choices=RANGE_TIME_DOMAIN_MODES, default="dataset")
+    parser.add_argument("--range_anchor_mode", choices=RANGE_ANCHOR_MODES, default="mixed_density")
     parser.add_argument("--min_points_per_segment", type=int, default=4)
     parser.add_argument("--max_points_per_segment", type=int, default=None)
     parser.add_argument("--max_time_gap_seconds", type=float, default=3600.0)
@@ -143,6 +152,9 @@ def main() -> int:
                 range_spatial_km=args.range_spatial_km,
                 range_time_hours=args.range_time_hours,
                 range_footprint_jitter=float(args.range_footprint_jitter),
+                range_max_coverage_overshoot=args.range_max_coverage_overshoot,
+                range_time_domain_mode=args.range_time_domain_mode,
+                range_anchor_mode=args.range_anchor_mode,
             )
         )
 

@@ -150,9 +150,10 @@ def _range_workload_diagnostics(
             boundaries,
             scored_queries,
         )
+        if query_cache is None:
+            raise RuntimeError("Pure range diagnostics expected a prepared query cache.")
 
         def _mask_provider(query_index: int, query: dict[str, Any]) -> torch.Tensor:
-            assert query_cache is not None
             return query_cache.get_support_mask(
                 query_index,
                 lambda query=query: range_box_mask(points, query["params"]),
@@ -342,10 +343,17 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "range_crossing_f1": metrics.range_crossing_f1,
         "range_temporal_coverage": metrics.range_temporal_coverage,
         "range_gap_coverage": metrics.range_gap_coverage,
+        "range_gap_time_coverage": metrics.range_gap_time_coverage,
+        "range_gap_distance_coverage": metrics.range_gap_distance_coverage,
+        "range_gap_min_coverage": metrics.range_gap_min_coverage,
         "range_turn_coverage": metrics.range_turn_coverage,
         "range_shape_score": metrics.range_shape_score,
         "range_usefulness_score": metrics.range_usefulness_score,
+        "range_usefulness_gap_time_score": metrics.range_usefulness_gap_time_score,
+        "range_usefulness_gap_distance_score": metrics.range_usefulness_gap_distance_score,
+        "range_usefulness_gap_min_score": metrics.range_usefulness_gap_min_score,
         "range_usefulness_schema_version": metrics.range_usefulness_schema_version,
+        "range_usefulness_gap_ablation_version": metrics.range_usefulness_gap_ablation_version,
         "range_audit": metrics.range_audit,
     }
 

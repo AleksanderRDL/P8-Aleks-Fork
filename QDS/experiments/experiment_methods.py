@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import torch
 
 from evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
     Method,
+    ScoreGlobalBudgetMethod,
     ScoreHybridMethod,
     UniformTemporalMethod,
 )
@@ -29,6 +32,7 @@ def build_primary_methods(
     eval_workload: TypedQueryWorkload,
     eval_workload_map: dict[str, float],
     config: ExperimentConfig,
+    trajectory_mmsis: list[int] | None = None,
 ) -> list[Method]:
     """Build the standard matched-evaluation methods."""
     return [
@@ -43,7 +47,10 @@ def build_primary_methods(
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
             hybrid_mode=config.model.mlqds_hybrid_mode,
+            stratified_center_weight=config.model.mlqds_stratified_center_weight,
+            min_learned_swaps=config.model.mlqds_min_learned_swaps,
             range_geometry_blend=config.model.mlqds_range_geometry_blend,
+            trajectory_mmsis=trajectory_mmsis,
             inference_batch_size=config.model.inference_batch_size,
             amp_mode=config.model.amp_mode,
         ),
@@ -118,7 +125,7 @@ def prepare_eval_labels(
 
 def attach_range_geometry_scores(
     *,
-    methods: list[Method],
+    methods: Sequence[Method],
     eval_labels: torch.Tensor,
     eval_workload_map: dict[str, float],
 ) -> None:
@@ -148,6 +155,8 @@ def build_learned_fill_methods(
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
             hybrid_mode=config.model.mlqds_hybrid_mode,
+            stratified_center_weight=config.model.mlqds_stratified_center_weight,
+            min_learned_swaps=config.model.mlqds_min_learned_swaps,
         ),
         ScoreHybridMethod(
             name="TemporalOracleFill",
@@ -155,6 +164,16 @@ def build_learned_fill_methods(
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
             hybrid_mode=config.model.mlqds_hybrid_mode,
+            stratified_center_weight=config.model.mlqds_stratified_center_weight,
+            min_learned_swaps=config.model.mlqds_min_learned_swaps,
+        ),
+        ScoreGlobalBudgetMethod(
+            name="GlobalRandomBudget",
+            scores=random_scores,
+        ),
+        ScoreGlobalBudgetMethod(
+            name="GlobalOracleBudget",
+            scores=eval_labels[:, eval_type_id].float(),
         ),
     ]
 
@@ -169,6 +188,7 @@ def evaluate_shift_pairs(
     config: ExperimentConfig,
     test_points: torch.Tensor,
     test_boundaries: list[tuple[int, int]],
+    test_mmsis: list[int] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Evaluate the train-workload self score needed by the shift table."""
     train_name = workload_name(train_workload_map)
@@ -196,6 +216,9 @@ def evaluate_shift_pairs(
                 temporal_fraction=config.model.mlqds_temporal_fraction,
                 diversity_bonus=config.model.mlqds_diversity_bonus,
                 hybrid_mode=config.model.mlqds_hybrid_mode,
+                stratified_center_weight=config.model.mlqds_stratified_center_weight,
+                min_learned_swaps=config.model.mlqds_min_learned_swaps,
+                trajectory_mmsis=test_mmsis,
                 inference_batch_size=config.model.inference_batch_size,
                 amp_mode=config.model.amp_mode,
             ),

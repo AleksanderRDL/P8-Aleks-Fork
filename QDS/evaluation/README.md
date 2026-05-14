@@ -40,9 +40,16 @@ Range audit components:
 | `EntryExitF1` | Sampled AIS entry/exit support. |
 | `CrossingF1` | Point pairs bracketing range-boundary crossings. |
 | `TemporalCov` | Retained time span inside the query. |
-| `GapCov` | Penalty for large missing runs. |
+| `GapCov` | Count-normalized penalty for large missing runs. |
+| `GapCovTime` | Time-span variant of the largest missing-run penalty. |
+| `GapCovDistance` | Along-track-distance variant of the largest missing-run penalty. |
 | `TurnCov` | Route-change support. |
 | `ShapeScore` | Range-local route fidelity. |
+
+`RangeUseful` remains count-gap based for schema 7. New runs also emit
+diagnostic aggregate variants that replace only the gap term:
+`range_usefulness_gap_time_score`, `range_usefulness_gap_distance_score`, and
+`range_usefulness_gap_min_score`.
 
 Non-range workloads still report answer-set `AnswerF1` and `CombinedF1` for
 diagnostic ablations. Current benchmark work is range-only.

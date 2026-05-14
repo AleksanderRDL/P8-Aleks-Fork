@@ -61,9 +61,15 @@ def _workload_cache_payload(
     workload_map: dict[str, float],
     seed: int,
     config: ExperimentConfig,
+    range_anchor_mode: str | None = None,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
 ) -> dict[str, Any]:
     """Build the canonical workload-cache key payload."""
     query_config = config.query
+    effective_range_anchor_mode = range_anchor_mode or query_config.range_anchor_mode
+    effective_range_spatial_km = query_config.range_spatial_km if range_spatial_km is None else range_spatial_km
+    effective_range_time_hours = query_config.range_time_hours if range_time_hours is None else range_time_hours
     return {
         "schema_version": WORKLOAD_CACHE_SCHEMA_VERSION,
         "points_sha256": tensor_cache_digest(points),
@@ -77,9 +83,11 @@ def _workload_cache_payload(
         "max_queries": query_config.max_queries,
         "range_spatial_fraction": query_config.range_spatial_fraction,
         "range_time_fraction": query_config.range_time_fraction,
-        "range_spatial_km": query_config.range_spatial_km,
-        "range_time_hours": query_config.range_time_hours,
+        "range_spatial_km": effective_range_spatial_km,
+        "range_time_hours": effective_range_time_hours,
         "range_footprint_jitter": query_config.range_footprint_jitter,
+        "range_time_domain_mode": query_config.range_time_domain_mode,
+        "range_anchor_mode": effective_range_anchor_mode,
         "range_min_point_hits": query_config.range_min_point_hits,
         "range_max_point_hit_fraction": query_config.range_max_point_hit_fraction,
         "range_min_trajectory_hits": query_config.range_min_trajectory_hits,
@@ -87,6 +95,7 @@ def _workload_cache_payload(
         "range_max_box_volume_fraction": query_config.range_max_box_volume_fraction,
         "range_duplicate_iou_threshold": query_config.range_duplicate_iou_threshold,
         "range_acceptance_max_attempts": query_config.range_acceptance_max_attempts,
+        "range_max_coverage_overshoot": query_config.range_max_coverage_overshoot,
     }
 
 
@@ -124,9 +133,15 @@ def generate_typed_query_workload_for_config(
     points: torch.Tensor | None = None,
     boundaries: list[tuple[int, int]] | None = None,
     cache_label: str | None = None,
+    range_anchor_mode: str | None = None,
+    range_spatial_km: float | None = None,
+    range_time_hours: float | None = None,
 ) -> TypedQueryWorkload:
     """Generate a typed workload from config, expanding to target coverage up to max_queries."""
     query_config = config.query
+    effective_range_anchor_mode = range_anchor_mode or query_config.range_anchor_mode
+    effective_range_spatial_km = query_config.range_spatial_km if range_spatial_km is None else range_spatial_km
+    effective_range_time_hours = query_config.range_time_hours if range_time_hours is None else range_time_hours
     points_for_cache = points if points is not None else torch.cat(trajectories, dim=0)
     boundaries_for_cache = boundaries if boundaries is not None else trajectory_boundaries_for_cache(trajectories)
     cache_root = _workload_cache_root(config)
@@ -140,6 +155,9 @@ def generate_typed_query_workload_for_config(
             workload_map=workload_map,
             seed=seed,
             config=config,
+            range_anchor_mode=effective_range_anchor_mode,
+            range_spatial_km=effective_range_spatial_km,
+            range_time_hours=effective_range_time_hours,
         )
         cache_key = _workload_cache_key(payload)
         cache_name = f"{cache_label or 'workload'}-{cache_key[:16]}.json"
@@ -162,9 +180,11 @@ def generate_typed_query_workload_for_config(
         max_queries=query_config.max_queries,
         range_spatial_fraction=query_config.range_spatial_fraction,
         range_time_fraction=query_config.range_time_fraction,
-        range_spatial_km=query_config.range_spatial_km,
-        range_time_hours=query_config.range_time_hours,
+        range_spatial_km=effective_range_spatial_km,
+        range_time_hours=effective_range_time_hours,
         range_footprint_jitter=query_config.range_footprint_jitter,
+        range_time_domain_mode=query_config.range_time_domain_mode,
+        range_anchor_mode=effective_range_anchor_mode,
         range_min_point_hits=query_config.range_min_point_hits,
         range_max_point_hit_fraction=query_config.range_max_point_hit_fraction,
         range_min_trajectory_hits=query_config.range_min_trajectory_hits,
@@ -172,6 +192,7 @@ def generate_typed_query_workload_for_config(
         range_max_box_volume_fraction=query_config.range_max_box_volume_fraction,
         range_duplicate_iou_threshold=query_config.range_duplicate_iou_threshold,
         range_acceptance_max_attempts=query_config.range_acceptance_max_attempts,
+        range_max_coverage_overshoot=query_config.range_max_coverage_overshoot,
     )
     if cache_path is not None and cache_key is not None:
         try:

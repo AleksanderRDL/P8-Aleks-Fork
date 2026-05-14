@@ -354,6 +354,60 @@ def test_range_usefulness_labels_preserve_point_component_mass() -> None:
     assert values[3].item() < values[:3].max().item()
 
 
+def test_range_usefulness_ship_balanced_labels_reduce_dense_ship_dominance() -> None:
+    """Assert ship-balanced usefulness labels do not let dense hit ships dominate point labels."""
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.1, 1.0],
+            [2.0, 0.0, 0.2, 1.0],
+            [3.0, 0.0, 0.3, 1.0],
+            [4.0, 0.0, 0.4, 1.0],
+            [2.0, 0.8, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 5), (5, 6)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": -1.0,
+                "lat_max": 1.0,
+                "lon_min": -1.0,
+                "lon_max": 1.0,
+                "t_start": -1.0,
+                "t_end": 5.0,
+            },
+        }
+    ]
+
+    _default_labels, _default_mask, default_components = compute_typed_importance_labels_with_range_components(
+        points,
+        boundaries,
+        queries,
+        range_label_mode="usefulness",
+    )
+    _balanced_labels, balanced_mask, balanced_components = compute_typed_importance_labels_with_range_components(
+        points,
+        boundaries,
+        queries,
+        range_label_mode="usefulness_ship_balanced",
+    )
+
+    default_point = default_components["range_point_f1"][:, QUERY_TYPE_ID_RANGE]
+    balanced_point = balanced_components["range_point_f1"][:, QUERY_TYPE_ID_RANGE]
+    default_dense_mass = float(default_point[:5].sum().item())
+    default_sparse_mass = float(default_point[5].item())
+    balanced_dense_mass = float(balanced_point[:5].sum().item())
+    balanced_sparse_mass = float(balanced_point[5].item())
+
+    assert bool(balanced_mask[:, QUERY_TYPE_ID_RANGE].all().item())
+    assert default_dense_mass / default_sparse_mass == pytest.approx(5.0)
+    assert balanced_dense_mass / balanced_sparse_mass < default_dense_mass / default_sparse_mass
+    assert balanced_sparse_mass > default_sparse_mass
+
+
 def test_range_usefulness_labels_include_between_sample_crossing_brackets() -> None:
     points = torch.tensor(
         [

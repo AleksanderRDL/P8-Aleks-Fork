@@ -10,12 +10,14 @@ import torch
 
 from experiments.experiment_config import ModelConfig
 from experiments.torch_runtime import torch_autocast_context
-from models.trajectory_qds_model import TrajectoryQDSModel
 from queries.query_types import NUM_QUERY_TYPES
 from training.training_losses import (
     _balanced_pointwise_loss_rows,
+    _budget_stratified_recall_loss_rows,
+    _budget_temporal_cdf_loss_rows,
     _budget_topk_recall_loss_rows,
     _budget_topk_temporal_residual_loss_rows,
+    _pointwise_bce_loss_rows,
     _ranking_loss_for_type,
 )
 from training.training_windows import _trajectory_batch_to_device
@@ -49,7 +51,7 @@ class TrainingEpochResult:
 
 def _train_one_epoch(
     *,
-    model: TrajectoryQDSModel,
+    model: torch.nn.Module,
     windows: list[TrajectoryBatch],
     opt: torch.optim.Optimizer,
     grad_scaler: _GradScalerLike,
@@ -115,7 +117,7 @@ def _train_one_epoch(
             generator=training_sample_generator,
         )
 
-        if loss_objective == "budget_topk":
+        if loss_objective in {"budget_topk", "stratified_budget_topk"}:
             if temporal_residual_budget_masks:
                 rank_loss_rows, _rank_active_rows = _budget_topk_temporal_residual_loss_rows(
                     pred=pred_batch,
@@ -124,6 +126,15 @@ def _train_one_epoch(
                     global_idx=safe_global_idx,
                     temporal_base_masks=temporal_residual_budget_masks,
                     temperature=budget_loss_temperature,
+                )
+            elif loss_objective == "stratified_budget_topk":
+                rank_loss_rows, _rank_active_rows = _budget_stratified_recall_loss_rows(
+                    pred=pred_batch,
+                    target=batch_labels,
+                    valid_mask=batch_label_mask,
+                    budget_ratios=budget_ratios,
+                    temperature=budget_loss_temperature,
+                    center_weight=float(getattr(model_config, "mlqds_stratified_center_weight", 0.0)),
                 )
             else:
                 rank_loss_rows, _rank_active_rows = _budget_topk_recall_loss_rows(
@@ -136,8 +147,30 @@ def _train_one_epoch(
 
             if bool(positive_row_mask.any().item()):
                 row_losses = rank_loss_rows + model_config.pointwise_loss_weight * pointwise_loss_rows
+                temporal_distribution_weight = float(
+                    getattr(model_config, "temporal_distribution_loss_weight", 0.0) or 0.0
+                )
+                if temporal_distribution_weight > 0.0:
+                    temporal_distribution_rows, _distribution_active_rows = _budget_temporal_cdf_loss_rows(
+                        pred=pred_batch,
+                        valid_mask=batch_label_mask,
+                        budget_ratios=budget_ratios,
+                        temperature=budget_loss_temperature,
+                    )
+                    row_losses = row_losses + temporal_distribution_weight * temporal_distribution_rows
                 loss = (
                     row_losses[positive_row_mask].sum() / float(batch_size)
+                    + model_config.l2_score_weight * (pred_batch ** 2).mean()
+                )
+        elif loss_objective == "pointwise_bce":
+            pointwise_direct_rows, pointwise_direct_active_rows = _pointwise_bce_loss_rows(
+                pred=pred_batch,
+                target=batch_labels,
+                valid_mask=batch_label_mask,
+            )
+            if bool(pointwise_direct_active_rows.any().item()):
+                loss = (
+                    pointwise_direct_rows[pointwise_direct_active_rows].sum() / float(batch_size)
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         else:

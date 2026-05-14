@@ -121,21 +121,17 @@ def pure_workload_scores(
     return score
 
 
-def simplify_mlqds_predictions(
+def mlqds_simplification_scores(
     predictions: torch.Tensor,
     boundaries: list[tuple[int, int]],
     workload_type: str,
-    compression_ratio: float,
-    temporal_fraction: float,
-    diversity_bonus: float,
-    hybrid_mode: str = "fill",
     score_mode: str = "rank",
     score_temperature: float = 1.0,
     rank_confidence_weight: float = 0.15,
     range_geometry_scores: torch.Tensor | None = None,
     range_geometry_blend: float = 0.0,
 ) -> torch.Tensor:
-    """Simplify using canonical MLQDS score conversion and retained-mask logic."""
+    """Convert model predictions into reusable MLQDS simplification scores."""
     scores = pure_workload_scores(
         predictions,
         boundaries,
@@ -162,6 +158,36 @@ def simplify_mlqds_predictions(
             score_mode="rank",
         )
         scores = (1.0 - geometry_blend) * scores + geometry_blend * geometry
+    return scores
+
+
+def simplify_mlqds_predictions(
+    predictions: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    workload_type: str,
+    compression_ratio: float,
+    temporal_fraction: float,
+    diversity_bonus: float,
+    hybrid_mode: str = "fill",
+    score_mode: str = "rank",
+    score_temperature: float = 1.0,
+    rank_confidence_weight: float = 0.15,
+    range_geometry_scores: torch.Tensor | None = None,
+    range_geometry_blend: float = 0.0,
+    stratified_center_weight: float = 0.0,
+    min_learned_swaps: int = 0,
+) -> torch.Tensor:
+    """Simplify using canonical MLQDS score conversion and retained-mask logic."""
+    scores = mlqds_simplification_scores(
+        predictions,
+        boundaries,
+        workload_type,
+        score_mode=score_mode,
+        score_temperature=score_temperature,
+        rank_confidence_weight=rank_confidence_weight,
+        range_geometry_scores=range_geometry_scores,
+        range_geometry_blend=range_geometry_blend,
+    )
     return simplify_with_temporal_score_hybrid(
         scores,
         boundaries,
@@ -169,4 +195,6 @@ def simplify_mlqds_predictions(
         temporal_fraction=temporal_fraction,
         diversity_bonus=diversity_bonus,
         hybrid_mode=hybrid_mode,
+        stratified_center_weight=stratified_center_weight,
+        min_learned_swaps=min_learned_swaps,
     )

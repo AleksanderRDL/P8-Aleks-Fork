@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import argparse
 
+from experiments.experiment_config import (
+    DEFAULT_BUDGET_LOSS_RATIOS,
+    DEFAULT_BUDGET_LOSS_TEMPERATURE,
+    VALIDATION_SPLIT_MODES,
+)
 from experiments.torch_runtime import AMP_MODE_CHOICES, FLOAT32_MATMUL_PRECISION_CHOICES
+from queries.query_generator import RANGE_ANCHOR_MODES, RANGE_TIME_DOMAIN_MODES
 from simplification.mlqds_scoring import MLQDS_SCORE_MODES
 from training.importance_labels import RANGE_LABEL_MODES
+from training.model_features import SUPPORTED_MODEL_TYPES
+from training.teacher_distillation import RANGE_TEACHER_DISTILLATION_MODES
+from training.training_targets import RANGE_TARGET_BALANCE_MODES, RANGE_TRAINING_TARGET_MODES
 
 
 def _compression_ratio_list(value: str) -> list[float]:
@@ -25,11 +34,64 @@ def _compression_ratio_list(value: str) -> list[float]:
     return ratios
 
 
+def _range_anchor_mode_list(value: str) -> list[str]:
+    """Parse comma-separated train anchor-prior modes."""
+    modes: list[str] = []
+    for raw in value.split(","):
+        mode = raw.strip().lower()
+        if not mode:
+            continue
+        if mode not in RANGE_ANCHOR_MODES:
+            raise argparse.ArgumentTypeError(
+                f"range train anchor modes must be one of {RANGE_ANCHOR_MODES}."
+            )
+        modes.append(mode)
+    if not modes:
+        raise argparse.ArgumentTypeError("provide at least one range anchor mode.")
+    return modes
+
+
+def _range_train_footprint_list(value: str) -> list[str]:
+    """Parse comma-separated train footprint families as spatial_km:time_hours."""
+    footprints: list[str] = []
+    for raw in value.split(","):
+        item = raw.strip().lower().replace("x", ":")
+        if not item:
+            continue
+        parts = [part.strip() for part in item.split(":")]
+        if len(parts) != 2:
+            raise argparse.ArgumentTypeError(
+                "range train footprints must use spatial_km:time_hours entries, "
+                "for example 1.1:2.5,2.2:5.0."
+            )
+        try:
+            spatial_km = float(parts[0])
+            time_hours = float(parts[1])
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("range train footprint values must be numeric.") from exc
+        if spatial_km <= 0.0 or time_hours <= 0.0:
+            raise argparse.ArgumentTypeError("range train footprint values must be positive.")
+        footprints.append(f"{spatial_km:g}:{time_hours:g}")
+    if not footprints:
+        raise argparse.ArgumentTypeError("provide at least one range train footprint.")
+    return footprints
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build experiment CLI parser. See experiments/README.md for details."""
     parser = argparse.ArgumentParser(description="Run AIS-QDS experiment.")
     parser.add_argument("--csv_path", type=str, default=None)
-    parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--train_csv_path",
+        "--train_csv",
+        dest="train_csv_path",
+        type=str,
+        default=None,
+        help=(
+            "Dedicated train CSV path. A comma-separated list trains on multiple historical "
+            "CSV days while keeping validation/eval sources separate."
+        ),
+    )
     parser.add_argument(
         "--validation_csv_path",
         "--validation_csv",
@@ -38,9 +100,19 @@ def build_parser() -> argparse.ArgumentParser:
         dest="validation_csv_path",
         type=str,
         default=None,
-        help="Optional dedicated checkpoint-validation CSV. Requires --train_csv_path and --eval_csv_path.",
+        help=(
+            "Optional dedicated checkpoint-validation CSV path or comma-separated CSV list. "
+            "Requires --train_csv_path and --eval_csv_path."
+        ),
     )
-    parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--eval_csv_path",
+        "--eval_csv",
+        dest="eval_csv_path",
+        type=str,
+        default=None,
+        help="Dedicated final-eval CSV path or comma-separated CSV list.",
+    )
     parser.add_argument(
         "--cache_dir",
         type=str,
@@ -58,6 +130,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="full",
         choices=["full", "cached"],
         help="Use full range diagnostics or reuse persistent range-diagnostics caches when --cache_dir is set.",
+    )
+    parser.add_argument(
+        "--validation_split_mode",
+        type=str,
+        default="random",
+        choices=VALIDATION_SPLIT_MODES,
+        help=(
+            "Fallback checkpoint-validation split when separate train/eval CSVs are used without "
+            "--validation_csv_path. 'random' samples from combined train trajectories; "
+            "'source_stratified' holds out validation trajectories from each train CSV source."
+        ),
     )
     parser.add_argument(
         "--final_metrics_mode",
@@ -94,6 +177,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional cap applied during CSV segmentation, useful for smoke runs.",
+    )
+    parser.add_argument(
+        "--train_max_segments",
+        type=int,
+        default=None,
+        help="Optional train CSV segment cap. Defaults to --max_segments when unset.",
+    )
+    parser.add_argument(
+        "--validation_max_segments",
+        type=int,
+        default=None,
+        help="Optional validation CSV segment cap. Defaults to --max_segments when unset.",
+    )
+    parser.add_argument(
+        "--eval_max_segments",
+        type=int,
+        default=None,
+        help="Optional eval CSV segment cap. Defaults to --max_segments when unset.",
     )
     parser.add_argument(
         "--max_trajectories",
@@ -145,6 +246,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Random +/- fraction applied to range query spatial and temporal half-windows. 0.0 makes footprints fixed.",
     )
     parser.add_argument(
+        "--range_time_domain_mode",
+        type=str,
+        default="dataset",
+        choices=RANGE_TIME_DOMAIN_MODES,
+        help=(
+            "Temporal clamp domain for generated range queries. 'dataset' uses global time bounds; "
+            "'anchor_day' clamps each query to the 24-hour source/calendar day containing its anchor."
+        ),
+    )
+    parser.add_argument(
+        "--range_anchor_mode",
+        type=str,
+        default="mixed_density",
+        choices=RANGE_ANCHOR_MODES,
+        help=(
+            "Anchor sampling prior for generated range queries. 'mixed_density' keeps the historical "
+            "70 percent density-biased / 30 percent uniform mix; 'dense', 'uniform', and 'sparse' expose held-out "
+            "generator settings."
+        ),
+    )
+    parser.add_argument(
+        "--range_train_anchor_modes",
+        type=_range_anchor_mode_list,
+        default=[],
+        help=(
+            "Optional comma-separated anchor priors cycled across train workload replicates. "
+            "Leave unset to use --range_anchor_mode for training. Eval and checkpoint selection "
+            "continue using --range_anchor_mode."
+        ),
+    )
+    parser.add_argument(
+        "--range_train_footprints",
+        type=_range_train_footprint_list,
+        default=[],
+        help=(
+            "Optional comma-separated train-only range footprint families as spatial_km:time_hours, "
+            "cycled across train workload replicates. Eval and checkpoint selection continue using "
+            "--range_spatial_km/--range_time_hours."
+        ),
+    )
+    parser.add_argument(
         "--range_min_point_hits",
         type=int,
         default=None,
@@ -186,8 +328,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum candidate range boxes to try when acceptance filters are enabled.",
     )
+    parser.add_argument(
+        "--range_max_coverage_overshoot",
+        type=float,
+        default=None,
+        help=(
+            "Optional target-coverage guard: reject candidate range boxes that would push union "
+            "point coverage above --query_coverage plus this absolute tolerance. Accepts fractions or percents."
+        ),
+    )
+    parser.add_argument(
+        "--range_train_workload_replicates",
+        type=int,
+        default=1,
+        help=(
+            "Number of independent train-workload seeds to aggregate into blind range supervision. "
+            "Eval and checkpoint-selection workloads remain separate."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--embed_dim", type=int, default=64, help="Transformer hidden dimension.")
+    parser.add_argument("--num_heads", type=int, default=4, help="Number of transformer attention heads.")
+    parser.add_argument(
+        "--num_layers",
+        type=int,
+        default=3,
+        help="Number of transformer encoder layers. For workload-blind models, 0 uses an MLP-only scorer.",
+    )
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability used by the model.")
     parser.add_argument(
         "--ranking_pairs_per_type",
         type=int,
@@ -210,23 +379,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--loss_objective",
         type=str,
         default="budget_topk",
-        choices=["ranking_bce", "budget_topk"],
+        choices=["ranking_bce", "budget_topk", "stratified_budget_topk", "pointwise_bce"],
         help=(
             "Training objective. 'ranking_bce' is the pairwise ranking plus BCE ablation; "
-            "'budget_topk' optimizes soft retained-budget target mass across budget ratios."
+            "'budget_topk' optimizes soft retained-budget target mass across budget ratios; "
+            "'stratified_budget_topk' is a slower diagnostic that optimizes the "
+            "stratified selector's per-stratum choices; "
+            "'pointwise_bce' directly fits every valid soft label."
         ),
     )
     parser.add_argument(
         "--budget_loss_ratios",
         type=_compression_ratio_list,
-        default=[0.01, 0.02, 0.05, 0.10],
-        help="Comma-separated retained-point ratios used by --loss_objective budget_topk.",
+        default=list(DEFAULT_BUDGET_LOSS_RATIOS),
+        help="Comma-separated retained-point ratios used by budget-aware loss objectives.",
     )
     parser.add_argument(
         "--budget_loss_temperature",
         type=float,
-        default=0.10,
+        default=DEFAULT_BUDGET_LOSS_TEMPERATURE,
         help="Soft top-k temperature for --loss_objective budget_topk.",
+    )
+    parser.add_argument(
+        "--temporal_distribution_loss_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional weight for a budget-aware temporal CDF regularizer. "
+            "0.0 disables it; small values discourage clustered soft top-k selections."
+        ),
     )
     parser.add_argument(
         "--gradient_clip_norm",
@@ -256,7 +437,68 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--compression_ratio", type=float, default=0.2)
-    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "turn_aware", "range_aware"])
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default="baseline",
+        choices=SUPPORTED_MODEL_TYPES,
+    )
+    parser.add_argument(
+        "--historical_prior_k",
+        type=int,
+        default=32,
+        help="Nearest-neighbor count for model_type=historical_prior.",
+    )
+    parser.add_argument(
+        "--historical_prior_clock_weight",
+        type=float,
+        default=0.0,
+        help="Distance weight for historical-prior circular clock-time features. 0.0 preserves density-only behavior.",
+    )
+    parser.add_argument(
+        "--historical_prior_mmsi_weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Distance weight for model_type=historical_prior_mmsi deterministic vessel-id hash features. "
+            "0.0 ignores identity; larger values prefer same-MMSI historical support."
+        ),
+    )
+    parser.add_argument(
+        "--historical_prior_density_weight",
+        type=float,
+        default=1.0,
+        help="Distance weight for historical-prior spatial density/sparsity features.",
+    )
+    parser.add_argument(
+        "--historical_prior_min_target",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum retained-frequency target stored by model_type=historical_prior. "
+            "0.0 stores all train points; larger values keep only stronger useful-point support."
+        ),
+    )
+    parser.add_argument(
+        "--historical_prior_support_ratio",
+        type=float,
+        default=1.0,
+        help=(
+            "Per-train-trajectory top-target support cap for model_type=historical_prior. "
+            "1.0 stores all points that pass min-target filtering; lower values reduce dense-route dominance."
+        ),
+    )
+    parser.add_argument(
+        "--historical_prior_source_aggregation",
+        type=str,
+        default="none",
+        choices=["none", "mean", "min", "median"],
+        help=(
+            "How to combine historical-prior KNN scores across explicit train CSV sources. "
+            "'none' preserves the original pooled prior; 'mean', 'min', and 'median' require signal "
+            "to transfer across train days."
+        ),
+    )
     parser.add_argument(
         "--workload",
         type=str,
@@ -355,17 +597,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--mlqds_diversity_bonus",
         type=float,
         default=0.0,
-        help="Spacing bonus for MLQDS fill candidates away from temporal base points. Default 0.0 keeps learned score fill isolated.",
+        help=(
+            "Spacing bonus for MLQDS fill/swap/local_swap/local_delta_swap candidates away from temporal base points. "
+            "Ignored by mlqds_hybrid_mode=stratified or global_budget."
+        ),
     )
     parser.add_argument(
         "--mlqds_hybrid_mode",
         type=str,
         default="fill",
-        choices=["fill", "swap"],
+        choices=["fill", "swap", "local_swap", "local_delta_swap", "stratified", "global_fill", "global_budget"],
         help=(
             "How temporal scaffolding and learned scores are combined. "
             "'fill' reserves part of the budget for a temporal spine, then fills the rest. "
-            "'swap' starts from full uniform temporal sampling and replaces only the unprotected budget share."
+            "'swap' starts from full uniform temporal sampling and replaces only the unprotected budget share. "
+            "'local_swap' pairs each learned addition with the nearest unprotected temporal-base removal. "
+            "'local_delta_swap' performs that local replacement only when the learned score improves over the paired base point. "
+            "'stratified' selects the highest learned-score point inside each temporal/index stratum. "
+            "'global_fill' keeps a temporal base per trajectory, then spends residual budget globally by learned score. "
+            "'global_budget' keeps endpoint skeletons, then spends remaining budget globally by learned score."
+        ),
+    )
+    parser.add_argument(
+        "--mlqds_stratified_center_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional center-distance penalty inside stratified learned-score bins. "
+            "0.0 keeps pure learned top-score selection within each bin."
+        ),
+    )
+    parser.add_argument(
+        "--mlqds_min_learned_swaps",
+        type=int,
+        default=0,
+        help=(
+            "Diagnostic lower bound on learned replacements per trajectory for swap/local_swap/local_delta_swap modes. "
+            "Default 0 preserves temporal-fraction rounding exactly."
         ),
     )
     parser.add_argument(
@@ -399,9 +667,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--temporal_residual_label_mode",
         type=str,
-        default="temporal",
+        default="none",
         choices=["none", "temporal"],
-        help="Use labels directly, or train only on points not already kept by the temporal base.",
+        help=(
+            "Use labels directly, or explicitly train only on points not already kept by the temporal base. "
+            "Default 'none' avoids accidental residual-only training in direct manual runs."
+        ),
     )
     parser.add_argument(
         "--range_label_mode",
@@ -411,7 +682,178 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Range label construction mode. 'point_f1' is the old in-box point proxy; "
             "'usefulness' adds audit-proxy signal; 'usefulness_balanced' rescales component "
-            "mass toward RangeUseful audit weights."
+            "mass toward RangeUseful audit weights; 'usefulness_ship_balanced' reduces dense "
+            "query-hit ship dominance in point, entry/exit, and crossing support labels."
+        ),
+    )
+    parser.add_argument(
+        "--range_training_target_mode",
+        type=str,
+        default="point_value",
+        choices=RANGE_TRAINING_TARGET_MODES,
+        help=(
+            "Transform training range labels before fitting the model. 'point_value' uses the raw "
+            "expected-usefulness values; 'retained_frequency' trains on oracle retained-set membership "
+            "frequency across configured budgets; 'global_budget_retained_frequency' trains on "
+            "training-only global-budget oracle membership; 'historical_prior_retained_frequency' "
+            "distills that target through a leave-one-out query-free historical KNN teacher; "
+            "'marginal_coverage_frequency' trains on set-aware "
+            "neighborhood coverage targets; 'query_spine_frequency' trains on query-derived temporal "
+            "support anchors; 'query_residual_frequency' trains on train-query residual fill anchors; "
+            "'set_utility_frequency' trains on one-step train-query RangeUseful gain; "
+            "'local_swap_utility_frequency' trains on one-step train-query local-swap RangeUseful gain; "
+            "'local_swap_gain_cost_frequency' trains local-delta candidate value against removal cost; "
+            "'structural_retained_frequency' blends train workload usefulness with query-free "
+            "globality/uniqueness scores; "
+            "'continuity_retained_frequency' trains from boundary, temporal, gap, turn, and shape components."
+        ),
+    )
+    parser.add_argument(
+        "--range_target_balance_mode",
+        type=str,
+        default="none",
+        choices=RANGE_TARGET_BALANCE_MODES,
+        help=(
+            "Optional training-only range target mass rebalance. 'trajectory_unit_mass' rescales "
+            "each train trajectory's positive range-target mass to one before fitting a blind prior."
+        ),
+    )
+    parser.add_argument(
+        "--range_replicate_target_aggregation",
+        type=str,
+        default="label_mean",
+        choices=["label_mean", "label_max", "frequency_mean"],
+        help=(
+            "How multiple train range workloads become retained-frequency targets. "
+            "'label_mean' averages raw usefulness labels before target selection; "
+            "'label_max' takes the max raw usefulness label before target selection; "
+            "'frequency_mean' averages per-workload retained-frequency targets."
+        ),
+    )
+    parser.add_argument(
+        "--range_component_target_blend",
+        type=float,
+        default=1.0,
+        help=(
+            "When range_training_target_mode is component_retained_frequency or continuity_retained_frequency, "
+            "blend component-wise retained targets with the ordinary retained-frequency target. 1.0 uses components only."
+        ),
+    )
+    parser.add_argument(
+        "--range_temporal_target_blend",
+        type=float,
+        default=0.0,
+        help=(
+            "Blend a query-blind uniform temporal retained-frequency target into retained-frequency "
+            "range supervision. This changes training labels only; inference temporal_fraction is separate."
+        ),
+    )
+    parser.add_argument(
+        "--range_structural_target_blend",
+        type=float,
+        default=0.25,
+        help=(
+            "Training-only blend weight for structural_retained_frequency. "
+            "0.0 uses train workload usefulness only; 1.0 uses query-free structural scores only."
+        ),
+    )
+    parser.add_argument(
+        "--range_structural_target_source_mode",
+        type=str,
+        default="blend",
+        choices=["blend", "boost"],
+        help=(
+            "Source-score mode for structural_retained_frequency. 'blend' adds structural score support; "
+            "'boost' only re-ranks train-useful points by structural prominence."
+        ),
+    )
+    parser.add_argument(
+        "--range_target_budget_weight_power",
+        type=float,
+        default=0.0,
+        help=(
+            "Training-only weighting for retained-frequency target budgets. "
+            "0.0 averages configured budgets uniformly; positive values weight smaller compression ratios "
+            "as ratio ** -power before normalization."
+        ),
+    )
+    parser.add_argument(
+        "--range_marginal_target_radius_scale",
+        type=float,
+        default=0.50,
+        help=(
+            "Neighborhood radius, as a fraction of target point spacing, for "
+            "range_training_target_mode=marginal_coverage_frequency."
+        ),
+    )
+    parser.add_argument(
+        "--range_query_spine_fraction",
+        type=float,
+        default=0.10,
+        help=(
+            "Fraction of each in-query trajectory slice used as temporal support anchors for "
+            "range_training_target_mode=query_spine_frequency."
+        ),
+    )
+    parser.add_argument(
+        "--range_query_spine_mass_mode",
+        type=str,
+        default="hit_group",
+        choices=["hit_group", "query"],
+        help=(
+            "Mass normalization for query_spine_frequency labels. 'hit_group' preserves the old behavior: "
+            "each train query/trajectory-hit group gets unit mass before averaging queries. 'query' gives each "
+            "train query unit mass split across its hit trajectories."
+        ),
+    )
+    parser.add_argument(
+        "--range_query_residual_multiplier",
+        type=float,
+        default=1.0,
+        help=(
+            "Multiplier applied to budget_ratio * in-query point count when building "
+            "range_training_target_mode=query_residual_frequency labels."
+        ),
+    )
+    parser.add_argument(
+        "--range_query_residual_mass_mode",
+        type=str,
+        default="query",
+        choices=["query", "point"],
+        help=(
+            "Mass normalization for query_residual_frequency labels. 'query' gives each train query "
+            "unit mass; 'point' gives each selected residual anchor unit mass before averaging queries."
+        ),
+    )
+    parser.add_argument(
+        "--range_set_utility_multiplier",
+        type=float,
+        default=1.0,
+        help=(
+            "Multiplier applied to budget_ratio * train-query hit count when building "
+            "range_training_target_mode=set_utility_frequency, local_swap_utility_frequency, "
+            "or local_swap_gain_cost_frequency labels."
+        ),
+    )
+    parser.add_argument(
+        "--range_set_utility_candidate_limit",
+        type=int,
+        default=128,
+        help=(
+            "Maximum candidates per train query and budget for one-step marginal RangeUseful scoring. "
+            "Used by set_utility_frequency, local_swap_utility_frequency, and "
+            "local_swap_gain_cost_frequency. Use 0 to score every candidate."
+        ),
+    )
+    parser.add_argument(
+        "--range_set_utility_mass_mode",
+        type=str,
+        default="gain",
+        choices=["gain", "point", "query"],
+        help=(
+            "Target mass for set_utility_frequency/local_swap_utility_frequency/"
+            "local_swap_gain_cost_frequency labels: raw marginal gain/value, selected-point frequency, "
+            "or query-equal selected-point frequency."
         ),
     )
     parser.add_argument(
@@ -422,6 +864,23 @@ def build_parser() -> argparse.ArgumentParser:
             "Optional range-label boundary prior. 0.0 keeps pure point-F1 labels; "
             "1.0 gives in-box boundary-crossing points 2x raw weight before normalization."
         ),
+    )
+    parser.add_argument(
+        "--range_teacher_distillation_mode",
+        type=str,
+        default="none",
+        choices=RANGE_TEACHER_DISTILLATION_MODES,
+        help=(
+            "Train a query-aware range teacher and convert its train-workload signal into query-blind "
+            "student labels. 'rank_percentile' uses teacher rank labels; 'retained_frequency' uses "
+            "teacher retained-set membership across budget ratios."
+        ),
+    )
+    parser.add_argument(
+        "--range_teacher_epochs",
+        type=int,
+        default=4,
+        help="Epochs for the query-aware range teacher when teacher distillation is enabled.",
     )
     parser.add_argument(
         "--range_audit_compression_ratios",

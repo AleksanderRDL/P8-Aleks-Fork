@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-
-from models.trajectory_qds_model import TrajectoryQDSModel
 from training.scaler import FeatureScaler
 
 
@@ -15,7 +13,7 @@ from training.scaler import FeatureScaler
 class TrainingOutputs:
     """Training artifact container. See training/README.md for details."""
 
-    model: TrajectoryQDSModel
+    model: torch.nn.Module
     scaler: FeatureScaler
     labels: torch.Tensor
     labelled_mask: torch.Tensor
@@ -25,3 +23,4 @@ class TrainingOutputs:
     best_loss: float = float("inf")
     best_selection_score: float = 0.0
     target_diagnostics: dict[str, Any] = field(default_factory=dict)
+    fit_diagnostics: dict[str, Any] = field(default_factory=dict)

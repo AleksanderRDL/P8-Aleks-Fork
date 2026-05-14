@@ -95,6 +95,7 @@ def _run_config(
     run_label: str,
     data_sources: BenchmarkDataSources,
     results_dir: Path,
+    extra_args: list[str],
 ) -> dict[str, Any]:
     """Build a compact config file for a benchmark run."""
     return {
@@ -106,6 +107,7 @@ def _run_config(
         "seed": int(args.seed),
         "workloads": workloads,
         "run_label": run_label,
+        "coverage_targets": _parse_coverage_targets(args.coverage_targets),
         "data_sources": {
             "csv_path": data_sources.csv_path,
             "train_csv_path": data_sources.train_csv_path,
@@ -125,7 +127,7 @@ def _run_config(
         },
         "checkpoint_selection_metric": _profile_settings(args.profile).get("checkpoint_selection_metric"),
         "validation_score_every": int(args.validation_score_every),
-        "extra_args": _split_extra_args(args.extra_args),
+        "extra_args": extra_args,
         "continue_on_failure": bool(args.continue_on_failure),
     }
 
@@ -142,6 +144,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Optional label for the child run row/directory. Defaults to the selected profile name.",
+    )
+    parser.add_argument(
+        "--coverage_targets",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated query coverage targets. Runs one child per "
+            "coverage target and appends a cXX suffix to each child run label."
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -164,7 +175,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "CSV files as train/validation/eval days for the range workload-aware diagnostic benchmark."
         ),
     )
-    parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
+    parser.add_argument(
+        "--train_csv_path",
+        "--train_csv",
+        dest="train_csv_path",
+        type=str,
+        default=None,
+        help=(
+            "Dedicated train CSV path. A comma-separated list trains on multiple historical "
+            "CSV days while keeping validation/eval sources separate."
+        ),
+    )
     parser.add_argument(
         "--validation_csv_path",
         "--validation_csv",
@@ -207,11 +228,48 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_coverage_targets(raw: str | None) -> list[float]:
+    """Parse optional comma-separated coverage targets supplied as fractions or percents."""
+    if raw is None or not str(raw).strip():
+        return []
+    targets: list[float] = []
+    for part in str(raw).split(","):
+        value_raw = part.strip()
+        if not value_raw:
+            continue
+        try:
+            value = float(value_raw)
+        except ValueError as exc:
+            raise ValueError(f"Invalid coverage target {value_raw!r}.") from exc
+        if value > 1.0:
+            if value <= 100.0:
+                value = value / 100.0
+            else:
+                raise ValueError("coverage targets must be fractions in (0, 1] or percents in (0, 100].")
+        if value <= 0.0 or value > 1.0:
+            raise ValueError("coverage targets must be fractions in (0, 1] or percents in (0, 100].")
+        targets.append(float(value))
+    return targets
+
+
+def _coverage_label_suffix(target: float) -> str:
+    """Return a compact run-label suffix for a coverage target."""
+    percent = float(target) * 100.0
+    rounded = round(percent)
+    if abs(percent - rounded) < 1e-6:
+        return f"c{int(rounded):02d}"
+    return "c" + f"{percent:.2f}".replace(".", "p").rstrip("0").rstrip("p")
+
+
 def main() -> None:
     """Run the benchmark run."""
     args = _build_parser().parse_args()
     workloads = _parse_name_list(args.workloads, allowed=PURE_WORKLOADS, arg_name="--workloads")
     run_label = args.run_label or args.profile
+    coverage_targets = _parse_coverage_targets(args.coverage_targets)
+    extra_args = _split_extra_args(args.extra_args)
+    if coverage_targets and "--query_coverage" in extra_args:
+        raise ValueError("--coverage_targets cannot be combined with --query_coverage inside --extra_args.")
     data_sources = _resolve_data_sources(args)
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +288,7 @@ def main() -> None:
         run_label=run_label,
         data_sources=data_sources,
         results_dir=results_dir,
+        extra_args=extra_args,
     )
     write_json(results_dir / "run_config.json", run_config)
     status_payload = write_status(
@@ -289,54 +348,82 @@ def main() -> None:
         cache_warmup = _warm_csv_caches(args, data_sources)
         measured_include_refresh = bool(args.refresh_cache and not cache_warmup)
 
-        for workload in workloads:
-            run_dir = _child_run_dir(results_dir, workload, run_label, len(workloads))
-            command = [
-                sys.executable,
-                "-m",
-                "experiments.run_ais_experiment",
-                *_profile_args(
-                    args.profile,
-                    args,
-                    data_sources,
-                    include_refresh_cache=measured_include_refresh,
-                ),
-                "--workload",
-                workload,
-                "--seed",
-                str(args.seed),
-                "--results_dir",
-                str(run_dir),
-                "--validation_score_every",
-                str(args.validation_score_every),
-                *_split_extra_args(args.extra_args),
+        coverage_runs = (
+            [(None, run_label)]
+            if not coverage_targets
+            else [
+                (target, f"{run_label}_{_coverage_label_suffix(target)}")
+                for target in coverage_targets
             ]
-            print(f"[benchmark] {workload}/{run_label}: {' '.join(shlex.quote(part) for part in command)}", flush=True)
-            stdout_path = run_dir / "stdout.log"
-            proc = _run_capture_streaming(command, cwd=_qds_root(), stdout_path=stdout_path)
-            run_json_path = run_dir / "example_run.json"
-            run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
-            timings = proc.timings
-            row = _row_from_run(
-                workload=workload,
-                run_label=run_label,
-                command=command,
-                returncode=proc.returncode,
-                elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
-                run_dir=run_dir,
-                stdout_path=stdout_path,
-                run_json_path=run_json_path,
-                timings=timings,
-                run_json=run_json,
+        )
+        for coverage_target, child_run_label in coverage_runs:
+            coverage_args = (
+                ["--query_coverage", f"{float(coverage_target):.6g}"]
+                if coverage_target is not None
+                else []
             )
-            rows.append(row)
-            failures += int(proc.returncode != 0)
-            if proc.returncode != 0:
+            for workload in workloads:
+                run_dir = _child_run_dir(results_dir, workload, child_run_label, len(workloads))
+                command = [
+                    sys.executable,
+                    "-m",
+                    "experiments.run_ais_experiment",
+                    *_profile_args(
+                        args.profile,
+                        args,
+                        data_sources,
+                        include_refresh_cache=measured_include_refresh,
+                    ),
+                    "--workload",
+                    workload,
+                    "--seed",
+                    str(args.seed),
+                    "--results_dir",
+                    str(run_dir),
+                    "--validation_score_every",
+                    str(args.validation_score_every),
+                    *extra_args,
+                    *coverage_args,
+                ]
                 print(
-                    f"[benchmark] {workload}/{run_label} failed with returncode={proc.returncode}; "
-                    f"see {stdout_path}",
+                    f"[benchmark] {workload}/{child_run_label}: "
+                    f"{' '.join(shlex.quote(part) for part in command)}",
                     flush=True,
                 )
+                stdout_path = run_dir / "stdout.log"
+                proc = _run_capture_streaming(command, cwd=_qds_root(), stdout_path=stdout_path)
+                run_json_path = run_dir / "example_run.json"
+                run_json = json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else None
+                timings = proc.timings
+                row = _row_from_run(
+                    workload=workload,
+                    run_label=child_run_label,
+                    command=command,
+                    returncode=proc.returncode,
+                    elapsed_seconds=float(getattr(proc, "elapsed_seconds", 0.0)),
+                    run_dir=run_dir,
+                    stdout_path=stdout_path,
+                    run_json_path=run_json_path,
+                    timings=timings,
+                    run_json=run_json,
+                    data_sources={
+                        "csv_path": data_sources.csv_path,
+                        "train_csv_path": data_sources.train_csv_path,
+                        "validation_csv_path": data_sources.validation_csv_path,
+                        "eval_csv_path": data_sources.eval_csv_path,
+                        "selected_cleaned_csv_files": list(data_sources.selected_cleaned_csv_files),
+                    },
+                )
+                rows.append(row)
+                failures += int(proc.returncode != 0)
+                if proc.returncode != 0:
+                    print(
+                        f"[benchmark] {workload}/{child_run_label} failed with returncode={proc.returncode}; "
+                        f"see {stdout_path}",
+                        flush=True,
+                    )
+                if failures and not args.continue_on_failure:
+                    break
             if failures and not args.continue_on_failure:
                 break
     except KeyboardInterrupt:

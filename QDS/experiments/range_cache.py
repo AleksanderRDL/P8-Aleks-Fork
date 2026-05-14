@@ -20,6 +20,9 @@ from training.importance_labels import (
 )
 
 RANGE_DIAGNOSTICS_CACHE_SCHEMA_VERSION = 2
+RANGE_COMPONENT_LABEL_MODES = frozenset(
+    {"usefulness", "usefulness_balanced", "usefulness_ship_balanced"}
+)
 
 
 @dataclass
@@ -67,7 +70,7 @@ def ensure_range_runtime_labels(
         return runtime_cache.labels, runtime_cache.labelled_mask
 
     range_label_mode = str(range_label_mode).lower()
-    if range_label_mode in {"usefulness", "usefulness_balanced"}:
+    if range_label_mode in RANGE_COMPONENT_LABEL_MODES:
         labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
             points=points,
             boundaries=boundaries,
@@ -220,11 +223,28 @@ def load_range_diagnostics_cache(
                 if isinstance(component_labels, dict)
                 else None
             )
+            range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness")).lower()
+            if range_label_mode in RANGE_COMPONENT_LABEL_MODES and runtime_cache.component_labels is None:
+                runtime_cache.labels = None
+                runtime_cache.labelled_mask = None
+                return None
             runtime_cache.query_cache = EvaluationQueryCache.for_workload(points, boundaries, scored_queries)
         summary = cached["summary"]
         rows = cached["rows"]
         if not isinstance(summary, dict) or not isinstance(rows, list):
             return None
+        range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness")).lower()
+        if range_label_mode in RANGE_COMPONENT_LABEL_MODES:
+            label_summary = (
+                summary.get("range_signal", {}).get("labels", {})
+                if isinstance(summary.get("range_signal"), dict)
+                else {}
+            )
+            if (
+                not isinstance(label_summary, dict)
+                or label_summary.get("component_label_mass_basis") == "unavailable"
+            ):
+                return None
         summary = dict(summary)
         cache_info = dict(summary.get("range_diagnostics_cache") or {})
         cache_info.update({"hit": True, "path": str(json_path), "tensor_path": str(tensor_path), "key": key})
@@ -265,6 +285,11 @@ def _load_range_label_tensor_cache(
             if isinstance(component_labels, dict)
             else None
         )
+        range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness")).lower()
+        if range_label_mode in RANGE_COMPONENT_LABEL_MODES and runtime_cache.component_labels is None:
+            runtime_cache.labels = None
+            runtime_cache.labelled_mask = None
+            return False
         print(f"  range label cache hit: {tensor_path}", flush=True)
         return True
     except (OSError, TypeError, RuntimeError) as exc:
@@ -378,8 +403,8 @@ def prepare_range_label_cache(
         key=cache_key,
         runtime_cache=runtime_cache,
     ):
-        assert runtime_cache.labels is not None
-        assert runtime_cache.labelled_mask is not None
+        if runtime_cache.labels is None or runtime_cache.labelled_mask is None:
+            raise RuntimeError("Range label tensor cache loaded without labels and labelled_mask.")
         return runtime_cache.labels, runtime_cache.labelled_mask
 
     range_label_mode = str(getattr(config.model, "range_label_mode", "usefulness")).lower()
@@ -388,7 +413,7 @@ def prepare_range_label_cache(
         if range_boundary_prior_weight is not None
         else getattr(config.model, "range_boundary_prior_weight", 0.0)
     )
-    if range_label_mode in {"usefulness", "usefulness_balanced"}:
+    if range_label_mode in RANGE_COMPONENT_LABEL_MODES:
         labels, labelled_mask, component_labels = compute_typed_importance_labels_with_range_components(
             points=points,
             boundaries=boundaries,

@@ -16,12 +16,11 @@ def _model_state_on_cpu(model: torch.nn.Module) -> dict[str, torch.Tensor]:
 def _workload_map_tensor(workload_map: dict[str, float], device: torch.device) -> torch.Tensor:
     """Return normalized pure-workload weights in query-type ID order."""
     normalized = normalize_pure_workload_map(workload_map)
-    values = torch.tensor(
+    return torch.tensor(
         [float(normalized.get("range", 0.0))],
         dtype=torch.float32,
         device=device,
     )
-    return values
 
 
 def _query_frequency_workload_map(workload: TypedQueryWorkload) -> dict[str, float]:

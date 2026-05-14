@@ -4,21 +4,22 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
 import torch
 
 from queries.workload import TypedQueryWorkload
-from simplification.mlqds_scoring import simplify_mlqds_predictions, workload_type_head
+from simplification.mlqds_scoring import mlqds_simplification_scores, workload_type_head
 from simplification.simplify_trajectories import (
     evenly_spaced_indices,
+    simplify_with_global_score_budget,
     simplify_with_temporal_score_hybrid,
     simplify_with_scores,
 )
 from training.training_outputs import TrainingOutputs
-from training.inference import default_inference_device, windowed_predict
+from training.inference import _is_workload_blind_model, _model_point_dim, default_inference_device, windowed_predict
 from training.model_features import build_model_point_features_for_dim
 
 
@@ -38,6 +39,30 @@ class Method(Protocol):
 
 
 @dataclass
+class FrozenMaskMethod:
+    """Evaluation wrapper for a retained mask frozen before query scoring."""
+
+    name: str
+    retained_mask: torch.Tensor
+    latency_ms: float = 0.0
+
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
+        """Return the precomputed retained mask."""
+        del boundaries, compression_ratio
+        if int(self.retained_mask.numel()) != int(points.shape[0]):
+            raise ValueError(
+                "Frozen retained mask must match point count: "
+                f"got {int(self.retained_mask.numel())}, expected {int(points.shape[0])}."
+            )
+        return self.retained_mask.to(device=points.device, dtype=torch.bool)
+
+
+@dataclass
 class MLQDSMethod:
     """Query-aware model-based simplification method. See evaluation/README.md for details."""
 
@@ -51,11 +76,129 @@ class MLQDSMethod:
     temporal_fraction: float = 0.50
     diversity_bonus: float = 0.0
     hybrid_mode: str = "fill"
+    stratified_center_weight: float = 0.0
+    min_learned_swaps: int = 0
     range_geometry_blend: float = 0.0
     range_geometry_scores: torch.Tensor | None = None
+    trajectory_mmsis: list[int] | None = None
     inference_device: str | torch.device | None = None
     amp_mode: str = "off"
     inference_batch_size: int = 16
+    _score_cache_key: tuple[object, ...] | None = field(default=None, init=False, repr=False)
+    _score_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
+
+    def _current_score_cache_key(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+    ) -> tuple[object, ...]:
+        """Return a conservative key for scores that are reusable across budgets."""
+        geometry_key: tuple[object, ...] | None = None
+        if self.range_geometry_scores is not None:
+            geometry_key = (
+                int(self.range_geometry_scores.data_ptr()),
+                tuple(int(dim) for dim in self.range_geometry_scores.shape),
+                str(self.range_geometry_scores.device),
+                str(self.range_geometry_scores.dtype),
+            )
+        query_key: tuple[object, ...] | None = None
+        if self.workload.query_features is not None:
+            query_key = (
+                int(self.workload.query_features.data_ptr()),
+                tuple(int(dim) for dim in self.workload.query_features.shape),
+                str(self.workload.query_features.device),
+                str(self.workload.query_features.dtype),
+            )
+        type_id_key: tuple[object, ...] | None = None
+        if self.workload.type_ids is not None:
+            type_id_key = (
+                int(self.workload.type_ids.data_ptr()),
+                tuple(int(dim) for dim in self.workload.type_ids.shape),
+                str(self.workload.type_ids.device),
+                str(self.workload.type_ids.dtype),
+            )
+        return (
+            id(self.trained.model),
+            id(self.trained.scaler),
+            int(points.data_ptr()),
+            tuple(int(dim) for dim in points.shape),
+            str(points.device),
+            str(points.dtype),
+            tuple((int(start), int(end)) for start, end in boundaries),
+            str(self.workload_type),
+            query_key,
+            type_id_key,
+            str(self.score_mode),
+            float(self.score_temperature),
+            float(self.rank_confidence_weight),
+            float(self.range_geometry_blend),
+            geometry_key,
+            tuple(int(mmsi) for mmsi in self.trajectory_mmsis) if self.trajectory_mmsis is not None else None,
+            int(self.min_learned_swaps),
+            str(self.inference_device),
+            str(self.amp_mode),
+            int(self.inference_batch_size),
+        )
+
+    def _simplification_scores(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        *,
+        workload_blind: bool,
+    ) -> torch.Tensor:
+        """Return cached query/workload scores for budget-independent retention."""
+        cache_key = self._current_score_cache_key(points, boundaries)
+        if self._score_cache_key == cache_key and self._score_cache is not None:
+            return self._score_cache
+
+        if self.range_geometry_blend >= 1.0 and self.range_geometry_scores is not None:
+            pred = torch.zeros((points.shape[0],), dtype=torch.float32, device=points.device)
+        else:
+            point_dim = _model_point_dim(self.trained.model)
+            model_points = build_model_point_features_for_dim(
+                points,
+                self.workload,
+                point_dim,
+                boundaries=boundaries,
+                trajectory_mmsis=self.trajectory_mmsis,
+            )
+            if workload_blind:
+                norm_points = self.trained.scaler.transform_points(model_points)
+                norm_queries = None
+                query_type_ids = None
+            else:
+                norm_points, norm_queries = self.trained.scaler.transform(model_points, self.workload.query_features)
+                query_type_ids = self.workload.type_ids
+            device = (
+                torch.device(self.inference_device)
+                if self.inference_device is not None
+                else default_inference_device()
+            )
+            pred = windowed_predict(
+                model=self.trained.model,
+                norm_points=norm_points,
+                boundaries=boundaries,
+                queries=norm_queries,
+                query_type_ids=query_type_ids,
+                batch_size=self.inference_batch_size,
+                device=device,
+                amp_mode=self.amp_mode,
+            )
+
+        scores = mlqds_simplification_scores(
+            pred,
+            boundaries,
+            self.workload_type,
+            score_mode=self.score_mode,
+            score_temperature=self.score_temperature,
+            rank_confidence_weight=self.rank_confidence_weight,
+            range_geometry_scores=self.range_geometry_scores,
+            range_geometry_blend=self.range_geometry_blend,
+        )
+        self._score_cache_key = cache_key
+        self._score_cache = scores
+        return scores
 
     def simplify(
         self,
@@ -74,42 +217,23 @@ class MLQDSMethod:
         """
         if not self.workload.typed_queries:
             return torch.ones((points.shape[0],), dtype=torch.bool, device=points.device)
-
-        if self.range_geometry_blend >= 1.0 and self.range_geometry_scores is not None:
-            pred = torch.zeros((points.shape[0],), dtype=torch.float32, device=points.device)
-        else:
-            point_dim = self.trained.model.point_dim
-            model_points = build_model_point_features_for_dim(points, self.workload, point_dim)
-            norm_points, norm_queries = self.trained.scaler.transform(model_points, self.workload.query_features)
-            device = (
-                torch.device(self.inference_device)
-                if self.inference_device is not None
-                else default_inference_device()
-            )
-            pred = windowed_predict(
-                model=self.trained.model,
-                norm_points=norm_points,
-                boundaries=boundaries,
-                queries=norm_queries,
-                query_type_ids=self.workload.type_ids,
-                batch_size=self.inference_batch_size,
-                device=device,
-                amp_mode=self.amp_mode,
+        workload_blind = _is_workload_blind_model(self.trained.model)
+        if workload_blind and self.range_geometry_blend > 0.0:
+            raise ValueError(
+                "workload_blind_range evaluation cannot use mlqds_range_geometry_blend; "
+                "eval labels would affect the retained mask."
             )
 
-        return simplify_mlqds_predictions(
-            pred,
+        scores = self._simplification_scores(points, boundaries, workload_blind=workload_blind)
+        return simplify_with_temporal_score_hybrid(
+            scores,
             boundaries,
-            self.workload_type,
             compression_ratio,
             temporal_fraction=self.temporal_fraction,
             diversity_bonus=self.diversity_bonus,
             hybrid_mode=self.hybrid_mode,
-            score_mode=self.score_mode,
-            score_temperature=self.score_temperature,
-            rank_confidence_weight=self.rank_confidence_weight,
-            range_geometry_scores=self.range_geometry_scores,
-            range_geometry_blend=self.range_geometry_blend,
+            stratified_center_weight=self.stratified_center_weight,
+            min_learned_swaps=self.min_learned_swaps,
         )
 
 
@@ -147,6 +271,8 @@ class ScoreHybridMethod:
     temporal_fraction: float = 0.50
     diversity_bonus: float = 0.0
     hybrid_mode: str = "fill"
+    stratified_center_weight: float = 0.0
+    min_learned_swaps: int = 0
 
     def simplify(
         self,
@@ -168,6 +294,37 @@ class ScoreHybridMethod:
             temporal_fraction=self.temporal_fraction,
             diversity_bonus=self.diversity_bonus,
             hybrid_mode=self.hybrid_mode,
+            stratified_center_weight=self.stratified_center_weight,
+            min_learned_swaps=self.min_learned_swaps,
+        )
+
+
+@dataclass
+class ScoreGlobalBudgetMethod:
+    """Diagnostic global score allocation with per-trajectory skeleton safeguards."""
+
+    name: str
+    scores: torch.Tensor
+    min_points_per_trajectory: int = 2
+
+    def simplify(
+        self,
+        points: torch.Tensor,
+        boundaries: list[tuple[int, int]],
+        compression_ratio: float,
+    ) -> torch.Tensor:
+        """Retain endpoint skeletons, then spend remaining budget by global score."""
+        if int(self.scores.numel()) != int(points.shape[0]):
+            raise ValueError(
+                "ScoreGlobalBudgetMethod scores must match flattened points: "
+                f"got {int(self.scores.numel())}, expected {int(points.shape[0])}."
+            )
+        scores = self.scores.to(device=points.device, dtype=torch.float32)
+        return simplify_with_global_score_budget(
+            scores,
+            boundaries,
+            compression_ratio,
+            min_points_per_trajectory=self.min_points_per_trajectory,
         )
 
 

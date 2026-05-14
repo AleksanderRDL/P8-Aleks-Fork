@@ -11,11 +11,11 @@ from evaluation.baselines import UniformTemporalMethod
 from evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
 from experiments.experiment_config import ModelConfig
 from experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
-from models.trajectory_qds_model import TrajectoryQDSModel
 from queries.query_types import single_workload_type
 from queries.workload import TypedQueryWorkload
 from simplification.mlqds_scoring import simplify_mlqds_predictions
 from training.model_features import build_model_point_features_for_dim
+from training.inference import _is_workload_blind_model, _model_point_dim
 from training.scaler import FeatureScaler
 from training.training_setup import _pure_query_type_id
 from training.training_windows import _trajectory_batch_to_device
@@ -25,7 +25,7 @@ PredictWorkloadLogits = Callable[..., torch.Tensor]
 
 
 def _predict_workload_logits(
-    model: TrajectoryQDSModel,
+    model: torch.nn.Module,
     scaler: FeatureScaler,
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -34,12 +34,18 @@ def _predict_workload_logits(
     device: torch.device,
 ) -> torch.Tensor:
     """Predict per-point pure-workload scores for exact validation-score diagnostics."""
-    model_points = build_model_point_features_for_dim(points, workload, model.point_dim)
-    norm_points, norm_queries = scaler.transform(model_points, workload.query_features)
+    point_dim = _model_point_dim(model)
+    model_points = build_model_point_features_for_dim(points, workload, point_dim)
+    if _is_workload_blind_model(model):
+        norm_points = scaler.transform_points(model_points)
+        norm_queries = None
+        type_ids_dev = None
+    else:
+        norm_points, norm_queries = scaler.transform(model_points, workload.query_features)
+        type_ids_dev = workload.type_ids.to(device)
+        _pure_query_type_id(workload.type_ids)
     norm_points_dev = norm_points.to(device)
-    norm_queries_dev = norm_queries.to(device)
-    type_ids_dev = workload.type_ids.to(device)
-    _pure_query_type_id(workload.type_ids)
+    norm_queries_dev = None if norm_queries is None else norm_queries.to(device)
     windows = build_trajectory_windows(
         points=norm_points,
         boundaries=boundaries,
@@ -77,7 +83,7 @@ def _predict_workload_logits(
 
 
 def _validation_checkpoint_scores(
-    model: TrajectoryQDSModel,
+    model: torch.nn.Module,
     scaler: FeatureScaler,
     trajectories: list[torch.Tensor],
     boundaries: list[tuple[int, int]],
@@ -115,6 +121,8 @@ def _validation_checkpoint_scores(
         rank_confidence_weight=float(getattr(model_config, "mlqds_rank_confidence_weight", 0.15)),
         range_geometry_scores=range_geometry_scores,
         range_geometry_blend=float(getattr(model_config, "mlqds_range_geometry_blend", 0.0)),
+        stratified_center_weight=float(getattr(model_config, "mlqds_stratified_center_weight", 0.0)),
+        min_learned_swaps=int(getattr(model_config, "mlqds_min_learned_swaps", 0)),
     )
     answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
@@ -163,7 +171,7 @@ def _validation_checkpoint_scores(
 
 
 def _validation_query_score(
-    model: TrajectoryQDSModel,
+    model: torch.nn.Module,
     scaler: FeatureScaler,
     trajectories: list[torch.Tensor],
     boundaries: list[tuple[int, int]],

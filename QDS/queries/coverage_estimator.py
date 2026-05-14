@@ -7,9 +7,11 @@ from dataclasses import asdict, dataclass
 import torch
 
 from queries.query_generator import (
+    DEFAULT_RANGE_ANCHOR_MODE,
     DEFAULT_RANGE_FOOTPRINT_JITTER,
     DEFAULT_RANGE_SPATIAL_FRACTION,
     DEFAULT_RANGE_TIME_FRACTION,
+    DEFAULT_RANGE_TIME_DOMAIN_MODE,
     generate_typed_query_workload,
 )
 
@@ -33,6 +35,8 @@ class RangeCoverageEstimate:
     range_spatial_fraction: float
     range_time_fraction: float
     range_footprint_jitter: float
+    range_time_domain_mode: str
+    range_anchor_mode: str
 
     def to_dict(self) -> dict[str, int | float | str | None]:
         """Serialize estimate for JSON artifacts."""
@@ -58,6 +62,9 @@ def estimate_range_coverage(
     range_spatial_km: float | None = None,
     range_time_hours: float | None = None,
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
+    range_max_coverage_overshoot: float | None = None,
+    range_time_domain_mode: str = DEFAULT_RANGE_TIME_DOMAIN_MODE,
+    range_anchor_mode: str = DEFAULT_RANGE_ANCHOR_MODE,
 ) -> list[RangeCoverageEstimate]:
     """Estimate range workload point coverage on a deterministic trajectory sample."""
     sampled_trajectories = sample_trajectories_by_stride(trajectories, sample_stride)
@@ -81,6 +88,9 @@ def estimate_range_coverage(
                 range_spatial_km=range_spatial_km,
                 range_time_hours=range_time_hours,
                 range_footprint_jitter=range_footprint_jitter,
+                range_max_coverage_overshoot=range_max_coverage_overshoot,
+                range_time_domain_mode=range_time_domain_mode,
+                range_anchor_mode=range_anchor_mode,
             )
             estimates.append(
                 RangeCoverageEstimate(
@@ -99,6 +109,8 @@ def estimate_range_coverage(
                     range_spatial_fraction=float(range_spatial_fraction),
                     range_time_fraction=float(range_time_fraction),
                     range_footprint_jitter=float(range_footprint_jitter),
+                    range_time_domain_mode=str(range_time_domain_mode),
+                    range_anchor_mode=str(range_anchor_mode),
                 )
             )
     return estimates

@@ -36,10 +36,21 @@ Range generation controls:
 - `range_spatial_fraction`, `range_time_fraction`: dataset-relative footprint.
 - `range_spatial_km`, `range_time_hours`: absolute half-window footprint.
 - `range_footprint_jitter`: random footprint scaling.
+- `range_time_domain_mode`: `dataset` uses global time bounds; `anchor_day`
+  clamps each query to the 24-hour source/calendar day containing its anchor.
+- `range_anchor_mode`: `mixed_density` keeps the historical 70% density-biased
+  / 30% uniform anchor prior; `dense`, `uniform`, and `sparse` are explicit
+  generator settings for ablation and held-out workload tests.
+- `range_train_footprints`: experiment-level train-only footprint families,
+  expressed as `spatial_km:time_hours`, cycled across training workload
+  replicates. Eval/checkpoint workloads still use the ordinary footprint flags.
 - `target_coverage`: point-level query-signal coverage target.
 - `max_queries`: optional cap when generation continues past `n_queries`.
-
-Range anchors use density-biased sampling mixed with uniform sampling.
+- `range_max_coverage_overshoot`: optional absolute tolerance above
+  `target_coverage`; candidate boxes that would push union point coverage over
+  `target + tolerance` are rejected. Accepts fractions or percentages. Use
+  this for coverage-grid experiments where a nominal 5%, 10%, 15%, or 30%
+  workload must stay near its cell.
 
 Use `scripts/estimate_range_coverage.py` before changing query count,
 footprint, or coverage targets.

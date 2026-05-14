@@ -34,8 +34,9 @@ Each trajectory tensor has 8 columns:
 - Groups by vessel, sorts by timestamp, and drops segments shorter than 4 points.
 - Splits one MMSI track when consecutive points exceed `max_time_gap_seconds`
   (`3600` by default).
-- `max_points_per_segment`, `max_segments`, and `min_points_per_segment` are
-  smoke/runtime controls, not benchmark-quality defaults.
+- `max_points_per_segment`, `max_segments`, split-specific segment caps, and
+  `min_points_per_segment` are smoke/runtime controls, not benchmark-quality
+  defaults.
 - `return_audit=True` returns invalid-row, duplicate, segmentation, and
   downsampling diagnostics.
 

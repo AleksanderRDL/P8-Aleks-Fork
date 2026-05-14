@@ -38,20 +38,44 @@ PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
 ## Data Modes
 
 - `--train_csv_path`, `--validation_csv_path`, `--eval_csv_path`: explicit
-  train, checkpoint-validation, and final-eval days.
+  train, checkpoint-validation, and final-eval sources. Each accepts a
+  comma-separated CSV list for multi-day splits.
 - `--train_csv_path`, `--eval_csv_path`: validation is split from train data.
+  The default `--validation_split_mode random` samples from combined train
+  trajectories. Use `--validation_split_mode source_stratified` to hold out
+  trajectories from each train CSV source for checkpoint-selection diagnostics.
+- `--train_csv_path day1.csv,day2.csv,...`: train on multiple historical CSV
+  days while keeping checkpoint-validation and final-eval sources explicit and
+  distinct. Validation and eval can use the same comma-list syntax for
+  week-level held-out evaluation.
 - `--csv_path`: one file or sorted directory split internally.
 - no CSV path: deterministic synthetic data.
 
 CSV loading segments MMSI tracks by `--max_time_gap_seconds` and can cache the
 post-segmentation tensors with `--cache_dir`.
+`--max_segments` is the global segment cap. In explicit split-CSV mode,
+`--train_max_segments`, `--validation_max_segments`, and `--eval_max_segments`
+can override it per split; unset split caps fall back to `--max_segments`.
 
-## Active Profile
+## Active Profiles
 
-`range_workload_aware_diagnostic` is the active implemented range profile. It
+`range_workload_aware_diagnostic` is the workload-aware diagnostic profile. It
 uses `model_type=range_aware`, so it may see the supplied range workload during
 compression. Treat it as diagnostic/teacher evidence, not final workload-blind
 evidence.
+
+The workload-blind benchmark profiles are:
+
+- `range_workload_blind_expected_usefulness`
+- `range_workload_blind_retained_frequency`
+- `range_workload_blind_teacher_distill`
+
+Those profiles freeze retained masks before held-out eval query scoring and
+evaluate the full compression audit grid. They use a small `n_queries=8`
+minimum query floor so `query_coverage` controls coverage. Do not raise that
+floor for final claims unless you explicitly want a high-query workload
+setting; a large floor can keep adding duplicate or near-duplicate queries after
+coverage is already reached.
 
 | Setting | Value |
 | --- | --- |
@@ -59,13 +83,18 @@ evidence.
 | Data | first three sorted cleaned CSVs = train, validation, eval |
 | Coverage target | default `20%`; required sweep `5%,10%,15%,30%` |
 | Compression | default `5%`; required sweep `1%,2%,5%,10%,15%,20%,30%` |
-| Range footprint | `2.2 km`, `5.0 h`, jitter `0.0` |
+| Range footprint | `2.2 km`, `5.0 h`, jitter `0.0`, `anchor_day` time clamp |
 | Training | `8` epochs, early stopping patience `5`, `budget_topk` loss |
 | Checkpointing | `checkpoint_score_variant=range_usefulness`, `checkpoint_selection_metric=uniform_gap` |
 | Runtime | BF16 AMP, TF32 allowed, train/inference batch size `64`, query chunk `2048` |
 
 Keep durable defaults in `benchmark_profiles.py`. Use queue rows or
 `BENCHMARK_CHILD_EXTRA_ARGS` for one-off variations.
+
+For explicit coverage-grid checks, `benchmark_runner.py` accepts
+`--coverage_targets 0.05,0.10,0.15,0.30`. The runner creates one child run per
+coverage target and appends `c05`, `c10`, etc. to the child run label. Do not
+also pass `--query_coverage` in `--extra_args` for the same benchmark.
 
 ## Benchmark Commands
 
@@ -98,11 +127,32 @@ Use this before changing query count, footprint, or coverage target:
   --target_coverage 0.20 \
   --range_spatial_km 2.2 \
   --range_time_hours 5.0 \
-  --range_footprint_jitter 0.0
+  --range_time_domain_mode anchor_day \
+  --range_footprint_jitter 0.0 \
+  --range_max_coverage_overshoot 0.02
 ```
 
 `query_coverage` is point-level query-signal coverage. If `max_queries` exceeds
 `n_queries`, generation continues until coverage is reached or the cap is hit.
+`n_queries` is still a minimum. For coverage-sweep claims, keep it low enough
+that it does not dominate the requested `query_coverage`; use the generated
+query count and actual coverage recorded in `example_run.json` as the evidence.
+`range_max_coverage_overshoot` is an optional absolute upper tolerance and
+accepts fractions or percentages. With `query_coverage=0.05` and
+`range_max_coverage_overshoot=0.02`, generated
+workloads reject boxes that would push union point coverage above 7%.
+
+`range_anchor_mode` controls the eval/checkpoint workload anchor prior.
+`range_train_anchor_modes` is an optional comma-separated list cycled across
+training workload replicates only. Use it to train blind supervision against
+multiple generated workload priors while keeping held-out eval queries unseen.
+`range_train_footprints` similarly cycles train-only absolute footprint
+families such as `1.1:2.5,2.2:5.0,4.4:10.0`; eval and checkpoint selection keep
+the configured `range_spatial_km` / `range_time_hours` footprint.
+For replicated retained-frequency targets, `range_replicate_target_aggregation`
+can average raw labels (`label_mean`), take the raw-label upper envelope
+(`label_max`), or average per-workload retained-frequency targets
+(`frequency_mean`).
 
 ## Artifacts
 
@@ -123,4 +173,8 @@ Artifact layout and cleanup rules live in [`../../artifacts/README.md`](../../ar
 
 For final workload-blind claims, choose retained masks before generating or
 passing eval queries into the model, feature builder, or checkpoint selector.
-The active implementation has not completed that protocol yet.
+Current workload-blind profiles record protocol flags in `example_run.json` and
+benchmark rows. Treat a run as invalid for final claims if
+`workload_blind_protocol.primary_masks_frozen_before_eval_query_scoring` or
+`workload_blind_protocol.audit_masks_frozen_before_eval_query_scoring` is
+false.
