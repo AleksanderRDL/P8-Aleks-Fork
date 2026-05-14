@@ -1,37 +1,20 @@
 # P8
 
-Mobility project centered on AIS data, with two main workstreams:
+AIS data tooling and query-driven trajectory simplification research.
 
-- Data cleaning and database ingestion/query tooling (root + `ais_pipeline/`)
-- Machine-learning query-driven simplification research in [`QDS/`](QDS/)
+## Workstreams
 
-## Documentation Convention
+| Area | Path | Purpose |
+| --- | --- | --- |
+| Cleaning pipeline | [`ais_pipeline/`](ais_pipeline/) | Spark-based AIS CSV cleaning. |
+| Database tools | [`db/`](db/) | Local PostGIS setup, CSV import, and range-query checks. |
+| QDS research | [`QDS/`](QDS/) | ML trajectory simplification, benchmarks, and redesign work. |
+| Data folders | [`AISDATA/`](AISDATA/) | Raw and cleaned AIS source data. |
+| Sprint notes | [`Aleks-Sprint/`](Aleks-Sprint/) | Active QDS redesign reference and short progress log. |
 
-This repository uses folder-local `README.md` files as the source of
-documentation.
+## Quick Start
 
-- Each folder with project context relevant for documentation should contain its own `README.md`.
-
-## Documentation Map
-
-- [`ais_pipeline/README.md`](ais_pipeline/README.md): root AIS cleaning pipeline layout.
-- [`QDS/README.md`](QDS/README.md): ML simplification project overview and usage.
-- [`db/README.md`](db/README.md): PostGIS setup, lifecycle, and SQL checks.
-- [`ais_pipeline/environment/README.md`](ais_pipeline/environment/README.md): Java/Hadoop/Spark bootstrap helpers.
-- [`ais_pipeline/tools/README.md`](ais_pipeline/tools/README.md): utility scripts and experiments.
-- [`AISDATA/README.md`](AISDATA/README.md): data folder conventions and expected files.
-
-## Project Layout (Top-Level)
-
-- `ais_pipeline/`: root AIS Spark cleaning pipeline package.
-- `db/`: local PostGIS compose, SQL assets, and DB operational scripts.
-- `AISDATA/`: AIS input/output data files.
-- `QDS/`: ML simplification research project.
-- `frontend/`: frontend application.
-- `Makefile`: shortcuts for common local commands.
-- `.env.example`: example runtime/environment variables.
-
-## Quick Start (Root Pipeline)
+Root cleaning pipeline:
 
 ```bash
 python -m venv .venv
@@ -40,27 +23,28 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Direct module entrypoint (equivalent):
+QDS work:
 
 ```bash
-python -m ais_pipeline
+cd QDS
+PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
+make check-env
+make test
 ```
 
-## Frontend Quick Start
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-## Makefile Shortcuts
+Database helpers:
 
 ```bash
 make db-up
 make db-smoke
-make db-import
-make db-query
-make pipeline
-make frontend-dev
+make db-import CSV=AISDATA/cleaned/<file-or-directory>
+make db-query QUERY_ARGS="--help"
 ```
+
+## Documentation
+
+- [`QDS/README.md`](QDS/README.md): QDS usage and where to look next.
+- [`Aleks-Sprint/range-training-redesign.md`](Aleks-Sprint/range-training-redesign.md): current range-training redesign.
+- [`AISDATA/README.md`](AISDATA/README.md): data folder conventions.
+- [`ais_pipeline/README.md`](ais_pipeline/README.md): cleaning pipeline layout.
+- [`db/README.md`](db/README.md): database lifecycle and scripts.

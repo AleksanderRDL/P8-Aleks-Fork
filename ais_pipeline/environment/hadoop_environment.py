@@ -114,11 +114,6 @@ def _local_hadoop_home(project_dir: Path) -> Optional[Path]:
         if _is_hadoop_home(candidate):
             return candidate.resolve()
 
-    # Legacy fallback for old project layout.
-    legacy_home = project_dir / "hadoop"
-    if _is_hadoop_home(legacy_home):
-        return legacy_home.resolve()
-
     return None
 
 

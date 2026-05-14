@@ -1,6 +1,8 @@
 # AIS Cleaning Pipeline (`ais_pipeline/`)
 
 This package contains the root Spark-based AIS cleaning pipeline code.
+By default it reads raw AIS files from `AISDATA/raw/` and writes cleaned AIS
+output under `AISDATA/cleaned/`.
 
 ## Entry Points
 
@@ -20,7 +22,6 @@ Both run the same `run()` function.
   - `ship_type.py`
   - `remove_shiptypes.py`
   - `remove_outliers.py`
-  - `trim_moving.py` (currently not invoked by the default `run()` pipeline)
 - `tools/`: utility and exploratory scripts related to the AIS workflow.
 
 ## Related Docs

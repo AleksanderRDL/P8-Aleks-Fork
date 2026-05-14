@@ -1,13 +1,32 @@
 # ---------------------------------
 # Project data and local runtimes
 # ---------------------------------
-AISDATA/*
 AI_lab_setup/
+AISDATA/*
 !AISDATA/README.md
+!AISDATA/raw/
+!AISDATA/cleaned/
+AISDATA/raw/*
+AISDATA/cleaned/*
+!AISDATA/raw/README.md
+!AISDATA/cleaned/README.md
 
 local_hadoop/
 local_java/
 spark_temp/
+artifacts/
+!QDS/artifacts/
+QDS/artifacts/*
+!QDS/artifacts/README.md
+QDS/src/models/saved_models/
+
+
+# ---------------------------------
+# Frontend_ work currently on hold
+# ---------------------------------
+frontend/
+
+
 
 # ---------------------------------
 # Python: bytecode and extensions

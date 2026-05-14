@@ -3,8 +3,8 @@ Check the N biggest consecutive gaps in cleaned data and classify each as
 legitimate (ship speed can explain it) or suspicious (potential missed outlier).
 
 Usage:
-    python -m ais_pipeline.tools.check_gaps --top 1000
-    python -m ais_pipeline.tools.check_gaps --top 1000 --suspicious-only
+    python -m ais_pipeline.tools.check_gaps --input AISDATA/cleaned/<cleaned-output-directory> --top 1000
+    python -m ais_pipeline.tools.check_gaps --input AISDATA/cleaned/<cleaned-output-directory> --top 1000 --suspicious-only
 """
 
 import argparse
@@ -71,7 +71,7 @@ def main():
     )
     parser.add_argument(
         "--input",
-        default=str(AISDATA_DIR / "aisdk-2026-02-05.cleaned.csv"),
+        required=True,
         help="Path to cleaned CSV (Spark output directory)",
     )
     parser.add_argument(

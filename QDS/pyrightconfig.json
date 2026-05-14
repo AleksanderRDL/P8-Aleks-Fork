@@ -1,0 +1,21 @@
+{
+  "include": [
+    "data",
+    "evaluation",
+    "experiments",
+    "models",
+    "queries",
+    "simplification",
+    "training",
+    "scripts",
+    "tests"
+  ],
+  "extraPaths": [
+    "."
+  ],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "standard",
+  "reportPrivateImportUsage": "none",
+  "venv": ".venv",
+  "venvPath": ".."
+}

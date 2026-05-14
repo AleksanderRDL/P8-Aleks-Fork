@@ -168,13 +168,3 @@ def outlier_detector(df, base_margin=1.2, time_scale=0.3, max_passes=3):
     )
 
     return df
-
-
-def remove_gps_outliers(df, base_margin=1.2, time_scale=0.3, max_passes=3):
-    """Backward-compatible entrypoint used by the pipeline."""
-    return outlier_detector(
-        df,
-        base_margin=base_margin,
-        time_scale=time_scale,
-        max_passes=max_passes,
-    )

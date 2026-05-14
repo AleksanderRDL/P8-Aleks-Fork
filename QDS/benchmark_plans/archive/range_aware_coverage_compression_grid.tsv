@@ -1,0 +1,10 @@
+# Archived workload-aware diagnostic grid for range_workload_aware_diagnostic.
+# Format: run_id<TAB>seed<TAB>child_extra_args
+# Coverage targets: 5%, 10%, 15%, 30%.
+# Compression audit targets: 1%, 2%, 5%, 10%, 15%, 20%, 30%.
+# Product caveat: this uses range_aware, so eval queries are available to
+# inference. Use only as teacher/upper-bound evidence, not as workload-blind proof.
+range_cov05_comp_grid_seed42	42	--query_coverage 0.05 --range_audit_compression_ratios 0.01,0.02,0.05,0.10,0.15,0.20,0.30
+range_cov10_comp_grid_seed42	42	--query_coverage 0.10 --range_audit_compression_ratios 0.01,0.02,0.05,0.10,0.15,0.20,0.30
+range_cov15_comp_grid_seed42	42	--query_coverage 0.15 --range_audit_compression_ratios 0.01,0.02,0.05,0.10,0.15,0.20,0.30
+range_cov30_comp_grid_seed42	42	--query_coverage 0.30 --range_audit_compression_ratios 0.01,0.02,0.05,0.10,0.15,0.20,0.30

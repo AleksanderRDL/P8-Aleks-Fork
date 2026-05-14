@@ -1,15 +1,15 @@
 """Regression tests for the weighted-sample fallback used when the candidate
 set exceeds torch.multinomial's 2^24 cap.
 
-This guards against the phase-2A failure where the combined-day training CSV
-has more than 2^24 points and torch.multinomial errors out.
+This guards against large cleaned AIS workloads with more than 2^24 candidate
+points, where torch.multinomial errors out.
 """
 
 from __future__ import annotations
 
 import torch
 
-from src.queries.query_generator import _weighted_sample_one, generate_typed_query_workload
+from queries.query_generator import _weighted_sample_one, generate_typed_query_workload
 
 
 def test_weighted_sample_one_small_uses_multinomial_path() -> None:
@@ -58,9 +58,7 @@ def test_weighted_sample_one_zero_weights_uniform_fallback() -> None:
 
 
 def test_generate_typed_query_workload_small_dataset_still_works() -> None:
-    """Phase-2A single-day path: small dataset must continue to work after the
-    multinomial-fallback addition. Regenerate a tiny workload and assert it
-    produces the right number of queries with sane coverage."""
+    """Small range workloads must still work after the multinomial fallback."""
     torch.manual_seed(0)
     trajectories = []
     for traj_idx in range(4):
@@ -81,10 +79,10 @@ def test_generate_typed_query_workload_small_dataset_still_works() -> None:
     workload = generate_typed_query_workload(
         trajectories=trajectories,
         n_queries=8,
-        workload_mix={"range": 0.5, "knn": 0.5},
+        workload_map={"range": 1.0},
         seed=42,
     )
     assert len(workload.typed_queries) == 8
     types = {q["type"] for q in workload.typed_queries}
-    assert types <= {"range", "knn"}
+    assert types == {"range"}
     assert workload.coverage_fraction is None or 0.0 <= workload.coverage_fraction <= 1.0

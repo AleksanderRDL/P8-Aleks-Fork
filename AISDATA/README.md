@@ -1,16 +1,20 @@
 # AIS Data (`AISDATA/`)
 
-Dataset folder for raw and cleaned AIS CSV files used by the root pipeline.
+Dataset folder for AIS data used by the root pipeline and related tools.
 
 ## Expected Conventions
 
-- Raw input file default: `aisdk-2026-02-05.csv`
-- Cleaned output default: `aisdk-2026-02-05.cleaned.csv/` (Spark CSV output directory)
+- Raw AIS files go under [`raw/`](raw/).
+- Cleaned AIS files go under [`cleaned/`](cleaned/).
+- Set `AIS_INPUT_FILE` to a raw AIS CSV under `raw/`.
+- Set `AIS_OUTPUT_PATH` to a cleaned Spark CSV output directory under `cleaned/`.
 
 ## Notes
 
 - This folder can contain very large files.
-- Root pipeline (`main.py`, backed by `ais_pipeline/pipeline.py`) reads and writes here by default unless overridden with:
+- The `raw/` and `cleaned/` folders are kept in git, but their data contents are ignored.
+- Keep `cleaned/` for cleaned source data only. QDS experiment outputs should go under `QDS/artifacts/` or another explicit run directory, not back into source-data folders.
+- Root pipeline (`main.py`, backed by `ais_pipeline/pipeline.py`) reads and writes here unless overridden with:
   - `AIS_INPUT_FILE`
   - `AIS_OUTPUT_PATH`
 

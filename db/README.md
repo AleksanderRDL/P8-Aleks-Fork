@@ -9,6 +9,10 @@ This folder contains the local PostGIS service definition and initialization SQL
 - `import_ais_csv.py`: cleaned AIS CSV import utility.
 - `run_range_query.py`: range query validation utility.
 
+Cleaned AIS CSVs are expected under `../AISDATA/cleaned/`. When
+`import_ais_csv.py` receives only a filename, it resolves that filename against
+`../AISDATA/cleaned/` by default.
+
 ## Database Lifecycle
 
 Start PostGIS:

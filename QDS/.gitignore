@@ -19,7 +19,7 @@ env/
 
 # Trained model weights
 *.pth
-#src/models/saved_models/*.pt
+src/models/saved_models/
 
 # Generated plots
 *.png
@@ -43,4 +43,5 @@ results/
 
 # QDS local run artifacts. Historical example results/checkpoints may be
 # tracked, but new sprint runs should live here or outside the source tree.
-artifacts/
+artifacts/*
+!artifacts/README.md

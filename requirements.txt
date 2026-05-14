@@ -1,18 +1,17 @@
-packaging==26.2
-click==8.3.3
-cloudpickle==3.1.2
-fsspec==2026.4.0
-locket==1.0.0
+# Single repository dependency entry point.
+# Keep this file to direct project dependencies. Transitive packages should be
+# installed through their parent dependency unless there is a concrete reason
+# to pin them here.
+
+# Runtime
 numpy==2.4.4
-pandas==3.0.2
-partd==1.4.2
-py4j==0.10.9.9
+pandas==3.0.3
+psycopg[binary]==3.3.4
 pyarrow==24.0.0
 pyspark==4.1.1
-python-dateutil==2.9.0.post0
-PyYAML==6.0.3
-six==1.17.0
-toolz==1.1.0
-psycopg==3.3.4
 python-dotenv==1.2.2
+torch==2.12.0
+
+# Dev/test
+pyright==1.1.409
 pytest==9.0.3
