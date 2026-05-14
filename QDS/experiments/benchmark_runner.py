@@ -374,7 +374,7 @@ def main() -> None:
         "command": [sys.executable, "-m", "experiments.benchmark_runner", *sys.argv[1:]],
         "run_id": run_id,
         "artifact_root": str(results_dir),
-        "family_root": str(family_root),
+        "family_root": str(run_family_root),
         "profile": args.profile,
         "seed": int(args.seed),
         "workloads": workloads,

@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+import experiments.benchmark_runner as benchmark_runner
 from experiments.benchmark_runner import (
     DEFAULT_WORKLOADS,
     DEFAULT_PROFILE,
@@ -26,6 +27,7 @@ from experiments.benchmark_runner import (
     _run_capture_streaming,
     _runner_environment_metadata,
 )
+from experiments.benchmark_process import BenchmarkChildResult
 from experiments.benchmark_artifacts import index_entry, write_family_indexes
 from experiments.experiment_config import build_experiment_config
 from experiments.experiment_workloads import resolve_workload_maps, validation_query_count
@@ -604,6 +606,73 @@ def test_family_index_upserts_current_status_and_appends_events(tmp_path) -> Non
     assert index_rows[0]["best_mlqds_range_usefulness"] == "0.42"
     assert index_rows[0]["best_mlqds_run_label"] == "custom_run"
     assert events_text.count('"run_id": "run-a"') == 2
+
+
+def test_benchmark_report_records_concrete_family_root(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    family = tmp_path / "range_family"
+    results_dir = family / "runs" / "artifact-test"
+    train_csv = tmp_path / "train.csv"
+    validation_csv = tmp_path / "validation.csv"
+    eval_csv = tmp_path / "eval.csv"
+    for path in (train_csv, validation_csv, eval_csv):
+        path.write_text("mmsi,timestamp,lat,lon\n", encoding="utf-8")
+
+    def fake_run_capture_streaming(
+        command: list[str],
+        cwd: Path,
+        stdout_path: Path,
+        *,
+        max_stdout_chars: int = 1_000_000,
+    ) -> BenchmarkChildResult:
+        run_dir = stdout_path.parent
+        run_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path.write_text("[train-model] done in 1.00s\n", encoding="utf-8")
+        (run_dir / "example_run.json").write_text(
+            json.dumps(
+                {
+                    "config": {"model": {"model_type": "range_aware", "compression_ratio": 0.05}},
+                    "matched": {"MLQDS": {"range_point_f1": 0.4, "range_usefulness_score": 0.5}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return BenchmarkChildResult(
+            returncode=0,
+            stdout="",
+            stdout_truncated=False,
+            timings={"phase_timings": [], "epoch_timings": [], "inference_step_timings": []},
+            elapsed_seconds=1.0,
+        )
+
+    monkeypatch.setattr(benchmark_runner, "_run_capture_streaming", fake_run_capture_streaming)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_runner",
+            "--results_dir",
+            str(results_dir),
+            "--run_id",
+            "artifact-test",
+            "--run_label",
+            "unit",
+            "--workloads",
+            "range",
+            "--train_csv_path",
+            str(train_csv),
+            "--validation_csv_path",
+            str(validation_csv),
+            "--eval_csv_path",
+            str(eval_csv),
+            "--no_cache_warmup",
+        ],
+    )
+
+    benchmark_runner.main()
+
+    artifact = json.loads((results_dir / "benchmark_report.json").read_text(encoding="utf-8"))
+    assert artifact["family_root"] == str(family)
+    assert "<function" not in artifact["family_root"]
 
 
 def test_resolve_data_sources_selects_three_cleaned_days(tmp_path) -> None:
