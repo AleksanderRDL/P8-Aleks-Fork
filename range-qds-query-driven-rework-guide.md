@@ -1,6 +1,6 @@
-# Range-QDS Query-Driven Rework Guide
+# Range_QDS Query-Driven Rework Guide
 
-This document synthesizes the current redesign spec, the audit/progress artifacts, and the revised project direction. It is intended to guide a complete rework of the current Range-QDS implementation.
+This document synthesizes the current redesign spec, the audit/progress artifacts, and the revised project direction. It is intended to guide a complete rework of the current Range_QDS implementation.
 
 The central change is this:
 
