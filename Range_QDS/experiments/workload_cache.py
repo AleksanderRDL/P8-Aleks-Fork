@@ -96,6 +96,7 @@ def _workload_cache_payload(
         "range_duplicate_iou_threshold": query_config.range_duplicate_iou_threshold,
         "range_acceptance_max_attempts": query_config.range_acceptance_max_attempts,
         "range_max_coverage_overshoot": query_config.range_max_coverage_overshoot,
+        "workload_profile_id": query_config.workload_profile_id,
     }
 
 
@@ -193,6 +194,7 @@ def generate_typed_query_workload_for_config(
         range_duplicate_iou_threshold=query_config.range_duplicate_iou_threshold,
         range_acceptance_max_attempts=query_config.range_acceptance_max_attempts,
         range_max_coverage_overshoot=query_config.range_max_coverage_overshoot,
+        workload_profile_id=query_config.workload_profile_id,
     )
     if cache_path is not None and cache_key is not None:
         try:

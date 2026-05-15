@@ -155,6 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
     parser.add_argument(
+        "--synthetic_route_families",
+        type=int,
+        default=0,
+        help=(
+            "Optional synthetic-data route-family count. A positive value generates ships "
+            "around shared corridors for same-support query-prior experiments."
+        ),
+    )
+    parser.add_argument(
         "--min_points_per_segment",
         type=int,
         default=4,
@@ -344,6 +353,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Number of independent train-workload seeds to aggregate into blind range supervision. "
             "Eval and checkpoint-selection workloads remain separate."
+        ),
+    )
+    parser.add_argument(
+        "--workload_profile_id",
+        type=str,
+        default=None,
+        choices=["legacy_generator", "range_workload_v1"],
+        help=(
+            "Versioned range workload profile. Use range_workload_v1 for query-driven final-candidate runs. "
+            "The default legacy_generator keeps old benchmark behavior."
         ),
     )
     parser.add_argument("--epochs", type=int, default=6)
@@ -580,10 +599,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint_score_variant",
         type=str,
         default="range_usefulness",
-        choices=["answer", "combined", "range_usefulness"],
+        choices=["answer", "combined", "range_usefulness", "query_useful_v1"],
         help=(
             "Which validation score to use for checkpoint selection. "
-            "'range_usefulness' = range-local audit score for range workloads (default), "
+            "'query_useful_v1' = query-driven primary score for range_workload_v1, "
+            "'range_usefulness' = legacy range-local audit score for range workloads (default), "
             "'answer' = point/query F1, 'combined' = answer_f1 * point_subset_f1."
         ),
     )
@@ -616,6 +636,16 @@ def build_parser() -> argparse.ArgumentParser:
             "'stratified' selects the highest learned-score point inside each temporal/index stratum. "
             "'global_fill' keeps a temporal base per trajectory, then spends residual budget globally by learned score. "
             "'global_budget' keeps endpoint skeletons, then spends remaining budget globally by learned score."
+        ),
+    )
+    parser.add_argument(
+        "--selector_type",
+        type=str,
+        default="temporal_hybrid",
+        choices=["temporal_hybrid", "learned_segment_budget_v1"],
+        help=(
+            "Retained-mask selector. Use learned_segment_budget_v1 for query-driven final-candidate runs; "
+            "temporal_hybrid keeps legacy selector behavior."
         ),
     )
     parser.add_argument(

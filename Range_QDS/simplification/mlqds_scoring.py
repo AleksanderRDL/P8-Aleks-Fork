@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from queries.query_types import QUERY_NAME_TO_ID
+from simplification.learned_segment_budget import simplify_with_learned_segment_budget_v1
 from simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
 
 MLQDS_SCORE_MODES = (
@@ -176,6 +177,9 @@ def simplify_mlqds_predictions(
     range_geometry_blend: float = 0.0,
     stratified_center_weight: float = 0.0,
     min_learned_swaps: int = 0,
+    selector_type: str = "temporal_hybrid",
+    segment_scores: torch.Tensor | None = None,
+    points: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Simplify using canonical MLQDS score conversion and retained-mask logic."""
     scores = mlqds_simplification_scores(
@@ -188,6 +192,14 @@ def simplify_mlqds_predictions(
         range_geometry_scores=range_geometry_scores,
         range_geometry_blend=range_geometry_blend,
     )
+    if str(selector_type).lower() == "learned_segment_budget_v1":
+        return simplify_with_learned_segment_budget_v1(
+            scores,
+            boundaries,
+            compression_ratio,
+            segment_scores=segment_scores,
+            points=points,
+        )
     return simplify_with_temporal_score_hybrid(
         scores,
         boundaries,

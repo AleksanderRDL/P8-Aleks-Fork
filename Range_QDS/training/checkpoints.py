@@ -12,6 +12,7 @@ from experiments.experiment_config import BaselineConfig, DataConfig, Experiment
 from models.historical_prior_qds_model import HistoricalPriorRangeQDSModel, HistoricalPriorStudentRangeQDSModel
 from models.trajectory_qds_model import TrajectoryQDSModel
 from models.turn_aware_qds_model import TurnAwareQDSModel
+from models.workload_blind_range_v2 import WorkloadBlindRangeV2Model
 from models.workload_blind_qds_model import SegmentContextRangeQDSModel, WorkloadBlindRangeQDSModel
 from training.scaler import FeatureScaler
 from training.model_features import (
@@ -31,6 +32,7 @@ class ModelArtifacts:
     config: ExperimentConfig
     epochs_trained: int = 0
     workload_type: str | None = None
+    query_prior_field: dict[str, Any] | None = None
 
 
 def _filter_config_section(raw_section: Any, config_cls: type) -> dict[str, Any]:
@@ -68,6 +70,7 @@ def save_checkpoint(path: str, artifacts: ModelArtifacts) -> None:
         "config": artifacts.config.to_dict(),
         "epochs_trained": int(artifacts.epochs_trained),
         "workload_type": artifacts.workload_type or artifacts.config.query.workload,
+        "query_prior_field": artifacts.query_prior_field,
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
@@ -96,6 +99,9 @@ def load_checkpoint(path: str) -> ModelArtifacts:
             model_state["prior.historical_source_ids"] = torch.zeros((prior_feature_count,), dtype=torch.long)
     elif model_type == "segment_context_range":
         model_cls = SegmentContextRangeQDSModel
+        prior_feature_count = 0
+    elif model_type == "workload_blind_range_v2":
+        model_cls = WorkloadBlindRangeV2Model
         prior_feature_count = 0
     elif is_workload_blind_model_type(model_type):
         model_cls = WorkloadBlindRangeQDSModel
@@ -135,7 +141,25 @@ def load_checkpoint(path: str) -> ModelArtifacts:
         )
         model_kwargs["prior_feature_count"] = prior_feature_count
     model = model_cls(**model_kwargs)
-    model.load_state_dict(model_state)
+    query_prior_field = payload.get("query_prior_field")
+    if query_prior_field is not None:
+        setattr(model, "query_prior_field", query_prior_field)
+    if model_type == "workload_blind_range_v2":
+        load_result = model.load_state_dict(model_state, strict=False)
+        allowed_missing = {
+            name
+            for name in model.state_dict()
+            if name == "prior_feature_scale" or name.startswith("prior_feature_encoder.")
+        }
+        missing = set(load_result.missing_keys)
+        unexpected = set(load_result.unexpected_keys)
+        if missing - allowed_missing or unexpected:
+            raise RuntimeError(
+                "Incompatible workload_blind_range_v2 checkpoint state: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+    else:
+        model.load_state_dict(model_state)
     model.eval()
     scaler = FeatureScaler.from_dict(payload["scaler"])
     return ModelArtifacts(
@@ -144,4 +168,5 @@ def load_checkpoint(path: str) -> ModelArtifacts:
         config=cfg,
         epochs_trained=int(payload.get("epochs_trained", 0)),
         workload_type=str(payload.get("workload_type") or cfg.query.workload),
+        query_prior_field=query_prior_field,
     )

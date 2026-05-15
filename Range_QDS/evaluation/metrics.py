@@ -63,6 +63,9 @@ class MethodEvaluation:
     range_usefulness_gap_min_score: float = 0.0
     range_usefulness_schema_version: int = 0
     range_usefulness_gap_ablation_version: int = 0
+    query_useful_v1_score: float = 0.0
+    query_useful_v1_schema_version: int = 0
+    query_useful_v1_components: dict[str, float] = field(default_factory=dict)
     range_audit: dict[str, Any] = field(default_factory=dict)
     retained_mask: torch.Tensor | None = None
 

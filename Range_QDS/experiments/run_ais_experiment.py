@@ -147,6 +147,7 @@ def main() -> None:
     config = build_experiment_config(
         n_ships=args.n_ships,
         n_points=args.n_points,
+        synthetic_route_families=args.synthetic_route_families,
         min_points_per_segment=args.min_points_per_segment,
         max_points_per_segment=args.max_points_per_segment,
         max_time_gap_seconds=normalized_gap_arg(args.max_time_gap_seconds),
@@ -178,6 +179,7 @@ def main() -> None:
         range_acceptance_max_attempts=args.range_acceptance_max_attempts,
         range_max_coverage_overshoot=args.range_max_coverage_overshoot,
         range_train_workload_replicates=args.range_train_workload_replicates,
+        workload_profile_id=args.workload_profile_id,
         epochs=args.epochs,
         lr=args.lr,
         embed_dim=args.embed_dim,
@@ -226,6 +228,7 @@ def main() -> None:
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         mlqds_hybrid_mode=args.mlqds_hybrid_mode,
+        selector_type=args.selector_type,
         mlqds_stratified_center_weight=args.mlqds_stratified_center_weight,
         mlqds_min_learned_swaps=args.mlqds_min_learned_swaps,
         mlqds_score_mode=args.mlqds_score_mode,
@@ -288,6 +291,7 @@ def main() -> None:
         f"range_diagnostics_mode={args.range_diagnostics_mode}  "
         f"validation_split_mode={args.validation_split_mode}  "
         f"final_metrics_mode={args.final_metrics_mode}  "
+        f"synthetic_route_families={args.synthetic_route_families}  "
         f"diagnostic_every={args.diagnostic_every}  "
         f"checkpoint_selection_metric={args.checkpoint_selection_metric}  "
         f"validation_score_every={args.validation_score_every}  "
@@ -313,6 +317,7 @@ def main() -> None:
         f"range_acceptance_max_attempts={args.range_acceptance_max_attempts}  "
         f"range_max_coverage_overshoot={args.range_max_coverage_overshoot}  "
         f"range_train_workload_replicates={args.range_train_workload_replicates}  "
+        f"workload_profile_id={args.workload_profile_id}  "
         f"historical_prior_k={args.historical_prior_k}  "
         f"historical_prior_clock_weight={args.historical_prior_clock_weight}  "
         f"historical_prior_mmsi_weight={args.historical_prior_mmsi_weight}  "
@@ -322,6 +327,7 @@ def main() -> None:
         f"historical_prior_source_aggregation={args.historical_prior_source_aggregation}  "
         f"mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"mlqds_hybrid_mode={args.mlqds_hybrid_mode}  "
+        f"selector_type={args.selector_type}  "
         f"mlqds_stratified_center_weight={args.mlqds_stratified_center_weight}  "
         f"mlqds_min_learned_swaps={args.mlqds_min_learned_swaps}  "
         f"mlqds_score_mode={args.mlqds_score_mode}  "
@@ -510,12 +516,17 @@ def main() -> None:
     else:
         if config.data.n_ships is None or config.data.n_points_per_ship is None:
             raise ValueError("Synthetic data generation requires n_ships and n_points_per_ship.")
-        print(f"[load-data] generating synthetic data "
-              f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship})", flush=True)
+        print(
+            f"[load-data] generating synthetic data "
+            f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship}, "
+            f"route_families={config.data.synthetic_route_families})",
+            flush=True,
+        )
         trajectories = generate_synthetic_ais_data(
             n_ships=config.data.n_ships,
             n_points_per_ship=config.data.n_points_per_ship,
             seed=config.data.seed,
+            route_families=config.data.synthetic_route_families,
         )
     if eval_trajectories is None:
         print(f"[load-data] {len(trajectories)} trajectories loaded in {time.perf_counter() - t0:.2f}s", flush=True)

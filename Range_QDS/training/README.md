@@ -15,9 +15,9 @@ checkpoints, and persists model artifacts.
 | `inference.py` | Deterministic persisted-model prediction. |
 | `training_losses.py` | Budget, ranking, pointwise, and temporal-residual losses. |
 | `training_targets.py` | Legacy RangeUseful/scalar target transforms and dispatch constants. |
-| `query_useful_targets.py` | Placeholder for future factorized QueryUsefulV1 labels. |
-| `query_prior_fields.py` | Placeholder for train-derived query-prior fields. |
-| `factorized_target_diagnostics.py` | Placeholder for future factorized-label diagnostics. |
+| `query_useful_targets.py` | Factorized QueryUsefulV1 label construction for the query-driven path. |
+| `query_prior_fields.py` | Train-only query-prior field construction and sampling. |
+| `factorized_target_diagnostics.py` | Factorized-label diagnostics and mass summaries. |
 | `training_diagnostics.py` | Target diagnostics and rank-correlation helpers. |
 | `training_epoch.py` | One-epoch forward/loss/backward optimization pass. |
 | `training_validation.py` | Validation scoring for checkpoint selection. |
@@ -28,16 +28,17 @@ checkpoints, and persists model artifacts.
 
 ## Current Flow
 
-The implemented strong path is workload-aware:
+The query-driven candidate path is workload-blind at compression time:
 
-1. Generate a pure workload and point labels.
-2. Fit `FeatureScaler` on training points/query features.
-3. Train a query-conditioned model on padded trajectory windows.
-4. Select checkpoints by validation score or `uniform_gap`.
-5. Restore the best checkpoint for final evaluation.
+1. Generate train-only `range_workload_v1` workloads.
+2. Build factorized `QueryUsefulV1` labels and train-derived query-prior fields.
+3. Train `workload_blind_range_v2` on query-free point, context, absolute-position, and train-prior features.
+4. Select checkpoints without final eval-query scoring.
+5. Freeze retained masks before held-out eval queries are scored.
 
-This is not the final workload-blind protocol. The redesign target is in
-[`../docs/query-driven-rework-guide.md`](../docs/query-driven-rework-guide.md).
+Legacy query-conditioned and scalar-target paths remain available as diagnostics.
+They are not final-success eligible for the query-driven rework. The acceptance
+contract is in [`../docs/query-driven-rework-guide.md`](../docs/query-driven-rework-guide.md).
 
 ## Labels
 

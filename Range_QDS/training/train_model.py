@@ -15,6 +15,7 @@ from experiments.torch_runtime import normalize_amp_mode, torch_autocast_context
 from models.historical_prior_qds_model import HistoricalPriorRangeQDSModel, HistoricalPriorStudentRangeQDSModel
 from models.trajectory_qds_model import TrajectoryQDSModel
 from models.turn_aware_qds_model import TurnAwareQDSModel
+from models.workload_blind_range_v2 import WorkloadBlindRangeV2Model
 from models.workload_blind_qds_model import SegmentContextRangeQDSModel, WorkloadBlindRangeQDSModel
 from queries.query_types import (
     ID_TO_QUERY_NAME,
@@ -33,6 +34,8 @@ from training.model_features import (
     build_model_point_features,
     is_workload_blind_model_type,
 )
+from training.query_prior_fields import build_train_query_prior_fields, query_prior_field_metadata
+from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES, build_query_useful_v1_targets
 from training.inference import windowed_predict
 from training.training_diagnostics import (
     _discriminative_sample,
@@ -119,6 +122,8 @@ def train_model(
     precomputed_validation_geometry_scores: torch.Tensor | None = None,
     train_trajectory_source_ids: list[int] | None = None,
     train_trajectory_mmsis: list[int] | None = None,
+    query_prior_workloads: list[TypedQueryWorkload] | None = None,
+    query_prior_workload_seeds: list[int] | None = None,
 ) -> TrainingOutputs:
     """Train one pure-workload model with trajectory-window ranking losses."""
     torch.manual_seed(int(seed))
@@ -138,16 +143,26 @@ def train_model(
             if int(source_id) < 0:
                 raise ValueError("train_trajectory_source_ids must be non-negative.")
             train_point_source_ids[start:end] = int(source_id)
-    points = build_model_point_features(
-        all_points,
-        workload,
-        model_config.model_type,
-        boundaries=train_boundaries,
-        trajectory_mmsis=train_trajectory_mmsis,
-    )
-    point_dim = int(points.shape[1])
+    prior_workloads = list(query_prior_workloads or [workload])
+    prior_queries: list[dict[str, Any]] = []
+    for prior_workload in prior_workloads:
+        prior_queries.extend(prior_workload.typed_queries)
 
-    if precomputed_labels is None:
+    factorized_targets: torch.Tensor | None = None
+    factorized_mask: torch.Tensor | None = None
+    factorized_target_diagnostics: dict[str, Any] = {}
+    if str(getattr(model_config, "range_training_target_mode", "")).lower() == "query_useful_v1_factorized":
+        factorized_bundle = build_query_useful_v1_targets(
+            points=all_points,
+            boundaries=train_boundaries,
+            typed_queries=prior_queries,
+        )
+        labels = factorized_bundle.labels
+        labelled_mask = factorized_bundle.labelled_mask
+        factorized_targets = factorized_bundle.head_targets
+        factorized_mask = factorized_bundle.head_mask
+        factorized_target_diagnostics = factorized_bundle.diagnostics
+    elif precomputed_labels is None:
         labels, labelled_mask = compute_typed_importance_labels(
             points=all_points,
             boundaries=train_boundaries,
@@ -163,6 +178,42 @@ def train_model(
                 "precomputed_labels must match flattened training points and query type count: "
                 f"expected {expected_shape}, got labels={tuple(labels.shape)} mask={tuple(labelled_mask.shape)}"
             )
+
+    query_prior_field: dict[str, Any] | None = None
+    if str(model_config.model_type).lower() == "workload_blind_range_v2":
+        prior_seed = None
+        if query_prior_workload_seeds:
+            prior_seed = int(query_prior_workload_seeds[0])
+        behavior_prior_values = None
+        if factorized_targets is not None:
+            try:
+                behavior_idx = tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("conditional_behavior_utility")
+                behavior_prior_values = factorized_targets[:, behavior_idx]
+            except ValueError:
+                behavior_prior_values = None
+        query_prior_field = build_train_query_prior_fields(
+            points=all_points,
+            boundaries=train_boundaries,
+            typed_queries=prior_queries,
+            labels=labels,
+            behavior_values=behavior_prior_values,
+            workload_profile_id=str(
+                (workload.generation_diagnostics or {}).get("query_generation", {}).get(
+                    "workload_profile_id",
+                    "range_workload_v1",
+                )
+            ),
+            train_workload_seed=prior_seed,
+        )
+    points = build_model_point_features(
+        all_points,
+        workload,
+        model_config.model_type,
+        boundaries=train_boundaries,
+        trajectory_mmsis=train_trajectory_mmsis,
+        query_prior_field=query_prior_field,
+    )
+    point_dim = int(points.shape[1])
     run_tag = "main"
     requested_temporal_residual_label_mode = str(
         getattr(model_config, "temporal_residual_label_mode", "none")
@@ -240,6 +291,10 @@ def train_model(
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         range_training_target_mode=str(getattr(model_config, "range_training_target_mode", "point_value")),
     )
+    if factorized_target_diagnostics:
+        target_diagnostics["query_useful_v1_factorized"] = factorized_target_diagnostics
+    if query_prior_field is not None:
+        target_diagnostics["query_prior_field"] = query_prior_field_metadata(query_prior_field)
     if budget_ratios != configured_budget_ratios:
         print(
             f"  [{run_tag}] effective_budget_loss_ratios={list(budget_ratios)} "
@@ -268,6 +323,8 @@ def train_model(
         model_cls = HistoricalPriorStudentRangeQDSModel
     elif model_config.model_type == "segment_context_range":
         model_cls = SegmentContextRangeQDSModel
+    elif model_config.model_type == "workload_blind_range_v2":
+        model_cls = WorkloadBlindRangeV2Model
     elif is_workload_blind_model_type(model_config.model_type):
         model_cls = WorkloadBlindRangeQDSModel
     elif model_config.model_type == "turn_aware":
@@ -302,6 +359,8 @@ def train_model(
             getattr(model_config, "historical_prior_source_aggregation", "none")
         )
     model: torch.nn.Module = model_cls(**model_kwargs)
+    if query_prior_field is not None:
+        setattr(model, "query_prior_field", query_prior_field)
     if uses_historical_prior:
         if not isinstance(model, (HistoricalPriorRangeQDSModel, HistoricalPriorStudentRangeQDSModel)):
             raise TypeError(f"{model_config.model_type} did not build a historical-prior model.")
@@ -414,6 +473,8 @@ def train_model(
     type_ids_dev = workload.type_ids.to(device)
     training_target_dev = training_target.to(device)
     labelled_mask_dev = training_labelled_mask.to(device)
+    factorized_targets_dev = factorized_targets.to(device) if factorized_targets is not None else None
+    factorized_mask_dev = factorized_mask.to(device) if factorized_mask is not None else None
     if temporal_residual_budget_masks:
         temporal_residual_budget_masks = tuple(
             (total_ratio, effective_ratio, base_mask.to(device=device, non_blocking=True))
@@ -571,6 +632,8 @@ def train_model(
             temporal_residual_budget_masks=temporal_residual_budget_masks,
             temporal_residual_union_mask=temporal_residual_union_mask,
             training_sample_generator=training_sample_generator,
+            factorized_targets_dev=factorized_targets_dev,
+            factorized_mask_dev=factorized_mask_dev,
         )
         epoch_timing = {
             "forward_s": float(epoch_result.timing["forward_s"]),
@@ -1060,4 +1123,8 @@ def train_model(
         best_selection_score=best_selection_score,
         target_diagnostics=target_diagnostics,
         fit_diagnostics=fit_diagnostics,
+        feature_context={
+            "query_prior_field": query_prior_field,
+            "query_prior_field_metadata": query_prior_field_metadata(query_prior_field),
+        },
     )

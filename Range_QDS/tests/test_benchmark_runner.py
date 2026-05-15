@@ -41,6 +41,7 @@ from experiments.benchmark_process import BenchmarkChildResult
 from experiments.benchmark_report import (
     MIN_MATCHED_LEARNED_SLOT_FRACTION_FOR_BLIND_CLAIM,
     _query_floor_fields,
+    query_driven_final_grid_summary,
 )
 from experiments.benchmark_artifacts import index_entry, write_family_indexes
 from experiments.experiment_config import build_experiment_config
@@ -125,6 +126,8 @@ def _profile_core_args() -> list[str]:
         "0.00",
         "--mlqds_hybrid_mode",
         "fill",
+        "--selector_type",
+        "temporal_hybrid",
         "--mlqds_stratified_center_weight",
         "0.00",
         "--temporal_residual_label_mode",
@@ -345,6 +348,90 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "audit_masks_frozen_before_eval_query_scoring": False,
             "eval_geometry_blend_allowed": True,
         },
+        "final_claim_summary": {
+            "primary_metric": "QueryUsefulV1",
+            "status": "candidate_blocked_by_required_gates",
+            "final_success_allowed": False,
+            "blocking_gates": ["predictability_gate"],
+        },
+        "predictability_audit": {
+            "gate_pass": False,
+            "metrics": {
+                "spearman": 0.12,
+                "kendall_tau": 0.08,
+                "lift_at_1_percent": 1.05,
+                "lift_at_2_percent": 1.10,
+                "lift_at_5_percent": 1.18,
+                "pr_auc_lift_over_base_rate": 1.20,
+            },
+        },
+        "workload_stability_gate": {
+            "gate_pass": False,
+            "failed_checks": ["train_r0:not_target_coverage_generation"],
+            "train_workload_replicate_count": 1,
+            "configured_target_coverage": 0.10,
+        },
+        "global_sanity_gate": {
+            "gate_pass": True,
+            "failed_checks": [],
+            "endpoint_sanity": 1.0,
+            "avg_sed_ratio_vs_uniform": 1.09,
+            "avg_sed_ratio_vs_uniform_max": 1.50,
+            "avg_length_preserved": 0.88,
+        },
+        "learning_causality_summary": {
+            "learning_causality_ablation_status": "partial",
+            "learning_causality_gate_pass": False,
+            "learning_causality_failed_checks": ["shuffled_scores_should_lose"],
+            "causality_ablation_missing": ["MLQDS_without_segment_budget_head"],
+            "learned_controlled_retained_slot_fraction": 0.72,
+            "planned_learned_controlled_retained_slot_fraction": 0.80,
+            "actual_learned_controlled_retained_slot_fraction": 0.72,
+            "trajectories_with_at_least_one_learned_decision": 5,
+            "trajectories_with_zero_learned_decisions": 1,
+            "segment_budget_entropy": 1.4,
+            "segment_budget_entropy_normalized": 0.7,
+            "selector_trace_retained_mask_matches_primary": True,
+            "shuffled_score_ablation_delta": 0.04,
+            "untrained_score_ablation_delta": 0.06,
+            "shuffled_prior_field_ablation_delta": 0.05,
+            "prior_field_only_score_ablation_delta": 0.02,
+            "no_query_prior_field_ablation_delta": 0.03,
+            "no_behavior_head_ablation_delta": 0.07,
+            "no_segment_budget_head_ablation_delta": 0.08,
+            "learning_causality_delta_gate": {
+                "min_material_query_useful_delta": 0.005,
+                "shuffled_score_delta_fraction_of_uniform_gap_min": 0.60,
+                "mlqds_uniform_query_useful_gap": 0.05,
+                "thresholds": {
+                    "shuffled_scores_should_lose": 0.03,
+                    "untrained_model_should_lose": 0.005,
+                    "without_segment_budget_head_should_lose": 0.005,
+                },
+            },
+            "segment_budget_head_ablation_mode": "neutral_constant_segment_scores",
+            "prior_sample_gate_pass": False,
+            "prior_sample_gate_failures": ["sampled_query_prior_features_all_zero"],
+            "prior_sensitivity_diagnostics": {
+                "shuffled_prior_fields": {
+                    "sampled_prior_features": {
+                        "sampled_inputs_changed": False,
+                        "primary_nonzero_fraction": 0.0,
+                        "ablation_nonzero_fraction": 0.01,
+                        "mean_abs_feature_delta": 0.002,
+                        "max_abs_feature_delta": 0.10,
+                        "points_outside_prior_extent_fraction": 0.75,
+                    }
+                },
+                "without_query_prior_features": {
+                    "sampled_prior_features": {
+                        "primary_nonzero_fraction": 0.0,
+                        "mean_abs_feature_delta": 0.0,
+                        "points_outside_prior_extent_fraction": 0.75,
+                    }
+                },
+            },
+        },
         "query_generation_diagnostics": {
             "train": {
                 "query_generation": {
@@ -405,6 +492,22 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "positive_label_mass": 16.0,
         },
         "workload_distribution_comparison": {
+            "workload_signature_gate": {
+                "all_available": True,
+                "all_pass": False,
+                "pairs": {
+                    "train": {
+                        "metrics": {
+                            "anchor_family_l1_distance": 0.16,
+                            "footprint_family_l1_distance": 0.05,
+                            "point_hit_distribution_ks": 0.22,
+                            "ship_hit_distribution_ks": 0.10,
+                            "point_hit_distribution_used_quantile_proxy": False,
+                            "ship_hit_distribution_used_quantile_proxy": False,
+                        }
+                    }
+                },
+            },
             "summaries": {
                 "train": {
                     "range_query_count": 28,
@@ -508,6 +611,7 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "aggregate_f1": 0.40,
                 "range_point_f1": 0.40,
                 "range_usefulness_score": 0.42,
+                "query_useful_v1_score": 0.46,
                 "range_ship_f1": 0.60,
                 "range_ship_coverage": 0.64,
                 "range_entry_exit_f1": 0.25,
@@ -538,6 +642,7 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "aggregate_f1": 0.35,
                 "range_point_f1": 0.35,
                 "range_usefulness_score": 0.37,
+                "query_useful_v1_score": 0.39,
                 "range_ship_f1": 0.50,
                 "range_ship_coverage": 0.60,
                 "range_entry_exit_f1": 0.30,
@@ -566,6 +671,7 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "aggregate_f1": 0.36,
                 "range_point_f1": 0.36,
                 "range_usefulness_score": 0.39,
+                "query_useful_v1_score": 0.41,
                 "range_ship_f1": 0.48,
                 "range_ship_coverage": 0.55,
                 "range_entry_exit_f1": 0.28,
@@ -593,21 +699,37 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
         },
         "range_compression_audit": {
             "0.0100": {
-                "MLQDS": {"range_usefulness_score": 0.10, "range_usefulness_gap_time_score": 0.11},
-                "uniform": {"range_usefulness_score": 0.12, "range_usefulness_gap_time_score": 0.10},
-                "DouglasPeucker": {"range_usefulness_score": 0.09},
+                "MLQDS": {
+                    "range_usefulness_score": 0.10,
+                    "query_useful_v1_score": 0.11,
+                    "range_usefulness_gap_time_score": 0.11,
+                },
+                "uniform": {
+                    "range_usefulness_score": 0.12,
+                    "query_useful_v1_score": 0.13,
+                    "range_usefulness_gap_time_score": 0.10,
+                },
+                "DouglasPeucker": {"range_usefulness_score": 0.09, "query_useful_v1_score": 0.10},
                 "TemporalRandomFill": {"range_usefulness_score": 0.11},
             },
             "0.0500": {
-                "MLQDS": {"range_usefulness_score": 0.42, "range_usefulness_gap_time_score": 0.43},
-                "uniform": {"range_usefulness_score": 0.37, "range_usefulness_gap_time_score": 0.38},
-                "DouglasPeucker": {"range_usefulness_score": 0.39},
+                "MLQDS": {
+                    "range_usefulness_score": 0.42,
+                    "query_useful_v1_score": 0.46,
+                    "range_usefulness_gap_time_score": 0.43,
+                },
+                "uniform": {
+                    "range_usefulness_score": 0.37,
+                    "query_useful_v1_score": 0.39,
+                    "range_usefulness_gap_time_score": 0.38,
+                },
+                "DouglasPeucker": {"range_usefulness_score": 0.39, "query_useful_v1_score": 0.41},
                 "TemporalRandomFill": {"range_usefulness_score": 0.41},
             },
             "0.1000": {
-                "MLQDS": {"range_usefulness_score": 0.50},
-                "uniform": {"range_usefulness_score": 0.48},
-                "DouglasPeucker": {"range_usefulness_score": 0.47},
+                "MLQDS": {"range_usefulness_score": 0.50, "query_useful_v1_score": 0.52},
+                "uniform": {"range_usefulness_score": 0.48, "query_useful_v1_score": 0.49},
+                "DouglasPeucker": {"range_usefulness_score": 0.47, "query_useful_v1_score": 0.48},
                 "TemporalRandomFill": {"range_usefulness_score": 0.52},
             },
         },
@@ -769,6 +891,64 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["runtime_bottleneck_seconds"] == 6.0
     assert row["runtime_bottleneck_fraction"] == pytest.approx(0.6)
     assert row["single_cell_range_status"] == "diagnostic_upper_bound"
+    assert row["final_claim_status"] == "candidate_blocked_by_required_gates"
+    assert row["final_success_allowed"] is False
+    assert row["final_claim_blocking_gates"] == ["predictability_gate"]
+    assert row["workload_stability_gate_pass"] is False
+    assert row["workload_stability_failed_checks"] == ["train_r0:not_target_coverage_generation"]
+    assert row["workload_stability_train_replicates"] == 1
+    assert row["workload_stability_configured_target_coverage"] == 0.10
+    assert row["global_sanity_gate_pass"] is True
+    assert row["global_sanity_failed_checks"] == []
+    assert row["global_sanity_endpoint_sanity"] == 1.0
+    assert row["global_sanity_avg_sed_ratio_vs_uniform"] == pytest.approx(1.09)
+    assert row["global_sanity_avg_length_preserved"] == pytest.approx(0.88)
+    assert row["predictability_gate_pass"] is False
+    assert row["predictability_spearman"] == 0.12
+    assert row["predictability_lift_at_5_percent"] == 1.18
+    assert row["predictability_pr_auc_lift_over_base_rate"] == 1.20
+    assert row["workload_signature_gate_available"] is True
+    assert row["workload_signature_gate_pass"] is False
+    assert row["workload_signature_pair_count"] == 1
+    assert row["workload_signature_failed_pairs"] == ["train"]
+    assert row["train_eval_anchor_family_l1_distance"] == 0.16
+    assert row["train_eval_point_hit_distribution_ks"] == 0.22
+    assert row["train_eval_point_hit_distribution_ks_proxy"] == 0.22
+    assert row["train_eval_point_hit_distribution_used_quantile_proxy"] is False
+    assert row["learning_causality_ablation_status"] == "partial"
+    assert row["learning_causality_gate_pass"] is False
+    assert row["learning_causality_failed_checks"] == ["shuffled_scores_should_lose"]
+    assert row["causality_ablation_missing"] == ["MLQDS_without_segment_budget_head"]
+    assert row["learned_controlled_retained_slot_fraction"] == 0.72
+    assert row["planned_learned_controlled_retained_slot_fraction"] == 0.80
+    assert row["actual_learned_controlled_retained_slot_fraction"] == 0.72
+    assert row["trajectories_with_at_least_one_learned_decision"] == 5
+    assert row["trajectories_with_zero_learned_decisions"] == 1
+    assert row["segment_budget_entropy"] == 1.4
+    assert row["segment_budget_entropy_normalized"] == 0.7
+    assert row["selector_trace_retained_mask_matches_primary"] is True
+    assert row["shuffled_score_ablation_delta"] == 0.04
+    assert row["untrained_score_ablation_delta"] == 0.06
+    assert row["shuffled_prior_field_ablation_delta"] == 0.05
+    assert row["no_query_prior_field_ablation_delta"] == 0.03
+    assert row["no_behavior_head_ablation_delta"] == 0.07
+    assert row["no_segment_budget_head_ablation_delta"] == 0.08
+    assert row["learning_causality_min_material_delta"] == 0.005
+    assert row["learning_causality_shuffled_fraction_of_uniform_gap_min"] == 0.60
+    assert row["learning_causality_mlqds_uniform_gap"] == 0.05
+    assert row["learning_causality_delta_thresholds"]["shuffled_scores_should_lose"] == 0.03
+    assert row["segment_budget_head_ablation_mode"] == "neutral_constant_segment_scores"
+    assert row["prior_sample_gate_pass"] is False
+    assert row["prior_sample_gate_failures"] == ["sampled_query_prior_features_all_zero"]
+    assert row["shuffled_prior_sampled_inputs_changed"] is False
+    assert row["shuffled_prior_sampled_primary_nonzero_fraction"] == 0.0
+    assert row["shuffled_prior_sampled_ablation_nonzero_fraction"] == 0.01
+    assert row["shuffled_prior_sampled_mean_abs_feature_delta"] == 0.002
+    assert row["shuffled_prior_sampled_max_abs_feature_delta"] == 0.10
+    assert row["shuffled_prior_sampled_outside_extent_fraction"] == 0.75
+    assert row["no_prior_sampled_primary_nonzero_fraction"] == 0.0
+    assert row["no_prior_sampled_mean_abs_feature_delta"] == 0.0
+    assert row["no_prior_sampled_outside_extent_fraction"] == 0.75
     assert row["workload_blind_candidate"] is False
     assert row["workload_blind_protocol_enabled"] is False
     assert row["primary_masks_frozen_before_eval_query_scoring"] is False
@@ -786,14 +966,22 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["audit_low_beats_uniform_range_usefulness_count"] == 1
     assert row["audit_low_beats_temporal_random_fill_range_usefulness_count"] == 1
     assert row["audit_low_beats_both_range_usefulness_count"] == 1
+    assert row["audit_beats_uniform_query_useful_v1_count"] == 2
+    assert row["audit_beats_douglas_peucker_query_useful_v1_count"] == 3
+    assert row["audit_low_beats_uniform_query_useful_v1_count"] == 1
     assert row["audit_min_low_vs_uniform_range_usefulness"] == pytest.approx(-0.02)
+    assert row["audit_min_low_vs_uniform_query_useful_v1"] == pytest.approx(-0.02)
     assert row["audit_mean_low_vs_uniform_range_usefulness"] == pytest.approx(0.015)
+    assert row["audit_mean_low_vs_uniform_query_useful_v1"] == pytest.approx(0.025)
     assert row["audit_min_low_vs_temporal_random_fill_range_usefulness"] == pytest.approx(-0.01)
     assert row["audit_mean_vs_temporal_random_fill_range_usefulness"] == pytest.approx(-0.02 / 3.0)
     assert row["audit_mean_low_vs_temporal_random_fill_range_usefulness"] == pytest.approx(0.0)
     assert row["audit_ratio_0p0100_compression_ratio"] == pytest.approx(0.01)
     assert row["audit_ratio_0p0100_mlqds_range_usefulness"] == pytest.approx(0.10)
     assert row["audit_ratio_0p0100_uniform_range_usefulness"] == pytest.approx(0.12)
+    assert row["audit_ratio_0p0100_mlqds_query_useful_v1"] == pytest.approx(0.11)
+    assert row["audit_ratio_0p0100_uniform_query_useful_v1"] == pytest.approx(0.13)
+    assert row["audit_ratio_0p0100_mlqds_vs_uniform_query_useful_v1"] == pytest.approx(-0.02)
     assert row["audit_ratio_0p0100_douglas_peucker_range_usefulness"] == pytest.approx(0.09)
     assert row["audit_ratio_0p0100_temporal_random_fill_range_usefulness"] == pytest.approx(0.11)
     assert row["audit_ratio_0p0100_mlqds_vs_uniform_range_usefulness"] == pytest.approx(-0.02)
@@ -845,20 +1033,23 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["local_swap_gain_cost_selected_candidate_value_mass"] == 1.50
     assert row["local_swap_gain_cost_selected_removal_cost_mass"] == 0.40
     assert row["local_swap_gain_cost_source_positive_mass"] == 3.75
-    assert row["mlqds_primary_metric"] == "range_usefulness"
-    assert row["mlqds_primary_score"] == 0.42
+    assert row["mlqds_primary_metric"] == "query_useful_v1"
+    assert row["mlqds_primary_score"] == 0.46
     assert row["mlqds_aggregate_f1"] == 0.40
     assert row["mlqds_range_point_f1"] == 0.40
     assert row["mlqds_range_usefulness"] == 0.42
     assert row["mlqds_range_usefulness_score"] == 0.42
+    assert row["mlqds_query_useful_v1_score"] == 0.46
     assert row["mlqds_range_usefulness_gap_time_score"] == 0.429
     assert row["mlqds_range_usefulness_gap_distance_score"] == 0.4245
     assert row["mlqds_range_usefulness_gap_min_score"] == 0.4245
     assert row["uniform_range_point_f1"] == 0.35
     assert row["uniform_range_usefulness"] == 0.37
+    assert row["uniform_query_useful_v1_score"] == 0.39
     assert row["uniform_range_usefulness_gap_time_score"] == 0.379
     assert row["douglas_peucker_range_point_f1"] == 0.36
     assert row["douglas_peucker_range_usefulness"] == 0.39
+    assert row["douglas_peucker_query_useful_v1_score"] == 0.41
     assert row["douglas_peucker_range_usefulness_gap_min_score"] == 0.3936
     assert row["mlqds_avg_sed_km"] == 0.60
     assert row["uniform_avg_sed_km"] == 0.55
@@ -901,7 +1092,9 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_vs_uniform_range_point_f1"] == pytest.approx(0.05)
     assert row["mlqds_vs_douglas_peucker_range_point_f1"] == pytest.approx(0.04)
     assert row["mlqds_vs_uniform_range_usefulness"] == pytest.approx(0.05)
+    assert row["mlqds_vs_uniform_query_useful_v1"] == pytest.approx(0.07)
     assert row["mlqds_vs_douglas_peucker_range_usefulness"] == pytest.approx(0.03)
+    assert row["mlqds_vs_douglas_peucker_query_useful_v1"] == pytest.approx(0.05)
     assert row["mlqds_vs_uniform_range_usefulness_gap_time"] == pytest.approx(0.05)
     assert row["mlqds_vs_uniform_range_usefulness_gap_distance"] == pytest.approx(0.0473)
     assert row["mlqds_vs_uniform_range_usefulness_gap_min"] == pytest.approx(0.0473)
@@ -910,6 +1103,74 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["mlqds_vs_douglas_peucker_range_usefulness_gap_min"] == pytest.approx(0.0309)
     assert row["audit_beats_uniform_range_usefulness_gap_time_count"] == 2
     assert row["audit_low_beats_uniform_range_usefulness_gap_time_count"] == 2
+
+
+def _final_grid_row(coverage: float, *, mlqds_delta: float = 0.05) -> dict[str, object]:
+    row: dict[str, object] = {
+        "workload": "range",
+        "run_label": f"c{int(coverage * 100):02d}",
+        "returncode": 0,
+        "query_target_coverage": coverage,
+        "compression_ratio": 0.05,
+        "mlqds_query_useful_v1_score": 0.55,
+        "uniform_query_useful_v1_score": 0.50,
+        "douglas_peucker_query_useful_v1_score": 0.49,
+        "workload_stability_gate_pass": True,
+        "predictability_gate_pass": True,
+        "target_diffusion_gate_pass": True,
+        "workload_signature_gate_pass": True,
+        "learning_causality_gate_pass": True,
+        "prior_sample_gate_pass": True,
+        "global_sanity_gate_pass": True,
+        "mlqds_primary_metric": "query_useful_v1",
+    }
+    for ratio in (0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30):
+        prefix = f"audit_ratio_{ratio:.4f}".replace(".", "p")
+        row[f"{prefix}_mlqds_query_useful_v1"] = 0.50 + mlqds_delta
+        row[f"{prefix}_uniform_query_useful_v1"] = 0.50
+        row[f"{prefix}_douglas_peucker_query_useful_v1"] = 0.49
+    return row
+
+
+def test_query_driven_final_grid_summary_accepts_complete_passing_grid() -> None:
+    rows = [_final_grid_row(coverage) for coverage in (0.05, 0.10, 0.15, 0.30)]
+    run_config = {
+        "profile_settings": {
+            "final_product_candidate": True,
+            "range_coverage_sweep_targets": [0.05, 0.10, 0.15, 0.30],
+            "range_compression_sweep_ratios": [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30],
+        }
+    }
+
+    summary = query_driven_final_grid_summary(rows, run_config)
+
+    assert summary["status"] == "final_grid_pass"
+    assert summary["final_success_allowed"] is True
+    assert summary["grid_complete"] is True
+    assert summary["observed_cell_count"] == 28
+    assert summary["beats_uniform_queryuseful_cells"] == 28
+    assert summary["beats_douglas_peucker_queryuseful_cells"] == 28
+    assert summary["low_budget_beats_uniform_queryuseful_cells"] == 12
+    assert summary["matched_5_percent_coverage_cells_uniform"] == 4
+    assert summary["failed_checks"] == []
+
+
+def test_query_driven_final_grid_summary_blocks_missing_or_failed_evidence() -> None:
+    rows = [_final_grid_row(0.05), _final_grid_row(0.10, mlqds_delta=-0.02)]
+    rows[0]["predictability_gate_pass"] = False
+
+    summary = query_driven_final_grid_summary(
+        rows,
+        {"profile_settings": {"final_product_candidate": True}},
+    )
+
+    assert summary["status"] == "final_grid_blocked"
+    assert summary["final_success_allowed"] is False
+    assert "coverage_grid_incomplete" in summary["failed_checks"]
+    assert "compression_grid_incomplete" in summary["failed_checks"]
+    assert "too_few_uniform_queryuseful_wins" in summary["failed_checks"]
+    assert "required_single_run_gates_failed" in summary["failed_checks"]
+    assert summary["child_gate_failures"][0]["failed_gates"] == ["predictability_gate_pass"]
 
 
 def test_query_floor_fields_flags_coverage_target_miss() -> None:

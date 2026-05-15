@@ -39,6 +39,9 @@ Each trajectory tensor has 8 columns:
   defaults.
 - `return_audit=True` returns invalid-row, duplicate, segmentation, and
   downsampling diagnostics.
+- Synthetic runs use independent random routes by default. Set
+  `--synthetic_route_families N` to generate ships around `N` shared corridors
+  when testing same-support query-prior behavior.
 
 ## Cache
 

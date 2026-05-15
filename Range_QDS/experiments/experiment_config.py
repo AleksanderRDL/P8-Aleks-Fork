@@ -17,6 +17,7 @@ class DataConfig:
 
     n_ships: int | None = 24
     n_points_per_ship: int | None = 200
+    synthetic_route_families: int = 0
     min_points_per_segment: int = 4
     max_points_per_segment: int | None = None
     max_time_gap_seconds: float | None = 3600.0
@@ -73,6 +74,7 @@ class QueryConfig:
     range_acceptance_max_attempts: int | None = None
     range_max_coverage_overshoot: float | None = None
     range_train_workload_replicates: int = 1
+    workload_profile_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See experiments/README.md for details."""
@@ -152,6 +154,7 @@ class ModelConfig:
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
     mlqds_hybrid_mode: str = "fill"
+    selector_type: str = "temporal_hybrid"
     mlqds_stratified_center_weight: float = 0.0
     mlqds_min_learned_swaps: int = 0
     mlqds_score_mode: str = "rank"
@@ -257,6 +260,7 @@ class SeedBundle:
 def build_experiment_config(
     n_ships: int = 24,
     n_points: int = 200,
+    synthetic_route_families: int = 0,
     min_points_per_segment: int = 4,
     max_points_per_segment: int | None = None,
     max_time_gap_seconds: float | None = 3600.0,
@@ -286,6 +290,7 @@ def build_experiment_config(
     range_acceptance_max_attempts: int | None = None,
     range_max_coverage_overshoot: float | None = None,
     range_train_workload_replicates: int = 1,
+    workload_profile_id: str | None = None,
     epochs: int = 6,
     lr: float = 5e-4,
     embed_dim: int = 64,
@@ -336,6 +341,7 @@ def build_experiment_config(
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
     mlqds_hybrid_mode: str = "fill",
+    selector_type: str = "temporal_hybrid",
     mlqds_stratified_center_weight: float = 0.0,
     mlqds_min_learned_swaps: int = 0,
     mlqds_score_mode: str = "rank",
@@ -375,6 +381,7 @@ def build_experiment_config(
         data=DataConfig(
             n_ships=None if uses_csv else n_ships,
             n_points_per_ship=None if uses_csv else n_points,
+            synthetic_route_families=0 if uses_csv else int(synthetic_route_families),
             min_points_per_segment=min_points_per_segment,
             max_points_per_segment=max_points_per_segment,
             max_time_gap_seconds=max_time_gap_seconds,
@@ -415,6 +422,7 @@ def build_experiment_config(
             range_acceptance_max_attempts=range_acceptance_max_attempts,
             range_max_coverage_overshoot=range_max_coverage_overshoot,
             range_train_workload_replicates=range_train_workload_replicates,
+            workload_profile_id=workload_profile_id,
             workload=workload,
         ),
         model=ModelConfig(
@@ -458,6 +466,7 @@ def build_experiment_config(
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             mlqds_hybrid_mode=mlqds_hybrid_mode,
+            selector_type=selector_type,
             mlqds_stratified_center_weight=mlqds_stratified_center_weight,
             mlqds_min_learned_swaps=mlqds_min_learned_swaps,
             mlqds_score_mode=mlqds_score_mode,
