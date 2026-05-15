@@ -79,8 +79,10 @@ coverage is already reached.
 
 All profiles in this section are legacy diagnostics. They report
 RangeUsefulLegacy and scalar-target behavior, and `final_success_allowed=false`.
-The planned `range_workload_v1_*` profiles are reserved names and fail clearly
-until the query-driven rework implements them.
+The active query-driven candidate is `range_workload_v1_workload_blind_v2`;
+it reports `QueryUsefulV1` as the primary metric but remains blocked unless
+the required stability, predictability, causality, global-sanity, and full-grid
+gates pass.
 
 | Setting | Value |
 | --- | --- |

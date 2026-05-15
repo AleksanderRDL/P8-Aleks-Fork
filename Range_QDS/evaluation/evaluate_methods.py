@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -34,6 +34,7 @@ from evaluation.range_usefulness import (
     range_usefulness_score_from_components,
     range_usefulness_weight_summary,
 )
+from evaluation.query_useful_v1 import query_useful_v1_from_range_audit
 from queries.range_geometry import (
     points_in_range_box,
     segment_box_bracket_indices,
@@ -637,6 +638,25 @@ def _retained_point_gap_stats(
     return float(total_gap / gap_count), float(total_norm_gap / gap_count), float(max_gap)
 
 
+def _endpoint_sanity(retained_mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> float:
+    """Return the fraction of eligible trajectories retaining both endpoints."""
+    eligible = 0
+    passing = 0
+    for start, end in boundaries:
+        n = int(end - start)
+        if n <= 1:
+            continue
+        retained_count = int(retained_mask[start:end].sum().item())
+        if retained_count < 2:
+            continue
+        eligible += 1
+        if bool(retained_mask[start].item()) and bool(retained_mask[end - 1].item()):
+            passing += 1
+    if eligible <= 0:
+        return 1.0
+    return float(passing / eligible)
+
+
 def evaluate_method(
     method: Method,
     points: torch.Tensor,
@@ -690,7 +710,24 @@ def evaluate_method(
             typed_queries=typed_queries,
             query_cache=query_cache,
         )
+    endpoint_sanity = _endpoint_sanity(retained_mask, boundaries)
+    range_audit["endpoint_sanity"] = endpoint_sanity
     boundary_f1 = float(range_audit.get("range_entry_exit_f1", 0.0))
+    query_useful_v1 = query_useful_v1_from_range_audit(
+        range_audit,
+        length_preservation=avg_length_preserved,
+        avg_sed_km=float(geometric.get("avg_sed_km", 0.0)),
+        endpoint_sanity=endpoint_sanity,
+    )
+    range_audit.update(query_useful_v1)
+    query_useful_components_raw = query_useful_v1.get("query_useful_v1_components", {})
+    query_useful_components = (
+        {str(key): float(value) for key, value in query_useful_components_raw.items()}
+        if isinstance(query_useful_components_raw, dict)
+        else {}
+    )
+    query_useful_score = float(cast(Any, query_useful_v1.get("query_useful_v1_score", 0.0)) or 0.0)
+    query_useful_schema = int(cast(Any, query_useful_v1.get("query_useful_v1_schema_version", 0)) or 0)
 
     return MethodEvaluation(
         aggregate_f1=float(aggregate),
@@ -727,6 +764,9 @@ def evaluate_method(
         range_usefulness_gap_ablation_version=int(
             range_audit.get("range_usefulness_gap_ablation_version", 0) or 0
         ),
+        query_useful_v1_score=query_useful_score,
+        query_useful_v1_schema_version=query_useful_schema,
+        query_useful_v1_components=query_useful_components,
         range_audit=range_audit,
         retained_mask=retained_mask if return_mask else None,
     )

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, cast
 
 import torch
+import torch.nn.functional as F
 
 from experiments.experiment_config import ModelConfig
 from experiments.torch_runtime import torch_autocast_context
@@ -49,6 +50,31 @@ class TrainingEpochResult:
     timing: dict[str, float]
 
 
+def _factorized_query_useful_loss(
+    *,
+    head_logits: torch.Tensor,
+    head_targets: torch.Tensor,
+    head_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Return auxiliary multi-head QueryUsefulV1 loss for v2 models."""
+    if head_logits.shape != head_targets.shape or head_mask.shape != head_logits.shape:
+        raise ValueError("factorized head logits, targets, and mask must have matching shape.")
+    valid = head_mask.to(dtype=torch.bool)
+    if not bool(valid.any().item()):
+        return head_logits.new_tensor(0.0)
+    # q_hit, boundary, and segment budget are probability-like.  Behavior and
+    # replacement are smooth utilities but BCE keeps useful gradients near 0/1.
+    per_element = F.binary_cross_entropy_with_logits(
+        head_logits,
+        head_targets.clamp(0.0, 1.0),
+        reduction="none",
+    )
+    head_weights = head_logits.new_tensor([0.30, 0.25, 0.15, 0.20, 0.10]).view(1, 1, -1)
+    weighted = per_element * head_weights * valid.to(dtype=per_element.dtype)
+    denom = (head_weights * valid.to(dtype=per_element.dtype)).sum().clamp(min=1.0)
+    return weighted.sum() / denom
+
+
 def _train_one_epoch(
     *,
     model: torch.nn.Module,
@@ -70,6 +96,8 @@ def _train_one_epoch(
     temporal_residual_budget_masks: tuple[tuple[float, float, torch.Tensor], ...],
     temporal_residual_union_mask: torch.Tensor | None,
     training_sample_generator: torch.Generator,
+    factorized_targets_dev: torch.Tensor | None = None,
+    factorized_mask_dev: torch.Tensor | None = None,
 ) -> TrainingEpochResult:
     """Run forward/loss/backward optimization over all training windows."""
     timing = {
@@ -87,12 +115,23 @@ def _train_one_epoch(
         window_batch = _trajectory_batch_to_device(window_batch_cpu, device)
         forward_t0 = time.perf_counter()
         with torch_autocast_context(device, amp_mode):
-            pred_batch = model(
-                points=window_batch.points,
-                queries=norm_queries_dev,
-                query_type_ids=type_ids_dev,
-                padding_mask=window_batch.padding_mask,
-            )
+            forward_with_heads = getattr(model, "forward_with_heads", None)
+            if factorized_targets_dev is not None and callable(forward_with_heads):
+                forward_with_heads_fn = cast(
+                    Callable[..., tuple[torch.Tensor, torch.Tensor]], forward_with_heads
+                )
+                pred_batch, head_logits_batch = forward_with_heads_fn(
+                    window_batch.points,
+                    padding_mask=window_batch.padding_mask,
+                )
+            else:
+                pred_batch = model(
+                    points=window_batch.points,
+                    queries=norm_queries_dev,
+                    query_type_ids=type_ids_dev,
+                    padding_mask=window_batch.padding_mask,
+                )
+                head_logits_batch = None
         timing["forward_s"] += time.perf_counter() - forward_t0
         loss_t0 = time.perf_counter()
         pred_batch = pred_batch.float()
@@ -103,6 +142,19 @@ def _train_one_epoch(
         safe_global_idx = batch_global_idx.clamp(min=0)
         batch_labels = training_target_dev[safe_global_idx]
         batch_label_mask = labelled_mask_dev[safe_global_idx] & valid_batch
+        aux_loss = pred_batch.new_tensor(0.0)
+        if (
+            head_logits_batch is not None
+            and factorized_targets_dev is not None
+            and factorized_mask_dev is not None
+        ):
+            batch_head_targets = factorized_targets_dev[safe_global_idx].float()
+            batch_head_mask = factorized_mask_dev[safe_global_idx] & valid_batch.unsqueeze(-1)
+            aux_loss = _factorized_query_useful_loss(
+                head_logits=head_logits_batch.float(),
+                head_targets=batch_head_targets,
+                head_mask=batch_head_mask,
+            )
         positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
         positive_windows[active_type_id] += int(positive_row_mask.sum().item())
         skipped_zero_windows[active_type_id] += int((~positive_row_mask).sum().item())
@@ -160,6 +212,7 @@ def _train_one_epoch(
                     row_losses = row_losses + temporal_distribution_weight * temporal_distribution_rows
                 loss = (
                     row_losses[positive_row_mask].sum() / float(batch_size)
+                    + 0.50 * aux_loss
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         elif loss_objective == "pointwise_bce":
@@ -171,6 +224,7 @@ def _train_one_epoch(
             if bool(pointwise_direct_active_rows.any().item()):
                 loss = (
                     pointwise_direct_rows[pointwise_direct_active_rows].sum() / float(batch_size)
+                    + 0.50 * aux_loss
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         else:
@@ -195,6 +249,7 @@ def _train_one_epoch(
             if loss_terms:
                 loss = (
                     torch.stack(loss_terms).sum() / float(batch_size)
+                    + 0.50 * aux_loss
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         timing["loss_s"] += time.perf_counter() - loss_t0

@@ -28,7 +28,6 @@ UNIMPLEMENTED_REWORK_PROFILES = frozenset(
     {
         RANGE_WORKLOAD_V1_PREDICTABILITY_AUDIT_PROFILE,
         RANGE_WORKLOAD_V1_PRIORFIELD_ONLY_PROFILE,
-        RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE,
         RANGE_WORKLOAD_V1_MILD_JITTER_PROFILE,
         RANGE_WORKLOAD_V1_OOD_DIAGNOSTIC_PROFILE,
     }
@@ -123,6 +122,9 @@ class BenchmarkProfile:
     final_success_allowed: bool = False
     legacy_reason: str = LEGACY_PROFILE_REASON
     mlqds_stratified_center_weight: float = 0.0
+    workload_profile_id: str | None = None
+    selector_type: str = "temporal_hybrid"
+    range_train_workload_replicates: int = 1
 
 
 RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE = BenchmarkProfile(
@@ -373,11 +375,79 @@ RANGE_WORKLOAD_BLIND_TEACHER_DISTILL_PROFILE = BenchmarkProfile(
     range_teacher_epochs=4,
 )
 
+RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_BENCHMARK_PROFILE = BenchmarkProfile(
+    name=RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE,
+    n_queries=RANGE_BLIND_COVERAGE_MIN_QUERY_FLOOR,
+    query_coverage=0.10,
+    range_spatial_fraction=0.0165,
+    range_time_fraction=0.033,
+    range_spatial_km=None,
+    range_time_hours=None,
+    range_footprint_jitter=0.20,
+    range_max_coverage_overshoot=0.0075,
+    range_time_domain_mode="anchor_day",
+    range_anchor_mode="mixed_density",
+    range_train_anchor_modes=(),
+    range_diagnostics_mode="cached",
+    final_metrics_mode="diagnostic",
+    max_queries=2048,
+    query_chunk_size=2048,
+    train_batch_size=64,
+    inference_batch_size=64,
+    model_type="workload_blind_range_v2",
+    compression_ratio=0.05,
+    epochs=10,
+    early_stopping_patience=5,
+    checkpoint_smoothing_window=1,
+    checkpoint_full_score_every=2,
+    checkpoint_candidate_pool_size=2,
+    mlqds_temporal_fraction=0.0,
+    workload="range",
+    checkpoint_selection_metric="uniform_gap",
+    checkpoint_score_variant="query_useful_v1",
+    float32_matmul_precision="high",
+    allow_tf32=True,
+    amp_mode="bf16",
+    loss_objective="budget_topk",
+    budget_loss_ratios=RANGE_COMPRESSION_SWEEP_RATIOS,
+    budget_loss_temperature=0.25,
+    temporal_distribution_loss_weight=0.0,
+    mlqds_score_mode="rank_confidence",
+    mlqds_score_temperature=1.0,
+    mlqds_rank_confidence_weight=0.20,
+    mlqds_range_geometry_blend=0.0,
+    mlqds_diversity_bonus=0.0,
+    mlqds_hybrid_mode="global_budget",
+    temporal_residual_label_mode="none",
+    validation_score_every=1,
+    range_label_mode="usefulness",
+    range_training_target_mode="query_useful_v1_factorized",
+    range_temporal_target_blend=0.0,
+    range_target_budget_weight_power=0.0,
+    range_marginal_target_radius_scale=0.50,
+    range_query_spine_fraction=0.10,
+    range_query_spine_mass_mode="hit_group",
+    range_query_residual_multiplier=1.0,
+    range_query_residual_mass_mode="query",
+    range_set_utility_multiplier=1.0,
+    range_set_utility_candidate_limit=128,
+    range_set_utility_mass_mode="gain",
+    range_boundary_prior_weight=0.0,
+    range_teacher_distillation_mode="none",
+    range_teacher_epochs=4,
+    final_success_allowed=True,
+    legacy_reason="QueryUsefulV1/range_workload_v1 final-candidate profile.",
+    workload_profile_id="range_workload_v1",
+    selector_type="learned_segment_budget_v1",
+    range_train_workload_replicates=4,
+)
+
 _PROFILES = {
     RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE.name: RANGE_WORKLOAD_AWARE_DIAGNOSTIC_PROFILE,
     RANGE_WORKLOAD_BLIND_EXPECTED_USEFULNESS_PROFILE.name: RANGE_WORKLOAD_BLIND_EXPECTED_USEFULNESS_PROFILE,
     RANGE_WORKLOAD_BLIND_RETAINED_FREQUENCY_PROFILE.name: RANGE_WORKLOAD_BLIND_RETAINED_FREQUENCY_PROFILE,
     RANGE_WORKLOAD_BLIND_TEACHER_DISTILL_PROFILE.name: RANGE_WORKLOAD_BLIND_TEACHER_DISTILL_PROFILE,
+    RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_BENCHMARK_PROFILE.name: RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_BENCHMARK_PROFILE,
 }
 
 
@@ -422,6 +492,10 @@ def benchmark_profile_args(
     ]
     if profile.range_max_coverage_overshoot is not None:
         args += ["--range_max_coverage_overshoot", str(profile.range_max_coverage_overshoot)]
+    if profile.workload_profile_id is not None:
+        args += ["--workload_profile_id", profile.workload_profile_id]
+    if int(profile.range_train_workload_replicates) > 1:
+        args += ["--range_train_workload_replicates", str(profile.range_train_workload_replicates)]
     args += [
         "--range_time_domain_mode",
         profile.range_time_domain_mode,
@@ -487,6 +561,8 @@ def benchmark_profile_args(
         f"{profile.mlqds_diversity_bonus:.2f}",
         "--mlqds_hybrid_mode",
         profile.mlqds_hybrid_mode,
+        "--selector_type",
+        profile.selector_type,
         "--mlqds_stratified_center_weight",
         f"{profile.mlqds_stratified_center_weight:.2f}",
         "--temporal_residual_label_mode",
@@ -541,6 +617,9 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
     profile = benchmark_profile(name)
     workload_blind = is_workload_blind_model_type(profile.model_type)
     profile_role = (
+        "query_driven_workload_blind_v2"
+        if profile.range_training_target_mode == "query_useful_v1_factorized"
+        else
         "workload_blind_teacher_distill"
         if profile.range_teacher_distillation_mode != "none"
         else "workload_blind_marginal_coverage"
@@ -553,17 +632,22 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         if workload_blind
         else "workload_aware_diagnostic"
     )
+    final_candidate = bool(profile.final_success_allowed)
     return {
         "profile_role": profile_role,
-        "profile_legacy_diagnostic": True,
+        "profile_legacy_diagnostic": not final_candidate,
         "legacy_reason": profile.legacy_reason,
-        "primary_metric_family": "RangeUsefulLegacy",
+        "primary_metric_family": "QueryUsefulV1" if final_candidate else "RangeUsefulLegacy",
         "final_success_allowed": bool(profile.final_success_allowed),
-        "final_product_candidate": False,
+        "final_product_candidate": final_candidate,
         "final_product_claim": False,
         "final_product_claim_gate": (
-            "Unavailable until range_workload_v1 and QueryUsefulV1 are implemented. "
-            "RangeUsefulLegacy wins are diagnostics only."
+            "Requires full held-out coverage/compression grid and learning-causality ablations."
+            if final_candidate
+            else (
+                "Unavailable until range_workload_v1 and QueryUsefulV1 are implemented. "
+                "RangeUsefulLegacy wins are diagnostics only."
+            )
         ),
         "workload_blind": bool(workload_blind),
         "data_mode": "three_cleaned_csv_days",
@@ -582,6 +666,8 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
         "range_time_domain_mode": profile.range_time_domain_mode,
         "range_anchor_mode": profile.range_anchor_mode,
         "range_train_anchor_modes": list(profile.range_train_anchor_modes),
+        "range_train_workload_replicates": int(profile.range_train_workload_replicates),
+        "workload_profile_id": profile.workload_profile_id,
         "range_diagnostics_mode": profile.range_diagnostics_mode,
         "final_metrics_mode": profile.final_metrics_mode,
         "query_chunk_size": profile.query_chunk_size,
@@ -612,6 +698,7 @@ def benchmark_profile_settings(name: str) -> dict[str, ProfileSetting]:
             profile.mlqds_diversity_bonus,
         ),
         "mlqds_hybrid_mode": profile.mlqds_hybrid_mode,
+        "selector_type": profile.selector_type,
         "mlqds_stratified_center_weight": profile.mlqds_stratified_center_weight,
         "temporal_residual_label_mode": profile.temporal_residual_label_mode,
         "validation_score_every": profile.validation_score_every,

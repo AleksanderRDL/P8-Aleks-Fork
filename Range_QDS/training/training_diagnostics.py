@@ -27,6 +27,7 @@ def _training_target_diagnostics(
     range_training_target_mode: str = "point_value",
 ) -> dict[str, Any]:
     """Summarize the effective supervised target after residual masking."""
+    target_mode = str(range_training_target_mode).lower()
     active = labelled_mask[:, workload_type_id].bool()
     values = labels[:, workload_type_id].float()
     positive = active & (values > 0.0)
@@ -36,13 +37,7 @@ def _training_target_diagnostics(
     total_positive_label_mass = float(values[positive].sum().item()) if bool(positive.any().item()) else 0.0
     diagnostics: dict[str, Any] = {
         "workload_type_id": int(workload_type_id),
-        "range_training_target_mode": str(range_training_target_mode),
-        "target_family": "legacy_range_useful_scalar",
-        "final_success_allowed": False,
-        "legacy_reason": (
-            "Old RangeUseful/scalar-target diagnostic path. "
-            "Not valid for query-driven rework acceptance."
-        ),
+        "range_training_target_mode": target_mode,
         "temporal_residual_label_mode": str(temporal_residual_label_mode),
         "loss_objective": str(loss_objective),
         "mlqds_temporal_fraction": float(temporal_fraction),
@@ -55,6 +50,24 @@ def _training_target_diagnostics(
         "positive_label_mass": total_positive_label_mass,
         "budget_rows": [],
     }
+    if target_mode == "query_useful_v1_factorized":
+        diagnostics.update(
+            {
+                "target_family": "QueryUsefulV1Factorized",
+                "final_success_allowed": True,
+            }
+        )
+    else:
+        diagnostics.update(
+            {
+                "target_family": "legacy_range_useful_scalar",
+                "final_success_allowed": False,
+                "legacy_reason": (
+                    "Old RangeUseful/scalar-target diagnostic path. "
+                    "Not valid for query-driven rework acceptance."
+                ),
+            }
+        )
 
     rows: list[dict[str, Any]] = []
     for total_ratio, effective_ratio, base_mask in temporal_residual_budget_masks:

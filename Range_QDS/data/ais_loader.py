@@ -376,23 +376,43 @@ def generate_synthetic_ais_data(
     n_ships: int = 24,
     n_points_per_ship: int = 200,
     seed: int = 42,
+    route_families: int = 0,
 ) -> list[torch.Tensor]:
     """Generate synthetic AIS trajectories with realistic temporal continuity. See data/README.md for details."""
     g = torch.Generator()
     g.manual_seed(int(seed))
 
     trajectories: list[torch.Tensor] = []
+    family_count = min(int(route_families), int(n_ships))
+    family_count = max(0, family_count)
+    family_lat = torch.empty((0,), dtype=torch.float32)
+    family_lon = torch.empty((0,), dtype=torch.float32)
+    family_drift_lat = torch.empty((0,), dtype=torch.float32)
+    family_drift_lon = torch.empty((0,), dtype=torch.float32)
+    if family_count > 0:
+        family_lat = 32.0 + 12.0 * torch.rand(family_count, generator=g)
+        family_lon = -12.0 + 24.0 * torch.rand(family_count, generator=g)
+        family_drift_lat = (torch.rand(family_count, generator=g) - 0.5) * 0.012
+        family_drift_lon = (torch.rand(family_count, generator=g) - 0.5) * 0.012
     for ship_idx in range(n_ships):
         time = torch.arange(n_points_per_ship, dtype=torch.float32)
         time = time * 60.0 + 1000.0 * ship_idx
 
-        start_lat = 30.0 + 20.0 * torch.rand(1, generator=g).item()
-        start_lon = -20.0 + 40.0 * torch.rand(1, generator=g).item()
+        if family_count > 0:
+            family_idx = ship_idx % family_count
+            start_lat = float(family_lat[family_idx].item()) + 0.004 * torch.randn(1, generator=g).item()
+            start_lon = float(family_lon[family_idx].item()) + 0.004 * torch.randn(1, generator=g).item()
+            drift_lat = float(family_drift_lat[family_idx].item()) + 0.0005 * torch.randn(1, generator=g).item()
+            drift_lon = float(family_drift_lon[family_idx].item()) + 0.0005 * torch.randn(1, generator=g).item()
+            phase = 0.20 * torch.randn(1, generator=g).item()
+        else:
+            start_lat = 30.0 + 20.0 * torch.rand(1, generator=g).item()
+            start_lon = -20.0 + 40.0 * torch.rand(1, generator=g).item()
+            drift_lat = (torch.rand(1, generator=g).item() - 0.5) * 0.02
+            drift_lon = (torch.rand(1, generator=g).item() - 0.5) * 0.02
+            phase = 0.0
 
-        drift_lat = (torch.rand(1, generator=g).item() - 0.5) * 0.02
-        drift_lon = (torch.rand(1, generator=g).item() - 0.5) * 0.02
-
-        wave = torch.sin(torch.linspace(0, 8.0 * math.pi, n_points_per_ship))
+        wave = torch.sin(torch.linspace(0, 8.0 * math.pi, n_points_per_ship) + float(phase))
         lat_noise = 0.002 * torch.randn(n_points_per_ship, generator=g)
         lon_noise = 0.002 * torch.randn(n_points_per_ship, generator=g)
 

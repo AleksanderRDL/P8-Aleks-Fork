@@ -363,6 +363,9 @@ def main() -> None:
         labelled_mask=torch.zeros((1, 4), dtype=torch.bool),
         history=[],
         epochs_trained=int(artifacts.epochs_trained),
+        feature_context={
+            "query_prior_field": artifacts.query_prior_field,
+        },
     )
 
     range_geometry_scores = None
@@ -392,6 +395,7 @@ def main() -> None:
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.0)),
             hybrid_mode=str(getattr(saved_cfg.model, "mlqds_hybrid_mode", "fill")),
+            selector_type=str(getattr(saved_cfg.model, "selector_type", "temporal_hybrid")),
             stratified_center_weight=float(getattr(saved_cfg.model, "mlqds_stratified_center_weight", 0.0)),
             min_learned_swaps=int(getattr(saved_cfg.model, "mlqds_min_learned_swaps", 0)),
             range_geometry_blend=range_geometry_blend,

@@ -24,3 +24,4 @@ class TrainingOutputs:
     best_selection_score: float = 0.0
     target_diagnostics: dict[str, Any] = field(default_factory=dict)
     fit_diagnostics: dict[str, Any] = field(default_factory=dict)
+    feature_context: dict[str, Any] = field(default_factory=dict)

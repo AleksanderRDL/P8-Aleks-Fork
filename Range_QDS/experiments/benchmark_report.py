@@ -9,6 +9,12 @@ from training.model_features import is_workload_blind_model_type, model_type_met
 
 LOW_COMPRESSION_THRESHOLD = 0.05 + 1e-9
 MIN_MATCHED_LEARNED_SLOT_FRACTION_FOR_BLIND_CLAIM = 0.25
+QUERY_DRIVEN_FINAL_COVERAGE_TARGETS = (0.05, 0.10, 0.15, 0.30)
+QUERY_DRIVEN_FINAL_COMPRESSION_RATIOS = (0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30)
+QUERY_DRIVEN_MIN_UNIFORM_WINS = 19
+QUERY_DRIVEN_MIN_DP_WINS = 24
+QUERY_DRIVEN_MIN_LOW_BUDGET_UNIFORM_WINS = 7
+QUERY_DRIVEN_MIN_MATCHED_5_PERCENT_UNIFORM_WINS = 3
 RANGE_COMPONENT_KEYS = (
     "range_point_f1",
     "range_ship_f1",
@@ -227,6 +233,21 @@ def _audit_ratio_prefix(ratio: float) -> str:
     return f"audit_ratio_{float(ratio):.4f}".replace(".", "p")
 
 
+def _ratio_close(left: float | None, right: float, tol: float = 1e-9) -> bool:
+    """Return whether two optional ratios should be treated as the same grid value."""
+    return left is not None and abs(float(left) - float(right)) <= tol
+
+
+def _normalized_grid_float(value: Any) -> float | None:
+    """Coerce a grid fraction or percent to a normalized fraction."""
+    number = _as_float(value)
+    if number is None:
+        return None
+    if number > 1.0 and number <= 100.0:
+        number /= 100.0
+    return float(number)
+
+
 def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
     """Summarize multi-compression RangeUseful audit wins and low-ratio failures."""
     audit = (run_json or {}).get("range_compression_audit") or {}
@@ -236,9 +257,13 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
     uniform_deltas: list[float] = []
     dp_deltas: list[float] = []
     random_fill_deltas: list[float] = []
+    query_uniform_deltas: list[float] = []
+    query_dp_deltas: list[float] = []
     low_uniform_deltas: list[float] = []
     low_dp_deltas: list[float] = []
     low_random_fill_deltas: list[float] = []
+    low_query_uniform_deltas: list[float] = []
+    low_query_dp_deltas: list[float] = []
     variant_uniform_deltas: dict[str, list[float]] = {
         suffix: [] for suffix, _metric_key in RANGE_USEFULNESS_GAP_VARIANT_KEYS
     }
@@ -247,6 +272,7 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
     }
     missing_baseline_count = 0
     missing_temporal_random_fill_count = 0
+    missing_query_useful_v1_count = 0
     per_ratio_fields: dict[str, Any] = {}
 
     ratio_rows: list[tuple[float, dict[str, Any]]] = []
@@ -284,6 +310,26 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
         else:
             random_fill_delta = mlqds_score - random_fill_score
             random_fill_deltas.append(random_fill_delta)
+        mlqds_query_score = _as_float(mlqds.get("query_useful_v1_score"))
+        uniform_query_score = _as_float(uniform.get("query_useful_v1_score"))
+        dp_query_score = _as_float(dp.get("query_useful_v1_score"))
+        query_uniform_delta: float | None = None
+        query_dp_delta: float | None = None
+        query_fields: dict[str, Any] = {}
+        if mlqds_query_score is None or uniform_query_score is None or dp_query_score is None:
+            missing_query_useful_v1_count += 1
+        else:
+            query_uniform_delta = float(mlqds_query_score - uniform_query_score)
+            query_dp_delta = float(mlqds_query_score - dp_query_score)
+            query_uniform_deltas.append(query_uniform_delta)
+            query_dp_deltas.append(query_dp_delta)
+            query_fields = {
+                f"{prefix}_mlqds_query_useful_v1": float(mlqds_query_score),
+                f"{prefix}_uniform_query_useful_v1": float(uniform_query_score),
+                f"{prefix}_douglas_peucker_query_useful_v1": float(dp_query_score),
+                f"{prefix}_mlqds_vs_uniform_query_useful_v1": query_uniform_delta,
+                f"{prefix}_mlqds_vs_douglas_peucker_query_useful_v1": query_dp_delta,
+            }
         variant_fields: dict[str, Any] = {}
         for suffix, metric_key in RANGE_USEFULNESS_GAP_VARIANT_KEYS:
             mlqds_variant = _as_float(mlqds.get(metric_key))
@@ -309,6 +355,7 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
                 f"{prefix}_mlqds_vs_uniform_range_usefulness": float(uniform_delta),
                 f"{prefix}_mlqds_vs_douglas_peucker_range_usefulness": float(dp_delta),
                 f"{prefix}_mlqds_vs_temporal_random_fill_range_usefulness": random_fill_delta,
+                **query_fields,
                 **variant_fields,
             }
         )
@@ -317,6 +364,10 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             low_dp_deltas.append(dp_delta)
             if random_fill_delta is not None:
                 low_random_fill_deltas.append(random_fill_delta)
+            if query_uniform_delta is not None:
+                low_query_uniform_deltas.append(query_uniform_delta)
+            if query_dp_delta is not None:
+                low_query_dp_deltas.append(query_dp_delta)
 
     def _mean(values: list[float]) -> float | None:
         return float(sum(values) / len(values)) if values else None
@@ -331,11 +382,22 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
         for uniform_delta, dp_delta in zip(uniform_deltas, dp_deltas)
         if uniform_delta > 0.0 and dp_delta > 0.0
     ]
+    query_low_both = [
+        1
+        for uniform_delta, dp_delta in zip(low_query_uniform_deltas, low_query_dp_deltas)
+        if uniform_delta > 0.0 and dp_delta > 0.0
+    ]
+    query_all_both = [
+        1
+        for uniform_delta, dp_delta in zip(query_uniform_deltas, query_dp_deltas)
+        if uniform_delta > 0.0 and dp_delta > 0.0
+    ]
     summary: dict[str, Any] = {
         "audit_compression_ratio_count": len(ratios),
         "audit_low_compression_ratio_count": len(low_uniform_deltas),
         "audit_missing_baseline_count": int(missing_baseline_count),
         "audit_missing_temporal_random_fill_count": int(missing_temporal_random_fill_count),
+        "audit_missing_query_useful_v1_count": int(missing_query_useful_v1_count),
         "audit_beats_uniform_range_usefulness_count": sum(1 for value in uniform_deltas if value > 0.0),
         "audit_beats_douglas_peucker_range_usefulness_count": sum(1 for value in dp_deltas if value > 0.0),
         "audit_beats_temporal_random_fill_range_usefulness_count": sum(
@@ -348,14 +410,32 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
             1 for value in low_random_fill_deltas if value > 0.0
         ),
         "audit_low_beats_both_range_usefulness_count": len(low_both),
+        "audit_beats_uniform_query_useful_v1_count": sum(1 for value in query_uniform_deltas if value > 0.0),
+        "audit_beats_douglas_peucker_query_useful_v1_count": sum(
+            1 for value in query_dp_deltas if value > 0.0
+        ),
+        "audit_beats_both_query_useful_v1_count": len(query_all_both),
+        "audit_low_beats_uniform_query_useful_v1_count": sum(
+            1 for value in low_query_uniform_deltas if value > 0.0
+        ),
+        "audit_low_beats_douglas_peucker_query_useful_v1_count": sum(
+            1 for value in low_query_dp_deltas if value > 0.0
+        ),
+        "audit_low_beats_both_query_useful_v1_count": len(query_low_both),
         "audit_min_vs_uniform_range_usefulness": min(uniform_deltas) if uniform_deltas else None,
         "audit_mean_vs_uniform_range_usefulness": _mean(uniform_deltas),
+        "audit_min_vs_uniform_query_useful_v1": min(query_uniform_deltas) if query_uniform_deltas else None,
+        "audit_mean_vs_uniform_query_useful_v1": _mean(query_uniform_deltas),
         "audit_min_vs_temporal_random_fill_range_usefulness": (
             min(random_fill_deltas) if random_fill_deltas else None
         ),
         "audit_mean_vs_temporal_random_fill_range_usefulness": _mean(random_fill_deltas),
         "audit_min_low_vs_uniform_range_usefulness": min(low_uniform_deltas) if low_uniform_deltas else None,
         "audit_mean_low_vs_uniform_range_usefulness": _mean(low_uniform_deltas),
+        "audit_min_low_vs_uniform_query_useful_v1": (
+            min(low_query_uniform_deltas) if low_query_uniform_deltas else None
+        ),
+        "audit_mean_low_vs_uniform_query_useful_v1": _mean(low_query_uniform_deltas),
         "audit_min_low_vs_temporal_random_fill_range_usefulness": (
             min(low_random_fill_deltas) if low_random_fill_deltas else None
         ),
@@ -382,6 +462,192 @@ def _audit_summary(run_json: dict[str, Any] | None) -> dict[str, Any]:
         )
     summary.update(per_ratio_fields)
     return summary
+
+
+def query_driven_final_grid_summary(
+    rows: list[dict[str, Any]],
+    run_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return benchmark-level QueryUsefulV1 final-grid acceptance evidence."""
+    run_config = run_config or {}
+    profile_settings = run_config.get("profile_settings") or {}
+    required_coverages = tuple(
+        float(value)
+        for value in (
+            profile_settings.get("range_coverage_sweep_targets") or QUERY_DRIVEN_FINAL_COVERAGE_TARGETS
+        )
+    )
+    required_ratios = tuple(
+        float(value)
+        for value in (
+            profile_settings.get("range_compression_sweep_ratios")
+            or QUERY_DRIVEN_FINAL_COMPRESSION_RATIOS
+        )
+    )
+    final_candidate = bool(profile_settings.get("final_product_candidate")) or any(
+        row.get("mlqds_primary_metric") == "query_useful_v1" for row in rows
+    )
+    coverage_rows: dict[float, dict[str, Any]] = {}
+    duplicate_coverages: list[float] = []
+    for row in rows:
+        coverage_raw = row.get("query_target_coverage")
+        if coverage_raw is None:
+            coverage_raw = row.get("workload_stability_configured_target_coverage")
+        coverage = _normalized_grid_float(coverage_raw)
+        matched_target = next(
+            (target for target in required_coverages if _ratio_close(coverage, target, tol=1e-6)),
+            None,
+        )
+        if matched_target is None:
+            continue
+        if matched_target in coverage_rows:
+            duplicate_coverages.append(float(matched_target))
+            continue
+        coverage_rows[matched_target] = row
+
+    missing_coverages = [
+        float(target)
+        for target in required_coverages
+        if target not in coverage_rows
+    ]
+    cells: list[dict[str, Any]] = []
+    missing_cells: list[dict[str, Any]] = []
+    for coverage in required_coverages:
+        row = coverage_rows.get(coverage)
+        for ratio in required_ratios:
+            if row is None:
+                missing_cells.append(
+                    {"coverage": float(coverage), "compression_ratio": float(ratio), "reason": "missing_coverage_row"}
+                )
+                continue
+            prefix = _audit_ratio_prefix(ratio)
+            mlqds = _as_float(row.get(f"{prefix}_mlqds_query_useful_v1"))
+            uniform = _as_float(row.get(f"{prefix}_uniform_query_useful_v1"))
+            dp = _as_float(row.get(f"{prefix}_douglas_peucker_query_useful_v1"))
+            if mlqds is None or uniform is None or dp is None:
+                if _ratio_close(_normalized_grid_float(row.get("compression_ratio")), ratio, tol=1e-6):
+                    mlqds = _as_float(row.get("mlqds_query_useful_v1_score"))
+                    uniform = _as_float(row.get("uniform_query_useful_v1_score"))
+                    dp = _as_float(row.get("douglas_peucker_query_useful_v1_score"))
+            if mlqds is None or uniform is None or dp is None:
+                missing_cells.append(
+                    {
+                        "coverage": float(coverage),
+                        "compression_ratio": float(ratio),
+                        "reason": "missing_query_useful_v1_scores",
+                    }
+                )
+                continue
+            cells.append(
+                {
+                    "coverage": float(coverage),
+                    "compression_ratio": float(ratio),
+                    "mlqds_query_useful_v1": float(mlqds),
+                    "uniform_query_useful_v1": float(uniform),
+                    "douglas_peucker_query_useful_v1": float(dp),
+                    "mlqds_vs_uniform_query_useful_v1": float(mlqds - uniform),
+                    "mlqds_vs_douglas_peucker_query_useful_v1": float(mlqds - dp),
+                    "beats_uniform": bool(mlqds > uniform),
+                    "beats_douglas_peucker": bool(mlqds > dp),
+                    "low_budget": bool(ratio <= LOW_COMPRESSION_THRESHOLD),
+                }
+            )
+
+    uniform_wins = sum(1 for cell in cells if cell["beats_uniform"])
+    dp_wins = sum(1 for cell in cells if cell["beats_douglas_peucker"])
+    low_uniform_wins = sum(1 for cell in cells if cell["low_budget"] and cell["beats_uniform"])
+    matched_5_percent_uniform_wins = sum(
+        1
+        for cell in cells
+        if _ratio_close(_as_float(cell.get("compression_ratio")), 0.05, tol=1e-9)
+        and cell["beats_uniform"]
+    )
+    required_cell_count = int(len(required_coverages) * len(required_ratios))
+    grid_complete = len(cells) == required_cell_count and not missing_cells and not missing_coverages
+    required_single_run_gate_names = (
+        "workload_stability_gate_pass",
+        "predictability_gate_pass",
+        "target_diffusion_gate_pass",
+        "workload_signature_gate_pass",
+        "learning_causality_gate_pass",
+        "prior_sample_gate_pass",
+        "global_sanity_gate_pass",
+    )
+    child_gate_failures: list[dict[str, Any]] = []
+    for coverage, row in sorted(coverage_rows.items()):
+        failed = [
+            name
+            for name in required_single_run_gate_names
+            if row.get(name) is not True
+        ]
+        if int(row.get("returncode", 1) or 0) != 0:
+            failed.append("child_returncode_nonzero")
+        if failed:
+            child_gate_failures.append(
+                {
+                    "coverage": float(coverage),
+                    "run_label": row.get("run_label"),
+                    "failed_gates": failed,
+                }
+            )
+
+    numeric_success_pass = (
+        grid_complete
+        and uniform_wins >= QUERY_DRIVEN_MIN_UNIFORM_WINS
+        and dp_wins >= QUERY_DRIVEN_MIN_DP_WINS
+        and low_uniform_wins >= QUERY_DRIVEN_MIN_LOW_BUDGET_UNIFORM_WINS
+        and matched_5_percent_uniform_wins >= QUERY_DRIVEN_MIN_MATCHED_5_PERCENT_UNIFORM_WINS
+    )
+    failed_checks: list[str] = []
+    if not final_candidate:
+        failed_checks.append("not_final_product_candidate_profile")
+    if missing_coverages:
+        failed_checks.append("coverage_grid_incomplete")
+    if missing_cells:
+        failed_checks.append("compression_grid_incomplete")
+    if duplicate_coverages:
+        failed_checks.append("duplicate_coverage_rows")
+    if uniform_wins < QUERY_DRIVEN_MIN_UNIFORM_WINS:
+        failed_checks.append("too_few_uniform_queryuseful_wins")
+    if dp_wins < QUERY_DRIVEN_MIN_DP_WINS:
+        failed_checks.append("too_few_douglas_peucker_queryuseful_wins")
+    if low_uniform_wins < QUERY_DRIVEN_MIN_LOW_BUDGET_UNIFORM_WINS:
+        failed_checks.append("too_few_low_budget_uniform_queryuseful_wins")
+    if matched_5_percent_uniform_wins < QUERY_DRIVEN_MIN_MATCHED_5_PERCENT_UNIFORM_WINS:
+        failed_checks.append("too_few_matched_5_percent_uniform_queryuseful_wins")
+    if child_gate_failures:
+        failed_checks.append("required_single_run_gates_failed")
+
+    final_success_allowed = bool(final_candidate and numeric_success_pass and not child_gate_failures and not failed_checks)
+    return {
+        "schema_version": 1,
+        "primary_metric": "QueryUsefulV1",
+        "status": "final_grid_pass" if final_success_allowed else "final_grid_blocked",
+        "final_success_allowed": final_success_allowed,
+        "failed_checks": failed_checks,
+        "final_product_candidate_profile": bool(final_candidate),
+        "required_coverage_targets": list(required_coverages),
+        "required_compression_ratios": list(required_ratios),
+        "required_cell_count": required_cell_count,
+        "observed_cell_count": int(len(cells)),
+        "grid_complete": bool(grid_complete),
+        "missing_coverage_targets": missing_coverages,
+        "duplicate_coverage_targets": duplicate_coverages,
+        "missing_cells": missing_cells,
+        "beats_uniform_queryuseful_cells": int(uniform_wins),
+        "beats_uniform_queryuseful_cells_min": QUERY_DRIVEN_MIN_UNIFORM_WINS,
+        "beats_douglas_peucker_queryuseful_cells": int(dp_wins),
+        "beats_douglas_peucker_queryuseful_cells_min": QUERY_DRIVEN_MIN_DP_WINS,
+        "low_budget_beats_uniform_queryuseful_cells": int(low_uniform_wins),
+        "low_budget_beats_uniform_queryuseful_cells_min": QUERY_DRIVEN_MIN_LOW_BUDGET_UNIFORM_WINS,
+        "matched_5_percent_coverage_cells_uniform": int(matched_5_percent_uniform_wins),
+        "matched_5_percent_coverage_cells_uniform_min": QUERY_DRIVEN_MIN_MATCHED_5_PERCENT_UNIFORM_WINS,
+        "numeric_success_bars_pass": bool(numeric_success_pass),
+        "required_single_run_gate_names": list(required_single_run_gate_names),
+        "child_gate_failures": child_gate_failures,
+        "cells": cells,
+    }
+
 
 def _phase_seconds(timings: dict[str, Any], name: str) -> float | None:
     """Extract one phase duration from parsed timings."""
@@ -662,6 +928,34 @@ def _row_from_run(
     fit_diagnostics = (run_json or {}).get("training_fit_diagnostics") or {}
     final_claim_summary = (run_json or {}).get("final_claim_summary") or {}
     legacy_range_useful_summary = (run_json or {}).get("legacy_range_useful_summary") or {}
+    predictability_audit = (run_json or {}).get("predictability_audit") or {}
+    predictability_metrics = predictability_audit.get("metrics") or {}
+    learning_causality = (run_json or {}).get("learning_causality_summary") or {}
+    learning_delta_gate = learning_causality.get("learning_causality_delta_gate") or {}
+    prior_sensitivity = learning_causality.get("prior_sensitivity_diagnostics") or {}
+    shuffled_prior_sample = (
+        (prior_sensitivity.get("shuffled_prior_fields") or {}).get("sampled_prior_features") or {}
+    )
+    no_prior_sample = (
+        (prior_sensitivity.get("without_query_prior_features") or {}).get("sampled_prior_features") or {}
+    )
+    workload_stability_gate = (run_json or {}).get("workload_stability_gate") or {}
+    global_sanity_gate = (run_json or {}).get("global_sanity_gate") or {}
+    target_diffusion_gate = (run_json or {}).get("target_diffusion_gate") or {}
+    workload_signature_gate = ((run_json or {}).get("workload_distribution_comparison") or {}).get(
+        "workload_signature_gate"
+    ) or {}
+    signature_pairs = workload_signature_gate.get("pairs") or {}
+    signature_train_pair = (workload_signature_gate.get("pairs") or {}).get("train") or {}
+    signature_train_metrics = signature_train_pair.get("metrics") or {}
+    point_hit_signature_distance = signature_train_metrics.get(
+        "point_hit_distribution_ks",
+        signature_train_metrics.get("point_hit_distribution_ks_proxy"),
+    )
+    ship_hit_signature_distance = signature_train_metrics.get(
+        "ship_hit_distribution_ks",
+        signature_train_metrics.get("ship_hit_distribution_ks_proxy"),
+    )
     eval_selector_diagnostics = ((run_json or {}).get("selector_budget_diagnostics") or {}).get("eval") or {}
     target_budget_row = _target_budget_row(target_diagnostics, model_config.get("compression_ratio"))
     selector_budget_row = _selector_budget_row(eval_selector_diagnostics, model_config.get("compression_ratio"))
@@ -673,22 +967,29 @@ def _row_from_run(
     mlqds_aggregate_f1 = mlqds.get("aggregate_f1")
     mlqds_range_point_f1 = mlqds.get("range_point_f1", mlqds_aggregate_f1)
     mlqds_range_usefulness = mlqds.get("range_usefulness_score")
+    mlqds_query_useful_v1 = mlqds.get("query_useful_v1_score")
     mlqds_gap_time_usefulness = mlqds.get("range_usefulness_gap_time_score")
     mlqds_gap_distance_usefulness = mlqds.get("range_usefulness_gap_distance_score")
     mlqds_gap_min_usefulness = mlqds.get("range_usefulness_gap_min_score")
-    mlqds_primary_score = mlqds_range_usefulness if mlqds_range_usefulness is not None else mlqds_range_point_f1
-    mlqds_primary_metric = "range_usefulness" if mlqds_range_usefulness is not None else "range_point_f1"
+    if final_claim_summary.get("primary_metric") == "QueryUsefulV1" and mlqds_query_useful_v1 is not None:
+        mlqds_primary_score = mlqds_query_useful_v1
+        mlqds_primary_metric = "query_useful_v1"
+    else:
+        mlqds_primary_score = mlqds_range_usefulness if mlqds_range_usefulness is not None else mlqds_range_point_f1
+        mlqds_primary_metric = "range_usefulness" if mlqds_range_usefulness is not None else "range_point_f1"
     random_fill_range_usefulness = temporal_random_fill.get("range_usefulness_score")
     oracle_fill_range_usefulness = temporal_oracle_fill.get("range_usefulness_score")
     uniform_aggregate_f1 = uniform.get("aggregate_f1")
     uniform_range_point_f1 = uniform.get("range_point_f1", uniform_aggregate_f1)
     uniform_range_usefulness = uniform.get("range_usefulness_score")
+    uniform_query_useful_v1 = uniform.get("query_useful_v1_score")
     uniform_gap_time_usefulness = uniform.get("range_usefulness_gap_time_score")
     uniform_gap_distance_usefulness = uniform.get("range_usefulness_gap_distance_score")
     uniform_gap_min_usefulness = uniform.get("range_usefulness_gap_min_score")
     dp_aggregate_f1 = dp.get("aggregate_f1")
     dp_range_point_f1 = dp.get("range_point_f1", dp_aggregate_f1)
     dp_range_usefulness = dp.get("range_usefulness_score")
+    dp_query_useful_v1 = dp.get("query_useful_v1_score")
     dp_gap_time_usefulness = dp.get("range_usefulness_gap_time_score")
     dp_gap_distance_usefulness = dp.get("range_usefulness_gap_distance_score")
     dp_gap_min_usefulness = dp.get("range_usefulness_gap_min_score")
@@ -741,6 +1042,108 @@ def _row_from_run(
         "single_cell_range_status": single_cell_range_status,
         "final_claim_status": final_claim_summary.get("status", "not_available_until_query_useful_v1"),
         "final_success_allowed": bool(final_claim_summary.get("final_success_allowed", False)),
+        "final_claim_blocking_gates": final_claim_summary.get("blocking_gates"),
+        "workload_stability_gate_pass": workload_stability_gate.get("gate_pass"),
+        "workload_stability_failed_checks": workload_stability_gate.get("failed_checks"),
+        "workload_stability_train_replicates": workload_stability_gate.get("train_workload_replicate_count"),
+        "workload_stability_configured_target_coverage": workload_stability_gate.get(
+            "configured_target_coverage"
+        ),
+        "global_sanity_gate_pass": global_sanity_gate.get("gate_pass"),
+        "global_sanity_failed_checks": global_sanity_gate.get("failed_checks"),
+        "global_sanity_endpoint_sanity": global_sanity_gate.get("endpoint_sanity"),
+        "global_sanity_avg_sed_ratio_vs_uniform": global_sanity_gate.get("avg_sed_ratio_vs_uniform"),
+        "global_sanity_avg_sed_ratio_vs_uniform_max": global_sanity_gate.get(
+            "avg_sed_ratio_vs_uniform_max"
+        ),
+        "global_sanity_avg_length_preserved": global_sanity_gate.get("avg_length_preserved"),
+        "target_diffusion_gate_pass": target_diffusion_gate.get("gate_pass"),
+        "target_diffusion_failed_checks": target_diffusion_gate.get("failed_checks"),
+        "target_diffusion_final_label_support_fraction": target_diffusion_gate.get(
+            "final_label_support_fraction"
+        ),
+        "predictability_gate_pass": predictability_audit.get("gate_pass"),
+        "predictability_spearman": predictability_metrics.get("spearman"),
+        "predictability_kendall_tau": predictability_metrics.get("kendall_tau"),
+        "predictability_lift_at_1_percent": predictability_metrics.get("lift_at_1_percent"),
+        "predictability_lift_at_2_percent": predictability_metrics.get("lift_at_2_percent"),
+        "predictability_lift_at_5_percent": predictability_metrics.get("lift_at_5_percent"),
+        "predictability_pr_auc_lift_over_base_rate": predictability_metrics.get("pr_auc_lift_over_base_rate"),
+        "workload_signature_gate_pass": workload_signature_gate.get("all_pass"),
+        "workload_signature_gate_available": workload_signature_gate.get("all_available"),
+        "workload_signature_pair_count": len(signature_pairs) if isinstance(signature_pairs, dict) else None,
+        "workload_signature_failed_pairs": (
+            [
+                label
+                for label, pair in signature_pairs.items()
+                if isinstance(pair, dict) and not bool(pair.get("gate_pass", False))
+            ]
+            if isinstance(signature_pairs, dict)
+            else None
+        ),
+        "train_eval_anchor_family_l1_distance": signature_train_metrics.get("anchor_family_l1_distance"),
+        "train_eval_footprint_family_l1_distance": signature_train_metrics.get("footprint_family_l1_distance"),
+        "train_eval_point_hit_distribution_ks": point_hit_signature_distance,
+        "train_eval_ship_hit_distribution_ks": ship_hit_signature_distance,
+        "train_eval_point_hit_distribution_used_quantile_proxy": signature_train_metrics.get(
+            "point_hit_distribution_used_quantile_proxy"
+        ),
+        "train_eval_ship_hit_distribution_used_quantile_proxy": signature_train_metrics.get(
+            "ship_hit_distribution_used_quantile_proxy"
+        ),
+        "train_eval_point_hit_distribution_ks_proxy": point_hit_signature_distance,
+        "train_eval_ship_hit_distribution_ks_proxy": ship_hit_signature_distance,
+        "learning_causality_ablation_status": learning_causality.get("learning_causality_ablation_status"),
+        "learning_causality_gate_pass": learning_causality.get("learning_causality_gate_pass"),
+        "learning_causality_failed_checks": learning_causality.get("learning_causality_failed_checks"),
+        "causality_ablation_missing": learning_causality.get("causality_ablation_missing"),
+        "learned_controlled_retained_slot_fraction": learning_causality.get(
+            "learned_controlled_retained_slot_fraction"
+        ),
+        "planned_learned_controlled_retained_slot_fraction": learning_causality.get(
+            "planned_learned_controlled_retained_slot_fraction"
+        ),
+        "actual_learned_controlled_retained_slot_fraction": learning_causality.get(
+            "actual_learned_controlled_retained_slot_fraction"
+        ),
+        "trajectories_with_at_least_one_learned_decision": learning_causality.get(
+            "trajectories_with_at_least_one_learned_decision"
+        ),
+        "trajectories_with_zero_learned_decisions": learning_causality.get(
+            "trajectories_with_zero_learned_decisions"
+        ),
+        "segment_budget_entropy": learning_causality.get("segment_budget_entropy"),
+        "segment_budget_entropy_normalized": learning_causality.get("segment_budget_entropy_normalized"),
+        "selector_trace_retained_mask_matches_primary": learning_causality.get(
+            "selector_trace_retained_mask_matches_primary"
+        ),
+        "shuffled_score_ablation_delta": learning_causality.get("shuffled_score_ablation_delta"),
+        "untrained_score_ablation_delta": learning_causality.get("untrained_score_ablation_delta"),
+        "shuffled_prior_field_ablation_delta": learning_causality.get("shuffled_prior_field_ablation_delta"),
+        "prior_field_only_score_ablation_delta": learning_causality.get("prior_field_only_score_ablation_delta"),
+        "no_query_prior_field_ablation_delta": learning_causality.get("no_query_prior_field_ablation_delta"),
+        "no_behavior_head_ablation_delta": learning_causality.get("no_behavior_head_ablation_delta"),
+        "no_segment_budget_head_ablation_delta": learning_causality.get("no_segment_budget_head_ablation_delta"),
+        "learning_causality_min_material_delta": learning_delta_gate.get("min_material_query_useful_delta"),
+        "learning_causality_shuffled_fraction_of_uniform_gap_min": learning_delta_gate.get(
+            "shuffled_score_delta_fraction_of_uniform_gap_min"
+        ),
+        "learning_causality_mlqds_uniform_gap": learning_delta_gate.get("mlqds_uniform_query_useful_gap"),
+        "learning_causality_delta_thresholds": learning_delta_gate.get("thresholds"),
+        "segment_budget_head_ablation_mode": learning_causality.get("segment_budget_head_ablation_mode"),
+        "prior_sample_gate_pass": learning_causality.get("prior_sample_gate_pass"),
+        "prior_sample_gate_failures": learning_causality.get("prior_sample_gate_failures"),
+        "shuffled_prior_sampled_inputs_changed": shuffled_prior_sample.get("sampled_inputs_changed"),
+        "shuffled_prior_sampled_primary_nonzero_fraction": shuffled_prior_sample.get("primary_nonzero_fraction"),
+        "shuffled_prior_sampled_ablation_nonzero_fraction": shuffled_prior_sample.get("ablation_nonzero_fraction"),
+        "shuffled_prior_sampled_mean_abs_feature_delta": shuffled_prior_sample.get("mean_abs_feature_delta"),
+        "shuffled_prior_sampled_max_abs_feature_delta": shuffled_prior_sample.get("max_abs_feature_delta"),
+        "shuffled_prior_sampled_outside_extent_fraction": shuffled_prior_sample.get(
+            "points_outside_prior_extent_fraction"
+        ),
+        "no_prior_sampled_primary_nonzero_fraction": no_prior_sample.get("primary_nonzero_fraction"),
+        "no_prior_sampled_mean_abs_feature_delta": no_prior_sample.get("mean_abs_feature_delta"),
+        "no_prior_sampled_outside_extent_fraction": no_prior_sample.get("points_outside_prior_extent_fraction"),
         "legacy_range_useful_diagnostic_only": bool(legacy_range_useful_summary.get("diagnostic_only", True)),
         **selector_claim_evidence,
         "workload_blind_candidate": is_workload_blind_model_type(model_config.get("model_type")),
@@ -763,6 +1166,7 @@ def _row_from_run(
         "mlqds_range_point_f1": mlqds_range_point_f1,
         "mlqds_range_usefulness": mlqds_range_usefulness,
         "mlqds_range_usefulness_score": mlqds_range_usefulness,
+        "mlqds_query_useful_v1_score": mlqds_query_useful_v1,
         "mlqds_range_usefulness_gap_time_score": mlqds_gap_time_usefulness,
         "mlqds_range_usefulness_gap_distance_score": mlqds_gap_distance_usefulness,
         "mlqds_range_usefulness_gap_min_score": mlqds_gap_min_usefulness,
@@ -786,6 +1190,7 @@ def _row_from_run(
         "uniform_range_point_f1": uniform_range_point_f1,
         "uniform_range_usefulness": uniform_range_usefulness,
         "uniform_range_usefulness_score": uniform_range_usefulness,
+        "uniform_query_useful_v1_score": uniform_query_useful_v1,
         "uniform_range_usefulness_gap_time_score": uniform_gap_time_usefulness,
         "uniform_range_usefulness_gap_distance_score": uniform_gap_distance_usefulness,
         "uniform_range_usefulness_gap_min_score": uniform_gap_min_usefulness,
@@ -802,6 +1207,7 @@ def _row_from_run(
         "douglas_peucker_range_point_f1": dp_range_point_f1,
         "douglas_peucker_range_usefulness": dp_range_usefulness,
         "douglas_peucker_range_usefulness_score": dp_range_usefulness,
+        "douglas_peucker_query_useful_v1_score": dp_query_useful_v1,
         "douglas_peucker_range_usefulness_gap_time_score": dp_gap_time_usefulness,
         "douglas_peucker_range_usefulness_gap_distance_score": dp_gap_distance_usefulness,
         "douglas_peucker_range_usefulness_gap_min_score": dp_gap_min_usefulness,
@@ -829,9 +1235,19 @@ def _row_from_run(
             if mlqds_range_usefulness is not None and uniform_range_usefulness is not None
             else None
         ),
+        "mlqds_vs_uniform_query_useful_v1": (
+            float(mlqds_query_useful_v1) - float(uniform_query_useful_v1)
+            if mlqds_query_useful_v1 is not None and uniform_query_useful_v1 is not None
+            else None
+        ),
         "mlqds_vs_douglas_peucker_range_usefulness": (
             float(mlqds_range_usefulness) - float(dp_range_usefulness)
             if mlqds_range_usefulness is not None and dp_range_usefulness is not None
+            else None
+        ),
+        "mlqds_vs_douglas_peucker_query_useful_v1": (
+            float(mlqds_query_useful_v1) - float(dp_query_useful_v1)
+            if mlqds_query_useful_v1 is not None and dp_query_useful_v1 is not None
             else None
         ),
         "mlqds_vs_uniform_range_usefulness_gap_time": (
@@ -1107,6 +1523,12 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "single_cell_range_status",
         "final_claim_status",
         "final_success_allowed",
+        "predictability_gate_pass",
+        "target_diffusion_gate_pass",
+        "workload_signature_gate_pass",
+        "workload_stability_gate_pass",
+        "learning_causality_gate_pass",
+        "global_sanity_gate_pass",
         "legacy_range_useful_diagnostic_only",
         "selector_claim_status",
         "selector_claim_has_material_learned_budget",
@@ -1122,6 +1544,9 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "audit_beats_uniform_range_usefulness_count",
         "audit_beats_both_range_usefulness_count",
         "audit_beats_temporal_random_fill_range_usefulness_count",
+        "audit_beats_uniform_query_useful_v1_count",
+        "audit_beats_douglas_peucker_query_useful_v1_count",
+        "audit_low_beats_uniform_query_useful_v1_count",
         "audit_low_compression_ratio_count",
         "audit_low_beats_uniform_range_usefulness_count",
         "audit_low_beats_both_range_usefulness_count",

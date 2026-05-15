@@ -16,7 +16,7 @@ query-free scoring path.
 | `turn_aware_qds_model.py` | Same architecture with `turn_score`. |
 | `workload_blind_qds_model.py` | Query-free range scorer used by workload-blind students. |
 | `historical_prior_qds_model.py` | Query-free KNN historical-prior diagnostic model and prior-assisted student. |
-| `workload_blind_range_v2.py` | Placeholder for the future factorized query-driven model. |
+| `workload_blind_range_v2.py` | Trainable factorized query-driven workload-blind model with prior-field and local/segment context encoders. |
 | `../training/model_features.py` | Baseline, turn-aware, range-aware, and workload-blind point features. |
 
 ## Flow
@@ -44,9 +44,9 @@ to point features -> point encoder -> score head.
   transformer, or skip it with `num_layers=0`.
 - Point features are 7 columns for baseline, 8 for turn-aware, 16 for
   range-aware, 17 for the compact workload-blind path, 24 for `range_prior`,
-  28 for `range_prior_clock_density` and `segment_context_range`, and 23 for
-  the historical-prior feature slice used by `historical_prior` and
-  `historical_prior_student`.
+  28 for `range_prior_clock_density` and `segment_context_range`, 35 for
+  `workload_blind_range_v2`, and 23 for the historical-prior feature slice used
+  by `historical_prior` and `historical_prior_student`.
   `historical_prior_mmsi` uses 27 columns by adding a deterministic query-free
   MMSI hash to the historical-prior slice.
 - Query features are 12 padded columns from `pad_query_features`.
@@ -72,8 +72,9 @@ Historical-prior diagnostics:
 `historical_prior` and `historical_prior_mmsi` are KNN diagnostics/teachers and
 are not final learned-model success. `historical_prior_student` is trainable,
 but it requires an ablation against the standalone KNN prior before it can claim
-learned value. The planned final rework model is `workload_blind_range_v2`; it
-is only a placeholder in this checkpoint.
+learned value. The current final-candidate model path is
+`workload_blind_range_v2`, but it is not accepted unless the workload stability,
+predictability, causality, global sanity, and full-grid gates pass.
 
 Current density/sparsity feature columns are current-split point-cloud context
 features. Do not call them train-derived query-prior fields.

@@ -306,7 +306,7 @@ def format_artifact_readme(artifact: dict[str, Any], rows: list[dict[str, Any]])
         "- `run_status.json` - current/final run status marker",
         "- `benchmark_report.md` - compact comparison table",
         "- `benchmark_report.csv` - comparison table as CSV",
-        "- `benchmark_report.json` - complete machine-readable benchmark artifact",
+        "- `benchmark_report.json` - complete machine-readable benchmark artifact, including `query_driven_final_grid_summary`",
         "- `artifact_index.json` - paths to logs and child run artifacts",
         "- `logs/console.log` - tmux/launcher console capture when launched through tmux",
         "- `logs/system_monitor.log` - RAM/GPU/system samples when launched through tmux",

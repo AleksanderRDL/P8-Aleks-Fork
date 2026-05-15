@@ -261,6 +261,8 @@ def _compact_range_workload_summary(summary: dict[str, Any]) -> dict[str, Any]:
     """Extract comparable workload-shape fields from verbose diagnostics."""
     range_summary = summary.get("range", {}) if isinstance(summary, dict) else {}
     range_signal = summary.get("range_signal", {}) if isinstance(summary, dict) else {}
+    generation = summary.get("generation", {}) if isinstance(summary, dict) else {}
+    workload_signature = generation.get("workload_signature", {}) if isinstance(generation, dict) else {}
     fields = (
         "range_query_count",
         "coverage_fraction",
@@ -281,7 +283,174 @@ def _compact_range_workload_summary(summary: dict[str, Any]) -> dict[str, Any]:
     compact = {field: range_summary.get(field) for field in fields}
     compact["oracle_gap_over_best_baseline"] = range_signal.get("oracle_gap_over_best_baseline")
     compact["best_baseline"] = range_signal.get("best_baseline")
+    compact["workload_signature"] = workload_signature if isinstance(workload_signature, dict) else {}
     return compact
+
+
+def _normalized_counts(counts: object, keys: set[str]) -> dict[str, float]:
+    """Return a normalized count map on the requested key universe."""
+    if not isinstance(counts, dict):
+        return {key: 0.0 for key in keys}
+    total = sum(float(value) for value in counts.values() if isinstance(value, (int, float)))
+    if total <= 0.0:
+        return {key: 0.0 for key in keys}
+    return {key: float(counts.get(key, 0.0)) / total for key in keys}
+
+
+def _l1_count_distance(left: object, right: object) -> float | None:
+    """Return L1 distance between two normalized count dictionaries."""
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return None
+    keys = set(str(key) for key in left) | set(str(key) for key in right)
+    if not keys:
+        return None
+    left_norm = _normalized_counts(left, keys)
+    right_norm = _normalized_counts(right, keys)
+    return float(sum(abs(left_norm[key] - right_norm[key]) for key in keys))
+
+
+def _quantile_linf_distance(left: object, right: object) -> float | None:
+    """Return a bounded quantile-distance proxy when raw distributions are unavailable."""
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return None
+    keys = ("p10", "p50", "p90")
+    distances: list[float] = []
+    for key in keys:
+        left_value = left.get(key)
+        right_value = right.get(key)
+        if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
+            scale = max(abs(float(left_value)), abs(float(right_value)), 1.0)
+            distances.append(abs(float(left_value) - float(right_value)) / scale)
+    if not distances:
+        return None
+    return float(max(distances))
+
+
+def _ks_distance(left: object, right: object) -> float | None:
+    """Return two-sample Kolmogorov-Smirnov distance for persisted scalar lists."""
+    if not isinstance(left, list) or not isinstance(right, list) or not left or not right:
+        return None
+    left_values = sorted(float(value) for value in left if isinstance(value, (int, float)))
+    right_values = sorted(float(value) for value in right if isinstance(value, (int, float)))
+    if not left_values or not right_values:
+        return None
+    values = sorted(set(left_values) | set(right_values))
+    left_index = 0
+    right_index = 0
+    max_distance = 0.0
+    left_count = float(len(left_values))
+    right_count = float(len(right_values))
+    for value in values:
+        while left_index < len(left_values) and left_values[left_index] <= value:
+            left_index += 1
+        while right_index < len(right_values) and right_values[right_index] <= value:
+            right_index += 1
+        max_distance = max(max_distance, abs(left_index / left_count - right_index / right_count))
+    return float(max_distance)
+
+
+def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dict[str, Any]) -> dict[str, Any]:
+    """Compare profile signatures against guide defaults."""
+    train_sig = train_like.get("workload_signature", {})
+    eval_sig = eval_like.get("workload_signature", {})
+    if not isinstance(train_sig, dict) or not isinstance(eval_sig, dict) or not train_sig or not eval_sig:
+        return {
+            "gate_available": False,
+            "gate_pass": False,
+            "reason": "missing_workload_signature",
+        }
+    thresholds = {
+        "anchor_family_l1_distance_max": 0.12,
+        "footprint_family_l1_distance_max": 0.12,
+        "point_hit_distribution_ks_max": 0.20,
+        "ship_hit_distribution_ks_max": 0.20,
+        "near_duplicate_rate_max": 0.05,
+        "broad_query_rate_max": 0.05,
+    }
+    point_hit_ks = _ks_distance(
+        train_sig.get("point_hit_counts_per_query"),
+        eval_sig.get("point_hit_counts_per_query"),
+    )
+    ship_hit_ks = _ks_distance(
+        train_sig.get("ship_hit_counts_per_query"),
+        eval_sig.get("ship_hit_counts_per_query"),
+    )
+    point_hit_proxy = _quantile_linf_distance(
+        train_sig.get("point_hits_per_query"),
+        eval_sig.get("point_hits_per_query"),
+    )
+    ship_hit_proxy = _quantile_linf_distance(
+        train_sig.get("ship_hits_per_query"),
+        eval_sig.get("ship_hits_per_query"),
+    )
+    metrics = {
+        "anchor_family_l1_distance": _l1_count_distance(
+            train_sig.get("anchor_family_counts"),
+            eval_sig.get("anchor_family_counts"),
+        ),
+        "footprint_family_l1_distance": _l1_count_distance(
+            train_sig.get("footprint_family_counts"),
+            eval_sig.get("footprint_family_counts"),
+        ),
+        "point_hit_distribution_ks": point_hit_ks if point_hit_ks is not None else point_hit_proxy,
+        "ship_hit_distribution_ks": ship_hit_ks if ship_hit_ks is not None else ship_hit_proxy,
+        "point_hit_distribution_used_quantile_proxy": point_hit_ks is None,
+        "ship_hit_distribution_used_quantile_proxy": ship_hit_ks is None,
+        "near_duplicate_rate_max_observed": max(
+            float(train_sig.get("near_duplicate_rate", 1.0)),
+            float(eval_sig.get("near_duplicate_rate", 1.0)),
+        ),
+        "broad_query_rate_max_observed": max(
+            float(train_sig.get("broad_query_rate", 1.0)),
+            float(eval_sig.get("broad_query_rate", 1.0)),
+        ),
+    }
+
+    checks = {
+        "anchor_family_l1_distance": (
+            metrics["anchor_family_l1_distance"],
+            thresholds["anchor_family_l1_distance_max"],
+        ),
+        "footprint_family_l1_distance": (
+            metrics["footprint_family_l1_distance"],
+            thresholds["footprint_family_l1_distance_max"],
+        ),
+        "point_hit_distribution_ks": (
+            metrics["point_hit_distribution_ks"],
+            thresholds["point_hit_distribution_ks_max"],
+        ),
+        "ship_hit_distribution_ks": (
+            metrics["ship_hit_distribution_ks"],
+            thresholds["ship_hit_distribution_ks_max"],
+        ),
+        "near_duplicate_rate_max_observed": (
+            metrics["near_duplicate_rate_max_observed"],
+            thresholds["near_duplicate_rate_max"],
+        ),
+        "broad_query_rate_max_observed": (
+            metrics["broad_query_rate_max_observed"],
+            thresholds["broad_query_rate_max"],
+        ),
+    }
+    failed = [
+        name
+        for name, (value, threshold) in checks.items()
+        if not isinstance(value, (int, float)) or float(value) > float(threshold)
+    ]
+    return {
+        "gate_available": True,
+        "gate_pass": not failed,
+        "failed_checks": failed,
+        "thresholds": thresholds,
+        "metrics": metrics,
+        "profile_id_train": train_sig.get("profile_id"),
+        "profile_id_eval": eval_sig.get("profile_id"),
+        "distribution_metric_note": (
+            "Point/ship hit distribution checks use persisted per-query hit-count KS distance when available; "
+            "older signatures fall back to p10/p50/p90 quantile-distance proxies."
+        ),
+    }
+
 
 def _range_workload_distribution_comparison(summaries: dict[str, Any]) -> dict[str, Any]:
     """Compare train/selection workload shape against final eval workload shape."""
@@ -313,9 +482,20 @@ def _range_workload_distribution_comparison(summaries: dict[str, Any]) -> dict[s
             else:
                 label_delta[f"{field}_minus_eval"] = None
         deltas[label] = label_delta
+    signature_gates = {
+        label: _workload_signature_gate_for_pair(row, eval_summary)
+        for label, row in compact.items()
+        if label != "eval"
+    }
     return {
         "summaries": compact,
         "deltas_vs_eval": deltas,
+        "workload_signature_gate": {
+            "schema_version": 1,
+            "all_available": all(bool(row.get("gate_available")) for row in signature_gates.values()),
+            "all_pass": bool(signature_gates) and all(bool(row.get("gate_pass")) for row in signature_gates.values()),
+            "pairs": signature_gates,
+        },
     }
 
 def _range_audit_ratios(config: ExperimentConfig) -> list[float]:
@@ -354,6 +534,9 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "range_usefulness_gap_min_score": metrics.range_usefulness_gap_min_score,
         "range_usefulness_schema_version": metrics.range_usefulness_schema_version,
         "range_usefulness_gap_ablation_version": metrics.range_usefulness_gap_ablation_version,
+        "query_useful_v1_score": metrics.query_useful_v1_score,
+        "query_useful_v1_schema_version": metrics.query_useful_v1_schema_version,
+        "query_useful_v1_components": metrics.query_useful_v1_components,
         "range_audit": metrics.range_audit,
     }
 

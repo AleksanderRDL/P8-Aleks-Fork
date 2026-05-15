@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
+import copy
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 
 import torch
 
@@ -57,11 +58,19 @@ from experiments.experiment_workloads import (
     workload_name,
 )
 from queries.query_types import QUERY_TYPE_ID_RANGE, single_workload_type
-from simplification.mlqds_scoring import workload_type_head
+from simplification.mlqds_scoring import mlqds_simplification_scores, workload_type_head
+from simplification.learned_segment_budget import (
+    learned_segment_budget_diagnostics,
+    simplify_with_learned_segment_budget_v1,
+    simplify_with_learned_segment_budget_v1_with_trace,
+)
 from simplification.simplify_trajectories import temporal_hybrid_selector_budget_diagnostics
 from training.train_model import train_model
 from training.checkpoints import ModelArtifacts, save_checkpoint
 from training.model_features import is_workload_blind_model_type, model_type_metadata
+from training.predictability_audit import query_prior_predictability_audit, query_prior_predictability_scores
+from training.query_prior_fields import QUERY_PRIOR_FIELD_NAMES, sample_query_prior_fields
+from training.training_outputs import TrainingOutputs
 from training.teacher_distillation import (
     build_range_teacher_config,
     distill_range_teacher_labels,
@@ -108,6 +117,712 @@ def _phase(name: str):
     finally:
         dt = time.perf_counter() - t0
         print(f"[{name}] done in {dt:.2f}s", flush=True)
+
+
+def _learned_slot_summary(
+    selector_budget_diagnostics: dict[str, Any],
+    compression_ratio: float,
+    selector_trace: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return learned-slot accounting without pretending budget rows are proof."""
+    eval_diagnostics = selector_budget_diagnostics.get("eval")
+    if not isinstance(eval_diagnostics, dict):
+        return {
+            "learned_controlled_retained_slots": None,
+            "learned_controlled_retained_slot_fraction": None,
+            "learned_slot_accounting_status": "missing_selector_diagnostics",
+        }
+    rows = eval_diagnostics.get("budget_rows")
+    if not isinstance(rows, list) or not rows:
+        return {
+            "learned_controlled_retained_slots": None,
+            "learned_controlled_retained_slot_fraction": None,
+            "learned_slot_accounting_status": "missing_budget_rows",
+        }
+    selected_row = None
+    for row in rows:
+        if isinstance(row, dict) and abs(float(row.get("compression_ratio", -1.0)) - float(compression_ratio)) <= 1e-9:
+            selected_row = row
+            break
+    if selected_row is None:
+        selected_row = rows[0] if isinstance(rows[0], dict) else None
+    if selected_row is None:
+        return {
+            "learned_controlled_retained_slots": None,
+            "learned_controlled_retained_slot_fraction": None,
+            "learned_slot_accounting_status": "invalid_budget_row",
+        }
+    planned_slots = int(selected_row.get("learned_slot_count", 0))
+    planned_fraction = float(selected_row.get("learned_slot_fraction_of_budget", 0.0))
+    summary = {
+        "learned_controlled_retained_slots": planned_slots,
+        "learned_controlled_retained_slot_fraction": planned_fraction,
+        "total_retained_slot_budget": int(selected_row.get("total_budget_count", 0)),
+        "minimal_skeleton_slot_cap": int(selected_row.get("minimal_skeleton_slot_cap", 0)),
+        "no_fixed_85_percent_temporal_scaffold": bool(
+            selected_row.get("no_fixed_85_percent_temporal_scaffold", False)
+        ),
+        "planned_learned_controlled_retained_slots": planned_slots,
+        "planned_learned_controlled_retained_slot_fraction": planned_fraction,
+        "learned_slot_accounting_status": "budget_level_accounting_only",
+        "learned_slot_accounting_note": (
+            "Counts planned learned-controlled selector budget. "
+            "Per-retained-point skeleton-vs-learned attribution is not yet recorded."
+        ),
+    }
+    if not isinstance(selector_trace, dict) or not selector_trace.get("point_attribution_available"):
+        return summary
+
+    actual_slots = int(selector_trace.get("learned_controlled_retained_slots", 0))
+    actual_fraction = float(selector_trace.get("learned_controlled_retained_slot_fraction", 0.0))
+    summary.update(
+        {
+            "learned_controlled_retained_slots": actual_slots,
+            "learned_controlled_retained_slot_fraction": actual_fraction,
+            "actual_learned_controlled_retained_slots": actual_slots,
+            "actual_learned_controlled_retained_slot_fraction": actual_fraction,
+            "skeleton_retained_count": int(selector_trace.get("skeleton_retained_count", 0)),
+            "fallback_retained_count": int(selector_trace.get("fallback_retained_count", 0)),
+            "unattributed_retained_count": int(selector_trace.get("unattributed_retained_count", 0)),
+            "trajectories_with_at_least_one_learned_decision": int(
+                selector_trace.get("trajectories_with_at_least_one_learned_decision", 0)
+            ),
+            "trajectories_with_zero_learned_decisions": int(
+                selector_trace.get("trajectories_with_zero_learned_decisions", 0)
+            ),
+            "segment_budget_entropy": float(selector_trace.get("segment_budget_entropy", 0.0)),
+            "segment_budget_entropy_normalized": float(
+                selector_trace.get("segment_budget_entropy_normalized", 0.0)
+            ),
+            "segments_with_learned_budget": int(selector_trace.get("segments_with_learned_budget", 0)),
+            "learned_slot_accounting_status": "point_attribution_available",
+            "learned_slot_accounting_note": (
+                "Counts actual retained points attributed to skeleton, learned segment allocation, "
+                "or fallback fill after masks were frozen."
+            ),
+        }
+    )
+    if "retained_mask_matches_frozen_primary" in selector_trace:
+        summary["selector_trace_retained_mask_matches_primary"] = bool(
+            selector_trace.get("retained_mask_matches_frozen_primary")
+        )
+    return summary
+
+
+def _learned_segment_frozen_method(
+    *,
+    name: str,
+    scores: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    compression_ratio: float,
+    segment_scores: torch.Tensor | None = None,
+    points: torch.Tensor | None = None,
+) -> FrozenMaskMethod:
+    """Freeze a score-based learned-segment diagnostic mask before query scoring."""
+    retained_mask = simplify_with_learned_segment_budget_v1(
+        scores.detach().cpu().float(),
+        boundaries,
+        compression_ratio,
+        segment_scores=None if segment_scores is None else segment_scores.detach().cpu().float(),
+        points=None if points is None else points.detach().cpu().float(),
+    )
+    return FrozenMaskMethod(name=name, retained_mask=retained_mask.detach().cpu())
+
+
+def _neutral_segment_scores_for_ablation(segment_scores: torch.Tensor) -> torch.Tensor:
+    """Return neutral segment scores for the no-segment-budget-head ablation."""
+    return torch.zeros_like(segment_scores.detach().cpu().float())
+
+
+def _query_useful_delta(
+    primary: MethodEvaluation,
+    ablations: dict[str, MethodEvaluation],
+    name: str,
+) -> float | None:
+    """Return primary minus ablation QueryUsefulV1 if the ablation exists."""
+    ablation = ablations.get(name)
+    if ablation is None:
+        return None
+    return float(primary.query_useful_v1_score - ablation.query_useful_v1_score)
+
+
+LEARNING_CAUSALITY_MIN_MATERIAL_DELTA = 0.005
+SHUFFLED_SCORE_DELTA_FRACTION_OF_UNIFORM_GAP_MIN = 0.60
+
+
+def _learning_causality_delta_gate_config(
+    *,
+    primary: MethodEvaluation,
+    uniform: MethodEvaluation | None,
+) -> dict[str, Any]:
+    """Return material QueryUsefulV1 delta thresholds for learning-causality checks."""
+    min_delta = float(LEARNING_CAUSALITY_MIN_MATERIAL_DELTA)
+    thresholds = {
+        "shuffled_scores_should_lose": min_delta,
+        "untrained_model_should_lose": min_delta,
+        "shuffled_prior_fields_should_lose": min_delta,
+        "without_query_prior_features_should_lose": min_delta,
+        "without_behavior_utility_head_should_lose": min_delta,
+        "without_segment_budget_head_should_lose": min_delta,
+        "prior_field_only_should_not_match_trained": min_delta,
+    }
+    uniform_gap = None
+    if uniform is not None:
+        uniform_gap = float(primary.query_useful_v1_score - uniform.query_useful_v1_score)
+        if uniform_gap > 0.0:
+            thresholds["shuffled_scores_should_lose"] = max(
+                min_delta,
+                float(SHUFFLED_SCORE_DELTA_FRACTION_OF_UNIFORM_GAP_MIN) * uniform_gap,
+            )
+    return {
+        "min_material_query_useful_delta": min_delta,
+        "shuffled_score_delta_fraction_of_uniform_gap_min": float(
+            SHUFFLED_SCORE_DELTA_FRACTION_OF_UNIFORM_GAP_MIN
+        ),
+        "mlqds_uniform_query_useful_gap": uniform_gap,
+        "thresholds": thresholds,
+    }
+
+
+def _score_ablation_sensitivity(
+    *,
+    primary_scores: torch.Tensor | None,
+    ablation_scores: torch.Tensor | None,
+    primary_mask: torch.Tensor | None,
+    ablation_mask: torch.Tensor | None,
+) -> dict[str, Any]:
+    """Return score- and mask-level sensitivity for a frozen ablation."""
+    if primary_scores is None or ablation_scores is None:
+        return {"available": False, "reason": "missing_scores"}
+    primary = primary_scores.detach().cpu().float().flatten()
+    ablation = ablation_scores.detach().cpu().float().flatten()
+    if int(primary.numel()) == 0 or primary.shape != ablation.shape:
+        return {
+            "available": False,
+            "reason": "score_shape_mismatch",
+            "primary_score_count": int(primary.numel()),
+            "ablation_score_count": int(ablation.numel()),
+        }
+    finite = torch.isfinite(primary) & torch.isfinite(ablation)
+    if not bool(finite.any().item()):
+        return {"available": False, "reason": "no_finite_scores"}
+    primary_f = primary[finite]
+    ablation_f = ablation[finite]
+    delta = primary_f - ablation_f
+    primary_std = float(primary_f.std(unbiased=False).item()) if int(primary_f.numel()) > 1 else 0.0
+    ablation_std = float(ablation_f.std(unbiased=False).item()) if int(ablation_f.numel()) > 1 else 0.0
+
+    retained_jaccard: float | None = None
+    retained_hamming_fraction: float | None = None
+    retained_changed: bool | None = None
+    topk_jaccard: float | None = None
+    retained_count: int | None = None
+    if primary_mask is not None and ablation_mask is not None:
+        primary_bool = primary_mask.detach().cpu().bool().flatten()
+        ablation_bool = ablation_mask.detach().cpu().bool().flatten()
+        if primary_bool.shape == ablation_bool.shape == primary.shape:
+            intersection = int((primary_bool & ablation_bool).sum().item())
+            union = int((primary_bool | ablation_bool).sum().item())
+            retained_jaccard = float(intersection / max(1, union))
+            retained_hamming_fraction = float((primary_bool != ablation_bool).float().mean().item())
+            retained_changed = bool(not torch.equal(primary_bool, ablation_bool))
+            retained_count = int(primary_bool.sum().item())
+            if retained_count > 0:
+                k = min(retained_count, int(primary.numel()))
+                primary_top = torch.zeros_like(primary_bool)
+                ablation_top = torch.zeros_like(ablation_bool)
+                primary_top[torch.topk(primary, k=k, largest=True).indices] = True
+                ablation_top[torch.topk(ablation, k=k, largest=True).indices] = True
+                top_intersection = int((primary_top & ablation_top).sum().item())
+                top_union = int((primary_top | ablation_top).sum().item())
+                topk_jaccard = float(top_intersection / max(1, top_union))
+
+    return {
+        "available": True,
+        "score_count": int(primary.numel()),
+        "finite_score_count": int(finite.sum().item()),
+        "mean_abs_score_delta": float(delta.abs().mean().item()),
+        "max_abs_score_delta": float(delta.abs().max().item()),
+        "mean_signed_score_delta": float(delta.mean().item()),
+        "primary_score_std": primary_std,
+        "ablation_score_std": ablation_std,
+        "retained_count": retained_count,
+        "retained_mask_changed": retained_changed,
+        "retained_mask_jaccard": retained_jaccard,
+        "retained_mask_hamming_fraction": retained_hamming_fraction,
+        "score_topk_jaccard_at_retained_count": topk_jaccard,
+    }
+
+
+def _prior_feature_sample_sensitivity(
+    *,
+    points: torch.Tensor,
+    primary_prior_field: dict[str, Any] | None,
+    ablation_prior_field: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return sampled query-prior feature sensitivity at eval-compression points."""
+    if primary_prior_field is None:
+        return {"available": False, "reason": "missing_primary_prior_field"}
+    primary = sample_query_prior_fields(points, primary_prior_field).detach().cpu().float()
+    ablation = sample_query_prior_fields(points, ablation_prior_field).detach().cpu().float()
+    if int(primary.numel()) == 0 or primary.shape != ablation.shape:
+        return {
+            "available": False,
+            "reason": "sample_shape_mismatch",
+            "primary_shape": list(primary.shape),
+            "ablation_shape": list(ablation.shape),
+        }
+    finite = torch.isfinite(primary) & torch.isfinite(ablation)
+    if not bool(finite.any().item()):
+        return {"available": False, "reason": "no_finite_sampled_features"}
+    delta = primary - ablation
+    finite_delta = delta[finite]
+    per_feature: dict[str, dict[str, float | int]] = {}
+    feature_names = list(QUERY_PRIOR_FIELD_NAMES)
+    for idx in range(int(primary.shape[1])):
+        name = feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
+        primary_col = primary[:, idx]
+        ablation_col = ablation[:, idx]
+        col_finite = torch.isfinite(primary_col) & torch.isfinite(ablation_col)
+        if not bool(col_finite.any().item()):
+            per_feature[name] = {"finite_count": 0}
+            continue
+        primary_f = primary_col[col_finite]
+        ablation_f = ablation_col[col_finite]
+        col_delta = primary_f - ablation_f
+        per_feature[name] = {
+            "finite_count": int(col_finite.sum().item()),
+            "mean_abs_delta": float(col_delta.abs().mean().item()),
+            "max_abs_delta": float(col_delta.abs().max().item()),
+            "primary_mean": float(primary_f.mean().item()),
+            "ablation_mean": float(ablation_f.mean().item()),
+            "primary_std": float(primary_f.std(unbiased=False).item()) if int(primary_f.numel()) > 1 else 0.0,
+            "ablation_std": float(ablation_f.std(unbiased=False).item()) if int(ablation_f.numel()) > 1 else 0.0,
+            "primary_nonzero_fraction": float((primary_f.abs() > 1e-12).float().mean().item()),
+            "ablation_nonzero_fraction": float((ablation_f.abs() > 1e-12).float().mean().item()),
+        }
+    primary_flat = primary[torch.isfinite(primary)]
+    ablation_flat = ablation[torch.isfinite(ablation)]
+    outside_extent_fraction: float | None = None
+    extent = primary_prior_field.get("extent")
+    if isinstance(extent, dict) and int(points.shape[0]) > 0:
+        lat = points[:, 1].detach().cpu().float()
+        lon = points[:, 2].detach().cpu().float()
+        outside = (
+            (lat < float(extent.get("lat_min", -float("inf"))))
+            | (lat > float(extent.get("lat_max", float("inf"))))
+            | (lon < float(extent.get("lon_min", -float("inf"))))
+            | (lon > float(extent.get("lon_max", float("inf"))))
+        )
+        outside_extent_fraction = float(outside.float().mean().item())
+    return {
+        "available": True,
+        "point_count": int(primary.shape[0]),
+        "feature_count": int(primary.shape[1]),
+        "finite_value_count": int(finite.sum().item()),
+        "sampled_inputs_changed": bool(float(finite_delta.abs().max().item()) > 1e-9),
+        "mean_abs_feature_delta": float(finite_delta.abs().mean().item()),
+        "max_abs_feature_delta": float(finite_delta.abs().max().item()),
+        "mean_signed_feature_delta": float(finite_delta.mean().item()),
+        "primary_feature_mean": float(primary_flat.mean().item()) if int(primary_flat.numel()) > 0 else 0.0,
+        "ablation_feature_mean": float(ablation_flat.mean().item()) if int(ablation_flat.numel()) > 0 else 0.0,
+        "primary_feature_std": (
+            float(primary_flat.std(unbiased=False).item()) if int(primary_flat.numel()) > 1 else 0.0
+        ),
+        "ablation_feature_std": (
+            float(ablation_flat.std(unbiased=False).item()) if int(ablation_flat.numel()) > 1 else 0.0
+        ),
+        "primary_nonzero_fraction": float((primary.abs() > 1e-12).float().mean().item()),
+        "ablation_nonzero_fraction": float((ablation.abs() > 1e-12).float().mean().item()),
+        "points_outside_prior_extent_fraction": outside_extent_fraction,
+        "per_feature": per_feature,
+    }
+
+
+def _prior_sample_gate_failures(prior_sensitivity_diagnostics: dict[str, Any]) -> list[str]:
+    """Return failures showing prior-feature ablations did not exercise useful inputs."""
+    shuffled = prior_sensitivity_diagnostics.get("shuffled_prior_fields")
+    if not isinstance(shuffled, dict):
+        return []
+    sampled = shuffled.get("sampled_prior_features")
+    if not isinstance(sampled, dict) or not sampled.get("available"):
+        return []
+    failures: list[str] = []
+    primary_nonzero = float(sampled.get("primary_nonzero_fraction") or 0.0)
+    if primary_nonzero <= 1e-6:
+        failures.append("sampled_query_prior_features_all_zero")
+    if not bool(sampled.get("sampled_inputs_changed", False)):
+        failures.append("shuffled_prior_fields_did_not_change_sampled_inputs")
+    outside_fraction = sampled.get("points_outside_prior_extent_fraction")
+    if outside_fraction is not None and float(outside_fraction) > 0.50:
+        failures.append("eval_points_mostly_outside_query_prior_extent")
+    return failures
+
+
+def _reset_module_parameters(module: torch.nn.Module, seed: int) -> torch.nn.Module:
+    """Return a deepcopy with reset trainable parameters for untrained-model ablations."""
+    clone = copy.deepcopy(module)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(seed))
+        for child in clone.modules():
+            reset_parameters = getattr(child, "reset_parameters", None)
+            if callable(reset_parameters):
+                reset_parameters()
+    return clone
+
+
+def _shuffled_query_prior_field(prior_field: dict[str, Any], seed: int) -> dict[str, Any]:
+    """Return a copy of query-prior fields with spatial associations broken."""
+    shuffled: dict[str, Any] = {}
+    generator = torch.Generator().manual_seed(int(seed))
+    for key, value in prior_field.items():
+        if isinstance(value, torch.Tensor) and value.numel() > 1:
+            flat = value.detach().cpu().flatten()
+            order = torch.randperm(int(flat.numel()), generator=generator)
+            shuffled[key] = flat[order].reshape(value.shape).to(dtype=value.dtype)
+        else:
+            shuffled[key] = copy.deepcopy(value)
+    shuffled["ablation"] = "shuffled_prior_fields"
+    shuffled["contains_eval_queries"] = False
+    shuffled["contains_validation_queries"] = False
+    return shuffled
+
+
+def _scores_without_factorized_head(
+    *,
+    model: torch.nn.Module,
+    head_logits: torch.Tensor,
+    disabled_head_name: str,
+    boundaries: list[tuple[int, int]],
+    workload_type: str,
+    score_mode: str,
+    score_temperature: float,
+    rank_confidence_weight: float,
+) -> torch.Tensor:
+    """Return simplification scores with one factorized head neutralized."""
+    compose = getattr(model, "final_logit_from_head_logits", None)
+    if not callable(compose):
+        raise RuntimeError(f"{type(model).__name__} does not expose final_logit_from_head_logits.")
+    compose_fn = cast(Callable[..., torch.Tensor], compose)
+    model_device = next(model.parameters()).device
+    original_training = model.training
+    try:
+        model.eval()
+        with torch.no_grad():
+            logits = head_logits.detach().to(model_device).unsqueeze(0)
+            pred = compose_fn(
+                logits,
+                disabled_head_names=(str(disabled_head_name),),
+            ).reshape(-1).detach().cpu()
+    finally:
+        model.train(original_training)
+    return mlqds_simplification_scores(
+        pred,
+        boundaries,
+        workload_type,
+        score_mode=score_mode,
+        score_temperature=score_temperature,
+        rank_confidence_weight=rank_confidence_weight,
+    )
+
+
+def _normalize_fraction_for_gate(value: Any) -> float | None:
+    """Normalize optional fraction/percent values for gate checks."""
+    if not isinstance(value, (int, float)):
+        return None
+    out = float(value)
+    if out > 1.0 and out <= 100.0:
+        out /= 100.0
+    return out
+
+
+def _optional_float_for_gate(value: Any) -> float | None:
+    """Coerce optional gate evidence to float without percent normalization."""
+    if not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _workload_stability_gate(
+    *,
+    config: ExperimentConfig,
+    train_label_workloads: list[Any],
+    eval_workload: Any,
+    selection_workload: Any | None,
+) -> dict[str, Any]:
+    """Return final-candidate gate evidence for statistically stable workloads."""
+    allowed_coverage_targets = (0.05, 0.10, 0.15, 0.30)
+    min_train_replicates = 4
+    min_queries_per_workload = 8
+    required_profile_id = "range_workload_v1"
+    coverage_tolerance = 1e-6
+    failed_checks: list[str] = []
+
+    configured_target = _normalize_fraction_for_gate(getattr(config.query, "target_coverage", None))
+    configured_target_in_grid = (
+        configured_target is not None
+        and any(abs(configured_target - target) <= 1e-9 for target in allowed_coverage_targets)
+    )
+    if not configured_target_in_grid:
+        failed_checks.append("coverage_target_not_in_final_grid")
+    if len(train_label_workloads) < min_train_replicates:
+        failed_checks.append("too_few_train_workload_replicates")
+
+    overshoot = _normalize_fraction_for_gate(getattr(config.query, "range_max_coverage_overshoot", None))
+    max_allowed_overshoot = _coverage_overshoot_tolerance_for_target(configured_target)
+    if max_allowed_overshoot is None or overshoot is None or overshoot > max_allowed_overshoot + 1e-12:
+        failed_checks.append("coverage_overshoot_tolerance_too_loose")
+    workload_rows: list[dict[str, Any]] = []
+    workloads: list[tuple[str, Any]] = [
+        *[(f"train_r{idx}", workload) for idx, workload in enumerate(train_label_workloads)],
+        ("eval", eval_workload),
+    ]
+    if selection_workload is not None:
+        workloads.append(("selection", selection_workload))
+
+    for label, workload in workloads:
+        generation = (getattr(workload, "generation_diagnostics", None) or {}).get("query_generation", {})
+        if not isinstance(generation, dict):
+            generation = {}
+        profile_id = str(generation.get("workload_profile_id", ""))
+        mode = str(generation.get("mode", ""))
+        query_count = len(getattr(workload, "typed_queries", []) or [])
+        target = _normalize_fraction_for_gate(generation.get("target_coverage"))
+        final_coverage = _normalize_fraction_for_gate(getattr(workload, "coverage_fraction", None))
+        coverage_guard_enabled = bool(generation.get("coverage_guard_enabled", False))
+        stop_reason = str(generation.get("stop_reason", ""))
+        row_failed: list[str] = []
+        if profile_id != required_profile_id:
+            row_failed.append("wrong_workload_profile")
+        if mode != "target_coverage":
+            row_failed.append("not_target_coverage_generation")
+        if query_count < min_queries_per_workload:
+            row_failed.append("too_few_queries")
+        if not coverage_guard_enabled:
+            row_failed.append("coverage_guard_disabled")
+        if stop_reason != "target_coverage_reached":
+            row_failed.append("target_coverage_not_reached")
+        if configured_target is not None and target is not None and abs(target - configured_target) > 1e-9:
+            row_failed.append("target_coverage_mismatch")
+        if target is not None and final_coverage is not None:
+            if final_coverage + coverage_tolerance < target:
+                row_failed.append("coverage_below_target")
+            if overshoot is not None and final_coverage > min(1.0, target + overshoot) + coverage_tolerance:
+                row_failed.append("coverage_above_guard")
+        else:
+            row_failed.append("missing_coverage_fields")
+        failed_checks.extend(f"{label}:{check}" for check in row_failed)
+        workload_rows.append(
+            {
+                "label": label,
+                "profile_id": profile_id,
+                "mode": mode,
+                "query_count": int(query_count),
+                "target_coverage": target,
+                "final_coverage": final_coverage,
+                "coverage_guard_enabled": coverage_guard_enabled,
+                "stop_reason": stop_reason,
+                "failed_checks": row_failed,
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "gate_pass": not failed_checks,
+        "failed_checks": failed_checks,
+        "configured_target_coverage": configured_target,
+        "allowed_coverage_targets": list(allowed_coverage_targets),
+        "configured_target_in_grid": bool(configured_target_in_grid),
+        "train_workload_replicate_count": int(len(train_label_workloads)),
+        "min_train_workload_replicates": int(min_train_replicates),
+        "min_queries_per_workload": int(min_queries_per_workload),
+        "range_max_coverage_overshoot": overshoot,
+        "max_allowed_coverage_overshoot": max_allowed_overshoot,
+        "required_profile_id": required_profile_id,
+        "workloads": workload_rows,
+    }
+
+
+def _coverage_overshoot_tolerance_for_target(target: float | None) -> float | None:
+    """Return guide-recommended absolute coverage overshoot tolerance."""
+    if target is None:
+        return None
+    if target <= 0.05:
+        return 0.005
+    if target <= 0.10:
+        return 0.0075
+    if target <= 0.15:
+        return 0.010
+    return 0.020
+
+
+def _global_sanity_gate(
+    *,
+    primary: MethodEvaluation,
+    uniform: MethodEvaluation | None,
+    compression_ratio: float,
+) -> dict[str, Any]:
+    """Return final-candidate geometry sanity gate evidence."""
+    failed_checks: list[str] = []
+    length_min = 0.80
+    length_max = 1.20
+    sed_ratio_threshold = (
+        2.00
+        if compression_ratio <= 0.01 + 1e-12
+        else 1.75
+        if compression_ratio <= 0.02 + 1e-12
+        else 1.50
+    )
+
+    length_preserved = float(primary.avg_length_preserved)
+    if length_preserved < length_min or length_preserved > length_max:
+        failed_checks.append("length_preservation_outside_range")
+
+    endpoint_sanity_raw = (
+        primary.range_audit.get("endpoint_sanity") if isinstance(primary.range_audit, dict) else None
+    )
+    endpoint_sanity = _normalize_fraction_for_gate(endpoint_sanity_raw)
+    if endpoint_sanity is None:
+        failed_checks.append("endpoint_sanity_missing")
+    elif endpoint_sanity < 1.0 - 1e-12:
+        failed_checks.append("endpoints_not_retained_for_all_eligible_trajectories")
+
+    primary_avg_sed = _optional_float_for_gate(primary.geometric_distortion.get("avg_sed_km"))
+    uniform_avg_sed = (
+        _optional_float_for_gate(uniform.geometric_distortion.get("avg_sed_km"))
+        if uniform is not None
+        else None
+    )
+    if primary_avg_sed is None or uniform_avg_sed is None:
+        sed_ratio = None
+        failed_checks.append("avg_sed_ratio_missing")
+    elif uniform_avg_sed <= 1e-12:
+        sed_ratio = 1.0 if primary_avg_sed <= 1e-12 else float("inf")
+    else:
+        sed_ratio = float(primary_avg_sed / uniform_avg_sed)
+    if sed_ratio is not None and sed_ratio > sed_ratio_threshold + 1e-12:
+        failed_checks.append("avg_sed_ratio_vs_uniform_too_high")
+
+    return {
+        "schema_version": 1,
+        "gate_pass": not failed_checks,
+        "failed_checks": failed_checks,
+        "compression_ratio": float(compression_ratio),
+        "endpoint_sanity": endpoint_sanity,
+        "endpoint_sanity_required": 1.0,
+        "avg_length_preserved": length_preserved,
+        "length_preservation_min": length_min,
+        "length_preservation_max": length_max,
+        "avg_sed_km": primary_avg_sed,
+        "uniform_avg_sed_km": uniform_avg_sed,
+        "avg_sed_ratio_vs_uniform": sed_ratio,
+        "avg_sed_ratio_vs_uniform_max": sed_ratio_threshold,
+        "catastrophic_geometry_outlier_fraction": None,
+        "catastrophic_geometry_outlier_fraction_max": 0.05,
+        "catastrophic_geometry_outlier_status": "not_available_report_only",
+    }
+
+
+def _target_diffusion_gate(target_diagnostics: dict[str, Any]) -> dict[str, Any]:
+    """Return gate evidence for labels that are too diffuse for low-budget ranking."""
+    max_support_fraction = 0.50
+    min_top5_mass_fraction = 0.10
+    final_support_threshold_key = "gt_0.01"
+    default_head_support_threshold_key = "gt_0.01"
+    head_support_threshold_keys = {
+        "boundary_event_utility": "gt_0.05",
+        "conditional_behavior_utility": "gt_0.01",
+        "marginal_replacement_gain": "gt_0.05",
+    }
+    blocking_heads = frozenset(head_support_threshold_keys)
+    low_budget_key = "0.05"
+    failed_checks: list[str] = []
+
+    factorized = target_diagnostics.get("query_useful_v1_factorized")
+    if not isinstance(factorized, dict):
+        return {
+            "schema_version": 1,
+            "gate_pass": False,
+            "failed_checks": ["query_useful_v1_factorized_diagnostics_missing"],
+            "final_support_threshold_key": final_support_threshold_key,
+            "max_support_fraction": max_support_fraction,
+            "min_top5_label_mass_fraction": min_top5_mass_fraction,
+            "blocking_heads": sorted(blocking_heads),
+            "head_rows": [],
+        }
+
+    final_supports = factorized.get("final_label_support_fraction_by_threshold")
+    final_support = None
+    if isinstance(final_supports, dict):
+        final_support = _optional_float_for_gate(final_supports.get(final_support_threshold_key))
+    if final_support is None:
+        final_support = _optional_float_for_gate(factorized.get("final_label_positive_fraction"))
+    if final_support is None:
+        failed_checks.append("final_label_support_fraction_missing")
+    elif final_support > max_support_fraction + 1e-12:
+        failed_checks.append("final_label_support_fraction_above_max")
+
+    support_by_head = factorized.get("support_fraction_by_threshold_by_head")
+    if not isinstance(support_by_head, dict):
+        support_by_head = {}
+    positive_by_head = factorized.get("positive_fraction_by_head")
+    if not isinstance(positive_by_head, dict):
+        positive_by_head = {}
+    topk_by_head = factorized.get("topk_label_mass_budget_grid")
+    if not isinstance(topk_by_head, dict):
+        topk_by_head = {}
+
+    head_names = sorted(set(support_by_head) | set(positive_by_head) | set(topk_by_head))
+    head_rows: list[dict[str, Any]] = []
+    if not head_names:
+        failed_checks.append("head_diffusion_diagnostics_missing")
+    for head_name in head_names:
+        blocking = head_name in blocking_heads
+        support_threshold_key = head_support_threshold_keys.get(head_name, default_head_support_threshold_key)
+        head_supports = support_by_head.get(head_name)
+        support_fraction = None
+        if isinstance(head_supports, dict):
+            support_fraction = _optional_float_for_gate(head_supports.get(support_threshold_key))
+        if support_fraction is None:
+            support_fraction = _optional_float_for_gate(positive_by_head.get(head_name))
+
+        topk_grid = topk_by_head.get(head_name)
+        top5_mass = _optional_float_for_gate(topk_grid.get(low_budget_key)) if isinstance(topk_grid, dict) else None
+        head_failed: list[str] = []
+        if support_fraction is None:
+            head_failed.append("support_fraction_missing")
+        elif support_fraction > max_support_fraction + 1e-12:
+            head_failed.append("support_fraction_above_max")
+        if top5_mass is None:
+            head_failed.append("top5_label_mass_missing")
+        elif top5_mass < min_top5_mass_fraction - 1e-12:
+            head_failed.append("top5_label_mass_below_min")
+        if blocking:
+            failed_checks.extend(f"{head_name}:{check}" for check in head_failed)
+        head_rows.append(
+            {
+                "head": str(head_name),
+                "blocking": bool(blocking),
+                "support_threshold_key": support_threshold_key,
+                "support_fraction": support_fraction,
+                "top5_label_mass_fraction": top5_mass,
+                "failed_checks": head_failed,
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "gate_pass": not failed_checks,
+        "failed_checks": failed_checks,
+        "final_support_threshold_key": final_support_threshold_key,
+        "default_head_support_threshold_key": default_head_support_threshold_key,
+        "head_support_threshold_keys": head_support_threshold_keys,
+        "blocking_heads": sorted(blocking_heads),
+        "max_support_fraction": max_support_fraction,
+        "min_top5_label_mass_fraction": min_top5_mass_fraction,
+        "final_label_support_fraction": final_support,
+        "head_rows": head_rows,
+    }
 
 
 def run_experiment_pipeline(
@@ -242,9 +957,12 @@ def run_experiment_pipeline(
         "mode": str(getattr(config.model, "range_teacher_distillation_mode", "none")),
     }
     if range_training_target_mode == "query_useful_v1_factorized":
-        raise RuntimeError(
-            "QueryUsefulV1 factorized targets are not implemented yet. "
-            "See Range_QDS/docs/query-driven-rework-guide.md."
+        range_training_target_transform.update(
+            {
+                "enabled": True,
+                "target_family": "QueryUsefulV1Factorized",
+                "final_success_allowed": True,
+            }
         )
     selection_query_cache: EvaluationQueryCache | None = None
     selection_geometry_scores: torch.Tensor | None = None
@@ -252,23 +970,24 @@ def run_experiment_pipeline(
     with _phase("range-training-prep"):
         train_label_sets: list[tuple[torch.Tensor, torch.Tensor]] = []
         train_component_label_sets: list[dict[str, torch.Tensor] | None] = []
-        for replicate_index, label_workload in enumerate(train_label_workloads):
-            label_cache_name = "train" if replicate_index == 0 else f"train_r{replicate_index}"
-            runtime_cache = range_runtime_caches["train"] if replicate_index == 0 else RangeRuntimeCache()
-            label_result = prepare_range_label_cache(
-                cache_label=label_cache_name,
-                points=train_points,
-                boundaries=train_boundaries,
-                workload=label_workload,
-                workload_map=train_workload_map,
-                config=config,
-                seed=train_label_workload_seeds[replicate_index],
-                runtime_cache=runtime_cache,
-                range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
-            )
-            if label_result is not None:
-                train_label_sets.append(label_result)
-                train_component_label_sets.append(runtime_cache.component_labels)
+        if range_training_target_mode != "query_useful_v1_factorized" or range_teacher_distillation_enabled(config.model):
+            for replicate_index, label_workload in enumerate(train_label_workloads):
+                label_cache_name = "train" if replicate_index == 0 else f"train_r{replicate_index}"
+                runtime_cache = range_runtime_caches["train"] if replicate_index == 0 else RangeRuntimeCache()
+                label_result = prepare_range_label_cache(
+                    cache_label=label_cache_name,
+                    points=train_points,
+                    boundaries=train_boundaries,
+                    workload=label_workload,
+                    workload_map=train_workload_map,
+                    config=config,
+                    seed=train_label_workload_seeds[replicate_index],
+                    runtime_cache=runtime_cache,
+                    range_boundary_prior_weight=float(getattr(config.model, "range_boundary_prior_weight", 0.0)),
+                )
+                if label_result is not None:
+                    train_label_sets.append(label_result)
+                    train_component_label_sets.append(runtime_cache.component_labels)
         if train_label_sets:
             train_labels = train_label_sets[0]
             if (
@@ -564,7 +1283,7 @@ def run_experiment_pipeline(
                 f"mass={range_training_target_transform['positive_label_mass']:.4f}",
                 flush=True,
             )
-    elif range_training_target_mode != "point_value":
+    elif range_training_target_mode not in {"point_value", "query_useful_v1_factorized"}:
         if range_training_target_mode in {"component_retained_frequency", "continuity_retained_frequency"}:
             if train_labels is None:
                 raise RuntimeError(
@@ -703,6 +1422,8 @@ def run_experiment_pipeline(
             precomputed_validation_geometry_scores=selection_geometry_scores,
             train_trajectory_source_ids=train_source_ids,
             train_trajectory_mmsis=train_mmsis,
+            query_prior_workloads=train_label_workloads,
+            query_prior_workload_seeds=train_label_workload_seeds,
         )
     training_cuda_memory = cuda_memory_snapshot()
     if training_cuda_memory.get("available"):
@@ -720,6 +1441,7 @@ def run_experiment_pipeline(
                 config=config,
                 epochs_trained=trained.epochs_trained,
                 workload_type=single_workload_type(eval_workload_map),
+                query_prior_field=trained.feature_context.get("query_prior_field"),
             )
             save_checkpoint(save_model, artifacts)
             print(
@@ -742,24 +1464,39 @@ def run_experiment_pipeline(
     selector_budget_ratios = tuple(
         sorted({float(config.model.compression_ratio), *(float(ratio) for ratio in audit_ratios)})
     )
-    selector_budget_diagnostics = {
-        "train": temporal_hybrid_selector_budget_diagnostics(
-            train_boundaries,
-            selector_budget_ratios,
-            temporal_fraction=float(config.model.mlqds_temporal_fraction),
-            hybrid_mode=str(config.model.mlqds_hybrid_mode),
-            min_learned_swaps=int(config.model.mlqds_min_learned_swaps),
-        ),
-        "eval": temporal_hybrid_selector_budget_diagnostics(
-            test_boundaries,
-            selector_budget_ratios,
-            temporal_fraction=float(config.model.mlqds_temporal_fraction),
-            hybrid_mode=str(config.model.mlqds_hybrid_mode),
-            min_learned_swaps=int(config.model.mlqds_min_learned_swaps),
-        ),
-    }
+    if str(getattr(config.model, "selector_type", "temporal_hybrid")).lower() == "learned_segment_budget_v1":
+        selector_budget_diagnostics = {
+            "train": learned_segment_budget_diagnostics(train_boundaries, selector_budget_ratios),
+            "eval": learned_segment_budget_diagnostics(test_boundaries, selector_budget_ratios),
+        }
+    else:
+        selector_budget_diagnostics = {
+            "train": temporal_hybrid_selector_budget_diagnostics(
+                train_boundaries,
+                selector_budget_ratios,
+                temporal_fraction=float(config.model.mlqds_temporal_fraction),
+                hybrid_mode=str(config.model.mlqds_hybrid_mode),
+                min_learned_swaps=int(config.model.mlqds_min_learned_swaps),
+            ),
+            "eval": temporal_hybrid_selector_budget_diagnostics(
+                test_boundaries,
+                selector_budget_ratios,
+                temporal_fraction=float(config.model.mlqds_temporal_fraction),
+                hybrid_mode=str(config.model.mlqds_hybrid_mode),
+                min_learned_swaps=int(config.model.mlqds_min_learned_swaps),
+            ),
+        }
     frozen_primary_masks: dict[str, torch.Tensor] = {}
     frozen_audit_methods_by_ratio: dict[str, list[Method]] = {}
+    frozen_primary_scores: dict[str, torch.Tensor] = {}
+    frozen_primary_raw_preds: dict[str, torch.Tensor] = {}
+    frozen_primary_head_logits: dict[str, torch.Tensor] = {}
+    frozen_primary_segment_scores: dict[str, torch.Tensor] = {}
+    primary_selector_trace: dict[str, Any] | None = None
+    causality_ablation_methods: list[FrozenMaskMethod] = []
+    causal_ablation_freeze_failures: dict[str, str] = {}
+    prior_sensitivity_diagnostics: dict[str, Any] = {}
+    segment_budget_head_ablation_mode: str | None = None
     if workload_blind_eval:
         with _phase("freeze-retained-masks"):
             for method in methods:
@@ -771,6 +1508,302 @@ def run_experiment_pipeline(
                         config.model.compression_ratio,
                     ).detach().cpu()
                     setattr(method, "latency_ms", float((time.perf_counter() - freeze_t0) * 1000.0))
+                    score_cache = getattr(method, "_score_cache", None)
+                    if isinstance(score_cache, torch.Tensor):
+                        frozen_primary_scores[method.name] = score_cache.detach().cpu().float()
+                    raw_pred_cache = getattr(method, "_raw_pred_cache", None)
+                    if isinstance(raw_pred_cache, torch.Tensor):
+                        frozen_primary_raw_preds[method.name] = raw_pred_cache.detach().cpu().float()
+                    head_logit_cache = getattr(method, "_head_logit_cache", None)
+                    if isinstance(head_logit_cache, torch.Tensor):
+                        frozen_primary_head_logits[method.name] = head_logit_cache.detach().cpu().float()
+                    segment_score_cache = getattr(method, "_segment_score_cache", None)
+                    if isinstance(segment_score_cache, torch.Tensor):
+                        frozen_primary_segment_scores[method.name] = segment_score_cache.detach().cpu().float()
+            primary_scores = frozen_primary_scores.get("MLQDS")
+            primary_raw_preds = frozen_primary_raw_preds.get("MLQDS")
+            if primary_scores is not None and str(getattr(config.model, "selector_type", "")).lower() == "learned_segment_budget_v1":
+                primary_segment_scores = frozen_primary_segment_scores.get("MLQDS")
+                trace_mask, trace = simplify_with_learned_segment_budget_v1_with_trace(
+                    primary_scores,
+                    test_boundaries,
+                    float(config.model.compression_ratio),
+                    segment_scores=primary_segment_scores,
+                    points=test_points.detach().cpu().float(),
+                )
+                frozen_mlqds_mask = frozen_primary_masks.get("MLQDS")
+                if isinstance(frozen_mlqds_mask, torch.Tensor):
+                    trace["retained_mask_matches_frozen_primary"] = bool(
+                        torch.equal(trace_mask.detach().cpu(), frozen_mlqds_mask.detach().cpu())
+                    )
+                    trace["frozen_primary_retained_count"] = int(frozen_mlqds_mask.sum().item())
+                primary_selector_trace = trace
+                generator = torch.Generator().manual_seed(int(seeds.eval_query_seed) + 91_337)
+                shuffled_order = torch.randperm(int(primary_scores.numel()), generator=generator)
+                shuffled_scores = primary_scores[shuffled_order]
+                shuffled_segment_scores = (
+                    primary_segment_scores[shuffled_order] if primary_segment_scores is not None else None
+                )
+                causality_ablation_methods.append(
+                    _learned_segment_frozen_method(
+                        name="MLQDS_shuffled_scores",
+                        scores=shuffled_scores,
+                        boundaries=test_boundaries,
+                        compression_ratio=float(config.model.compression_ratio),
+                        segment_scores=shuffled_segment_scores,
+                        points=test_points,
+                    )
+                )
+                if primary_segment_scores is not None:
+                    neutral_segment_scores = _neutral_segment_scores_for_ablation(primary_segment_scores)
+                    segment_budget_head_ablation_mode = "neutral_constant_segment_scores"
+                    causality_ablation_methods.append(
+                        _learned_segment_frozen_method(
+                            name="MLQDS_without_segment_budget_head",
+                            scores=primary_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            segment_scores=neutral_segment_scores,
+                            points=test_points,
+                        )
+                    )
+                primary_head_logits = frozen_primary_head_logits.get("MLQDS")
+                if primary_head_logits is not None:
+                    try:
+                        behavior_scores = _scores_without_factorized_head(
+                            model=trained.model,
+                            head_logits=primary_head_logits,
+                            disabled_head_name="conditional_behavior_utility",
+                            boundaries=test_boundaries,
+                            workload_type=single_workload_type(eval_workload_map),
+                            score_mode=config.model.mlqds_score_mode,
+                            score_temperature=float(config.model.mlqds_score_temperature),
+                            rank_confidence_weight=float(config.model.mlqds_rank_confidence_weight),
+                        )
+                        causality_ablation_methods.append(
+                            _learned_segment_frozen_method(
+                                name="MLQDS_without_behavior_utility_head",
+                                scores=behavior_scores,
+                                boundaries=test_boundaries,
+                                compression_ratio=float(config.model.compression_ratio),
+                                segment_scores=primary_segment_scores,
+                                points=test_points,
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                        causal_ablation_freeze_failures["MLQDS_without_behavior_utility_head"] = str(exc)
+                try:
+                    untrained_model = _reset_module_parameters(
+                        trained.model,
+                        seed=int(seeds.torch_seed) + 44_021,
+                    )
+                    untrained_outputs = TrainingOutputs(
+                        model=untrained_model,
+                        scaler=trained.scaler,
+                        labels=trained.labels,
+                        labelled_mask=trained.labelled_mask,
+                        history=[],
+                        feature_context=dict(trained.feature_context),
+                    )
+                    untrained_method = MLQDSMethod(
+                        name="MLQDS_untrained_model",
+                        trained=untrained_outputs,
+                        workload=eval_workload,
+                        workload_type=single_workload_type(eval_workload_map),
+                        score_mode=config.model.mlqds_score_mode,
+                        score_temperature=config.model.mlqds_score_temperature,
+                        rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
+                        temporal_fraction=config.model.mlqds_temporal_fraction,
+                        diversity_bonus=config.model.mlqds_diversity_bonus,
+                        hybrid_mode=config.model.mlqds_hybrid_mode,
+                        stratified_center_weight=config.model.mlqds_stratified_center_weight,
+                        min_learned_swaps=config.model.mlqds_min_learned_swaps,
+                        selector_type=config.model.selector_type,
+                        trajectory_mmsis=test_mmsis,
+                        inference_device=None,
+                        amp_mode=config.model.amp_mode,
+                        inference_batch_size=config.model.inference_batch_size,
+                    )
+                    untrained_mask = untrained_method.simplify(
+                        test_points,
+                        test_boundaries,
+                        float(config.model.compression_ratio),
+                    )
+                    causality_ablation_methods.append(
+                        FrozenMaskMethod(
+                            name="MLQDS_untrained_model",
+                            retained_mask=untrained_mask.detach().cpu(),
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                    causal_ablation_freeze_failures["MLQDS_untrained_model"] = str(exc)
+                query_prior_field = trained.feature_context.get("query_prior_field")
+                if isinstance(query_prior_field, dict):
+                    prior_scores = query_prior_predictability_scores(test_points, query_prior_field).detach().cpu()
+                    causality_ablation_methods.append(
+                        _learned_segment_frozen_method(
+                            name="MLQDS_prior_field_only_score",
+                            scores=prior_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            points=test_points,
+                        )
+                    )
+                    try:
+                        shuffled_prior_field = _shuffled_query_prior_field(
+                            query_prior_field,
+                            seed=int(seeds.eval_query_seed) + 71_003,
+                        )
+                        shuffled_prior_feature_sensitivity = _prior_feature_sample_sensitivity(
+                            points=test_points,
+                            primary_prior_field=query_prior_field,
+                            ablation_prior_field=shuffled_prior_field,
+                        )
+                        shuffled_prior_trained = TrainingOutputs(
+                            model=trained.model,
+                            scaler=trained.scaler,
+                            labels=trained.labels,
+                            labelled_mask=trained.labelled_mask,
+                            history=trained.history,
+                            epochs_trained=trained.epochs_trained,
+                            best_epoch=trained.best_epoch,
+                            best_loss=trained.best_loss,
+                            best_selection_score=trained.best_selection_score,
+                            target_diagnostics=trained.target_diagnostics,
+                            fit_diagnostics=trained.fit_diagnostics,
+                            feature_context={
+                                **trained.feature_context,
+                                "query_prior_field": shuffled_prior_field,
+                            },
+                        )
+                        shuffled_prior_method = MLQDSMethod(
+                            name="MLQDS_shuffled_prior_fields",
+                            trained=shuffled_prior_trained,
+                            workload=eval_workload,
+                            workload_type=single_workload_type(eval_workload_map),
+                            score_mode=config.model.mlqds_score_mode,
+                            score_temperature=config.model.mlqds_score_temperature,
+                            rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
+                            temporal_fraction=config.model.mlqds_temporal_fraction,
+                            diversity_bonus=config.model.mlqds_diversity_bonus,
+                            hybrid_mode=config.model.mlqds_hybrid_mode,
+                            stratified_center_weight=config.model.mlqds_stratified_center_weight,
+                            min_learned_swaps=config.model.mlqds_min_learned_swaps,
+                            selector_type=config.model.selector_type,
+                            trajectory_mmsis=test_mmsis,
+                            inference_device=None,
+                            amp_mode=config.model.amp_mode,
+                            inference_batch_size=config.model.inference_batch_size,
+                        )
+                        shuffled_prior_mask = shuffled_prior_method.simplify(
+                            test_points,
+                            test_boundaries,
+                            float(config.model.compression_ratio),
+                        )
+                        shuffled_prior_scores = getattr(shuffled_prior_method, "_score_cache", None)
+                        shuffled_prior_raw_preds = getattr(shuffled_prior_method, "_raw_pred_cache", None)
+                        score_sensitivity = _score_ablation_sensitivity(
+                            primary_scores=primary_scores,
+                            ablation_scores=shuffled_prior_scores if isinstance(shuffled_prior_scores, torch.Tensor) else None,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=shuffled_prior_mask,
+                        )
+                        raw_sensitivity = _score_ablation_sensitivity(
+                            primary_scores=primary_raw_preds,
+                            ablation_scores=(
+                                shuffled_prior_raw_preds if isinstance(shuffled_prior_raw_preds, torch.Tensor) else None
+                            ),
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=shuffled_prior_mask,
+                        )
+                        prior_sensitivity_diagnostics["shuffled_prior_fields"] = {
+                            "sampled_prior_features": shuffled_prior_feature_sensitivity,
+                            "selector_score": score_sensitivity,
+                            "raw_prediction": raw_sensitivity,
+                        }
+                        causality_ablation_methods.append(
+                            FrozenMaskMethod(
+                                name="MLQDS_shuffled_prior_fields",
+                                retained_mask=shuffled_prior_mask.detach().cpu(),
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                        causal_ablation_freeze_failures["MLQDS_shuffled_prior_fields"] = str(exc)
+                    try:
+                        zero_prior_feature_sensitivity = _prior_feature_sample_sensitivity(
+                            points=test_points,
+                            primary_prior_field=query_prior_field,
+                            ablation_prior_field=None,
+                        )
+                        zero_prior_trained = TrainingOutputs(
+                            model=trained.model,
+                            scaler=trained.scaler,
+                            labels=trained.labels,
+                            labelled_mask=trained.labelled_mask,
+                            history=trained.history,
+                            epochs_trained=trained.epochs_trained,
+                            best_epoch=trained.best_epoch,
+                            best_loss=trained.best_loss,
+                            best_selection_score=trained.best_selection_score,
+                            target_diagnostics=trained.target_diagnostics,
+                            fit_diagnostics=trained.fit_diagnostics,
+                            feature_context={
+                                key: value
+                                for key, value in trained.feature_context.items()
+                                if key not in {"query_prior_field", "query_prior_field_metadata"}
+                            },
+                        )
+                        zero_prior_method = MLQDSMethod(
+                            name="MLQDS_without_query_prior_features",
+                            trained=zero_prior_trained,
+                            workload=eval_workload,
+                            workload_type=single_workload_type(eval_workload_map),
+                            score_mode=config.model.mlqds_score_mode,
+                            score_temperature=config.model.mlqds_score_temperature,
+                            rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
+                            temporal_fraction=config.model.mlqds_temporal_fraction,
+                            diversity_bonus=config.model.mlqds_diversity_bonus,
+                            hybrid_mode=config.model.mlqds_hybrid_mode,
+                            stratified_center_weight=config.model.mlqds_stratified_center_weight,
+                            min_learned_swaps=config.model.mlqds_min_learned_swaps,
+                            selector_type=config.model.selector_type,
+                            trajectory_mmsis=test_mmsis,
+                            inference_device=None,
+                            amp_mode=config.model.amp_mode,
+                            inference_batch_size=config.model.inference_batch_size,
+                        )
+                        zero_prior_mask = zero_prior_method.simplify(
+                            test_points,
+                            test_boundaries,
+                            float(config.model.compression_ratio),
+                        )
+                        zero_prior_scores = getattr(zero_prior_method, "_score_cache", None)
+                        zero_prior_raw_preds = getattr(zero_prior_method, "_raw_pred_cache", None)
+                        score_sensitivity = _score_ablation_sensitivity(
+                            primary_scores=primary_scores,
+                            ablation_scores=zero_prior_scores if isinstance(zero_prior_scores, torch.Tensor) else None,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=zero_prior_mask,
+                        )
+                        raw_sensitivity = _score_ablation_sensitivity(
+                            primary_scores=primary_raw_preds,
+                            ablation_scores=zero_prior_raw_preds if isinstance(zero_prior_raw_preds, torch.Tensor) else None,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=zero_prior_mask,
+                        )
+                        prior_sensitivity_diagnostics["without_query_prior_features"] = {
+                            "sampled_prior_features": zero_prior_feature_sensitivity,
+                            "selector_score": score_sensitivity,
+                            "raw_prediction": raw_sensitivity,
+                        }
+                        causality_ablation_methods.append(
+                            FrozenMaskMethod(
+                                name="MLQDS_without_query_prior_features",
+                                retained_mask=zero_prior_mask.detach().cpu(),
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                        causal_ablation_freeze_failures["MLQDS_without_query_prior_features"] = str(exc)
         methods = [
             FrozenMaskMethod(
                 name=method.name,
@@ -879,6 +1912,21 @@ def run_experiment_pipeline(
                     compression_ratio=config.model.compression_ratio,
                     query_cache=eval_query_cache,
                 )
+
+    causality_ablation_evaluations: dict[str, MethodEvaluation] = {}
+    if causality_ablation_methods:
+        with _phase("learning-causality-ablations"):
+            for method in causality_ablation_methods:
+                with _phase(f"  ablation {method.name}"):
+                    causality_ablation_evaluations[method.name] = evaluate_method(
+                        method=method,
+                        points=test_points,
+                        boundaries=test_boundaries,
+                        typed_queries=eval_workload.typed_queries,
+                        workload_map=eval_workload_map,
+                        compression_ratio=config.model.compression_ratio,
+                        query_cache=eval_query_cache,
+                    )
 
     learned_fill_diagnostics: dict[str, MethodEvaluation] = {"MLQDS": matched["MLQDS"]}
     learned_fill_table = ""
@@ -993,6 +2041,20 @@ def run_experiment_pipeline(
         range_diagnostics_summary["eval"] = eval_summary
         range_diagnostics_rows.extend(train_rows)
         range_diagnostics_rows.extend(eval_rows)
+        for replicate_index, replicate_workload in enumerate(train_label_workloads[1:], start=1):
+            replicate_label = f"train_r{replicate_index}"
+            replicate_summary, replicate_rows = _range_workload_diagnostics(
+                replicate_label,
+                train_points,
+                train_boundaries,
+                replicate_workload,
+                train_workload_map,
+                config,
+                train_label_workload_seeds[replicate_index],
+                RangeRuntimeCache(),
+            )
+            range_diagnostics_summary[replicate_label] = replicate_summary
+            range_diagnostics_rows.extend(replicate_rows)
         if selection_workload is not None and selection_points is not None and selection_boundaries is not None:
             selection_summary, selection_rows = _range_workload_diagnostics(
                 "selection",
@@ -1016,14 +2078,36 @@ def run_experiment_pipeline(
         range_diagnostics_summary=range_diagnostics_summary,
         compression_ratio=float(config.model.compression_ratio),
     )
-    final_claim_summary = {
-        "primary_metric": None,
-        "status": "not_available_until_query_useful_v1",
-        "final_success_allowed": False,
-        "reason": "Old RangeUseful/RangeUsefulLegacy outputs are diagnostic only.",
-    }
+    predictability_audit = query_prior_predictability_audit(
+        points=test_points,
+        boundaries=test_boundaries,
+        eval_typed_queries=eval_workload.typed_queries,
+        query_prior_field=trained.feature_context.get("query_prior_field"),
+    )
     uniform_eval = matched.get("uniform")
     douglas_peucker_eval = matched.get("DouglasPeucker")
+    workload_signature_gate = workload_distribution_comparison.get("workload_signature_gate", {})
+    predictability_gate_pass = bool(predictability_audit.get("gate_pass", False))
+    signature_gate_pass = bool(
+        isinstance(workload_signature_gate, dict)
+        and workload_signature_gate.get("all_available")
+        and workload_signature_gate.get("all_pass")
+    )
+    workload_stability_gate = _workload_stability_gate(
+        config=config,
+        train_label_workloads=train_label_workloads,
+        eval_workload=eval_workload,
+        selection_workload=selection_workload,
+    )
+    workload_stability_gate_pass = bool(workload_stability_gate.get("gate_pass", False))
+    target_diffusion_gate = _target_diffusion_gate(trained.target_diagnostics)
+    target_diffusion_gate_pass = bool(target_diffusion_gate.get("gate_pass", False))
+    final_candidate = (
+        str(config.query.workload_profile_id or "").lower() == "range_workload_v1"
+        and str(config.model.model_type).lower() == "workload_blind_range_v2"
+        and str(config.model.range_training_target_mode).lower() == "query_useful_v1_factorized"
+        and str(getattr(config.model, "selector_type", "")).lower() == "learned_segment_budget_v1"
+    )
     legacy_range_useful_summary = {
         "metric": "RangeUsefulLegacy",
         "schema": "range_usefulness_schema_version",
@@ -1036,23 +2120,190 @@ def run_experiment_pipeline(
             else None
         ),
     }
+    learned_slot_summary = _learned_slot_summary(
+        selector_budget_diagnostics,
+        float(config.model.compression_ratio),
+        primary_selector_trace,
+    )
+    primary_eval = matched["MLQDS"]
+    shuffled_delta = _query_useful_delta(primary_eval, causality_ablation_evaluations, "MLQDS_shuffled_scores")
+    prior_only_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_prior_field_only_score",
+    )
+    untrained_delta = _query_useful_delta(primary_eval, causality_ablation_evaluations, "MLQDS_untrained_model")
+    shuffled_prior_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_shuffled_prior_fields",
+    )
+    no_query_prior_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_without_query_prior_features",
+    )
+    no_behavior_head_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_without_behavior_utility_head",
+    )
+    no_segment_budget_head_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_without_segment_budget_head",
+    )
+    required_causality_ablation_names = (
+        "MLQDS_shuffled_scores",
+        "MLQDS_untrained_model",
+        "MLQDS_shuffled_prior_fields",
+        "MLQDS_without_query_prior_features",
+        "MLQDS_without_behavior_utility_head",
+        "MLQDS_without_segment_budget_head",
+    )
+    missing_causality_ablations = [
+        name for name in required_causality_ablation_names if name not in causality_ablation_evaluations
+    ]
+    failed_causality_checks: list[str] = []
+    delta_checks = {
+        "shuffled_scores_should_lose": shuffled_delta,
+        "untrained_model_should_lose": untrained_delta,
+        "shuffled_prior_fields_should_lose": shuffled_prior_delta,
+        "without_query_prior_features_should_lose": no_query_prior_delta,
+        "without_behavior_utility_head_should_lose": no_behavior_head_delta,
+        "without_segment_budget_head_should_lose": no_segment_budget_head_delta,
+        "prior_field_only_should_not_match_trained": prior_only_delta,
+    }
+    delta_gate_config = _learning_causality_delta_gate_config(
+        primary=primary_eval,
+        uniform=uniform_eval,
+    )
+    delta_thresholds = delta_gate_config.get("thresholds", {})
+    for check_name, delta in delta_checks.items():
+        threshold = float(delta_thresholds.get(check_name, LEARNING_CAUSALITY_MIN_MATERIAL_DELTA))
+        if delta is not None and float(delta) + 1e-12 < threshold:
+            failed_causality_checks.append(check_name)
+    prior_sample_failures = _prior_sample_gate_failures(prior_sensitivity_diagnostics)
+    failed_causality_checks.extend(prior_sample_failures)
+    learned_slot_fraction = float(learned_slot_summary.get("learned_controlled_retained_slot_fraction") or 0.0)
+    learned_slot_fraction_min = 0.0
+    if float(config.model.compression_ratio) >= 0.10:
+        learned_slot_fraction_min = 0.35
+    elif float(config.model.compression_ratio) >= 0.05:
+        learned_slot_fraction_min = 0.25
+    if learned_slot_fraction_min > 0.0 and learned_slot_fraction < learned_slot_fraction_min:
+        failed_causality_checks.append("learned_controlled_slot_fraction_below_minimum")
+    ablation_status = "not_run"
+    if causality_ablation_evaluations or causal_ablation_freeze_failures:
+        ablation_status = "complete" if not missing_causality_ablations and not causal_ablation_freeze_failures else "partial"
+    learning_causality_gate_pass = (
+        ablation_status == "complete" and not failed_causality_checks and not missing_causality_ablations
+    )
     learning_causality_summary = {
         "selector_diagnostics_present": bool(selector_budget_diagnostics),
         "training_fit_diagnostics_present": bool(trained.fit_diagnostics),
-        "legacy_temporal_hybrid_selector": True,
-        "final_success_allowed": False,
+        "selector_type": str(getattr(config.model, "selector_type", "temporal_hybrid")),
+        "legacy_temporal_hybrid_selector": str(getattr(config.model, "selector_type", "temporal_hybrid")) != "learned_segment_budget_v1",
+        "query_prior_field_available": bool(trained.feature_context.get("query_prior_field")),
+        **learned_slot_summary,
+        "shuffled_score_ablation_delta": shuffled_delta,
+        "untrained_score_ablation_delta": untrained_delta,
+        "shuffled_prior_field_ablation_delta": shuffled_prior_delta,
+        "no_query_prior_field_ablation_delta": no_query_prior_delta,
+        "no_behavior_head_ablation_delta": no_behavior_head_delta,
+        "no_segment_budget_head_ablation_delta": no_segment_budget_head_delta,
+        "segment_budget_head_ablation_mode": segment_budget_head_ablation_mode,
+        "prior_field_only_score_ablation_delta": prior_only_delta,
+        "without_query_prior_features_delta": no_query_prior_delta,
+        "learning_causality_delta_gate": delta_gate_config,
+        "prior_sensitivity_diagnostics": prior_sensitivity_diagnostics,
+        "prior_sample_gate_pass": not prior_sample_failures,
+        "prior_sample_gate_failures": prior_sample_failures,
+        "causality_ablation_scores": {
+            name: metrics.query_useful_v1_score for name, metrics in causality_ablation_evaluations.items()
+        },
+        "causality_ablation_freeze_failures": causal_ablation_freeze_failures,
+        "causality_ablation_missing": missing_causality_ablations,
+        "learning_causality_gate_pass": learning_causality_gate_pass,
+        "learning_causality_failed_checks": failed_causality_checks,
+        "learned_controlled_slot_fraction_min": learned_slot_fraction_min,
+        "learning_causality_ablation_status": ablation_status,
+        "predictability_gate_pass": predictability_gate_pass,
+        "workload_signature_gate_pass": signature_gate_pass,
     }
+    global_sanity_gate = _global_sanity_gate(
+        primary=matched["MLQDS"],
+        uniform=uniform_eval,
+        compression_ratio=float(config.model.compression_ratio),
+    )
+    global_sanity_gate_pass = bool(global_sanity_gate.get("gate_pass", False))
+    blocking_gates: list[str] = []
+    if final_candidate:
+        if not workload_stability_gate_pass:
+            blocking_gates.append("workload_stability_gate")
+        if not predictability_gate_pass:
+            blocking_gates.append("predictability_gate")
+        if not target_diffusion_gate_pass:
+            blocking_gates.append("target_diffusion_gate")
+        if not signature_gate_pass:
+            blocking_gates.append("workload_signature_gate")
+        if not learning_causality_gate_pass:
+            blocking_gates.append("learning_causality_ablations")
+        if not global_sanity_gate_pass:
+            blocking_gates.append("global_sanity_gates")
+        blocking_gates.append("full_coverage_compression_grid")
+        final_claim_summary = {
+            "primary_metric": "QueryUsefulV1",
+            "status": "candidate_blocked_by_required_gates" if blocking_gates else "candidate_ready_for_final_claim",
+            "final_success_allowed": not blocking_gates,
+            "blocking_gates": blocking_gates,
+            "workload_stability_gate_pass": workload_stability_gate_pass,
+            "predictability_gate_pass": predictability_gate_pass,
+            "target_diffusion_gate_pass": target_diffusion_gate_pass,
+            "workload_signature_gate_pass": signature_gate_pass,
+            "learning_causality_gate_pass": learning_causality_gate_pass,
+            "global_sanity_gate_pass": global_sanity_gate_pass,
+            "mlqds_score": matched["MLQDS"].query_useful_v1_score,
+            "uniform_score": uniform_eval.query_useful_v1_score if uniform_eval is not None else None,
+            "douglas_peucker_score": (
+                douglas_peucker_eval.query_useful_v1_score
+                if douglas_peucker_eval is not None
+                else None
+            ),
+            "reason": (
+                "Single runs remain blocked until the benchmark-level full coverage/compression "
+                "grid validates the numeric success bars."
+            ),
+        }
+    else:
+        final_claim_summary = {
+            "primary_metric": None,
+            "status": "not_final_query_driven_candidate",
+            "final_success_allowed": False,
+            "reason": "Requires range_workload_v1, QueryUsefulV1 factorized target, workload_blind_range_v2, and learned_segment_budget_v1.",
+        }
+    learning_causality_summary["final_success_allowed"] = bool(final_candidate and not blocking_gates)
 
     dump = {
         "config": config.to_dict(),
         "final_claim_summary": final_claim_summary,
         "diagnostic_summary": {
             "legacy_range_useful_available": True,
+            "query_useful_v1_available": True,
             "range_component_diagnostics_available": True,
             "workload_blind_protocol_available": True,
+            "predictability_audit_available": bool(predictability_audit.get("available", False)),
+            "workload_stability_gate_available": bool(workload_stability_gate),
+            "global_sanity_gate_available": bool(global_sanity_gate),
+            "target_diffusion_gate_available": bool(target_diffusion_gate),
+            "workload_signature_gate_available": bool(
+                isinstance(workload_signature_gate, dict) and workload_signature_gate.get("all_available")
+            ),
         },
         "legacy_range_useful_summary": legacy_range_useful_summary,
         "learning_causality_summary": learning_causality_summary,
+        "global_sanity_gate": global_sanity_gate,
+        "target_diffusion_gate": target_diffusion_gate,
         "workload": single_workload_type(eval_workload_map),
         "train_query_count": len(train_workload.typed_queries),
         "train_label_workload_count": len(train_label_workloads),
@@ -1071,11 +2322,20 @@ def run_experiment_pipeline(
         },
         "data_split_diagnostics": data_split.split_diagnostics,
         "selector_budget_diagnostics": selector_budget_diagnostics,
+        "selector_trace_diagnostics": {
+            "eval_primary": primary_selector_trace if primary_selector_trace is not None else {"available": False}
+        },
         "matched": {name: _evaluation_metrics_payload(m) for name, m in matched.items()},
+        "learning_causality_ablations": {
+            name: _evaluation_metrics_payload(metrics)
+            for name, metrics in causality_ablation_evaluations.items()
+        },
         "learned_fill_diagnostics": {
             name: _evaluation_metrics_payload(metrics) for name, metrics in learned_fill_diagnostics.items()
         },
         "range_learned_fill_summary": range_learned_fill_summary,
+        "predictability_audit": predictability_audit,
+        "workload_stability_gate": workload_stability_gate,
         "range_compression_audit": range_compression_audit,
         "shift": shift_pairs,
         "training_history": trained.history,
@@ -1083,6 +2343,7 @@ def run_experiment_pipeline(
         "training_fit_diagnostics": trained.fit_diagnostics,
         "range_training_target_transform": range_training_target_transform,
         "model_metadata": model_type_metadata(config.model.model_type),
+        "query_prior_field": trained.feature_context.get("query_prior_field_metadata", {"available": False}),
         "range_target_balance": range_target_balance_diagnostics,
         "range_training_label_aggregation": range_training_label_aggregation,
         "teacher_distillation": teacher_distillation_diagnostics,
@@ -1096,6 +2357,12 @@ def run_experiment_pipeline(
         "workload_blind_protocol": {
             "enabled": bool(workload_blind_eval),
             "model_type": config.model.model_type,
+            "masks_frozen_before_eval_query_scoring": bool(workload_blind_eval),
+            "eval_queries_seen_by_model": False,
+            "eval_queries_seen_by_feature_builder": False,
+            "eval_queries_seen_by_selector": False,
+            "checkpoint_selected_on_eval_queries": False,
+            "query_conditioned_range_aware_used_for_product_acceptance": False,
             "primary_masks_frozen_before_eval_query_scoring": bool(workload_blind_eval),
             "audit_masks_frozen_before_eval_query_scoring": bool(
                 workload_blind_eval and bool(frozen_audit_methods_by_ratio)
@@ -1171,6 +2438,7 @@ def run_experiment_pipeline(
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
                     hybrid_mode=config.model.mlqds_hybrid_mode,
+                    selector_type=config.model.selector_type,
                     stratified_center_weight=config.model.mlqds_stratified_center_weight,
                     min_learned_swaps=config.model.mlqds_min_learned_swaps,
                     trajectory_mmsis=test_mmsis,

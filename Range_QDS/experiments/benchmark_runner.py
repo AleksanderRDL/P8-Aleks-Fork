@@ -38,7 +38,12 @@ from experiments.benchmark_inputs import (
     _runner_environment_metadata,
 )
 from experiments.benchmark_process import _run_capture_streaming
-from experiments.benchmark_report import _child_run_dir, _format_report_table, _row_from_run
+from experiments.benchmark_report import (
+    _child_run_dir,
+    _format_report_table,
+    _row_from_run,
+    query_driven_final_grid_summary,
+)
 from experiments.benchmark_runtime import (
     _git_metadata,
     _qds_root,
@@ -456,7 +461,7 @@ def main() -> None:
         raise
 
     artifact = {
-        "schema_version": 4,
+        "schema_version": 5,
         "timestamp_utc": utc_now(),
         "command": [sys.executable, "-m", "experiments.benchmark_runner", *sys.argv[1:]],
         "run_id": run_id,
@@ -479,6 +484,7 @@ def main() -> None:
         "git": git,
         "rows": rows,
     }
+    artifact["query_driven_final_grid_summary"] = query_driven_final_grid_summary(rows, run_config)
     finished_at_utc = utc_now()
     status = "failed" if failures else "completed"
     status_payload = write_status(

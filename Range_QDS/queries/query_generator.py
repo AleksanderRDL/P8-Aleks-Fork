@@ -11,7 +11,14 @@ from data.trajectory_index import boundaries_from_trajectories
 from queries.range_geometry import points_in_range_box
 from queries.query_types import normalize_pure_workload_map, pad_query_features
 from queries.workload import TypedQueryWorkload
-from queries.workload_diagnostics import range_query_diagnostic
+from queries.workload_diagnostics import compute_range_workload_diagnostics, range_query_diagnostic
+from queries.workload_profiles import (
+    LEGACY_GENERATOR_PROFILE,
+    RangeWorkloadProfile,
+    max_point_hit_fraction_for_coverage,
+    range_workload_profile,
+    workload_profile_metadata,
+)
 
 DENSITY_ANCHOR_PROBABILITY = 0.70
 DENSITY_GRID_BINS = 64
@@ -22,6 +29,13 @@ DEFAULT_RANGE_TIME_DOMAIN_MODE = "dataset"
 DEFAULT_RANGE_ANCHOR_MODE = "mixed_density"
 RANGE_TIME_DOMAIN_MODES = ("dataset", "anchor_day")
 RANGE_ANCHOR_MODES = ("mixed_density", "dense", "uniform", "sparse")
+RANGE_WORKLOAD_V1_ANCHOR_FAMILIES = (
+    "density_route",
+    "boundary_entry_exit",
+    "crossing_turn_change",
+    "port_or_approach_zone",
+    "sparse_background_control",
+)
 SECONDS_PER_DAY = 24.0 * 3600.0
 EPOCH_LIKE_SECONDS = 366.0 * SECONDS_PER_DAY
 
@@ -92,6 +106,51 @@ def _sparse_anchor_weights(points: torch.Tensor, bins: int = DENSITY_GRID_BINS) 
     return weights / total
 
 
+def _normalize_weights(weights: torch.Tensor) -> torch.Tensor:
+    """Return a probability vector, falling back to uniform when needed."""
+    if int(weights.numel()) == 0:
+        return weights.to(dtype=torch.float32)
+    clean = torch.nan_to_num(weights.float().clamp(min=0.0), nan=0.0, posinf=0.0, neginf=0.0)
+    total = float(clean.sum().item())
+    if total <= 1e-12:
+        return torch.ones_like(clean, dtype=torch.float32) / float(clean.numel())
+    return clean / total
+
+
+def _endpoint_anchor_weights(points: torch.Tensor) -> torch.Tensor:
+    """Return endpoint-biased anchor weights from query-free trajectory flags."""
+    if points.shape[0] == 0:
+        return torch.empty((0,), dtype=torch.float32, device=points.device)
+    weights = torch.ones((points.shape[0],), dtype=torch.float32, device=points.device)
+    if points.shape[1] > 6:
+        endpoint = (points[:, 5].float() > 0.5) | (points[:, 6].float() > 0.5)
+        weights = weights + 8.0 * endpoint.float()
+    if points.shape[1] > 7:
+        weights = weights + 3.0 * points[:, 7].float().clamp(min=0.0)
+    return _normalize_weights(weights)
+
+
+def _turn_change_anchor_weights(points: torch.Tensor) -> torch.Tensor:
+    """Return turn/change-biased anchor weights from query-free point features."""
+    if points.shape[0] == 0:
+        return torch.empty((0,), dtype=torch.float32, device=points.device)
+    weights = torch.ones((points.shape[0],), dtype=torch.float32, device=points.device)
+    if points.shape[1] > 7:
+        weights = weights + 8.0 * points[:, 7].float().clamp(min=0.0)
+    if points.shape[1] > 4:
+        prev_idx = torch.clamp(torch.arange(points.shape[0], device=points.device) - 1, min=0)
+        heading_delta = torch.abs(points[:, 4].float() - points[prev_idx, 4].float())
+        heading_delta = torch.minimum(heading_delta, 360.0 - heading_delta).clamp(min=0.0) / 180.0
+        weights = weights + 4.0 * heading_delta
+    if points.shape[1] > 3:
+        prev_idx = torch.clamp(torch.arange(points.shape[0], device=points.device) - 1, min=0)
+        speed_delta = torch.abs(points[:, 3].float() - points[prev_idx, 3].float())
+        if float(speed_delta.max().item()) > 1e-6:
+            speed_delta = speed_delta / speed_delta.max().clamp(min=1e-6)
+        weights = weights + 2.0 * speed_delta
+    return _normalize_weights(weights)
+
+
 def _normalize_range_anchor_mode(mode: str) -> str:
     """Normalize range-query anchor sampling mode names."""
     normalized = str(mode).strip().lower()
@@ -111,6 +170,62 @@ def _anchor_weights_for_mode(points: torch.Tensor, mode: str) -> tuple[torch.Ten
     if normalized == "dense":
         return weights, 1.0
     return weights, DENSITY_ANCHOR_PROBABILITY
+
+
+def _anchor_weights_for_family(
+    points: torch.Tensor,
+    family: str,
+) -> tuple[torch.Tensor | None, float]:
+    """Return anchor weights for a range_workload_v1 anchor family."""
+    normalized = str(family).strip().lower()
+    if normalized == "sparse_background_control":
+        return _sparse_anchor_weights(points), 1.0
+    if normalized == "boundary_entry_exit":
+        return _endpoint_anchor_weights(points), 1.0
+    if normalized == "crossing_turn_change":
+        return _turn_change_anchor_weights(points), 1.0
+    if normalized in {"density_route", "port_or_approach_zone"}:
+        return _density_anchor_weights(points), 1.0
+    raise ValueError(f"Unknown range workload anchor family: {family!r}.")
+
+
+def _weighted_choice(mapping: dict[str, float], generator: torch.Generator, fallback: str) -> str:
+    """Sample one key from a non-negative weight mapping."""
+    if not mapping:
+        return fallback
+    keys = [str(key) for key in mapping]
+    weights = torch.tensor([max(0.0, float(mapping[key])) for key in keys], dtype=torch.float32)
+    if float(weights.sum().item()) <= 0.0:
+        return keys[int(torch.randint(0, len(keys), (1,), generator=generator).item())]
+    idx = _weighted_sample_one(weights, generator)
+    return keys[int(idx)]
+
+
+def _profile_query_settings(
+    profile: RangeWorkloadProfile,
+    generator: torch.Generator,
+) -> dict[str, Any]:
+    """Sample query-level profile settings for one range_workload_v1 query."""
+    if profile.profile_id == LEGACY_GENERATOR_PROFILE.profile_id:
+        return {}
+    anchor_family = _weighted_choice(
+        profile.anchor_family_weights,
+        generator,
+        fallback="density_route",
+    )
+    footprint_family = _weighted_choice(
+        profile.footprint_family_weights,
+        generator,
+        fallback="medium_operational",
+    )
+    footprint = dict(profile.footprint_families.get(footprint_family) or {})
+    return {
+        "anchor_family": anchor_family,
+        "footprint_family": footprint_family,
+        "range_spatial_km": float(footprint.get("spatial_radius_km", 2.2)),
+        "range_time_hours": float(footprint.get("time_half_window_hours", 5.0)),
+        "elongation_allowed": bool(footprint.get("elongation_allowed", False)),
+    }
 
 
 def _weighted_sample_one(
@@ -243,6 +358,7 @@ def _make_range_query(
     range_time_hours: float | None = None,
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
     range_time_domain_mode: str = DEFAULT_RANGE_TIME_DOMAIN_MODE,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate one range query. See queries/README.md for details."""
     time_domain_mode = _normalize_range_time_domain_mode(range_time_domain_mode)
@@ -279,7 +395,7 @@ def _make_range_query(
         t_w = time_hours * 3600.0 * time_jitter
     anchor_time = float(anchor_point[0].item())
     time_min, time_max = _query_time_bounds_for_mode(anchor_time, bounds, time_domain_mode)
-    return {
+    query = {
         "type": "range",
         "params": {
             "lat_min": float(max(bounds["lat_min"], anchor_point[1].item() - lat_w)),
@@ -290,6 +406,9 @@ def _make_range_query(
             "t_end": float(min(time_max, anchor_time + t_w)),
         },
     }
+    if metadata:
+        query["_metadata"] = dict(metadata)
+    return query
 
 
 def point_coverage_mask_for_query(points: torch.Tensor, query: dict[str, Any]) -> torch.Tensor:
@@ -350,6 +469,7 @@ def _normalize_coverage_overshoot(range_max_coverage_overshoot: float | None) ->
 
 def _finalize_workload(
     points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
     typed_queries: list[dict[str, Any]],
     generator: torch.Generator,
     generation_diagnostics: dict[str, Any] | None = None,
@@ -380,6 +500,15 @@ def _finalize_workload(
         }
     )
     diagnostics["query_generation"] = query_generation
+    if typed_queries and all(str(query.get("type", "")).lower() == "range" for query in typed_queries):
+        profile_metadata = diagnostics.get("workload_profile")
+        diagnostics["workload_signature"] = _range_workload_signature(
+            points=points,
+            boundaries=boundaries,
+            typed_queries=typed_queries,
+            coverage_fraction=coverage_fraction,
+            profile_metadata=profile_metadata if isinstance(profile_metadata, dict) else None,
+        )
     return TypedQueryWorkload(
         query_features=features,
         typed_queries=typed_queries,
@@ -389,6 +518,90 @@ def _finalize_workload(
         total_points=total_points,
         generation_diagnostics=diagnostics,
     )
+
+
+def _counts_from_metadata(typed_queries: list[dict[str, Any]], key: str) -> dict[str, int]:
+    """Count query metadata values."""
+    counts: dict[str, int] = {}
+    for query in typed_queries:
+        metadata = query.get("_metadata") or {}
+        value = str(metadata.get(key, "legacy_or_unspecified"))
+        counts[value] = int(counts.get(value, 0)) + 1
+    return counts
+
+
+def _range_workload_signature(
+    *,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict[str, Any]],
+    coverage_fraction: float,
+    profile_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the v1 workload signature artifact described by the rework guide."""
+    diagnostics = compute_range_workload_diagnostics(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=typed_queries,
+        duplicate_iou_threshold=0.65,
+        coverage_fraction=coverage_fraction,
+    )
+    summary = diagnostics["summary"]
+    query_rows = diagnostics["queries"]
+    point_hit_counts = [int(row["point_hits"]) for row in query_rows]
+    trajectory_hit_counts = [int(row["trajectory_hits"]) for row in query_rows]
+    spatial_radii = []
+    time_spans = []
+    for query in typed_queries:
+        metadata = query.get("_metadata") or {}
+        params = query["params"]
+        spatial_radii.append(float(metadata.get("spatial_radius_km", metadata.get("range_spatial_km", 0.0)) or 0.0))
+        time_spans.append(float(params["t_end"] - params["t_start"]) / 3600.0)
+
+    def quantiles(values: list[float]) -> dict[str, float]:
+        if not values:
+            return {"p10": 0.0, "p50": 0.0, "p90": 0.0}
+        tensor = torch.tensor(values, dtype=torch.float32)
+        return {
+            "p10": float(torch.quantile(tensor, 0.10).item()),
+            "p50": float(torch.quantile(tensor, 0.50).item()),
+            "p90": float(torch.quantile(tensor, 0.90).item()),
+        }
+
+    profile_id = "legacy_generator"
+    if profile_metadata is not None:
+        profile_id = str(profile_metadata.get("profile_id", profile_id))
+    return {
+        "profile_id": profile_id,
+        "coverage_actual": float(coverage_fraction),
+        "query_count": int(len(typed_queries)),
+        "anchor_family_counts": _counts_from_metadata(typed_queries, "anchor_family"),
+        "footprint_family_counts": _counts_from_metadata(typed_queries, "footprint_family"),
+        "point_hits_per_query": {
+            "p10": float(summary["point_hit_count_p10"]),
+            "p50": float(summary["point_hit_count_p50"]),
+            "p90": float(summary["point_hit_count_p90"]),
+        },
+        "point_hit_counts_per_query": point_hit_counts,
+        "ship_hits_per_query": {
+            "p10": float(summary["trajectory_hit_count_p10"]),
+            "p50": float(summary["trajectory_hit_count_p50"]),
+            "p90": float(summary["trajectory_hit_count_p90"]),
+        },
+        "ship_hit_counts_per_query": trajectory_hit_counts,
+        "trajectory_hits_per_query": {
+            "p10": float(summary["trajectory_hit_count_p10"]),
+            "p50": float(summary["trajectory_hit_count_p50"]),
+            "p90": float(summary["trajectory_hit_count_p90"]),
+        },
+        "trajectory_hit_counts_per_query": trajectory_hit_counts,
+        "time_span_hours_per_query": quantiles(time_spans),
+        "spatial_radius_km_per_query": quantiles(spatial_radii),
+        "near_duplicate_rate": float(summary["near_duplicate_query_rate"]),
+        "broad_query_rate": float(summary["too_broad_query_rate"]),
+        "empty_query_rate": float(summary["empty_query_rate"]),
+        "train_eval_signature_distance": None,
+    }
 
 
 def _range_acceptance_enabled(
@@ -495,9 +708,14 @@ def generate_typed_query_workload(
     range_duplicate_iou_threshold: float | None = None,
     range_acceptance_max_attempts: int | None = None,
     range_max_coverage_overshoot: float | None = None,
+    workload_profile_id: str | None = None,
 ) -> TypedQueryWorkload:
     """Generate a range-query workload and padded feature tensor. See queries/README.md for details."""
-    time_domain_mode = _normalize_range_time_domain_mode(range_time_domain_mode)
+    profile = range_workload_profile(workload_profile_id)
+    profile_enabled = profile.profile_id != LEGACY_GENERATOR_PROFILE.profile_id
+    time_domain_mode = _normalize_range_time_domain_mode(
+        profile.time_domain_mode if profile_enabled else range_time_domain_mode
+    )
     anchor_mode = _normalize_range_anchor_mode(range_anchor_mode)
     points = torch.cat(trajectories, dim=0)
     bounds = _dataset_bounds(points)
@@ -509,6 +727,17 @@ def generate_typed_query_workload(
 
     coverage_target = _normalize_target_coverage(target_coverage)
     coverage_overshoot = _normalize_coverage_overshoot(range_max_coverage_overshoot)
+    if profile_enabled:
+        if range_min_point_hits is None:
+            range_min_point_hits = profile.min_points_per_query
+        if range_min_trajectory_hits is None:
+            range_min_trajectory_hits = profile.min_trajectories_per_query
+        if range_max_point_hit_fraction is None:
+            range_max_point_hit_fraction = max_point_hit_fraction_for_coverage(coverage_target)
+        if range_duplicate_iou_threshold is None:
+            range_duplicate_iou_threshold = profile.max_near_duplicate_hitset_jaccard
+        if range_acceptance_max_attempts is None:
+            range_acceptance_max_attempts = max(1, int(profile.max_attempt_multiplier) * max(1, int(n_queries)))
     coverage_guard_enabled = coverage_target is not None and coverage_overshoot is not None
     max_allowed_coverage = (
         min(1.0, float(coverage_target) + float(coverage_overshoot))
@@ -550,19 +779,41 @@ def generate_typed_query_workload(
                 range_acceptance["exhausted"] = True
                 return None
             range_acceptance["attempts"] = int(range_acceptance["attempts"]) + 1
+        profile_query = _profile_query_settings(profile, generator) if profile_enabled else {}
+        query_anchor_weights = anchor_weights
+        query_anchor_probability = anchor_weight_probability
+        query_spatial_km = range_spatial_km
+        query_time_hours = range_time_hours
+        query_metadata: dict[str, Any] = {}
+        if profile_query:
+            query_anchor_weights, query_anchor_probability = _anchor_weights_for_family(
+                points,
+                str(profile_query["anchor_family"]),
+            )
+            query_spatial_km = float(profile_query["range_spatial_km"])
+            query_time_hours = float(profile_query["range_time_hours"])
+            query_metadata = {
+                "workload_profile_id": profile.profile_id,
+                "anchor_family": str(profile_query["anchor_family"]),
+                "footprint_family": str(profile_query["footprint_family"]),
+                "spatial_radius_km": float(query_spatial_km),
+                "time_half_window_hours": float(query_time_hours),
+                "elongation_allowed": bool(profile_query.get("elongation_allowed", False)),
+            }
         query = _make_range_query(
             points,
             bounds,
             generator,
             anchor_mask=anchor_mask,
-            anchor_weights=anchor_weights,
-            anchor_weight_probability=anchor_weight_probability,
+            anchor_weights=query_anchor_weights,
+            anchor_weight_probability=query_anchor_probability,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
-            range_spatial_km=range_spatial_km,
-            range_time_hours=range_time_hours,
+            range_spatial_km=query_spatial_km,
+            range_time_hours=query_time_hours,
             range_footprint_jitter=range_footprint_jitter,
             range_time_domain_mode=time_domain_mode,
+            metadata=query_metadata,
         )
         if not query_acceptance_enabled:
             return query
@@ -640,6 +891,9 @@ def generate_typed_query_workload(
             stop_reason = "target_coverage_reached"
         query_generation = {
             "mode": "target_coverage",
+            "workload_profile_id": profile.profile_id,
+            "workload_profile_version": int(profile.version),
+            "query_count_mode": profile.query_count_mode,
             "minimum_queries": int(requested_queries),
             "requested_queries": int(requested_queries),
             "max_queries": int(query_limit),
@@ -665,9 +919,11 @@ def generate_typed_query_workload(
         }
         return _finalize_workload(
             points,
+            boundaries,
             generated_queries,
             generator,
             generation_diagnostics={
+                "workload_profile": workload_profile_metadata(profile),
                 "range_acceptance": range_acceptance,
                 "query_generation": query_generation,
             },
@@ -688,12 +944,17 @@ def generate_typed_query_workload(
 
     return _finalize_workload(
         points,
+        boundaries,
         generated_queries,
         generator,
         generation_diagnostics={
             "range_acceptance": range_acceptance,
+            "workload_profile": workload_profile_metadata(profile),
             "query_generation": {
                 "mode": "fixed_count",
+                "workload_profile_id": profile.profile_id,
+                "workload_profile_version": int(profile.version),
+                "query_count_mode": profile.query_count_mode,
                 "minimum_queries": requested_queries,
                 "requested_queries": requested_queries,
                 "max_queries": requested_queries,

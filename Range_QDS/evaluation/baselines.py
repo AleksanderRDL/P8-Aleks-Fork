@@ -12,6 +12,7 @@ import torch
 
 from queries.workload import TypedQueryWorkload
 from simplification.mlqds_scoring import mlqds_simplification_scores, workload_type_head
+from simplification.learned_segment_budget import simplify_with_learned_segment_budget_v1
 from simplification.simplify_trajectories import (
     evenly_spaced_indices,
     simplify_with_global_score_budget,
@@ -19,8 +20,15 @@ from simplification.simplify_trajectories import (
     simplify_with_scores,
 )
 from training.training_outputs import TrainingOutputs
-from training.inference import _is_workload_blind_model, _model_point_dim, default_inference_device, windowed_predict
+from training.inference import (
+    _is_workload_blind_model,
+    _model_point_dim,
+    default_inference_device,
+    windowed_predict,
+    windowed_predict_with_heads,
+)
 from training.model_features import build_model_point_features_for_dim
+from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES
 
 
 class Method(Protocol):
@@ -78,6 +86,7 @@ class MLQDSMethod:
     hybrid_mode: str = "fill"
     stratified_center_weight: float = 0.0
     min_learned_swaps: int = 0
+    selector_type: str = "temporal_hybrid"
     range_geometry_blend: float = 0.0
     range_geometry_scores: torch.Tensor | None = None
     trajectory_mmsis: list[int] | None = None
@@ -86,6 +95,9 @@ class MLQDSMethod:
     inference_batch_size: int = 16
     _score_cache_key: tuple[object, ...] | None = field(default=None, init=False, repr=False)
     _score_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _raw_pred_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _head_logit_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _segment_score_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
 
     def _current_score_cache_key(
         self,
@@ -135,6 +147,7 @@ class MLQDSMethod:
             geometry_key,
             tuple(int(mmsi) for mmsi in self.trajectory_mmsis) if self.trajectory_mmsis is not None else None,
             int(self.min_learned_swaps),
+            str(self.selector_type),
             str(self.inference_device),
             str(self.amp_mode),
             int(self.inference_batch_size),
@@ -154,6 +167,9 @@ class MLQDSMethod:
 
         if self.range_geometry_blend >= 1.0 and self.range_geometry_scores is not None:
             pred = torch.zeros((points.shape[0],), dtype=torch.float32, device=points.device)
+            self._raw_pred_cache = pred.detach().cpu().float()
+            self._head_logit_cache = None
+            self._segment_score_cache = None
         else:
             point_dim = _model_point_dim(self.trained.model)
             model_points = build_model_point_features_for_dim(
@@ -162,6 +178,7 @@ class MLQDSMethod:
                 point_dim,
                 boundaries=boundaries,
                 trajectory_mmsis=self.trajectory_mmsis,
+                query_prior_field=self.trained.feature_context.get("query_prior_field"),
             )
             if workload_blind:
                 norm_points = self.trained.scaler.transform_points(model_points)
@@ -175,16 +192,43 @@ class MLQDSMethod:
                 if self.inference_device is not None
                 else default_inference_device()
             )
-            pred = windowed_predict(
-                model=self.trained.model,
-                norm_points=norm_points,
-                boundaries=boundaries,
-                queries=norm_queries,
-                query_type_ids=query_type_ids,
-                batch_size=self.inference_batch_size,
-                device=device,
-                amp_mode=self.amp_mode,
-            )
+            if workload_blind and callable(getattr(self.trained.model, "forward_with_heads", None)):
+                pred, head_logits = windowed_predict_with_heads(
+                    model=self.trained.model,
+                    norm_points=norm_points,
+                    boundaries=boundaries,
+                    queries=norm_queries,
+                    query_type_ids=query_type_ids,
+                    batch_size=self.inference_batch_size,
+                    device=device,
+                    amp_mode=self.amp_mode,
+                )
+            else:
+                pred = windowed_predict(
+                    model=self.trained.model,
+                    norm_points=norm_points,
+                    boundaries=boundaries,
+                    queries=norm_queries,
+                    query_type_ids=query_type_ids,
+                    batch_size=self.inference_batch_size,
+                    device=device,
+                    amp_mode=self.amp_mode,
+                )
+                head_logits = None
+            if head_logits is not None:
+                self._head_logit_cache = head_logits.detach().cpu().float()
+                try:
+                    segment_head_idx = tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("segment_budget_target")
+                except ValueError:
+                    segment_head_idx = -1
+                if segment_head_idx >= 0 and int(head_logits.shape[-1]) > segment_head_idx:
+                    self._segment_score_cache = torch.sigmoid(
+                        head_logits[:, segment_head_idx].detach().cpu().float()
+                    )
+            else:
+                self._head_logit_cache = None
+                self._segment_score_cache = None
+            self._raw_pred_cache = pred.detach().cpu().float()
 
         scores = mlqds_simplification_scores(
             pred,
@@ -225,6 +269,14 @@ class MLQDSMethod:
             )
 
         scores = self._simplification_scores(points, boundaries, workload_blind=workload_blind)
+        if str(self.selector_type).lower() == "learned_segment_budget_v1":
+            return simplify_with_learned_segment_budget_v1(
+                scores,
+                boundaries,
+                compression_ratio,
+                segment_scores=self._segment_score_cache,
+                points=points,
+            )
         return simplify_with_temporal_score_hybrid(
             scores,
             boundaries,

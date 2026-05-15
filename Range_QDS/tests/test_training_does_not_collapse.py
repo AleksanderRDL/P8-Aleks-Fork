@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 import torch
 
@@ -777,6 +779,67 @@ def test_validation_range_usefulness_matches_final_audit(monkeypatch: pytest.Mon
 
     assert validation_score == pytest.approx(audit["range_usefulness_score"])
     assert validation_per_type["range"] == pytest.approx(audit["range_usefulness_score"])
+
+
+def test_validation_selection_passes_segment_head_to_learned_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=1, n_points_per_ship=12, seed=617)
+    ds = TrajectoryDataset(trajectories)
+    points = ds.get_all_points()
+    boundaries = ds.get_trajectory_boundaries()
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=2,
+        workload_map={"range": 1.0},
+        seed=618,
+        range_spatial_fraction=0.60,
+        range_time_fraction=0.60,
+    )
+    cfg = build_experiment_config(
+        compression_ratio=0.40,
+        workload="range",
+        checkpoint_score_variant="answer",
+    )
+    cfg.model.selector_type = "learned_segment_budget_v1"
+    predictions = torch.zeros((points.shape[0],), dtype=torch.float32)
+    head_logits = torch.zeros((points.shape[0], 5), dtype=torch.float32)
+    head_logits[:, 4] = torch.linspace(-2.0, 2.0, steps=points.shape[0])
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "training.training_validation._predict_workload_logits_with_heads",
+        lambda **_kwargs: (predictions.clone(), head_logits.clone()),
+    )
+
+    def fake_simplify(*_args: object, **kwargs: object) -> torch.Tensor:
+        captured["segment_scores"] = kwargs.get("segment_scores")
+        captured["points"] = kwargs.get("points")
+        retained = torch.zeros((points.shape[0],), dtype=torch.bool)
+        retained[:5] = True
+        return retained
+
+    monkeypatch.setattr("training.training_validation.simplify_mlqds_predictions", fake_simplify)
+
+    _validation_query_score(
+        model=TrajectoryQDSModel(
+            point_dim=7,
+            query_dim=int(workload.query_features.shape[1]),
+            embed_dim=16,
+            num_heads=2,
+            num_layers=1,
+            query_chunk_size=8,
+        ),
+        scaler=FeatureScaler.fit(points[:, :7], workload.query_features),
+        trajectories=trajectories,
+        boundaries=boundaries,
+        workload=workload,
+        workload_map={"range": 1.0},
+        model_config=cfg.model,
+        device=torch.device("cpu"),
+        validation_points=points,
+    )
+
+    assert torch.allclose(cast(torch.Tensor, captured["segment_scores"]), torch.sigmoid(head_logits[:, 4]))
+    assert captured["points"] is points
 
 
 def test_training_accepts_precomputed_importance_labels() -> None:

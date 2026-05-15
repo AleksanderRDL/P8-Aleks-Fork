@@ -13,6 +13,7 @@ from experiments.benchmark_profiles import (
     DEFAULT_PROFILE,
     RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE,
     benchmark_profile,
+    benchmark_profile_args,
     benchmark_profile_settings,
 )
 from experiments.benchmark_report import _row_from_run
@@ -65,8 +66,20 @@ def test_legacy_profiles_final_success_allowed_false(profile_name: str) -> None:
 
 
 def test_rework_profiles_fail_until_implemented() -> None:
-    with pytest.raises(ValueError, match="Profile not implemented yet"):
-        benchmark_profile(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
+    profile = benchmark_profile(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
+    settings = benchmark_profile_settings(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
+    args = benchmark_profile_args(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
+
+    assert profile.model_type == "workload_blind_range_v2"
+    assert profile.range_training_target_mode == "query_useful_v1_factorized"
+    assert profile.workload_profile_id == "range_workload_v1"
+    assert profile.selector_type == "learned_segment_budget_v1"
+    assert profile.range_train_workload_replicates == 4
+    assert profile.range_max_coverage_overshoot == 0.0075
+    assert settings["primary_metric_family"] == "QueryUsefulV1"
+    assert settings["final_success_allowed"] is True
+    assert settings["range_train_workload_replicates"] == 4
+    assert args[args.index("--range_train_workload_replicates") + 1] == "4"
 
 
 def test_legacy_and_query_useful_target_modes_are_separated() -> None:
