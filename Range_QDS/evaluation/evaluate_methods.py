@@ -13,6 +13,7 @@ from data.trajectory_index import (
 )
 from evaluation.baselines import Method
 from evaluation.metrics import (
+    KM_PER_DEG_LAT,
     MethodEvaluation,
     _cumulative_polyline_length_km,
     _polyline_length_km,
@@ -215,6 +216,7 @@ def _build_range_query_audit_support(
             RangeTrajectoryAuditSupport(
                 trajectory_id=int(trajectory_id),
                 start=int(start),
+                end=int(end),
                 in_offsets_cpu=in_offsets,
                 turn_weights_cpu=turn_weights.cpu(),
                 distance_offsets_km_cpu=distance_offsets.cpu(),
@@ -352,11 +354,68 @@ def _range_turn_coverage_for_mask(turn_weights: torch.Tensor, retained_local: to
     return float((2.0 * recall) / (1.0 + recall))
 
 
+def _query_local_interpolation_fidelity(
+    *,
+    points_cpu: torch.Tensor,
+    retained_cpu: torch.Tensor,
+    support: RangeTrajectoryAuditSupport,
+) -> float:
+    """Score reconstruction of in-query points from retained full-trajectory anchors."""
+    start = int(support.start)
+    end = int(support.end)
+    if end <= start:
+        return 1.0
+    in_offsets = support.in_offsets_cpu.long()
+    if int(in_offsets.numel()) <= 0:
+        return 1.0
+    local_points = points_cpu[start:end]
+    full_retained = retained_cpu[start:end].bool()
+    retained_idx = torch.where(full_retained)[0]
+    if int(retained_idx.numel()) < 2:
+        return 0.0
+    query_retained = full_retained[in_offsets]
+    removed_offsets = in_offsets[~query_retained]
+    if int(removed_offsets.numel()) == 0:
+        return 1.0
+    pos = torch.searchsorted(retained_idx, removed_offsets)
+    valid = (pos > 0) & (pos < int(retained_idx.numel()))
+    if not bool(valid.any().item()):
+        return 0.0
+    removed_offsets = removed_offsets[valid]
+    pos = pos[valid]
+    left_idx = retained_idx[pos - 1]
+    right_idx = retained_idx[pos]
+    times = local_points[:, 0].float()
+    lats = local_points[:, 1].float()
+    lons = local_points[:, 2].float()
+    t_l = times[left_idx]
+    t_r = times[right_idx]
+    t_p = times[removed_offsets]
+    alpha = ((t_p - t_l) / (t_r - t_l).clamp(min=1e-9)).clamp(0.0, 1.0)
+    interp_lat = lats[left_idx] + alpha * (lats[right_idx] - lats[left_idx])
+    interp_lon = lons[left_idx] + alpha * (lons[right_idx] - lons[left_idx])
+    cos_lat = torch.cos(torch.deg2rad(lats[removed_offsets]))
+    dx_km = (lons[removed_offsets] - interp_lon) * cos_lat * KM_PER_DEG_LAT
+    dy_km = (lats[removed_offsets] - interp_lat) * KM_PER_DEG_LAT
+    sed_km = torch.sqrt(dx_km * dx_km + dy_km * dy_km)
+
+    cos_lat_left = torch.cos(torch.deg2rad(lats[left_idx]))
+    bx_km = (lons[right_idx] - lons[left_idx]) * cos_lat_left * KM_PER_DEG_LAT
+    by_km = (lats[right_idx] - lats[left_idx]) * KM_PER_DEG_LAT
+    px_km = (lons[removed_offsets] - lons[left_idx]) * cos_lat_left * KM_PER_DEG_LAT
+    py_km = (lats[removed_offsets] - lats[left_idx]) * KM_PER_DEG_LAT
+    chord_len = torch.sqrt(bx_km * bx_km + by_km * by_km).clamp(min=1e-9)
+    ped_km = torch.abs(bx_km * py_km - by_km * px_km) / chord_len
+    avg_error_km = float(((sed_km + ped_km) * 0.5).mean().item())
+    avg_segment_km = support.full_length_km / float(max(1, int(in_offsets.numel()) - 1))
+    return float(max(0.0, min(1.0, 1.0 / (1.0 + avg_error_km / max(avg_segment_km, 1e-6)))))
+
+
 def _range_trajectory_detail_scores_for_query(
     points_cpu: torch.Tensor,
     retained_cpu: torch.Tensor,
     trajectory_support: tuple[RangeTrajectoryAuditSupport, ...],
-) -> tuple[float, float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float, float]:
     """Return query-level per-ship coverage, temporal, gap, turn, and route-fidelity scores."""
     ship_coverage_scores: list[float] = []
     temporal_scores: list[float] = []
@@ -365,6 +424,9 @@ def _range_trajectory_detail_scores_for_query(
     gap_distance_scores: list[float] = []
     turn_scores: list[float] = []
     shape_scores: list[float] = []
+    interpolation_scores: list[float] = []
+    interpolation_scores: list[float] = []
+    interpolation_scores: list[float] = []
     times = points_cpu[:, 0]
     for support in trajectory_support:
         in_offsets = support.in_offsets_cpu
@@ -379,6 +441,13 @@ def _range_trajectory_detail_scores_for_query(
             gap_distance_scores.append(0.0)
             turn_scores.append(0.0)
             shape_scores.append(0.0)
+            interpolation_scores.append(
+                _query_local_interpolation_fidelity(
+                    points_cpu=points_cpu,
+                    retained_cpu=retained_cpu,
+                    support=support,
+                )
+            )
             continue
 
         ship_coverage_scores.append(_range_ship_coverage_for_offsets(in_offsets, retained_offsets))
@@ -408,6 +477,13 @@ def _range_trajectory_detail_scores_for_query(
             )
         )
         turn_scores.append(_range_turn_coverage_for_mask(support.turn_weights_cpu, retained_local))
+        interpolation_scores.append(
+            _query_local_interpolation_fidelity(
+                points_cpu=points_cpu,
+                retained_cpu=retained_cpu,
+                support=support,
+            )
+        )
 
         if support.full_length_km <= 1e-9:
             shape_scores.append(1.0)
@@ -437,6 +513,7 @@ def _range_trajectory_detail_scores_for_query(
         _mean(gap_distance_scores, default=1.0),
         _mean(turn_scores, default=1.0),
         _mean(shape_scores, default=1.0),
+        _mean(interpolation_scores, default=1.0),
     )
 
 
@@ -472,6 +549,7 @@ def score_range_usefulness(
     gap_distance_scores: list[float] = []
     turn_scores: list[float] = []
     shape_scores: list[float] = []
+    interpolation_scores: list[float] = []
 
     for query_index, query in enumerate(typed_queries):
         if str(query.get("type", "")).lower() != "range":
@@ -503,6 +581,7 @@ def score_range_usefulness(
             gap_distance_score,
             turn_score,
             shape_score,
+            interpolation_score,
         ) = _range_trajectory_detail_scores_for_query(
             points_cpu=points_cpu,
             retained_cpu=retained_cpu,
@@ -515,6 +594,7 @@ def score_range_usefulness(
         gap_distance_scores.append(gap_distance_score)
         turn_scores.append(turn_score)
         shape_scores.append(shape_score)
+        interpolation_scores.append(interpolation_score)
 
     query_count = len(point_scores)
     range_point_f1 = _mean(point_scores)
@@ -528,6 +608,7 @@ def score_range_usefulness(
     range_gap_distance_coverage = _mean(gap_distance_scores)
     range_turn_coverage = _mean(turn_scores)
     range_shape_score = _mean(shape_scores)
+    range_query_local_interpolation_fidelity = _mean(interpolation_scores)
     components = {
         "range_point_f1": range_point_f1,
         "range_ship_f1": range_ship_f1,
@@ -540,6 +621,7 @@ def score_range_usefulness(
         "range_gap_distance_coverage": range_gap_distance_coverage,
         "range_turn_coverage": range_turn_coverage,
         "range_shape_score": range_shape_score,
+        "range_query_local_interpolation_fidelity": range_query_local_interpolation_fidelity,
     }
     range_usefulness_score = range_usefulness_score_from_components(components)
     gap_ablation_scores = range_usefulness_gap_ablation_scores(components)
@@ -558,6 +640,7 @@ def score_range_usefulness(
         "range_gap_min_coverage": float(gap_ablation_scores["range_gap_min_coverage"]),
         "range_turn_coverage": float(range_turn_coverage),
         "range_shape_score": float(range_shape_score),
+        "range_query_local_interpolation_fidelity": float(range_query_local_interpolation_fidelity),
         "range_usefulness_score": float(range_usefulness_score),
         "range_usefulness_gap_time_score": float(gap_ablation_scores["range_usefulness_gap_time_score"]),
         "range_usefulness_gap_distance_score": float(
@@ -754,6 +837,9 @@ def evaluate_method(
         range_gap_min_coverage=float(range_audit.get("range_gap_min_coverage", 0.0)),
         range_turn_coverage=float(range_audit.get("range_turn_coverage", 0.0)),
         range_shape_score=float(range_audit.get("range_shape_score", 0.0)),
+        range_query_local_interpolation_fidelity=float(
+            range_audit.get("range_query_local_interpolation_fidelity", 0.0)
+        ),
         range_usefulness_score=float(range_audit.get("range_usefulness_score", 0.0)),
         range_usefulness_gap_time_score=float(range_audit.get("range_usefulness_gap_time_score", 0.0)),
         range_usefulness_gap_distance_score=float(

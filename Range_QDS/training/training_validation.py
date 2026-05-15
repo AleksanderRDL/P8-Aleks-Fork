@@ -9,6 +9,7 @@ import torch
 
 from evaluation.baselines import UniformTemporalMethod
 from evaluation.evaluate_methods import score_range_usefulness, score_retained_mask
+from evaluation.metrics import compute_geometric_distortion, compute_length_preservation
 from evaluation.query_useful_v1 import query_useful_v1_from_range_audit
 from experiments.experiment_config import ModelConfig
 from experiments.torch_runtime import normalize_amp_mode
@@ -23,6 +24,104 @@ from training.scaler import FeatureScaler
 from training.training_setup import _pure_query_type_id
 
 PredictWorkloadLogits = Callable[..., torch.Tensor]
+
+
+def _validation_endpoint_sanity(retained_mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> float:
+    """Return fraction of eligible trajectories whose endpoints are retained."""
+    retained = retained_mask.detach().cpu().bool()
+    eligible = 0
+    passing = 0
+    for start, end in boundaries:
+        if int(end) - int(start) < 2:
+            continue
+        local_count = int(retained[int(start) : int(end)].sum().item())
+        if local_count < 2:
+            continue
+        eligible += 1
+        if bool(retained[int(start)].item()) and bool(retained[int(end) - 1].item()):
+            passing += 1
+    if eligible <= 0:
+        return 1.0
+    return float(passing / eligible)
+
+
+def _validation_sed_ratio_threshold(compression_ratio: float) -> float:
+    """Return the same soft SED threshold used by final global sanity."""
+    ratio = float(compression_ratio)
+    if ratio <= 0.01 + 1e-12:
+        return 2.00
+    if ratio <= 0.02 + 1e-12:
+        return 1.75
+    return 1.50
+
+
+def _validation_global_sanity_metrics(
+    *,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    model_config: ModelConfig,
+    uniform_retained_mask: torch.Tensor | None = None,
+) -> dict[str, float]:
+    """Return geometry guardrail metrics used by validation checkpoint scoring."""
+    uniform_mask = (
+        uniform_retained_mask
+        if uniform_retained_mask is not None
+        else UniformTemporalMethod().simplify(
+            points=points,
+            boundaries=boundaries,
+            compression_ratio=model_config.compression_ratio,
+        )
+    )
+    geometric = compute_geometric_distortion(points, boundaries, retained_mask)
+    uniform_geometric = compute_geometric_distortion(points, boundaries, uniform_mask)
+    avg_sed = float(geometric.get("avg_sed_km", 0.0))
+    uniform_avg_sed = float(uniform_geometric.get("avg_sed_km", 0.0))
+    if uniform_avg_sed <= 1e-12:
+        sed_ratio = 1.0 if avg_sed <= 1e-12 else float("inf")
+    else:
+        sed_ratio = float(avg_sed / uniform_avg_sed)
+    return {
+        "avg_length_preserved": float(compute_length_preservation(points, boundaries, retained_mask)),
+        "endpoint_sanity": _validation_endpoint_sanity(retained_mask, boundaries),
+        "avg_sed_km": avg_sed,
+        "uniform_avg_sed_km": uniform_avg_sed,
+        "avg_sed_ratio_vs_uniform": sed_ratio,
+        "avg_sed_ratio_vs_uniform_max": _validation_sed_ratio_threshold(float(model_config.compression_ratio)),
+    }
+
+
+def _validation_query_useful_selection_score(
+    raw_query_useful_v1: float,
+    sanity: dict[str, float],
+    model_config: ModelConfig,
+) -> float:
+    """Apply a light validation-only penalty for global sanity failures."""
+    if not bool(getattr(model_config, "validation_global_sanity_penalty_enabled", True)):
+        return float(raw_query_useful_v1)
+    length_min = float(getattr(model_config, "validation_length_preservation_min", 0.80))
+    length_penalty = max(0.0, length_min - float(sanity.get("avg_length_preserved", 1.0)))
+    sed_penalty = max(
+        0.0,
+        float(sanity.get("avg_sed_ratio_vs_uniform", 1.0))
+        - float(sanity.get("avg_sed_ratio_vs_uniform_max", 1.50)),
+    )
+    endpoint_penalty = max(0.0, 1.0 - float(sanity.get("endpoint_sanity", 1.0)))
+    total_penalty = (
+        float(getattr(model_config, "validation_global_sanity_penalty_weight", 0.10)) * length_penalty
+        + float(getattr(model_config, "validation_sed_penalty_weight", 0.05)) * sed_penalty
+        + float(getattr(model_config, "validation_endpoint_penalty_weight", 0.10)) * endpoint_penalty
+    )
+    return float(raw_query_useful_v1 - total_penalty)
+
+
+def _validation_global_sanity_penalty(
+    raw_query_useful_v1: float,
+    sanity: dict[str, float],
+    model_config: ModelConfig,
+) -> float:
+    """Return the validation-only global-sanity penalty magnitude."""
+    return float(raw_query_useful_v1 - _validation_query_useful_selection_score(raw_query_useful_v1, sanity, model_config))
 
 
 def _predict_workload_logits_with_heads(
@@ -134,7 +233,7 @@ def _validation_checkpoint_scores(
         except ValueError:
             segment_head_idx = -1
         if segment_head_idx >= 0 and int(head_logits.shape[-1]) > segment_head_idx:
-            segment_scores = torch.sigmoid(head_logits[:, segment_head_idx].detach().cpu().float())
+            segment_scores = head_logits[:, segment_head_idx].detach().cpu().float()
     retained_mask = simplify_mlqds_predictions(
         predictions,
         boundaries,
@@ -176,11 +275,40 @@ def _validation_checkpoint_scores(
             typed_queries=workload.typed_queries,
             query_cache=query_cache,
         )
-        query_useful = query_useful_v1_from_range_audit(range_audit)
+        sanity = _validation_global_sanity_metrics(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            model_config=model_config,
+        )
+        query_useful = query_useful_v1_from_range_audit(
+            range_audit,
+            length_preservation=sanity["avg_length_preserved"],
+            avg_sed_km=sanity["avg_sed_km"],
+            endpoint_sanity=sanity["endpoint_sanity"],
+        )
+        raw_query_useful_score = float(cast(Any, query_useful["query_useful_v1_score"]))
+        penalized_query_useful_score = _validation_query_useful_selection_score(
+            raw_query_useful_score,
+            sanity,
+            model_config,
+        )
         metrics.update(
             {
                 "range_usefulness": float(range_audit["range_usefulness_score"]),
-                "query_useful_v1": float(cast(Any, query_useful["query_useful_v1_score"])),
+                "query_useful_v1": raw_query_useful_score,
+                "query_useful_v1_selection_score": penalized_query_useful_score,
+                "validation_global_sanity_penalty": _validation_global_sanity_penalty(
+                    raw_query_useful_score,
+                    sanity,
+                    model_config,
+                ),
+                "validation_avg_length_preserved": sanity["avg_length_preserved"],
+                "validation_endpoint_sanity": sanity["endpoint_sanity"],
+                "validation_avg_sed_km": sanity["avg_sed_km"],
+                "validation_uniform_avg_sed_km": sanity["uniform_avg_sed_km"],
+                "validation_avg_sed_ratio_vs_uniform": sanity["avg_sed_ratio_vs_uniform"],
+                "validation_avg_sed_ratio_vs_uniform_max": sanity["avg_sed_ratio_vs_uniform_max"],
                 "range_ship_f1": float(range_audit["range_ship_f1"]),
                 "range_ship_coverage": float(range_audit["range_ship_coverage"]),
                 "range_entry_exit_f1": float(range_audit["range_entry_exit_f1"]),
@@ -189,6 +317,9 @@ def _validation_checkpoint_scores(
                 "range_gap_coverage": float(range_audit["range_gap_coverage"]),
                 "range_turn_coverage": float(range_audit["range_turn_coverage"]),
                 "range_shape_score": float(range_audit["range_shape_score"]),
+                "range_query_local_interpolation_fidelity": float(
+                    range_audit.get("range_query_local_interpolation_fidelity", 0.0)
+                ),
             }
         )
     variant = str(getattr(model_config, "checkpoint_score_variant", "range_usefulness")).lower()
@@ -200,7 +331,8 @@ def _validation_checkpoint_scores(
     if variant == "query_useful_v1":
         if range_audit is None:
             return float(answer_agg), answer_pt, metrics
-        score = float(cast(Any, query_useful_v1_from_range_audit(range_audit)["query_useful_v1_score"]))
+        raw_score = float(metrics.get("query_useful_v1", 0.0))
+        score = float(metrics.get("query_useful_v1_selection_score", raw_score))
         return score, {"range": score}, metrics
     if variant == "combined":
         return float(combined_agg), combined_pt, metrics
@@ -282,7 +414,21 @@ def _validation_uniform_score(
             typed_queries=workload.typed_queries,
             query_cache=query_cache,
         )
-        score = float(cast(Any, query_useful_v1_from_range_audit(audit)["query_useful_v1_score"]))
+        sanity = _validation_global_sanity_metrics(
+            points=points,
+            boundaries=boundaries,
+            retained_mask=retained_mask,
+            model_config=model_config,
+            uniform_retained_mask=retained_mask,
+        )
+        query_useful = query_useful_v1_from_range_audit(
+            audit,
+            length_preservation=sanity["avg_length_preserved"],
+            avg_sed_km=sanity["avg_sed_km"],
+            endpoint_sanity=sanity["endpoint_sanity"],
+        )
+        raw_score = float(cast(Any, query_useful["query_useful_v1_score"]))
+        score = _validation_query_useful_selection_score(raw_score, sanity, model_config)
         return score, {"range": score}
     if variant == "combined":
         return combined_agg, combined_pt

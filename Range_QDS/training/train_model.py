@@ -36,7 +36,7 @@ from training.model_features import (
 )
 from training.query_prior_fields import build_train_query_prior_fields, query_prior_field_metadata
 from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES, build_query_useful_v1_targets
-from training.inference import windowed_predict
+from training.inference import windowed_predict_with_heads
 from training.training_diagnostics import (
     _discriminative_sample,
     _kendall_tau,
@@ -103,6 +103,51 @@ def _require_validation_inputs(
     if validation_trajectories is None or validation_boundaries is None or validation_workload is None:
         raise RuntimeError("Validation scoring requested without complete validation inputs.")
     return validation_trajectories, validation_boundaries, validation_workload
+
+
+def _segment_head_fit_diagnostics(
+    *,
+    head_logits: torch.Tensor | None,
+    factorized_targets: torch.Tensor | None,
+    factorized_mask: torch.Tensor | None,
+    seed: int,
+) -> dict[str, Any]:
+    """Summarize training-set fit for the segment-budget auxiliary head."""
+    if head_logits is None or factorized_targets is None or factorized_mask is None:
+        return {"segment_head_diagnostics_available": False}
+    try:
+        segment_idx = tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("segment_budget_target")
+    except ValueError:
+        return {"segment_head_diagnostics_available": False, "reason": "segment_budget_head_missing"}
+    if int(head_logits.shape[0]) != int(factorized_targets.shape[0]) or int(head_logits.shape[-1]) <= segment_idx:
+        return {"segment_head_diagnostics_available": False, "reason": "shape_mismatch"}
+    valid = factorized_mask[:, segment_idx].detach().cpu().bool()
+    targets = factorized_targets[:, segment_idx].detach().cpu().float().clamp(0.0, 1.0)
+    scores = torch.sigmoid(head_logits[:, segment_idx].detach().cpu().float())
+    if not bool(valid.any().item()):
+        return {"segment_head_diagnostics_available": False, "reason": "no_valid_segment_targets"}
+    generator = torch.Generator().manual_seed(int(seed) + 811)
+    sampled_scores, sampled_targets = _discriminative_sample(
+        scores[valid],
+        targets[valid],
+        n_each=200,
+        generator=generator,
+    )
+    tau = _kendall_tau(sampled_scores, sampled_targets)
+    valid_scores = scores[valid]
+    valid_targets = targets[valid]
+    k = max(1, int(math.ceil(0.05 * int(valid_scores.numel()))))
+    selected = torch.topk(valid_scores, k=k, largest=True).indices
+    ideal = torch.topk(valid_targets, k=k, largest=True).indices
+    selected_mass = float(valid_targets[selected].sum().item())
+    ideal_mass = float(valid_targets[ideal].sum().item())
+    return {
+        "segment_head_diagnostics_available": True,
+        "segment_head_tau": float(tau),
+        "segment_head_topk_mass_recall_at_5_percent": float(selected_mass / max(ideal_mass, 1e-12)),
+        "segment_head_valid_point_count": int(valid_scores.numel()),
+        "segment_head_target_mass": float(valid_targets.sum().item()),
+    }
 
 
 def train_model(
@@ -204,6 +249,7 @@ def train_model(
                 )
             ),
             train_workload_seed=prior_seed,
+            out_of_extent_sampling="nearest",
         )
     points = build_model_point_features(
         all_points,
@@ -1071,7 +1117,7 @@ def train_model(
     fit_t0 = time.perf_counter()
     fit_diagnostics: dict[str, Any] = {}
     try:
-        train_predictions = windowed_predict(
+        train_predictions, train_head_logits = windowed_predict_with_heads(
             model=model,
             norm_points=norm_points,
             boundaries=train_boundaries,
@@ -1091,6 +1137,14 @@ def train_model(
             model_config=model_config,
             workload_type=ID_TO_QUERY_NAME.get(workload_type_id, str(workload_type_id)),
             seed=seed,
+        )
+        fit_diagnostics.update(
+            _segment_head_fit_diagnostics(
+                head_logits=train_head_logits,
+                factorized_targets=factorized_targets,
+                factorized_mask=factorized_mask,
+                seed=seed,
+            )
         )
         fit_diagnostics["seconds"] = float(time.perf_counter() - fit_t0)
         matched_delta = fit_diagnostics.get("matched_mlqds_vs_uniform_target_recall")

@@ -64,73 +64,6 @@ workload_blind_protocol:
 
 ---
 
-## 2. What the Current Findings Actually Show
-
-The current work produced a credible negative result and a useful baseline, not a final model.
-
-### Current best branch
-
-The strongest branch appears to be roughly:
-
-```yaml
-model_type: historical_prior
-range_label_mode: usefulness_ship_balanced
-range_train_workload_replicates: 4
-range_replicate_target_aggregation: label_mean
-mlqds_hybrid_mode: local_swap
-mlqds_temporal_fraction: 0.85
-mlqds_diversity_bonus: 0.02
-train_days: 2026-02-02..2026-02-05
-validation_day: 2026-02-06
-eval_day: 2026-02-07
-```
-
-Main result:
-
-| Comparison | Result |
-|---|---:|
-| Wins vs uniform | `17/28` |
-| Wins vs Douglas-Peucker | `28/28` |
-| Wins vs TemporalRandomFill | `18/28` |
-| Low-budget wins vs uniform, `1%,2%,5%` | `4/12` |
-
-Matched `5%` compression showed small but broad component gains at `30%` coverage:
-
-| Component | MLQDS | Uniform |
-|---|---:|---:|
-| `RangePointF1` | `0.091175` | `0.089271` |
-| `ShipF1` | `0.667008` | `0.655058` |
-| `ShipCov` | `0.109885` | `0.104853` |
-| `EntryExitF1` | `0.199307` | `0.193753` |
-| `CrossingF1` | `0.101842` | `0.096723` |
-| `TemporalCov` | `0.274301` | `0.260320` |
-| `GapCov` | `0.252489` | `0.247608` |
-| `TurnCov` | `0.099750` | `0.090915` |
-| `ShapeScore` | `0.171505` | `0.159903` |
-
-This suggests some real workload-blind signal exists. But it is shallow.
-
-### Why this is not final learned success
-
-The evidence does not support the claim that a trainable model has solved the task.
-
-Reasons:
-
-- The strongest branch is a historical-prior KNN-like method, not a clean learned compressor.
-- The selector uses a heavy temporal scaffold (`0.85`).
-- Clean learned stratified selector variants lose to uniform.
-- Lower-scaffold variants degrade quality and geometry.
-- Trainable `range_prior` variants fail target fit or fail held-out transfer.
-- `historical_prior_student` fits labels better but trails the KNN branch and still misses low-budget cells.
-- Pointwise MLP fitting improves training fit but worsens held-out usefulness.
-- Opening learned low-budget slots exposes that the current blind score does not transfer.
-
-Correct interpretation:
-
-> Historical/query-prior signal exists, but the current scalar-target and temporal-scaffold formulation does not yet produce robust learned query-driven simplification.
-
----
-
 ## 3. Strategic Reframe
 
 The project should now be framed as a contract between five things:
@@ -1532,3 +1465,35 @@ Recommended order:
 This order matters. If the workload profile and metric do not expose a stable query-driven signal, the model cannot learn the intended behavior. If the selector still hides behind temporal scaffolding, wins will not prove model learning. If the feature path removes absolute spatial priors, the model cannot learn the query distribution you want it to exploit.
 
 The ambition is realistic only if the future query workload family is explicit and stable. Under that condition, the model can learn to preserve points likely to matter for future queries. Under arbitrary future workloads, uniform temporal sampling will often remain too strong.
+
+## 24. Progress alignment update from `query-driven-rework-progress.md` (checkpoint 6+)
+
+Current implementation status is solid on protocol, but not strong on claim. The branch now has:
+
+- versioned workload profile and stability checks;
+- workload signature drift reporting across train replicates;
+- query-blind protocol with no eval-query contamination;
+- factorized `QueryUsefulV1` targets and diagnostics;
+- train-derived prior fields and prior field ablation tracking;
+- `learned_segment_budget_v1` with segment-head allocation;
+- causality ablations and stronger material-delta gates;
+- `support_overlap_gate` and strict profile-sampled workload calibration in the final profile.
+
+Current blockers remain real, and they are now explicit:
+
+1. Predictability does not hold across the strict profile at meaningful strength (low-budget lift and PR-AUC lift still block).
+2. Learned transfer is not convincing against untrained or prior-only baselines once material-delta gates are applied.
+3. `QueryUsefulV1` still loses on full strict support-valid probes, and global sanity still fails length preservation.
+4. The full 4x7 final grid is not the next step; blockers are visible in smaller, support-valid probes.
+
+Do not interpret older fixed-count smokes as evidence of acceptance. They are still useful for regression detection, but not for product evidence.
+
+Recommended checkpoint order from here:
+
+1. Make support-valid strict probes durable: increase synthetic realism only enough to keep train/eval query support overlap without leaking eval signal.
+2. Add/restore a robust geometry-preserving signal that is tied to learned selection pressure, not hard-coded scaffold.
+3. Raise segment-budget head usage from a control to a strong driver in validation selection and held-out scoring.
+4. Add stronger query-local behavior supervision only after the above produces material causality and predictability gains.
+5. Re-run only a narrowed strict cell grid (single coverage/critical compression slices) before resuming full-grid acceptance runs.
+
+Stop rule remains unchanged: do not push further model architecture until checkpoints 1 and 2 (support + predictability + causality materiality) are clearly passing.

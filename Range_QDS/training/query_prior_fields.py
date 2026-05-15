@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import torch
@@ -18,6 +19,24 @@ QUERY_PRIOR_FIELD_NAMES = (
     "behavior_utility_prior",
     "route_density_prior",
 )
+
+
+def zero_query_prior_field_like(prior_field: dict[str, Any]) -> dict[str, Any]:
+    """Return a zero-valued prior field that preserves train extent and provenance."""
+    zeroed = copy.deepcopy(prior_field)
+    for name in QUERY_PRIOR_FIELD_NAMES:
+        value = zeroed.get(name)
+        if isinstance(value, torch.Tensor):
+            zeroed[name] = torch.zeros_like(value)
+    diagnostics = dict(zeroed.get("diagnostics") or {})
+    diagnostics["ablation"] = "zero_query_prior_features"
+    diagnostics["zeroed_prior_features_preserve_train_extent"] = True
+    zeroed["diagnostics"] = diagnostics
+    zeroed["ablation"] = "zero_query_prior_features"
+    zeroed["built_from_split"] = prior_field.get("built_from_split", "train_only")
+    zeroed["contains_eval_queries"] = False
+    zeroed["contains_validation_queries"] = False
+    return zeroed
 
 
 def _bounds(points: torch.Tensor, typed_queries: list[dict[str, Any]] | None = None) -> dict[str, float]:
@@ -172,6 +191,16 @@ def _query_box_prior_grids(
     )
 
 
+def _canonical_out_of_extent_sampling(mode: str | None) -> str:
+    """Normalize query-prior out-of-extent sampling mode."""
+    normalized = str(mode or "zero").strip().lower().replace("-", "_")
+    if normalized in {"clamp", "clamped"}:
+        normalized = "nearest"
+    if normalized not in {"zero", "nearest"}:
+        raise ValueError(f"Unknown out_of_extent_sampling mode: {mode!r}")
+    return normalized
+
+
 def _smooth_spacetime_grid(values: torch.Tensor, grid_bins: int, time_bins: int, passes: int) -> torch.Tensor:
     """Smooth every time slice of a spatial-temporal grid."""
     bins = max(1, int(grid_bins))
@@ -224,8 +253,10 @@ def build_train_query_prior_fields(
     grid_bins: int = 64,
     time_bins: int = 24,
     smoothing_passes: int = 2,
+    out_of_extent_sampling: str = "zero",
 ) -> dict[str, Any]:
     """Build query-prior fields from training points and training queries only."""
+    out_of_extent_sampling = _canonical_out_of_extent_sampling(out_of_extent_sampling)
     range_queries = [query for query in typed_queries if str(query.get("type", "")).lower() == "range"]
     extent = _bounds(points, range_queries)
     bins = max(1, int(grid_bins))
@@ -312,7 +343,7 @@ def build_train_query_prior_fields(
         "contains_validation_queries": False,
         "grid_projection": "lat_lon_training_extent",
         "spatial_query_field_source": "train_query_box_density",
-        "out_of_extent_sampling": "zero",
+        "out_of_extent_sampling": out_of_extent_sampling,
         "grid_bins": int(bins),
         "time_bins": int(clock_bins),
         "smoothing": {
@@ -348,7 +379,21 @@ def sample_query_prior_fields(points: torch.Tensor, prior_field: dict[str, Any] 
     bins = int(prior_field.get("grid_bins", 64))
     time_bins = int(prior_field.get("time_bins", 24))
     extent = dict(prior_field.get("extent") or _bounds(points))
-    _lat_bin, _lon_bin, cell_ids = _spatial_bins(points, extent, bins)
+    out_of_extent_sampling = _canonical_out_of_extent_sampling(prior_field.get("out_of_extent_sampling", "zero"))
+    sampling_points = points.detach()
+    if out_of_extent_sampling == "nearest":
+        sampling_points = points.detach().clone()
+        sampling_points[:, 1] = torch.clamp(
+            sampling_points[:, 1],
+            min=float(extent["lat_min"]),
+            max=float(extent["lat_max"]),
+        )
+        sampling_points[:, 2] = torch.clamp(
+            sampling_points[:, 2],
+            min=float(extent["lon_min"]),
+            max=float(extent["lon_max"]),
+        )
+    _lat_bin, _lon_bin, cell_ids = _spatial_bins(sampling_points.to(dtype=torch.float32), extent, bins)
     time_ids = _time_bins(points, time_bins)
     cell_ids_cpu = cell_ids.detach().cpu().long()
     time_ids_cpu = time_ids.detach().cpu().long()
@@ -384,7 +429,7 @@ def sample_query_prior_fields(points: torch.Tensor, prior_field: dict[str, Any] 
         ],
         dim=1,
     )
-    if bool(outside_extent.any().item()):
+    if out_of_extent_sampling == "zero" and bool(outside_extent.any().item()):
         sampled[outside_extent] = 0.0
     return sampled.to(device=points.device, dtype=torch.float32).clamp(0.0, 1.0)
 
@@ -408,5 +453,6 @@ def query_prior_field_metadata(prior_field: dict[str, Any] | None) -> dict[str, 
         "smoothing": prior_field.get("smoothing"),
         "contains_eval_queries": bool(prior_field.get("contains_eval_queries", True)),
         "contains_validation_queries": bool(prior_field.get("contains_validation_queries", True)),
+        "ablation": prior_field.get("ablation"),
         "diagnostics": dict(prior_field.get("diagnostics") or {}),
     }

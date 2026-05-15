@@ -23,6 +23,7 @@ class RangeWorkloadProfile:
     max_coverage_overshoot: float | None
     time_domain_mode: str = "anchor_day"
     query_count_mode: str = "calibrated_to_coverage"
+    coverage_calibration_mode: str = "profile_sampled_query_count"
     min_points_per_query: int = 3
     min_trajectories_per_query: int = 1
     max_near_duplicate_hitset_jaccard: float = 0.65
@@ -43,6 +44,7 @@ LEGACY_GENERATOR_PROFILE = RangeWorkloadProfile(
     max_coverage_overshoot=None,
     time_domain_mode="dataset",
     query_count_mode="legacy_fixed_or_target_coverage",
+    coverage_calibration_mode="uncovered_anchor_chasing",
     min_points_per_query=0,
     min_trajectories_per_query=0,
     max_near_duplicate_hitset_jaccard=0.85,
@@ -95,6 +97,7 @@ RANGE_WORKLOAD_V1_PROFILE = RangeWorkloadProfile(
     max_coverage_overshoot=None,
     time_domain_mode="anchor_day",
     query_count_mode="calibrated_to_coverage",
+    coverage_calibration_mode="profile_sampled_query_count",
     min_points_per_query=3,
     min_trajectories_per_query=1,
     max_near_duplicate_hitset_jaccard=0.65,
@@ -160,6 +163,7 @@ def workload_profile_metadata(profile: RangeWorkloadProfile) -> dict[str, Any]:
         "max_coverage_overshoot": profile.max_coverage_overshoot,
         "time_domain_mode": profile.time_domain_mode,
         "query_count_mode": profile.query_count_mode,
+        "coverage_calibration_mode": profile.coverage_calibration_mode,
         "query_acceptance": {
             "min_points_per_query": int(profile.min_points_per_query),
             "min_trajectories_per_query": int(profile.min_trajectories_per_query),

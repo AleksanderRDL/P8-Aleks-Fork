@@ -838,7 +838,7 @@ def test_validation_selection_passes_segment_head_to_learned_selector(monkeypatc
         validation_points=points,
     )
 
-    assert torch.allclose(cast(torch.Tensor, captured["segment_scores"]), torch.sigmoid(head_logits[:, 4]))
+    assert torch.allclose(cast(torch.Tensor, captured["segment_scores"]), head_logits[:, 4])
     assert captured["points"] is points
 
 

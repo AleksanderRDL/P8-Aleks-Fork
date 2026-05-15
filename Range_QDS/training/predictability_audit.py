@@ -154,14 +154,25 @@ def _prior_predictability_score(points: torch.Tensor, query_prior_field: dict[st
     sampled = sample_query_prior_fields(points, query_prior_field).float()
     if sampled.shape[1] < 6:
         return torch.zeros((int(points.shape[0]),), dtype=torch.float32, device=points.device)
-    score = (
-        0.30 * sampled[:, 0]
-        + 0.25 * sampled[:, 1]
-        + 0.15 * sampled[:, 4]
-        + 0.10 * sampled[:, 2]
-        + 0.10 * sampled[:, 3]
-        + 0.10 * sampled[:, 5]
+    spatial_query_hit_probability = sampled[:, 0].clamp(0.0, 1.0)
+    spatiotemporal_query_hit_probability = sampled[:, 1].clamp(0.0, 1.0)
+    boundary_entry_exit_likelihood = sampled[:, 2].clamp(0.0, 1.0)
+    behavior_utility_prior = sampled[:, 4].clamp(0.0, 1.0)
+
+    # Query mass is the primary prior signal; behavior is an additive utility term
+    # and explicit boundary support is retained as a bounded bonus term.
+    query_mass = torch.clamp(
+        0.70 * spatial_query_hit_probability + 0.30 * spatiotemporal_query_hit_probability,
+        0.0,
+        1.0,
     )
+    behavior_signal = torch.clamp(
+        0.50 * behavior_utility_prior + 0.50 * boundary_entry_exit_likelihood,
+        0.0,
+        1.0,
+    )
+    score = query_mass * (0.50 + behavior_signal)
+    score = score + 0.25 * boundary_entry_exit_likelihood.square()
     return score.clamp(0.0, 1.0)
 
 

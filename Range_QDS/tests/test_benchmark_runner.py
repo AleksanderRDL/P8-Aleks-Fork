@@ -371,6 +371,16 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "train_workload_replicate_count": 1,
             "configured_target_coverage": 0.10,
         },
+        "support_overlap_gate": {
+            "gate_pass": True,
+            "failed_checks": [],
+            "eval_points_outside_train_prior_extent_fraction": 0.02,
+            "sampled_prior_nonzero_fraction": 0.80,
+            "primary_sampled_prior_nonzero_fraction": 0.60,
+            "route_density_overlap": 0.70,
+            "query_prior_support_overlap": 0.65,
+            "train_eval_spatial_extent_intersection_fraction": 0.90,
+        },
         "global_sanity_gate": {
             "gate_pass": True,
             "failed_checks": [],
@@ -898,6 +908,14 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["workload_stability_failed_checks"] == ["train_r0:not_target_coverage_generation"]
     assert row["workload_stability_train_replicates"] == 1
     assert row["workload_stability_configured_target_coverage"] == 0.10
+    assert row["support_overlap_gate_pass"] is True
+    assert row["support_overlap_failed_checks"] == []
+    assert row["support_eval_points_outside_train_prior_extent_fraction"] == 0.02
+    assert row["support_sampled_prior_nonzero_fraction"] == 0.80
+    assert row["support_primary_sampled_prior_nonzero_fraction"] == 0.60
+    assert row["support_route_density_overlap"] == 0.70
+    assert row["support_query_prior_support_overlap"] == 0.65
+    assert row["support_train_eval_spatial_extent_intersection_fraction"] == 0.90
     assert row["global_sanity_gate_pass"] is True
     assert row["global_sanity_failed_checks"] == []
     assert row["global_sanity_endpoint_sanity"] == 1.0
@@ -1122,6 +1140,7 @@ def _final_grid_row(coverage: float, *, mlqds_delta: float = 0.05) -> dict[str, 
         "learning_causality_gate_pass": True,
         "prior_sample_gate_pass": True,
         "global_sanity_gate_pass": True,
+        "support_overlap_gate_pass": True,
         "mlqds_primary_metric": "query_useful_v1",
     }
     for ratio in (0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30):

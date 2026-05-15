@@ -21,6 +21,14 @@ CONTEXT_WORKLOAD_BLIND_EXTRA_DIM = 16
 CONTEXT_WORKLOAD_BLIND_POINT_DIM = 8 + CONTEXT_WORKLOAD_BLIND_EXTRA_DIM
 RANGE_PRIOR_CLOCK_DENSITY_POINT_DIM = CONTEXT_WORKLOAD_BLIND_POINT_DIM + 4
 WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_DIM = 5
+WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_EXTENT_FALLBACK = {
+    "t_min": 0.0,
+    "t_max": 86_400.0,
+    "lat_min": -90.0,
+    "lat_max": 90.0,
+    "lon_min": -180.0,
+    "lon_max": 180.0,
+}
 WORKLOAD_BLIND_RANGE_V2_PRIOR_DIM = len(QUERY_PRIOR_FIELD_NAMES)
 WORKLOAD_BLIND_RANGE_V2_POINT_DIM = (
     CONTEXT_WORKLOAD_BLIND_POINT_DIM
@@ -478,8 +486,10 @@ def _extent_for_absolute_features(points: torch.Tensor, query_prior_field: dict[
     """Return the training extent used for stable absolute features."""
     if query_prior_field is not None and isinstance(query_prior_field.get("extent"), dict):
         return dict(query_prior_field["extent"])
+    if query_prior_field is None:
+        return dict(WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_EXTENT_FALLBACK)
     if int(points.numel()) == 0:
-        return {"t_min": 0.0, "t_max": 1.0, "lat_min": 0.0, "lat_max": 1.0, "lon_min": 0.0, "lon_max": 1.0}
+        return dict(WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_EXTENT_FALLBACK)
     return {
         "t_min": float(points[:, 0].min().item()),
         "t_max": float(points[:, 0].max().item()),
@@ -496,10 +506,16 @@ def _absolute_range_v2_features(points: torch.Tensor, query_prior_field: dict[st
     if n_points == 0:
         return torch.empty((0, WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_DIM), dtype=torch.float32, device=points.device)
     extent = _extent_for_absolute_features(points, query_prior_field)
+    has_training_extent = query_prior_field is not None and isinstance(query_prior_field.get("extent"), dict)
+    if has_training_extent:
+        t_norm = (
+            (points[:, 0].float() - float(extent["t_min"])) / max(1e-9, float(extent["t_max"]) - float(extent["t_min"]))
+        ).clamp(0.0, 1.0)
+    else:
+        t_norm = torch.remainder(points[:, 0].float(), 86_400.0) / 86_400.0
     t_span = max(1e-9, float(extent["t_max"]) - float(extent["t_min"]))
     lat_span = max(1e-9, float(extent["lat_max"]) - float(extent["lat_min"]))
     lon_span = max(1e-9, float(extent["lon_max"]) - float(extent["lon_min"]))
-    t_norm = ((points[:, 0].float() - float(extent["t_min"])) / t_span).clamp(0.0, 1.0)
     lat_norm = ((points[:, 1].float() - float(extent["lat_min"])) / lat_span).clamp(0.0, 1.0)
     lon_norm = ((points[:, 2].float() - float(extent["lon_min"])) / lon_span).clamp(0.0, 1.0)
     phase = torch.remainder(points[:, 0].float(), 86_400.0) / 86_400.0

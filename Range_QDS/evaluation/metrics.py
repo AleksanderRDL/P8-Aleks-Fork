@@ -57,6 +57,7 @@ class MethodEvaluation:
     range_gap_min_coverage: float = 0.0
     range_turn_coverage: float = 0.0
     range_shape_score: float = 0.0
+    range_query_local_interpolation_fidelity: float = 0.0
     range_usefulness_score: float = 0.0
     range_usefulness_gap_time_score: float = 0.0
     range_usefulness_gap_distance_score: float = 0.0

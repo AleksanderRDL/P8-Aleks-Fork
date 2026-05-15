@@ -55,6 +55,8 @@ def _factorized_query_useful_loss(
     head_logits: torch.Tensor,
     head_targets: torch.Tensor,
     head_mask: torch.Tensor,
+    global_indices: torch.Tensor | None = None,
+    segment_size: int = 32,
 ) -> torch.Tensor:
     """Return auxiliary multi-head QueryUsefulV1 loss for v2 models."""
     if head_logits.shape != head_targets.shape or head_mask.shape != head_logits.shape:
@@ -72,7 +74,64 @@ def _factorized_query_useful_loss(
     head_weights = head_logits.new_tensor([0.30, 0.25, 0.15, 0.20, 0.10]).view(1, 1, -1)
     weighted = per_element * head_weights * valid.to(dtype=per_element.dtype)
     denom = (head_weights * valid.to(dtype=per_element.dtype)).sum().clamp(min=1.0)
-    return weighted.sum() / denom
+    point_loss = weighted.sum() / denom
+    segment_loss = _segment_budget_head_segment_level_loss(
+        head_logits=head_logits,
+        head_targets=head_targets,
+        head_mask=head_mask,
+        global_indices=global_indices,
+        segment_size=segment_size,
+    )
+    return point_loss + 0.25 * segment_loss
+
+
+def _segment_budget_head_segment_level_loss(
+    *,
+    head_logits: torch.Tensor,
+    head_targets: torch.Tensor,
+    head_mask: torch.Tensor,
+    global_indices: torch.Tensor | None = None,
+    segment_size: int = 32,
+) -> torch.Tensor:
+    """Return segment-level/listwise loss for the segment-budget head."""
+    if head_logits.shape != head_targets.shape or head_mask.shape != head_logits.shape:
+        raise ValueError("factorized head logits, targets, and mask must have matching shape.")
+    if int(head_logits.shape[-1]) <= 4:
+        return head_logits.new_tensor(0.0)
+    size = max(1, int(segment_size))
+    seg_logits = head_logits[..., 4].float()
+    seg_targets = head_targets[..., 4].float().clamp(0.0, 1.0)
+    seg_mask = head_mask[..., 4].to(dtype=torch.bool)
+    if global_indices is not None:
+        seg_mask = seg_mask & (global_indices >= 0)
+    losses: list[torch.Tensor] = []
+    for row in range(int(seg_logits.shape[0])):
+        valid_positions = torch.where(seg_mask[row])[0]
+        if int(valid_positions.numel()) <= 0:
+            continue
+        row_segment_logits: list[torch.Tensor] = []
+        row_segment_targets: list[torch.Tensor] = []
+        for start in range(0, int(valid_positions.numel()), size):
+            positions = valid_positions[start : start + size]
+            if int(positions.numel()) <= 0:
+                continue
+            row_segment_logits.append(seg_logits[row, positions].mean())
+            row_segment_targets.append(seg_targets[row, positions].mean())
+        if not row_segment_logits:
+            continue
+        pooled_logits = torch.stack(row_segment_logits)
+        pooled_targets = torch.stack(row_segment_targets).clamp(0.0, 1.0)
+        losses.append(F.binary_cross_entropy_with_logits(pooled_logits, pooled_targets, reduction="mean"))
+        if int(pooled_logits.numel()) >= 2:
+            target_diff = pooled_targets.unsqueeze(1) - pooled_targets.unsqueeze(0)
+            logit_diff = pooled_logits.unsqueeze(1) - pooled_logits.unsqueeze(0)
+            pair_mask = target_diff.abs() > 0.05
+            if bool(pair_mask.any().item()):
+                direction = torch.sign(target_diff[pair_mask])
+                losses.append(F.softplus(-direction * logit_diff[pair_mask]).mean())
+    if not losses:
+        return head_logits.new_tensor(0.0)
+    return torch.stack(losses).mean()
 
 
 def _train_one_epoch(
@@ -154,6 +213,7 @@ def _train_one_epoch(
                 head_logits=head_logits_batch.float(),
                 head_targets=batch_head_targets,
                 head_mask=batch_head_mask,
+                global_indices=batch_global_idx,
             )
         positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
         positive_windows[active_type_id] += int(positive_row_mask.sum().item())

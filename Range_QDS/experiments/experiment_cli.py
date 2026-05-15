@@ -365,6 +365,16 @@ def build_parser() -> argparse.ArgumentParser:
             "The default legacy_generator keeps old benchmark behavior."
         ),
     )
+    parser.add_argument(
+        "--coverage_calibration_mode",
+        type=str,
+        default=None,
+        choices=["profile_sampled_query_count", "uncovered_anchor_chasing"],
+        help=(
+            "Target-coverage calibration behavior. range_workload_v1 defaults to "
+            "profile_sampled_query_count; uncovered_anchor_chasing is legacy/diagnostic only."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--embed_dim", type=int, default=64, help="Transformer hidden dimension.")
@@ -606,6 +616,36 @@ def build_parser() -> argparse.ArgumentParser:
             "'range_usefulness' = legacy range-local audit score for range workloads (default), "
             "'answer' = point/query F1, 'combined' = answer_f1 * point_subset_f1."
         ),
+    )
+    parser.add_argument(
+        "--validation_global_sanity_penalty",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply a light validation-only penalty to query_useful_v1 checkpoint selection when global sanity fails.",
+    )
+    parser.add_argument(
+        "--validation_global_sanity_penalty_weight",
+        type=float,
+        default=0.10,
+        help="Validation checkpoint penalty weight for length preservation shortfall.",
+    )
+    parser.add_argument(
+        "--validation_sed_penalty_weight",
+        type=float,
+        default=0.05,
+        help="Validation checkpoint penalty weight for SED ratio above the final sanity threshold.",
+    )
+    parser.add_argument(
+        "--validation_endpoint_penalty_weight",
+        type=float,
+        default=0.10,
+        help="Validation checkpoint penalty weight for endpoint retention failures.",
+    )
+    parser.add_argument(
+        "--validation_length_preservation_min",
+        type=float,
+        default=0.80,
+        help="Minimum validation length preservation used by query_useful_v1 checkpoint penalties.",
     )
     parser.add_argument(
         "--mlqds_temporal_fraction",

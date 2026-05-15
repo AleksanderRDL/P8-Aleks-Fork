@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any
 
@@ -29,6 +30,7 @@ DEFAULT_RANGE_TIME_DOMAIN_MODE = "dataset"
 DEFAULT_RANGE_ANCHOR_MODE = "mixed_density"
 RANGE_TIME_DOMAIN_MODES = ("dataset", "anchor_day")
 RANGE_ANCHOR_MODES = ("mixed_density", "dense", "uniform", "sparse")
+RANGE_COVERAGE_CALIBRATION_MODES = ("profile_sampled_query_count", "uncovered_anchor_chasing")
 RANGE_WORKLOAD_V1_ANCHOR_FAMILIES = (
     "density_route",
     "boundary_entry_exit",
@@ -151,11 +153,38 @@ def _turn_change_anchor_weights(points: torch.Tensor) -> torch.Tensor:
     return _normalize_weights(weights)
 
 
+def _port_or_approach_anchor_weights(points: torch.Tensor) -> torch.Tensor:
+    """Return hotspot/approach weights distinct from generic route density."""
+    if points.shape[0] == 0:
+        return torch.empty((0,), dtype=torch.float32, device=points.device)
+    density = _density_anchor_weights(points)
+    endpoint = _endpoint_anchor_weights(points)
+    weights = 0.35 * density + 0.35 * endpoint
+    if points.shape[1] > 3:
+        speed = points[:, 3].float().clamp(min=0.0)
+        if int(speed.numel()) > 0:
+            low_speed_cutoff = torch.quantile(speed, 0.30)
+            slow = (speed <= low_speed_cutoff).float()
+            weights = weights + 0.30 * _normalize_weights(slow)
+    return _normalize_weights(weights)
+
+
 def _normalize_range_anchor_mode(mode: str) -> str:
     """Normalize range-query anchor sampling mode names."""
     normalized = str(mode).strip().lower()
     if normalized not in RANGE_ANCHOR_MODES:
         raise ValueError(f"range_anchor_mode must be one of {RANGE_ANCHOR_MODES}; got {mode!r}.")
+    return normalized
+
+
+def _normalize_coverage_calibration_mode(mode: str | None, fallback: str) -> str:
+    """Return a known target-coverage calibration mode."""
+    normalized = str(mode or fallback).strip().lower()
+    if normalized not in RANGE_COVERAGE_CALIBRATION_MODES:
+        raise ValueError(
+            "coverage_calibration_mode must be one of "
+            f"{RANGE_COVERAGE_CALIBRATION_MODES}; got {mode!r}."
+        )
     return normalized
 
 
@@ -184,7 +213,9 @@ def _anchor_weights_for_family(
         return _endpoint_anchor_weights(points), 1.0
     if normalized == "crossing_turn_change":
         return _turn_change_anchor_weights(points), 1.0
-    if normalized in {"density_route", "port_or_approach_zone"}:
+    if normalized == "port_or_approach_zone":
+        return _port_or_approach_anchor_weights(points), 1.0
+    if normalized == "density_route":
         return _density_anchor_weights(points), 1.0
     raise ValueError(f"Unknown range workload anchor family: {family!r}.")
 
@@ -201,22 +232,71 @@ def _weighted_choice(mapping: dict[str, float], generator: torch.Generator, fall
     return keys[int(idx)]
 
 
+def _deterministic_unit_from_payload(*parts: object) -> float:
+    """Return a deterministic unit-uniform-like value from arbitrary key material."""
+    payload = "|".join(str(part) for part in parts)
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    raw = int.from_bytes(digest[:8], byteorder="big", signed=False)
+    return (raw / float(1 << 64))
+
+
+def _weighted_choice_with_deterministic_key(
+    mapping: dict[str, float],
+    generator: torch.Generator,
+    fallback: str,
+    deterministic_value: float | None = None,
+) -> str:
+    """Sample one key from a non-negative weight mapping using deterministic ordering."""
+    if not mapping:
+        return fallback
+    keys = [str(key) for key in mapping]
+    weights = torch.tensor([max(0.0, float(mapping[key])) for key in keys], dtype=torch.float32)
+    total = float(weights.sum().item())
+    if total <= 0.0:
+        idx = _weighted_sample_one(torch.ones((max(1, len(keys)),), dtype=torch.float32), generator)
+        return keys[min(int(idx), len(keys) - 1)]
+    if deterministic_value is None:
+        idx = _weighted_sample_one(weights, generator)
+        return keys[int(idx)]
+    u = float(deterministic_value) % 1.0
+    cdf = torch.cumsum(weights, dim=0)
+    target = u * total
+    idx = int(torch.searchsorted(cdf, torch.tensor(target, dtype=cdf.dtype)).item())
+    return keys[min(max(idx, 0), len(keys) - 1)]
+
+
 def _profile_query_settings(
     profile: RangeWorkloadProfile,
     generator: torch.Generator,
+    query_index: int | None = None,
+    workload_seed: int | None = None,
 ) -> dict[str, Any]:
     """Sample query-level profile settings for one range_workload_v1 query."""
     if profile.profile_id == LEGACY_GENERATOR_PROFILE.profile_id:
         return {}
-    anchor_family = _weighted_choice(
+    query_key = str(int(workload_seed) if workload_seed is not None else "unseeded")
+    if query_index is None or query_index < 0:
+        anchor_value: float | None = None
+        footprint_value: float | None = None
+    else:
+        anchor_value = _deterministic_unit_from_payload(profile.profile_id, "anchor", query_key, query_index)
+        footprint_value = _deterministic_unit_from_payload(
+            profile.profile_id,
+            "footprint",
+            query_key,
+            query_index,
+        )
+    anchor_family = _weighted_choice_with_deterministic_key(
         profile.anchor_family_weights,
         generator,
         fallback="density_route",
+        deterministic_value=anchor_value,
     )
-    footprint_family = _weighted_choice(
+    footprint_family = _weighted_choice_with_deterministic_key(
         profile.footprint_family_weights,
         generator,
         fallback="medium_operational",
+        deterministic_value=footprint_value,
     )
     footprint = dict(profile.footprint_families.get(footprint_family) or {})
     return {
@@ -358,6 +438,7 @@ def _make_range_query(
     range_time_hours: float | None = None,
     range_footprint_jitter: float = DEFAULT_RANGE_FOOTPRINT_JITTER,
     range_time_domain_mode: str = DEFAULT_RANGE_TIME_DOMAIN_MODE,
+    elongation_allowed: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate one range query. See queries/README.md for details."""
@@ -389,6 +470,24 @@ def _make_range_query(
         lat_w = (spatial_km / 111.32) * lat_jitter
         cos_lat = max(0.10, abs(math.cos(math.radians(float(anchor_point[1].item())))))
         lon_w = (spatial_km / (111.32 * cos_lat)) * lon_jitter
+    corridor_axis = "none"
+    elongation_factor = 1.0
+    cross_axis_factor = 1.0
+    if bool(elongation_allowed):
+        heading = float(anchor_point[4].item()) if int(anchor_point.numel()) > 4 else 90.0
+        heading_rad = math.radians(heading % 180.0)
+        north_south_alignment = abs(math.cos(heading_rad))
+        east_west_alignment = abs(math.sin(heading_rad))
+        elongation_factor = 2.50
+        cross_axis_factor = 0.45
+        if east_west_alignment >= north_south_alignment:
+            lon_w *= elongation_factor
+            lat_w *= cross_axis_factor
+            corridor_axis = "east_west"
+        else:
+            lat_w *= elongation_factor
+            lon_w *= cross_axis_factor
+            corridor_axis = "north_south"
     if time_hours is None:
         t_w = time_fraction * (bounds["t_max"] - bounds["t_min"]) * time_jitter
     else:
@@ -406,8 +505,17 @@ def _make_range_query(
             "t_end": float(min(time_max, anchor_time + t_w)),
         },
     }
-    if metadata:
-        query["_metadata"] = dict(metadata)
+    query_metadata = dict(metadata or {})
+    if bool(elongation_allowed):
+        query_metadata.update(
+            {
+                "corridor_axis": corridor_axis,
+                "corridor_elongation_factor": float(elongation_factor),
+                "corridor_cross_axis_factor": float(cross_axis_factor),
+            }
+        )
+    if query_metadata:
+        query["_metadata"] = query_metadata
     return query
 
 
@@ -709,12 +817,17 @@ def generate_typed_query_workload(
     range_acceptance_max_attempts: int | None = None,
     range_max_coverage_overshoot: float | None = None,
     workload_profile_id: str | None = None,
+    coverage_calibration_mode: str | None = None,
 ) -> TypedQueryWorkload:
     """Generate a range-query workload and padded feature tensor. See queries/README.md for details."""
     profile = range_workload_profile(workload_profile_id)
     profile_enabled = profile.profile_id != LEGACY_GENERATOR_PROFILE.profile_id
     time_domain_mode = _normalize_range_time_domain_mode(
         profile.time_domain_mode if profile_enabled else range_time_domain_mode
+    )
+    coverage_mode = _normalize_coverage_calibration_mode(
+        coverage_calibration_mode,
+        profile.coverage_calibration_mode if profile_enabled else "uncovered_anchor_chasing",
     )
     anchor_mode = _normalize_range_anchor_mode(range_anchor_mode)
     points = torch.cat(trajectories, dim=0)
@@ -772,14 +885,26 @@ def generate_typed_query_workload(
         range_acceptance["accepted"] = int(range_acceptance["accepted"]) + 1
         accepted_range_queries.append({"params": query["params"], "query_index": len(accepted_range_queries)})
 
-    def build_query(anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
+    def build_query(
+        anchor_mask: torch.Tensor | None = None,
+        query_index: int | None = None,
+    ) -> dict[str, Any] | None:
         """Build one query, applying optional range acceptance filters."""
         if acceptance_enabled:
             if max_range_attempts is not None and int(range_acceptance["attempts"]) >= max_range_attempts:
                 range_acceptance["exhausted"] = True
                 return None
             range_acceptance["attempts"] = int(range_acceptance["attempts"]) + 1
-        profile_query = _profile_query_settings(profile, generator) if profile_enabled else {}
+        profile_query = (
+            _profile_query_settings(
+                profile,
+                generator,
+                query_index=query_index,
+                workload_seed=int(seed),
+            )
+            if profile_enabled
+            else {}
+        )
         query_anchor_weights = anchor_weights
         query_anchor_probability = anchor_weight_probability
         query_spatial_km = range_spatial_km
@@ -813,6 +938,7 @@ def generate_typed_query_workload(
             range_time_hours=query_time_hours,
             range_footprint_jitter=range_footprint_jitter,
             range_time_domain_mode=time_domain_mode,
+            elongation_allowed=bool(profile_query.get("elongation_allowed", False)),
             metadata=query_metadata,
         )
         if not query_acceptance_enabled:
@@ -846,14 +972,23 @@ def generate_typed_query_workload(
 
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
         stop_reason = "max_queries_reached"
+        calibrated_query_count_mode = profile.query_count_mode == "calibrated_to_coverage"
 
         while len(generated_queries) < query_limit:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
-            if len(generated_queries) >= requested_queries and current_coverage >= coverage_target:
+            if (
+                not calibrated_query_count_mode
+                and len(generated_queries) >= requested_queries
+                and current_coverage >= coverage_target
+            ):
                 stop_reason = "target_coverage_reached"
                 break
-            anchor_mask = (~covered) if current_coverage < coverage_target else None
-            query = build_query(anchor_mask=anchor_mask)
+            anchor_mask = (
+                (~covered)
+                if coverage_mode == "uncovered_anchor_chasing" and current_coverage < coverage_target
+                else None
+            )
+            query = build_query(anchor_mask=anchor_mask, query_index=len(generated_queries))
             if query is None:
                 if range_acceptance.get("exhausted"):
                     stop_reason = "range_acceptance_exhausted"
@@ -881,6 +1016,18 @@ def generate_typed_query_workload(
             if target_reached_query_count is None and new_coverage >= coverage_target:
                 target_reached_query_count = int(len(generated_queries))
                 coverage_at_target_reached = float(new_coverage)
+                if calibrated_query_count_mode:
+                    stop_reason = "target_coverage_reached"
+                    break
+
+            final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
+            if (
+                stop_reason == "max_queries_reached"
+                and len(generated_queries) >= requested_queries
+                and final_coverage >= coverage_target
+            ):
+                stop_reason = "target_coverage_reached"
+                break
 
         final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
         if (
@@ -894,6 +1041,7 @@ def generate_typed_query_workload(
             "workload_profile_id": profile.profile_id,
             "workload_profile_version": int(profile.version),
             "query_count_mode": profile.query_count_mode,
+            "coverage_calibration_mode": coverage_mode,
             "minimum_queries": int(requested_queries),
             "requested_queries": int(requested_queries),
             "max_queries": int(query_limit),
@@ -933,7 +1081,7 @@ def generate_typed_query_workload(
     requested_queries = max(0, int(n_queries))
     stop_reason = "fixed_count_completed"
     while len(generated_queries) < requested_queries:
-        query = build_query()
+        query = build_query(query_index=len(generated_queries))
         if query is None:
             if range_acceptance.get("exhausted"):
                 stop_reason = "range_acceptance_exhausted"
@@ -955,6 +1103,7 @@ def generate_typed_query_workload(
                 "workload_profile_id": profile.profile_id,
                 "workload_profile_version": int(profile.version),
                 "query_count_mode": profile.query_count_mode,
+                "coverage_calibration_mode": coverage_mode,
                 "minimum_queries": requested_queries,
                 "requested_queries": requested_queries,
                 "max_queries": requested_queries,

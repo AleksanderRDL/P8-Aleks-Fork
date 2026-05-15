@@ -528,6 +528,7 @@ def _evaluation_metrics_payload(metrics: MethodEvaluation) -> dict[str, Any]:
         "range_gap_min_coverage": metrics.range_gap_min_coverage,
         "range_turn_coverage": metrics.range_turn_coverage,
         "range_shape_score": metrics.range_shape_score,
+        "range_query_local_interpolation_fidelity": metrics.range_query_local_interpolation_fidelity,
         "range_usefulness_score": metrics.range_usefulness_score,
         "range_usefulness_gap_time_score": metrics.range_usefulness_gap_time_score,
         "range_usefulness_gap_distance_score": metrics.range_usefulness_gap_distance_score,
