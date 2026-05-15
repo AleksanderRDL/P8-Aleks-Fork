@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from data.ais_loader import generate_synthetic_ais_data
+from evaluation.evaluate_methods import score_range_usefulness
 from evaluation.metrics import MethodEvaluation, compute_length_preservation
 from evaluation.query_useful_v1 import query_useful_v1_from_range_audit
 from experiments.experiment_pipeline import (
@@ -17,13 +18,15 @@ from experiments.experiment_pipeline import (
     _prior_feature_sample_sensitivity,
     _prior_sample_gate_failures,
     _score_ablation_sensitivity,
+    _support_overlap_gate,
     _target_diffusion_gate,
     _workload_stability_gate,
 )
 from experiments.range_diagnostics import _range_workload_distribution_comparison
 from models.workload_blind_range_v2 import WorkloadBlindRangeV2Model
-from queries.query_generator import generate_typed_query_workload
+from queries.query_generator import _anchor_weights_for_family, _make_range_query, generate_typed_query_workload
 from queries.query_types import QUERY_TYPE_ID_RANGE
+from queries.workload_profiles import range_workload_profile
 from simplification.learned_segment_budget import (
     learned_segment_budget_diagnostics,
     simplify_with_learned_segment_budget_v1,
@@ -33,10 +36,17 @@ from training.model_features import (
     WORKLOAD_BLIND_RANGE_V2_POINT_DIM,
     build_workload_blind_range_v2_point_features,
 )
-from training.query_prior_fields import build_train_query_prior_fields, sample_query_prior_fields
+from training.query_prior_fields import (
+    build_train_query_prior_fields,
+    query_prior_field_metadata,
+    sample_query_prior_fields,
+    zero_query_prior_field_like,
+)
 from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES, build_query_useful_v1_targets
 from training.predictability_audit import query_prior_predictability_audit
 from training.training_diagnostics import _training_target_diagnostics
+from training.training_epoch import _segment_budget_head_segment_level_loss
+from training.training_validation import _validation_query_useful_selection_score
 
 
 def _boundaries(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
@@ -107,6 +117,71 @@ def test_query_useful_v1_prioritizes_query_local_components() -> None:
     assert strong_score > weak_score
 
 
+def test_query_useful_v1_has_true_query_local_interpolation_component() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [2.0, 0.0, 2.0],
+            [3.0, 0.0, 3.0],
+            [4.0, 0.0, 4.0],
+        ],
+        dtype=torch.float32,
+    )
+    retained = torch.tensor([True, False, False, False, True])
+    query = {
+        "type": "range",
+        "params": {
+            "t_start": 0.5,
+            "t_end": 3.5,
+            "lat_min": -1.0,
+            "lat_max": 1.0,
+            "lon_min": 0.5,
+            "lon_max": 3.5,
+        },
+    }
+
+    audit = score_range_usefulness(
+        points=points,
+        boundaries=[(0, 5)],
+        retained_mask=retained,
+        typed_queries=[query],
+    )
+    useful = query_useful_v1_from_range_audit(audit)
+    components = cast(dict[str, float], useful["query_useful_v1_components"])
+
+    assert audit["range_shape_score"] == 0.0
+    assert audit["range_query_local_interpolation_fidelity"] > 0.99
+    assert components["query_local_interpolation_fidelity"] > 0.99
+    assert useful["query_useful_v1_metric_maturity"] == "bridge_with_true_query_local_interpolation_component"
+
+
+def test_validation_query_useful_penalizes_bad_global_sanity() -> None:
+    cfg = SimpleNamespace(
+        validation_global_sanity_penalty_enabled=True,
+        validation_global_sanity_penalty_weight=0.10,
+        validation_sed_penalty_weight=0.05,
+        validation_endpoint_penalty_weight=0.10,
+        validation_length_preservation_min=0.80,
+    )
+    good = {
+        "avg_length_preserved": 0.90,
+        "avg_sed_ratio_vs_uniform": 1.00,
+        "avg_sed_ratio_vs_uniform_max": 1.50,
+        "endpoint_sanity": 1.00,
+    }
+    bad = {
+        "avg_length_preserved": 0.40,
+        "avg_sed_ratio_vs_uniform": 2.50,
+        "avg_sed_ratio_vs_uniform_max": 1.50,
+        "endpoint_sanity": 0.00,
+    }
+
+    assert _validation_query_useful_selection_score(0.50, bad, cast(Any, cfg)) < (
+        _validation_query_useful_selection_score(0.50, good, cast(Any, cfg)) - 0.10
+    )
+
+
 def test_factorized_targets_and_prior_fields_are_train_query_derived() -> None:
     trajectories = generate_synthetic_ais_data(n_ships=4, n_points_per_ship=32, seed=82)
     points = torch.cat(trajectories, dim=0)
@@ -173,7 +248,7 @@ def test_factorized_replacement_target_is_query_local_and_sparse() -> None:
         typed_queries=[query],
     )
 
-    replacement = targets.head_targets[:, tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("marginal_replacement_gain")]
+    replacement = targets.head_targets[:, tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("replacement_representative_value")]
     final_score = targets.labels[:, QUERY_TYPE_ID_RANGE]
     assert int((replacement > 0.0).sum().item()) == 5
     assert int((final_score > 0.0).sum().item()) == 5
@@ -186,12 +261,12 @@ def test_target_diffusion_gate_blocks_broad_low_budget_labels() -> None:
             "support_fraction_by_threshold_by_head": {
                 "query_hit_probability": {"gt_0.01": 0.70},
                 "conditional_behavior_utility": {"gt_0.01": 0.70},
-                "marginal_replacement_gain": {"gt_0.05": 0.20},
+                "replacement_representative_value": {"gt_0.05": 0.20},
             },
             "topk_label_mass_budget_grid": {
                 "query_hit_probability": {"0.05": 0.08},
                 "conditional_behavior_utility": {"0.05": 0.08},
-                "marginal_replacement_gain": {"0.05": 0.35},
+                "replacement_representative_value": {"0.05": 0.35},
             },
         }
     }
@@ -212,12 +287,12 @@ def test_target_diffusion_gate_accepts_concentrated_factorized_labels() -> None:
             "support_fraction_by_threshold_by_head": {
                 "query_hit_probability": {"gt_0.01": 0.35},
                 "conditional_behavior_utility": {"gt_0.01": 0.20},
-                "marginal_replacement_gain": {"gt_0.05": 0.20},
+                "replacement_representative_value": {"gt_0.05": 0.20},
             },
             "topk_label_mass_budget_grid": {
                 "query_hit_probability": {"0.05": 0.25},
                 "conditional_behavior_utility": {"0.05": 0.35},
-                "marginal_replacement_gain": {"0.05": 0.35},
+                "replacement_representative_value": {"0.05": 0.35},
             },
         }
     }
@@ -304,6 +379,146 @@ def test_query_prior_field_rasterizes_query_boxes_not_only_hit_points() -> None:
     assert float(sampled[0, 0].item()) > 0.0
     assert float(sampled[0, 1].item()) > 0.0
     assert torch.allclose(sampled[1], torch.zeros_like(sampled[1]))
+
+
+def test_zero_prior_field_like_preserves_metadata_and_shape() -> None:
+    points = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
+    query = {
+        "type": "range",
+        "params": {
+            "t_start": -1.0,
+            "t_end": 2.0,
+            "lat_min": -1.0,
+            "lat_max": 2.0,
+            "lon_min": -1.0,
+            "lon_max": 2.0,
+        },
+    }
+    prior = build_train_query_prior_fields(
+        points=points,
+        boundaries=[(0, 2)],
+        typed_queries=[query],
+        workload_profile_id="range_workload_v1",
+        grid_bins=4,
+        time_bins=2,
+        smoothing_passes=0,
+    )
+
+    zeroed = zero_query_prior_field_like(prior)
+
+    assert zeroed["extent"] == prior["extent"]
+    assert zeroed["grid_bins"] == prior["grid_bins"]
+    assert zeroed["time_bins"] == prior["time_bins"]
+    assert zeroed["ablation"] == "zero_query_prior_features"
+    assert query_prior_field_metadata(zeroed)["contains_eval_queries"] is False
+    for name in zeroed["field_names"]:
+        assert zeroed[name].shape == prior[name].shape
+        assert torch.count_nonzero(zeroed[name]).item() == 0
+
+
+def test_no_query_prior_ablation_preserves_train_extent() -> None:
+    train_points = torch.tensor([[0.0, 0.0, 0.0], [1.0, 10.0, 10.0]], dtype=torch.float32)
+    eval_points = torch.tensor([[0.5, 5.0, 5.0], [0.75, 6.0, 6.0]], dtype=torch.float32)
+    query = {
+        "type": "range",
+        "params": {
+            "t_start": -1.0,
+            "t_end": 2.0,
+            "lat_min": -1.0,
+            "lat_max": 11.0,
+            "lon_min": -1.0,
+            "lon_max": 11.0,
+        },
+    }
+    prior = build_train_query_prior_fields(
+        points=train_points,
+        boundaries=[(0, 2)],
+        typed_queries=[query],
+        workload_profile_id="range_workload_v1",
+        grid_bins=4,
+        time_bins=2,
+        smoothing_passes=0,
+    )
+    zeroed = zero_query_prior_field_like(prior)
+
+    with_prior = build_workload_blind_range_v2_point_features(eval_points, prior)
+    no_prior = build_workload_blind_range_v2_point_features(eval_points, zeroed)
+    without_field = build_workload_blind_range_v2_point_features(eval_points, None)
+
+    assert with_prior.shape == no_prior.shape == without_field.shape
+    assert torch.allclose(with_prior[:, :-6], no_prior[:, :-6])
+    assert not torch.allclose(no_prior[:, :-6], without_field[:, :-6])
+    assert torch.count_nonzero(no_prior[:, -6:]).item() == 0
+
+
+def test_support_overlap_gate_passes_same_support_eval_points() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.5, 0.5],
+            [2.0, 1.0, 1.0],
+            [3.0, 0.25, 0.75],
+        ],
+        dtype=torch.float32,
+    )
+    query = {
+        "type": "range",
+        "params": {
+            "t_start": -1.0,
+            "t_end": 4.0,
+            "lat_min": -0.5,
+            "lat_max": 1.5,
+            "lon_min": -0.5,
+            "lon_max": 1.5,
+        },
+    }
+    prior = build_train_query_prior_fields(
+        points=points,
+        boundaries=[(0, 4)],
+        typed_queries=[query],
+        workload_profile_id="range_workload_v1",
+        grid_bins=4,
+        time_bins=2,
+        smoothing_passes=0,
+    )
+
+    gate = _support_overlap_gate(train_points=points, eval_points=points, query_prior_field=prior)
+
+    assert gate["gate_pass"] is True
+    assert gate["failed_checks"] == []
+    assert gate["eval_points_outside_train_prior_extent_fraction"] == 0.0
+    assert gate["sampled_prior_nonzero_fraction"] >= 0.50
+
+
+def test_support_overlap_gate_blocks_out_of_extent_eval_points() -> None:
+    train_points = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
+    eval_points = torch.tensor([[0.0, 10.0, 10.0], [1.0, 11.0, 11.0]], dtype=torch.float32)
+    query = {
+        "type": "range",
+        "params": {
+            "t_start": -1.0,
+            "t_end": 2.0,
+            "lat_min": -0.5,
+            "lat_max": 1.5,
+            "lon_min": -0.5,
+            "lon_max": 1.5,
+        },
+    }
+    prior = build_train_query_prior_fields(
+        points=train_points,
+        boundaries=[(0, 2)],
+        typed_queries=[query],
+        workload_profile_id="range_workload_v1",
+        grid_bins=4,
+        time_bins=2,
+        smoothing_passes=0,
+    )
+
+    gate = _support_overlap_gate(train_points=train_points, eval_points=eval_points, query_prior_field=prior)
+
+    assert gate["gate_pass"] is False
+    assert "eval_points_outside_train_prior_extent_too_high" in gate["failed_checks"]
+    assert "sampled_prior_nonzero_fraction_too_low" in gate["failed_checks"]
 
 
 def test_workload_blind_range_v2_features_and_selector_are_query_free() -> None:
@@ -519,6 +734,34 @@ def test_no_segment_budget_head_ablation_uses_neutral_segment_scores() -> None:
     assert bool(learned_retained[27].item()) is True
     assert bool(ablated_retained[27].item()) is False
     assert not torch.equal(learned_retained, ablated_retained)
+
+
+def test_segment_budget_head_has_segment_level_loss() -> None:
+    head_targets = torch.zeros((1, 8, len(QUERY_USEFUL_V1_HEAD_NAMES)), dtype=torch.float32)
+    head_mask = torch.ones_like(head_targets, dtype=torch.bool)
+    segment_idx = tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("segment_budget_target")
+    head_targets[:, :4, segment_idx] = 1.0
+    aligned = torch.zeros_like(head_targets)
+    reversed_logits = torch.zeros_like(head_targets)
+    aligned[:, :4, segment_idx] = 4.0
+    aligned[:, 4:, segment_idx] = -4.0
+    reversed_logits[:, :4, segment_idx] = -4.0
+    reversed_logits[:, 4:, segment_idx] = 4.0
+
+    aligned_loss = _segment_budget_head_segment_level_loss(
+        head_logits=aligned,
+        head_targets=head_targets,
+        head_mask=head_mask,
+        segment_size=4,
+    )
+    reversed_loss = _segment_budget_head_segment_level_loss(
+        head_logits=reversed_logits,
+        head_targets=head_targets,
+        head_mask=head_mask,
+        segment_size=4,
+    )
+
+    assert float(aligned_loss.item()) < float(reversed_loss.item())
 
 
 def test_factorized_training_diagnostics_do_not_claim_legacy_scalar_target() -> None:
@@ -778,6 +1021,93 @@ def test_predictability_audit_is_diagnostic_only_and_reports_gate_fields() -> No
     assert "lift_at_5_percent" in audit["gate_checks"]
 
 
+def test_route_corridor_family_has_actual_corridor_semantics_or_is_not_final() -> None:
+    profile = range_workload_profile("range_workload_v1")
+    assert profile.final_success_allowed is True
+    assert profile.footprint_families["route_corridor_like"]["elongation_allowed"] is True
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0, 90.0],
+            [1.0, 0.0, 1.0, 1.0, 90.0],
+            [2.0, 0.0, 2.0, 1.0, 90.0],
+        ],
+        dtype=torch.float32,
+    )
+    bounds = {
+        "t_min": 0.0,
+        "t_max": 2.0,
+        "lat_min": -5.0,
+        "lat_max": 5.0,
+        "lon_min": -5.0,
+        "lon_max": 5.0,
+    }
+    query = _make_range_query(
+        points,
+        bounds,
+        torch.Generator().manual_seed(3),
+        range_spatial_km=10.0,
+        range_time_hours=1.0,
+        range_footprint_jitter=0.0,
+        elongation_allowed=True,
+        metadata={"footprint_family": "route_corridor_like"},
+    )
+    params = query["params"]
+    metadata = query["_metadata"]
+    assert metadata["corridor_axis"] == "east_west"
+    assert float(params["lon_max"] - params["lon_min"]) > float(params["lat_max"] - params["lat_min"])
+
+
+def test_port_or_approach_zone_anchor_family_is_distinct_from_density_route() -> None:
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 0.1, 0.0, 1.0, 0.0, 0.0],
+            [1.0, 0.1, 0.1, 4.0, 0.0, 0.0, 0.0, 0.0],
+            [2.0, 0.2, 0.2, 5.0, 0.0, 0.0, 0.0, 0.0],
+            [3.0, 1.0, 1.0, 0.2, 0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    density, _density_prob = _anchor_weights_for_family(points, "density_route")
+    port, _port_prob = _anchor_weights_for_family(points, "port_or_approach_zone")
+
+    assert density is not None
+    assert port is not None
+    assert not torch.allclose(density, port)
+    assert float(port[0].item() + port[-1].item()) > float(density[0].item() + density[-1].item())
+
+
+def test_final_profile_does_not_chase_uncovered_points_unless_declared() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=4, n_points_per_ship=32, seed=91, route_families=1)
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=22,
+        target_coverage=0.30,
+        max_queries=8,
+        workload_profile_id="range_workload_v1",
+        range_max_point_hit_fraction=1.0,
+        range_duplicate_iou_threshold=1.0,
+    )
+    generation = (workload.generation_diagnostics or {})["query_generation"]
+    legacy = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=4,
+        workload_map={"range": 1.0},
+        seed=22,
+        target_coverage=0.30,
+        max_queries=8,
+        workload_profile_id="range_workload_v1",
+        coverage_calibration_mode="uncovered_anchor_chasing",
+        range_max_point_hit_fraction=1.0,
+        range_duplicate_iou_threshold=1.0,
+    )
+    legacy_generation = (legacy.generation_diagnostics or {})["query_generation"]
+
+    assert generation["coverage_calibration_mode"] == "profile_sampled_query_count"
+    assert legacy_generation["coverage_calibration_mode"] == "uncovered_anchor_chasing"
+
+
 def test_workload_stability_gate_rejects_tiny_fixed_count_workloads() -> None:
     config = SimpleNamespace(
         query=SimpleNamespace(target_coverage=None, range_max_coverage_overshoot=None)
@@ -789,6 +1119,7 @@ def test_workload_stability_gate_rejects_tiny_fixed_count_workloads() -> None:
             "query_generation": {
                 "mode": "fixed_count",
                 "workload_profile_id": "range_workload_v1",
+                "coverage_calibration_mode": "profile_sampled_query_count",
                 "coverage_guard_enabled": False,
                 "stop_reason": "fixed_count_completed",
             }
@@ -822,6 +1153,7 @@ def test_workload_stability_gate_accepts_coverage_calibrated_replicates() -> Non
                 "query_generation": {
                     "mode": "target_coverage",
                     "workload_profile_id": "range_workload_v1",
+                    "coverage_calibration_mode": "profile_sampled_query_count",
                     "target_coverage": 0.10,
                     "coverage_guard_enabled": True,
                     "stop_reason": "target_coverage_reached",
@@ -839,6 +1171,37 @@ def test_workload_stability_gate_accepts_coverage_calibrated_replicates() -> Non
     assert gate["gate_pass"] is True
     assert gate["failed_checks"] == []
     assert gate["train_workload_replicate_count"] == 4
+
+
+def test_workload_stability_gate_accepts_exhausted_stop_after_coverage_satisfied() -> None:
+    config = SimpleNamespace(
+        query=SimpleNamespace(target_coverage=0.10, range_max_coverage_overshoot=0.0075)
+    )
+    workload = SimpleNamespace(
+        typed_queries=[{} for _ in range(12)],
+        coverage_fraction=0.105,
+        generation_diagnostics={
+            "query_generation": {
+                "mode": "target_coverage",
+                "workload_profile_id": "range_workload_v1",
+                "coverage_calibration_mode": "profile_sampled_query_count",
+                "target_coverage": 0.10,
+                "coverage_guard_enabled": True,
+                "stop_reason": "range_acceptance_exhausted",
+            }
+        },
+    )
+
+    gate = _workload_stability_gate(
+        config=cast(Any, config),
+        train_label_workloads=[workload, workload, workload, workload],
+        eval_workload=workload,
+        selection_workload=None,
+    )
+
+    assert gate["gate_pass"] is True
+    assert gate["failed_checks"] == []
+    assert gate["workloads"][0]["coverage_target_satisfied"] is True
 
 
 def test_global_sanity_gate_enforces_endpoint_length_and_sed_ratio() -> None:

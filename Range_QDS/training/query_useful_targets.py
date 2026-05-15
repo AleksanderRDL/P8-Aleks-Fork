@@ -20,7 +20,7 @@ QUERY_USEFUL_V1_HEAD_NAMES = (
     "query_hit_probability",
     "conditional_behavior_utility",
     "boundary_event_utility",
-    "marginal_replacement_gain",
+    "replacement_representative_value",
     "segment_budget_target",
 )
 
@@ -146,7 +146,7 @@ def _query_replacement_support(
     boundaries: list[tuple[int, int]],
     keep_fraction: float = 0.50,
 ) -> torch.Tensor:
-    """Return sparse query-local representatives for marginal replacement gain."""
+    """Return sparse query-local representative support for replacement-value labels."""
     support = torch.zeros_like(query_value, dtype=torch.bool)
     ratio = min(1.0, max(0.0, float(keep_fraction)))
     positive = query_value > 0.0
@@ -250,8 +250,11 @@ def build_query_useful_v1_targets(
             "target_family": "QueryUsefulV1Factorized",
             "range_query_count": int(len(range_queries)),
             "segment_size_points": int(segment_size),
+            "segment_budget_target_training": "point_repeated_plus_segment_level_listwise_loss",
+            "segment_budget_segment_level_loss_enabled": True,
             "behavior_change_highpass_quantile": 0.70,
-            "replacement_gain_normalization": "expected_per_query",
+            "replacement_representative_value_normalization": "expected_per_query",
+            "replacement_value_is_true_counterfactual_marginal_gain": False,
             "final_boundary_bonus_uses_squared_event_probability": True,
             "final_label_positive_fraction": float((final_score > 0.0).float().mean().item()),
             "final_label_support_fraction_by_threshold": support_fraction_by_threshold(final_score),

@@ -14,6 +14,7 @@ class RangeTrajectoryAuditSupport:
 
     trajectory_id: int
     start: int
+    end: int
     in_offsets_cpu: torch.Tensor
     turn_weights_cpu: torch.Tensor
     distance_offsets_km_cpu: torch.Tensor

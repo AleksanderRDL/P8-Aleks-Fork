@@ -6,7 +6,7 @@ aggregate: query-local point mass and behavior explanation dominate; global
 geometry is only a light guardrail.
 """
 
-QUERY_USEFUL_V1_SCHEMA_VERSION = 1
+QUERY_USEFUL_V1_SCHEMA_VERSION = 2
 
 QUERY_USEFUL_V1_WEIGHTS: dict[str, float] = {
     "query_point_mass": 0.40,
@@ -21,7 +21,7 @@ QUERY_USEFUL_V1_COMPONENT_WEIGHTS: dict[str, float] = {
     "query_balanced_point_recall": 0.10,
     "query_point_mass_ratio": 0.07,
     "query_point_distribution_stability": 0.05,
-    "query_local_interpolation_score": 0.10,
+    "query_local_interpolation_fidelity": 0.10,
     "query_local_turn_change_coverage": 0.07,
     "query_local_speed_heading_coverage": 0.06,
     "query_local_shape_score": 0.05,
@@ -81,6 +81,7 @@ def query_useful_v1_components_from_range_audit(
     gap_min = min(gap_time, gap_distance)
     turn = _component_value(range_audit, "range_turn_coverage")
     shape = _component_value(range_audit, "range_shape_score")
+    interpolation = _component_value(range_audit, "range_query_local_interpolation_fidelity", shape)
     entry_exit = _component_value(range_audit, "range_entry_exit_f1")
     crossing = _component_value(range_audit, "range_crossing_f1")
     length_score = 1.0 if length_preservation is None else max(0.0, min(1.0, float(length_preservation)))
@@ -91,7 +92,7 @@ def query_useful_v1_components_from_range_audit(
         "query_balanced_point_recall": range_point,
         "query_point_mass_ratio": range_point,
         "query_point_distribution_stability": float(min(range_point, gap_min)),
-        "query_local_interpolation_score": shape,
+        "query_local_interpolation_fidelity": interpolation,
         "query_local_turn_change_coverage": turn,
         "query_local_speed_heading_coverage": float(0.5 * turn + 0.5 * temporal),
         "query_local_shape_score": shape,
@@ -133,6 +134,8 @@ def query_useful_v1_from_range_audit(
     return {
         "query_useful_v1_schema_version": int(QUERY_USEFUL_V1_SCHEMA_VERSION),
         "query_useful_v1_score": query_useful_v1_score_from_components(components),
+        "query_useful_v1_metric_maturity": "bridge_with_true_query_local_interpolation_component",
+        "query_useful_v1_query_local_component_source": "range_query_local_interpolation_fidelity",
         "query_useful_v1_components": components,
         "query_useful_v1_component_weights": dict(QUERY_USEFUL_V1_COMPONENT_WEIGHTS),
         "query_useful_v1_group_weights": dict(QUERY_USEFUL_V1_WEIGHTS),

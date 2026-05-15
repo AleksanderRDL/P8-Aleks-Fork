@@ -132,7 +132,7 @@ class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Modu
             behavior = torch.full_like(behavior, 0.5)
         if "boundary_event_utility" in disabled:
             boundary = torch.zeros_like(boundary)
-        if "marginal_replacement_gain" in disabled:
+        if "replacement_representative_value" in disabled or "marginal_replacement_gain" in disabled:
             replacement = torch.full_like(replacement, 0.5)
         interpretable_score = q_hit * replacement * (0.5 + behavior) + 0.25 * boundary
         calibration = self.calibration_head(calibration_logits).squeeze(-1)

@@ -180,6 +180,7 @@ def main() -> None:
         range_max_coverage_overshoot=args.range_max_coverage_overshoot,
         range_train_workload_replicates=args.range_train_workload_replicates,
         workload_profile_id=args.workload_profile_id,
+        coverage_calibration_mode=args.coverage_calibration_mode,
         epochs=args.epochs,
         lr=args.lr,
         embed_dim=args.embed_dim,
@@ -225,6 +226,11 @@ def main() -> None:
         checkpoint_full_score_every=args.checkpoint_full_score_every,
         checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
         checkpoint_score_variant=args.checkpoint_score_variant,
+        validation_global_sanity_penalty_enabled=args.validation_global_sanity_penalty,
+        validation_global_sanity_penalty_weight=args.validation_global_sanity_penalty_weight,
+        validation_sed_penalty_weight=args.validation_sed_penalty_weight,
+        validation_endpoint_penalty_weight=args.validation_endpoint_penalty_weight,
+        validation_length_preservation_min=args.validation_length_preservation_min,
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         mlqds_hybrid_mode=args.mlqds_hybrid_mode,
@@ -301,6 +307,7 @@ def main() -> None:
         f"full_score_every={args.checkpoint_full_score_every}  "
         f"candidate_pool={args.checkpoint_candidate_pool_size}  "
         f"score_variant={args.checkpoint_score_variant}  "
+        f"validation_global_sanity_penalty={args.validation_global_sanity_penalty}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
         f"range_spatial_km={args.range_spatial_km}  range_time_hours={args.range_time_hours}  "
         f"range_footprint_jitter={args.range_footprint_jitter}  "
@@ -318,6 +325,7 @@ def main() -> None:
         f"range_max_coverage_overshoot={args.range_max_coverage_overshoot}  "
         f"range_train_workload_replicates={args.range_train_workload_replicates}  "
         f"workload_profile_id={args.workload_profile_id}  "
+        f"coverage_calibration_mode={args.coverage_calibration_mode}  "
         f"historical_prior_k={args.historical_prior_k}  "
         f"historical_prior_clock_weight={args.historical_prior_clock_weight}  "
         f"historical_prior_mmsi_weight={args.historical_prior_mmsi_weight}  "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import torch
@@ -18,6 +19,24 @@ QUERY_PRIOR_FIELD_NAMES = (
     "behavior_utility_prior",
     "route_density_prior",
 )
+
+
+def zero_query_prior_field_like(prior_field: dict[str, Any]) -> dict[str, Any]:
+    """Return a zero-valued prior field that preserves train extent and provenance."""
+    zeroed = copy.deepcopy(prior_field)
+    for name in QUERY_PRIOR_FIELD_NAMES:
+        value = zeroed.get(name)
+        if isinstance(value, torch.Tensor):
+            zeroed[name] = torch.zeros_like(value)
+    diagnostics = dict(zeroed.get("diagnostics") or {})
+    diagnostics["ablation"] = "zero_query_prior_features"
+    diagnostics["zeroed_prior_features_preserve_train_extent"] = True
+    zeroed["diagnostics"] = diagnostics
+    zeroed["ablation"] = "zero_query_prior_features"
+    zeroed["built_from_split"] = prior_field.get("built_from_split", "train_only")
+    zeroed["contains_eval_queries"] = False
+    zeroed["contains_validation_queries"] = False
+    return zeroed
 
 
 def _bounds(points: torch.Tensor, typed_queries: list[dict[str, Any]] | None = None) -> dict[str, float]:
@@ -408,5 +427,6 @@ def query_prior_field_metadata(prior_field: dict[str, Any] | None) -> dict[str, 
         "smoothing": prior_field.get("smoothing"),
         "contains_eval_queries": bool(prior_field.get("contains_eval_queries", True)),
         "contains_validation_queries": bool(prior_field.get("contains_validation_queries", True)),
+        "ablation": prior_field.get("ablation"),
         "diagnostics": dict(prior_field.get("diagnostics") or {}),
     }

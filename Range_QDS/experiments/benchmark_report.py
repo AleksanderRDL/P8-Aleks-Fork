@@ -25,6 +25,7 @@ RANGE_COMPONENT_KEYS = (
     "range_gap_coverage",
     "range_turn_coverage",
     "range_shape_score",
+    "range_query_local_interpolation_fidelity",
 )
 RANGE_USEFULNESS_GAP_VARIANT_KEYS = (
     ("gap_time", "range_usefulness_gap_time_score"),
@@ -566,6 +567,7 @@ def query_driven_final_grid_summary(
     grid_complete = len(cells) == required_cell_count and not missing_cells and not missing_coverages
     required_single_run_gate_names = (
         "workload_stability_gate_pass",
+        "support_overlap_gate_pass",
         "predictability_gate_pass",
         "target_diffusion_gate_pass",
         "workload_signature_gate_pass",
@@ -831,6 +833,7 @@ def _query_floor_fields(prefix: str, generation: dict[str, Any]) -> dict[str, An
     return {
         f"{prefix}_query_generation_mode": generation.get("mode"),
         f"{prefix}_query_generation_stop_reason": generation.get("stop_reason"),
+        f"{prefix}_query_coverage_calibration_mode": generation.get("coverage_calibration_mode"),
         f"{prefix}_query_target_coverage": generation.get("target_coverage"),
         f"{prefix}_query_final_coverage": generation.get("final_coverage"),
         f"{prefix}_query_target_reached": target_reached,
@@ -940,6 +943,7 @@ def _row_from_run(
         (prior_sensitivity.get("without_query_prior_features") or {}).get("sampled_prior_features") or {}
     )
     workload_stability_gate = (run_json or {}).get("workload_stability_gate") or {}
+    support_overlap_gate = (run_json or {}).get("support_overlap_gate") or {}
     global_sanity_gate = (run_json or {}).get("global_sanity_gate") or {}
     target_diffusion_gate = (run_json or {}).get("target_diffusion_gate") or {}
     workload_signature_gate = ((run_json or {}).get("workload_distribution_comparison") or {}).get(
@@ -1048,6 +1052,20 @@ def _row_from_run(
         "workload_stability_train_replicates": workload_stability_gate.get("train_workload_replicate_count"),
         "workload_stability_configured_target_coverage": workload_stability_gate.get(
             "configured_target_coverage"
+        ),
+        "support_overlap_gate_pass": support_overlap_gate.get("gate_pass"),
+        "support_overlap_failed_checks": support_overlap_gate.get("failed_checks"),
+        "support_eval_points_outside_train_prior_extent_fraction": support_overlap_gate.get(
+            "eval_points_outside_train_prior_extent_fraction"
+        ),
+        "support_sampled_prior_nonzero_fraction": support_overlap_gate.get("sampled_prior_nonzero_fraction"),
+        "support_primary_sampled_prior_nonzero_fraction": support_overlap_gate.get(
+            "primary_sampled_prior_nonzero_fraction"
+        ),
+        "support_route_density_overlap": support_overlap_gate.get("route_density_overlap"),
+        "support_query_prior_support_overlap": support_overlap_gate.get("query_prior_support_overlap"),
+        "support_train_eval_spatial_extent_intersection_fraction": support_overlap_gate.get(
+            "train_eval_spatial_extent_intersection_fraction"
         ),
         "global_sanity_gate_pass": global_sanity_gate.get("gate_pass"),
         "global_sanity_failed_checks": global_sanity_gate.get("failed_checks"),
@@ -1363,6 +1381,7 @@ def _row_from_run(
         "range_train_anchor_modes": query_config.get("range_train_anchor_modes"),
         "range_train_footprints": query_config.get("range_train_footprints"),
         "range_max_coverage_overshoot": query_config.get("range_max_coverage_overshoot"),
+        "coverage_calibration_mode": query_config.get("coverage_calibration_mode"),
         **_workload_generation_fields(run_json, "train"),
         **_workload_generation_fields(run_json, "eval"),
         **_workload_generation_fields(run_json, "selection"),
@@ -1527,6 +1546,7 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "target_diffusion_gate_pass",
         "workload_signature_gate_pass",
         "workload_stability_gate_pass",
+        "support_overlap_gate_pass",
         "learning_causality_gate_pass",
         "global_sanity_gate_pass",
         "legacy_range_useful_diagnostic_only",

@@ -69,7 +69,12 @@ from training.train_model import train_model
 from training.checkpoints import ModelArtifacts, save_checkpoint
 from training.model_features import is_workload_blind_model_type, model_type_metadata
 from training.predictability_audit import query_prior_predictability_audit, query_prior_predictability_scores
-from training.query_prior_fields import QUERY_PRIOR_FIELD_NAMES, sample_query_prior_fields
+from training.query_prior_fields import (
+    QUERY_PRIOR_FIELD_NAMES,
+    query_prior_field_metadata,
+    sample_query_prior_fields,
+    zero_query_prior_field_like,
+)
 from training.training_outputs import TrainingOutputs
 from training.teacher_distillation import (
     build_range_teacher_config,
@@ -459,6 +464,138 @@ def _prior_sample_gate_failures(prior_sensitivity_diagnostics: dict[str, Any]) -
     return failures
 
 
+def _points_outside_prior_extent_fraction(points: torch.Tensor, extent: dict[str, Any] | None) -> float | None:
+    """Return the fraction of points outside a train-prior spatial extent."""
+    if not isinstance(extent, dict) or int(points.shape[0]) <= 0:
+        return None
+    lat = points[:, 1].detach().cpu().float()
+    lon = points[:, 2].detach().cpu().float()
+    outside = (
+        (lat < float(extent.get("lat_min", -float("inf"))))
+        | (lat > float(extent.get("lat_max", float("inf"))))
+        | (lon < float(extent.get("lon_min", -float("inf"))))
+        | (lon > float(extent.get("lon_max", float("inf"))))
+    )
+    return float(outside.float().mean().item())
+
+
+def _spatial_extent_intersection_fraction(train_points: torch.Tensor, eval_points: torch.Tensor) -> float | None:
+    """Return train/eval lat-lon extent intersection as a fraction of eval extent area."""
+    if int(train_points.shape[0]) <= 0 or int(eval_points.shape[0]) <= 0:
+        return None
+    train_lat_min = float(train_points[:, 1].min().item())
+    train_lat_max = float(train_points[:, 1].max().item())
+    train_lon_min = float(train_points[:, 2].min().item())
+    train_lon_max = float(train_points[:, 2].max().item())
+    eval_lat_min = float(eval_points[:, 1].min().item())
+    eval_lat_max = float(eval_points[:, 1].max().item())
+    eval_lon_min = float(eval_points[:, 2].min().item())
+    eval_lon_max = float(eval_points[:, 2].max().item())
+    eval_lat_span = eval_lat_max - eval_lat_min
+    eval_lon_span = eval_lon_max - eval_lon_min
+    if eval_lat_span <= 1e-12 or eval_lon_span <= 1e-12:
+        inside = (
+            eval_lat_min >= train_lat_min - 1e-12
+            and eval_lat_max <= train_lat_max + 1e-12
+            and eval_lon_min >= train_lon_min - 1e-12
+            and eval_lon_max <= train_lon_max + 1e-12
+        )
+        return 1.0 if inside else 0.0
+    lat_overlap = max(0.0, min(train_lat_max, eval_lat_max) - max(train_lat_min, eval_lat_min))
+    lon_overlap = max(0.0, min(train_lon_max, eval_lon_max) - max(train_lon_min, eval_lon_min))
+    eval_area = max(1e-12, eval_lat_span * eval_lon_span)
+    return float(max(0.0, min(1.0, (lat_overlap * lon_overlap) / eval_area)))
+
+
+def _support_overlap_gate(
+    *,
+    train_points: torch.Tensor,
+    eval_points: torch.Tensor,
+    query_prior_field: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return train/eval support-overlap evidence for final query-driven claims."""
+    thresholds = {
+        "eval_points_outside_train_prior_extent_fraction_max": 0.10,
+        "sampled_prior_nonzero_fraction_min": 0.50,
+        "primary_sampled_prior_nonzero_fraction_min": 0.30,
+        "route_density_overlap_min": 0.25,
+        "query_prior_support_overlap_min": 0.25,
+    }
+    if query_prior_field is None:
+        return {
+            "schema_version": 1,
+            "gate_pass": False,
+            "failed_checks": ["query_prior_field_missing"],
+            **thresholds,
+            "eval_points_outside_train_prior_extent_fraction": None,
+            "sampled_prior_nonzero_fraction": 0.0,
+            "primary_sampled_prior_nonzero_fraction": 0.0,
+            "route_density_overlap": 0.0,
+            "query_prior_support_overlap": 0.0,
+            "train_eval_spatial_extent_intersection_fraction": _spatial_extent_intersection_fraction(
+                train_points,
+                eval_points,
+            ),
+        }
+    sampled = sample_query_prior_fields(eval_points, query_prior_field).detach().cpu().float()
+    if int(sampled.numel()) == 0:
+        sampled_any = torch.zeros((int(eval_points.shape[0]),), dtype=torch.bool)
+        primary = sampled_any
+        route = sampled_any
+        query_support = sampled_any
+    else:
+        sampled_any = (sampled.abs() > 1e-12).any(dim=1)
+        feature_names: tuple[str, ...] = tuple(QUERY_PRIOR_FIELD_NAMES)
+
+        def col(name: str) -> torch.Tensor:
+            try:
+                idx = feature_names.index(name)
+            except ValueError:
+                return torch.zeros((int(sampled.shape[0]),), dtype=torch.bool)
+            if idx >= int(sampled.shape[1]):
+                return torch.zeros((int(sampled.shape[0]),), dtype=torch.bool)
+            return sampled[:, idx].abs() > 1e-12
+
+        primary = col("spatial_query_hit_probability")
+        spatiotemporal = col("spatiotemporal_query_hit_probability")
+        route = col("route_density_prior")
+        query_support = primary | spatiotemporal
+    point_count = max(1, int(eval_points.shape[0]))
+    outside = _points_outside_prior_extent_fraction(eval_points, query_prior_field.get("extent"))
+    sampled_fraction = float(sampled_any.float().sum().item() / point_count)
+    primary_fraction = float(primary.float().sum().item() / point_count)
+    route_fraction = float(route.float().sum().item() / point_count)
+    query_support_fraction = float(query_support.float().sum().item() / point_count)
+    failed_checks: list[str] = []
+    if outside is None:
+        failed_checks.append("train_prior_extent_missing")
+    elif outside > thresholds["eval_points_outside_train_prior_extent_fraction_max"] + 1e-12:
+        failed_checks.append("eval_points_outside_train_prior_extent_too_high")
+    if sampled_fraction + 1e-12 < thresholds["sampled_prior_nonzero_fraction_min"]:
+        failed_checks.append("sampled_prior_nonzero_fraction_too_low")
+    if primary_fraction + 1e-12 < thresholds["primary_sampled_prior_nonzero_fraction_min"]:
+        failed_checks.append("primary_sampled_prior_nonzero_fraction_too_low")
+    if route_fraction + 1e-12 < thresholds["route_density_overlap_min"]:
+        failed_checks.append("route_density_overlap_too_low")
+    if query_support_fraction + 1e-12 < thresholds["query_prior_support_overlap_min"]:
+        failed_checks.append("query_prior_support_overlap_too_low")
+    return {
+        "schema_version": 1,
+        "gate_pass": not failed_checks,
+        "failed_checks": failed_checks,
+        **thresholds,
+        "eval_points_outside_train_prior_extent_fraction": outside,
+        "sampled_prior_nonzero_fraction": sampled_fraction,
+        "primary_sampled_prior_nonzero_fraction": primary_fraction,
+        "route_density_overlap": route_fraction,
+        "query_prior_support_overlap": query_support_fraction,
+        "train_eval_spatial_extent_intersection_fraction": _spatial_extent_intersection_fraction(
+            train_points,
+            eval_points,
+        ),
+    }
+
+
 def _reset_module_parameters(module: torch.nn.Module, seed: int) -> torch.nn.Module:
     """Return a deepcopy with reset trainable parameters for untrained-model ablations."""
     clone = copy.deepcopy(module)
@@ -589,6 +726,7 @@ def _workload_stability_gate(
         query_count = len(getattr(workload, "typed_queries", []) or [])
         target = _normalize_fraction_for_gate(generation.get("target_coverage"))
         final_coverage = _normalize_fraction_for_gate(getattr(workload, "coverage_fraction", None))
+        coverage_mode = str(generation.get("coverage_calibration_mode", ""))
         coverage_guard_enabled = bool(generation.get("coverage_guard_enabled", False))
         stop_reason = str(generation.get("stop_reason", ""))
         row_failed: list[str] = []
@@ -596,12 +734,13 @@ def _workload_stability_gate(
             row_failed.append("wrong_workload_profile")
         if mode != "target_coverage":
             row_failed.append("not_target_coverage_generation")
+        if coverage_mode != "profile_sampled_query_count":
+            row_failed.append("coverage_calibration_not_profile_sampled")
         if query_count < min_queries_per_workload:
             row_failed.append("too_few_queries")
         if not coverage_guard_enabled:
             row_failed.append("coverage_guard_disabled")
-        if stop_reason != "target_coverage_reached":
-            row_failed.append("target_coverage_not_reached")
+        coverage_target_satisfied = False
         if configured_target is not None and target is not None and abs(target - configured_target) > 1e-9:
             row_failed.append("target_coverage_mismatch")
         if target is not None and final_coverage is not None:
@@ -609,19 +748,30 @@ def _workload_stability_gate(
                 row_failed.append("coverage_below_target")
             if overshoot is not None and final_coverage > min(1.0, target + overshoot) + coverage_tolerance:
                 row_failed.append("coverage_above_guard")
+            coverage_target_satisfied = (
+                final_coverage + coverage_tolerance >= target
+                and (
+                    overshoot is None
+                    or final_coverage <= min(1.0, target + overshoot) + coverage_tolerance
+                )
+            )
         else:
             row_failed.append("missing_coverage_fields")
+        if stop_reason != "target_coverage_reached" and not coverage_target_satisfied:
+            row_failed.append("target_coverage_not_reached")
         failed_checks.extend(f"{label}:{check}" for check in row_failed)
         workload_rows.append(
             {
                 "label": label,
                 "profile_id": profile_id,
                 "mode": mode,
+                "coverage_calibration_mode": coverage_mode,
                 "query_count": int(query_count),
                 "target_coverage": target,
                 "final_coverage": final_coverage,
                 "coverage_guard_enabled": coverage_guard_enabled,
                 "stop_reason": stop_reason,
+                "coverage_target_satisfied": bool(coverage_target_satisfied),
                 "failed_checks": row_failed,
             }
         )
@@ -732,7 +882,7 @@ def _target_diffusion_gate(target_diagnostics: dict[str, Any]) -> dict[str, Any]
     head_support_threshold_keys = {
         "boundary_event_utility": "gt_0.05",
         "conditional_behavior_utility": "gt_0.01",
-        "marginal_replacement_gain": "gt_0.05",
+        "replacement_representative_value": "gt_0.05",
     }
     blocking_heads = frozenset(head_support_threshold_keys)
     low_budget_key = "0.05"
@@ -1730,10 +1880,11 @@ def run_experiment_pipeline(
                     except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
                         causal_ablation_freeze_failures["MLQDS_shuffled_prior_fields"] = str(exc)
                     try:
+                        zero_prior_field = zero_query_prior_field_like(query_prior_field)
                         zero_prior_feature_sensitivity = _prior_feature_sample_sensitivity(
                             points=test_points,
                             primary_prior_field=query_prior_field,
-                            ablation_prior_field=None,
+                            ablation_prior_field=zero_prior_field,
                         )
                         zero_prior_trained = TrainingOutputs(
                             model=trained.model,
@@ -1748,9 +1899,9 @@ def run_experiment_pipeline(
                             target_diagnostics=trained.target_diagnostics,
                             fit_diagnostics=trained.fit_diagnostics,
                             feature_context={
-                                key: value
-                                for key, value in trained.feature_context.items()
-                                if key not in {"query_prior_field", "query_prior_field_metadata"}
+                                **trained.feature_context,
+                                "query_prior_field": zero_prior_field,
+                                "query_prior_field_metadata": query_prior_field_metadata(zero_prior_field),
                             },
                         )
                         zero_prior_method = MLQDSMethod(
@@ -2100,6 +2251,12 @@ def run_experiment_pipeline(
         selection_workload=selection_workload,
     )
     workload_stability_gate_pass = bool(workload_stability_gate.get("gate_pass", False))
+    support_overlap_gate = _support_overlap_gate(
+        train_points=train_points,
+        eval_points=test_points,
+        query_prior_field=trained.feature_context.get("query_prior_field"),
+    )
+    support_overlap_gate_pass = bool(support_overlap_gate.get("gate_pass", False))
     target_diffusion_gate = _target_diffusion_gate(trained.target_diagnostics)
     target_diffusion_gate_pass = bool(target_diffusion_gate.get("gate_pass", False))
     final_candidate = (
@@ -2230,6 +2387,7 @@ def run_experiment_pipeline(
         "learning_causality_ablation_status": ablation_status,
         "predictability_gate_pass": predictability_gate_pass,
         "workload_signature_gate_pass": signature_gate_pass,
+        "support_overlap_gate_pass": support_overlap_gate_pass,
     }
     global_sanity_gate = _global_sanity_gate(
         primary=matched["MLQDS"],
@@ -2241,6 +2399,8 @@ def run_experiment_pipeline(
     if final_candidate:
         if not workload_stability_gate_pass:
             blocking_gates.append("workload_stability_gate")
+        if not support_overlap_gate_pass:
+            blocking_gates.append("support_overlap_gate")
         if not predictability_gate_pass:
             blocking_gates.append("predictability_gate")
         if not target_diffusion_gate_pass:
@@ -2258,6 +2418,7 @@ def run_experiment_pipeline(
             "final_success_allowed": not blocking_gates,
             "blocking_gates": blocking_gates,
             "workload_stability_gate_pass": workload_stability_gate_pass,
+            "support_overlap_gate_pass": support_overlap_gate_pass,
             "predictability_gate_pass": predictability_gate_pass,
             "target_diffusion_gate_pass": target_diffusion_gate_pass,
             "workload_signature_gate_pass": signature_gate_pass,
@@ -2294,6 +2455,7 @@ def run_experiment_pipeline(
             "workload_blind_protocol_available": True,
             "predictability_audit_available": bool(predictability_audit.get("available", False)),
             "workload_stability_gate_available": bool(workload_stability_gate),
+            "support_overlap_gate_available": bool(support_overlap_gate),
             "global_sanity_gate_available": bool(global_sanity_gate),
             "target_diffusion_gate_available": bool(target_diffusion_gate),
             "workload_signature_gate_available": bool(
@@ -2302,6 +2464,7 @@ def run_experiment_pipeline(
         },
         "legacy_range_useful_summary": legacy_range_useful_summary,
         "learning_causality_summary": learning_causality_summary,
+        "support_overlap_gate": support_overlap_gate,
         "global_sanity_gate": global_sanity_gate,
         "target_diffusion_gate": target_diffusion_gate,
         "workload": single_workload_type(eval_workload_map),

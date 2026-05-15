@@ -13,7 +13,7 @@ from experiments.experiment_config import ExperimentConfig
 from queries.query_generator import generate_typed_query_workload
 from queries.workload import TypedQueryWorkload
 
-WORKLOAD_CACHE_SCHEMA_VERSION = 1
+WORKLOAD_CACHE_SCHEMA_VERSION = 2
 
 
 def coverage_name(workload: TypedQueryWorkload) -> str:
@@ -97,6 +97,7 @@ def _workload_cache_payload(
         "range_acceptance_max_attempts": query_config.range_acceptance_max_attempts,
         "range_max_coverage_overshoot": query_config.range_max_coverage_overshoot,
         "workload_profile_id": query_config.workload_profile_id,
+        "coverage_calibration_mode": query_config.coverage_calibration_mode,
     }
 
 
@@ -195,6 +196,7 @@ def generate_typed_query_workload_for_config(
         range_acceptance_max_attempts=query_config.range_acceptance_max_attempts,
         range_max_coverage_overshoot=query_config.range_max_coverage_overshoot,
         workload_profile_id=query_config.workload_profile_id,
+        coverage_calibration_mode=query_config.coverage_calibration_mode,
     )
     if cache_path is not None and cache_key is not None:
         try:

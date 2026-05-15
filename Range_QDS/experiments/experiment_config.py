@@ -75,6 +75,7 @@ class QueryConfig:
     range_max_coverage_overshoot: float | None = None
     range_train_workload_replicates: int = 1
     workload_profile_id: str | None = None
+    coverage_calibration_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See experiments/README.md for details."""
@@ -151,6 +152,11 @@ class ModelConfig:
     checkpoint_full_score_every: int = 1
     checkpoint_candidate_pool_size: int = 1
     checkpoint_score_variant: str = "range_usefulness"
+    validation_global_sanity_penalty_enabled: bool = True
+    validation_global_sanity_penalty_weight: float = 0.10
+    validation_sed_penalty_weight: float = 0.05
+    validation_endpoint_penalty_weight: float = 0.10
+    validation_length_preservation_min: float = 0.80
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
     mlqds_hybrid_mode: str = "fill"
@@ -291,6 +297,7 @@ def build_experiment_config(
     range_max_coverage_overshoot: float | None = None,
     range_train_workload_replicates: int = 1,
     workload_profile_id: str | None = None,
+    coverage_calibration_mode: str | None = None,
     epochs: int = 6,
     lr: float = 5e-4,
     embed_dim: int = 64,
@@ -338,6 +345,11 @@ def build_experiment_config(
     checkpoint_full_score_every: int | None = None,
     checkpoint_candidate_pool_size: int = 1,
     checkpoint_score_variant: str | None = None,
+    validation_global_sanity_penalty_enabled: bool = True,
+    validation_global_sanity_penalty_weight: float = 0.10,
+    validation_sed_penalty_weight: float = 0.05,
+    validation_endpoint_penalty_weight: float = 0.10,
+    validation_length_preservation_min: float = 0.80,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
     mlqds_hybrid_mode: str = "fill",
@@ -423,6 +435,7 @@ def build_experiment_config(
             range_max_coverage_overshoot=range_max_coverage_overshoot,
             range_train_workload_replicates=range_train_workload_replicates,
             workload_profile_id=workload_profile_id,
+            coverage_calibration_mode=coverage_calibration_mode,
             workload=workload,
         ),
         model=ModelConfig(
@@ -463,6 +476,11 @@ def build_experiment_config(
             checkpoint_full_score_every=1 if checkpoint_full_score_every is None else checkpoint_full_score_every,
             checkpoint_candidate_pool_size=checkpoint_candidate_pool_size,
             checkpoint_score_variant=checkpoint_score_variant or "range_usefulness",
+            validation_global_sanity_penalty_enabled=validation_global_sanity_penalty_enabled,
+            validation_global_sanity_penalty_weight=validation_global_sanity_penalty_weight,
+            validation_sed_penalty_weight=validation_sed_penalty_weight,
+            validation_endpoint_penalty_weight=validation_endpoint_penalty_weight,
+            validation_length_preservation_min=validation_length_preservation_min,
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             mlqds_hybrid_mode=mlqds_hybrid_mode,

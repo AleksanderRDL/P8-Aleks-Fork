@@ -792,3 +792,57 @@ Smoke result:
 Current decision:
 - Keep the selector fix. It corrects a real implementation bug without giving the selector extra future-query information.
 - It does not solve global sanity in current strict probes. Length preservation remains a blocker.
+
+## Checkpoint 18 - Support-valid strict single-cell correction
+
+Status: implemented checkpoint scope; strict support-valid debug cell remains blocked
+
+Scope:
+- Fix no-prior ablation confounding by preserving the train prior extent and metadata while zeroing query-prior channels.
+- Add a first-class train/eval support-overlap gate and block final claims on it.
+- Penalize validation checkpoint selection for bad global sanity instead of letting validation `QueryUsefulV1` assume optimistic geometry.
+- Tighten `QueryUsefulV1` with one true query-local interpolation-fidelity component.
+- Clean misleading workload-profile semantics and make final workload coverage calibration profile-sampled instead of uncovered-anchor chasing.
+- Add segment-level/listwise training pressure for the segment-budget head.
+- Run one strict support-valid shared-route debug cell before any full-grid work.
+
+Changes:
+- Added `zero_query_prior_field_like`, and the no-query-prior ablation now uses a zeroed train prior field instead of removing the field entirely.
+- Added `support_overlap_gate` with extent, sampled-prior, route-density, query-prior-support, and train/eval spatial-intersection checks. Final-claim and benchmark reporting now include the gate.
+- Validation `query_useful_v1` scoring now includes geometry sanity and returns a penalized selection score when length, SED, or endpoint sanity are bad.
+- Added `range_query_local_interpolation_fidelity`, based on reconstruction of query-local removed points from retained trajectory anchors. `QueryUsefulV1` schema is now version 2 and records `query_useful_v1_metric_maturity=bridge_with_true_query_local_interpolation_component`.
+- Added `coverage_calibration_mode`. `range_workload_v1` defaults to `profile_sampled_query_count`; legacy generation remains explicitly marked as `uncovered_anchor_chasing`.
+- Implemented actual corridor-like query boxes and distinct `port_or_approach_zone` anchor weighting.
+- Renamed the misleading `marginal_replacement_gain` head to `replacement_representative_value` because it is not true counterfactual marginal gain.
+- Added segment-pooled BCE and pairwise segment-rank loss for the segment-budget head. Training diagnostics now report segment-head tau and top-k target-mass recall.
+
+Strict support-valid shared-route probe:
+- Command:
+  `/home/aleks_dev/dev_projects/P8/.venv/bin/python -m experiments.run_ais_experiment --results_dir artifacts/results/query_driven_v2_checkpoint18_strict_support_probe --n_ships 8 --n_points 128 --synthetic_route_families 1 --seed 1818 --n_queries 48 --query_coverage 0.10 --max_queries 512 --range_max_coverage_overshoot 0.0075 --range_train_workload_replicates 4 --workload_profile_id range_workload_v1 --coverage_calibration_mode profile_sampled_query_count --model_type workload_blind_range_v2 --range_training_target_mode query_useful_v1_factorized --selector_type learned_segment_budget_v1 --checkpoint_score_variant query_useful_v1 --checkpoint_selection_metric uniform_gap --validation_score_every 1 --checkpoint_full_score_every 1 --epochs 3 --embed_dim 32 --num_heads 2 --num_layers 1 --train_batch_size 8 --inference_batch_size 8 --compression_ratio 0.05 --mlqds_temporal_fraction 0.0 --mlqds_hybrid_mode fill --mlqds_score_mode rank_confidence --range_acceptance_max_attempts 6000 --final_metrics_mode diagnostic`
+- Artifact:
+  `artifacts/results/query_driven_v2_checkpoint18_strict_support_probe/example_run.json`.
+- Support overlap passes: outside train-prior extent `0.0000`, sampled prior nonzero `0.9922`, primary sampled prior nonzero `0.6914`, route-density overlap `0.9492`, query-prior support overlap `0.6914`, spatial extent intersection `1.0000`.
+- Workload stability passes under strict settings: target coverage `0.10`, overshoot `0.0075`, four train workload replicates, profile-sampled coverage calibration. Some workloads stop by acceptance or guard exhaustion, but their final coverage satisfies the target.
+- Target diffusion passes: final label support above `0.01` is `0.0109`.
+- `QueryUsefulV1`: MLQDS `0.2394`, uniform `0.2430`, Douglas-Peucker `0.3113`. MLQDS loses to both baselines.
+- `RangePointF1`: MLQDS `0.2589`, uniform `0.2758`, Douglas-Peucker `0.3458`.
+- `RangeUseful`: MLQDS `0.2011`, uniform `0.1980`, Douglas-Peucker `0.2536`.
+- Global sanity still fails length preservation: MLQDS `0.5370` versus required `0.80`; uniform is `0.5898`, Douglas-Peucker is `0.7000`. Endpoint sanity passes and SED ratio versus uniform is within limit.
+- Predictability fails: Spearman `-0.3708`, lift@1/2/5% all `0.0`, PR-AUC lift `1.0641`.
+- Learning causality fails every material-delta check. Shuffled scores and prior-field-only controls beat trained MLQDS; shuffled/zeroed priors and disabled heads do not materially change retained masks or score.
+- Segment-head diagnostics are weak: segment-head Kendall tau `0.0950`, top-5% segment target-mass recall `0.1070`.
+
+Focused tests run:
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/python -m pytest tests/test_query_driven_rework.py tests/test_benchmark_runner.py::test_query_driven_final_grid_summary_accepts_complete_passing_grid tests/test_benchmark_runner.py::test_benchmark_row_records_effective_child_torch_runtime`: passed, 40 tests.
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/python -m pytest tests/test_query_driven_rework.py::test_query_useful_v1_has_true_query_local_interpolation_component tests/test_training_does_not_collapse.py::test_validation_range_usefulness_matches_final_audit tests/test_training_does_not_collapse.py::test_validation_query_score_matches_final_mlqds_scoring`: passed, 9 tests.
+
+Full verification:
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/python -m pytest tests`: passed, 348 tests, 1 PyTorch nested-tensor warning.
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/python -m ruff check data evaluation experiments models queries simplification training scripts tests`: passed.
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/python -m pyright data evaluation experiments models queries simplification training tests`: passed.
+- `git diff --check`: passed.
+
+Current decision:
+- Keep the checkpoint 18 fixes. They remove real confounds and make the artifact harder to misread.
+- Do not claim final success. The first strict support-valid cell is now a cleaner failure: support exists and strict workload generation is acceptable, but learned transfer still is not convincing.
+- Next work should target actual learned signal and global geometry preservation, not a full 4x7 grid. Running the grid now would mostly document a failure already visible in the single-cell probe.
