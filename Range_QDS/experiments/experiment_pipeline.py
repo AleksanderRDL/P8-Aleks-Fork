@@ -724,11 +724,14 @@ def _workload_stability_gate(
         profile_id = str(generation.get("workload_profile_id", ""))
         mode = str(generation.get("mode", ""))
         query_count = len(getattr(workload, "typed_queries", []) or [])
+        query_count_mode = str(generation.get("query_count_mode", ""))
         target = _normalize_fraction_for_gate(generation.get("target_coverage"))
         final_coverage = _normalize_fraction_for_gate(getattr(workload, "coverage_fraction", None))
         coverage_mode = str(generation.get("coverage_calibration_mode", ""))
         coverage_guard_enabled = bool(generation.get("coverage_guard_enabled", False))
         stop_reason = str(generation.get("stop_reason", ""))
+        is_calibrated_query_count_mode = query_count_mode == "calibrated_to_coverage"
+        row_min_queries_per_workload = 1 if is_calibrated_query_count_mode else min_queries_per_workload
         row_failed: list[str] = []
         if profile_id != required_profile_id:
             row_failed.append("wrong_workload_profile")
@@ -736,7 +739,7 @@ def _workload_stability_gate(
             row_failed.append("not_target_coverage_generation")
         if coverage_mode != "profile_sampled_query_count":
             row_failed.append("coverage_calibration_not_profile_sampled")
-        if query_count < min_queries_per_workload:
+        if query_count < row_min_queries_per_workload:
             row_failed.append("too_few_queries")
         if not coverage_guard_enabled:
             row_failed.append("coverage_guard_disabled")
@@ -766,6 +769,7 @@ def _workload_stability_gate(
                 "profile_id": profile_id,
                 "mode": mode,
                 "coverage_calibration_mode": coverage_mode,
+                "query_count_mode": query_count_mode,
                 "query_count": int(query_count),
                 "target_coverage": target,
                 "final_coverage": final_coverage,

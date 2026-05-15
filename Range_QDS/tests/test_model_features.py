@@ -21,6 +21,8 @@ from training.model_features import (
     SUPPORTED_MODEL_TYPES,
     WORKLOAD_BLIND_POINT_DIM,
     WORKLOAD_BLIND_RANGE_V2_POINT_DIM,
+    WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_DIM,
+    WORKLOAD_BLIND_RANGE_V2_PRIOR_DIM,
     build_model_point_features,
     build_model_point_features_for_dim,
     build_query_free_point_features_for_dim,
@@ -158,6 +160,31 @@ def test_workload_blind_features_do_not_encode_absolute_day_time() -> None:
     assert torch.allclose(features, shifted_features)
     assert features[0, 0].item() == pytest.approx(0.0)
     assert features[-1, 0].item() == pytest.approx(1.0)
+
+
+def test_workload_blind_range_v2_absolute_features_without_prior_are_day_invariant() -> None:
+    workload = _range_workload()
+    points = torch.tensor(
+        [
+            [10.0, 55.0, 12.0, 5.0, 0.0, 1.0, 0.0, 0.0],
+            [20.0, 55.5, 12.5, 7.0, 45.0, 0.0, 0.0, 0.1],
+        ],
+        dtype=torch.float32,
+    )
+    shifted = points.clone()
+    shifted[:, 0] += 172_800.0
+
+    absolute_start = CONTEXT_WORKLOAD_BLIND_POINT_DIM
+    absolute_end = absolute_start + WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_DIM
+
+    features = build_model_point_features(points, workload, "workload_blind_range_v2")
+    shifted_features = build_model_point_features(shifted, workload, "workload_blind_range_v2")
+
+    assert torch.allclose(features[:, absolute_start:absolute_end], shifted_features[:, absolute_start:absolute_end])
+    prior_start = absolute_end
+    prior_end = prior_start + WORKLOAD_BLIND_RANGE_V2_PRIOR_DIM
+    assert torch.allclose(features[:, prior_start:prior_end], shifted_features[:, prior_start:prior_end])
+    assert torch.allclose(features[:, prior_start:prior_end], torch.zeros_like(features[:, prior_start:prior_end]))
 
 
 def test_old_workload_blind_checkpoint_feature_dim_stays_supported() -> None:

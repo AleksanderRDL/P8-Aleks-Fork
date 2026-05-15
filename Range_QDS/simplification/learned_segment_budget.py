@@ -12,6 +12,8 @@ from simplification.simplify_trajectories import deterministic_topk_with_jitter
 LEARNED_SEGMENT_BUDGET_SCHEMA_VERSION = 2
 LEARNED_SEGMENT_BUDGET_TRACE_SCHEMA_VERSION = 1
 SEGMENT_ALLOCATION_WEIGHT_FLOOR = 0.50
+GEOMETRY_TIE_BREAKER_WEIGHT = 0.12
+SEGMENT_SCORE_POINT_BLEND_WEIGHT = 0.05
 
 
 def _total_budget(boundaries: list[tuple[int, int]], compression_ratio: float) -> int:
@@ -55,14 +57,21 @@ def _segment_rows(
             seg_end = min(int(end), seg_start + size)
             if seg_end <= seg_start:
                 continue
-            local = scores[seg_start:seg_end].float()
-            local_segment = segment_values[seg_start:seg_end].float()
             if segment_scores is None:
-                top_count = min(int(local.numel()), max(1, int(math.ceil(0.20 * int(local.numel())))))
-                segment_score = float(torch.topk(local, k=top_count).values.mean().item())
+                local_segment = scores[seg_start:seg_end].float()
+                top_count = min(
+                    int(local_segment.numel()),
+                    max(1, int(math.ceil(0.20 * int(local_segment.numel())))),
+                )
+                segment_score = float(torch.topk(local_segment, k=top_count).values.mean().item())
                 segment_score_source = "point_score_top20_mean"
             else:
-                segment_score = float(local_segment.mean().item())
+                local_segment = segment_values[seg_start:seg_end].float()
+                head_top_count = min(
+                    int(local_segment.numel()),
+                    max(1, int(math.ceil(0.20 * int(local_segment.numel())))),
+                )
+                segment_score = float(torch.topk(local_segment, k=head_top_count).values.mean().item())
                 segment_score_source = "segment_budget_head_mean"
             rows.append(
                 {
@@ -168,6 +177,43 @@ def _allocate_segment_budgets(
     segment_allocations: dict[int, int] = {}
     weights = _segment_allocation_weights(segment_rows)
     remaining_slots = int(remaining)
+
+    # Trajectories with enough total learned budget should not be reduced to
+    # endpoints-only retention. Guarantee one learned slot on at least one segment
+    # per active trajectory before score-weighted diminishing allocations.
+    if remaining_slots >= max(1, valid_trajectory_count):
+        trajectory_best_rows: dict[int, tuple[float, int, int]] = {}
+        for segment_idx, row in enumerate(segment_rows):
+            trajectory_id = int(row["trajectory_id"])
+            start = int(row["start"])
+            score = float(row["score"])
+            best = trajectory_best_rows.get(trajectory_id)
+            if best is None or score > best[0] or (score == best[0] and start < best[1]):
+                trajectory_best_rows[trajectory_id] = (score, start, segment_idx)
+
+        for _, _start, segment_idx in sorted(
+            trajectory_best_rows.values(),
+            key=lambda item: (float(item[0]), -int(item[1])),
+            reverse=True,
+        ):
+            if remaining_slots <= 0:
+                break
+            row = segment_rows[segment_idx]
+            trajectory_id = int(row["trajectory_id"])
+            if ship_allocations.get(trajectory_id, 0) >= max_per_ship:
+                continue
+            start = int(row["start"])
+            end = int(row["end"])
+            capacity = int(row["length"]) - int(retained[start:end].sum().item()) - int(segment_allocations.get(segment_idx, 0))
+            if capacity <= 0:
+                continue
+            segment_allocations[segment_idx] = int(segment_allocations.get(segment_idx, 0)) + 1
+            ship_allocations[trajectory_id] = int(ship_allocations.get(trajectory_id, 0)) + 1
+            remaining_slots -= 1
+
+    if remaining_slots <= 0:
+        return segment_allocations
+
     while remaining_slots > 0:
         best_idx: int | None = None
         best_key: tuple[float, int, float, int] | None = None
@@ -328,6 +374,8 @@ def _select_with_spacing(
     min_spacing: int,
     local_points: torch.Tensor | None = None,
     geometry_gain_weight: float = 0.05,
+    segment_aux_scores: torch.Tensor | None = None,
+    segment_score_weight: float = 0.0,
 ) -> torch.Tensor:
     """Select top scores with simple non-maximum spacing."""
     keep = max(0, min(int(keep_count), int(local_scores.numel())))
@@ -343,8 +391,21 @@ def _select_with_spacing(
         finite = torch.isfinite(candidate_scores)
         if not bool(finite.any().item()):
             break
-        gain_scores = _length_gain_scores(local_points, retained_indices, candidate_scores)
-        normalized_scores = _normalize_candidate_values(candidate_scores, finite)
+        segment_weight = max(0.0, min(1.0, float(segment_score_weight)))
+        score_for_selection = candidate_scores.clone()
+        if segment_aux_scores is not None and segment_weight > 0.0:
+            segment_scores = segment_aux_scores.to(device=candidate_scores.device, dtype=torch.float32).clone()
+            segment_scores[~finite] = -float("inf")
+            segment_finite = torch.isfinite(segment_scores)
+            if bool(segment_finite.any().item()):
+                point_scores_norm = _normalize_candidate_values(score_for_selection, finite)
+                segment_scores_norm = _normalize_candidate_values(segment_scores, segment_finite)
+                blended = (1.0 - segment_weight) * point_scores_norm + segment_weight * segment_scores_norm
+                blended[~finite] = -float("inf")
+                score_for_selection = blended
+
+        gain_scores = _length_gain_scores(local_points, retained_indices, score_for_selection)
+        normalized_scores = _normalize_candidate_values(score_for_selection, finite)
         normalized_gain = _normalize_candidate_values(gain_scores, finite)
         weight = max(0.0, min(1.0, float(geometry_gain_weight)))
         combined_scores = (1.0 - weight) * normalized_scores + weight * normalized_gain
@@ -373,6 +434,8 @@ def _select_with_spacing(
                 trajectory_id * 9173 + keep,
             )
             selected.append(fallback)
+        if not selected:
+            return torch.empty((0,), dtype=torch.long, device=local_scores.device)
     if not selected:
         return torch.empty((0,), dtype=torch.long, device=local_scores.device)
     return torch.cat(selected).unique(sorted=True)[:keep]
@@ -388,6 +451,7 @@ def simplify_with_learned_segment_budget_v1_with_trace(
     max_budget_share_per_ship: float = 0.20,
     segment_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
+    geometry_gain_weight: float = GEOMETRY_TIE_BREAKER_WEIGHT,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Retain points and return skeleton/learned/fallback attribution."""
     point_total = int(scores.numel())
@@ -503,6 +567,18 @@ def simplify_with_learned_segment_budget_v1_with_trace(
         local_retained = retained[trajectory_start:trajectory_end]
         existing = torch.where(local_retained)[0]
         min_spacing = int(math.floor(float(end - start) * float(min_temporal_spacing_fraction_within_segment)))
+        segment_aux_scores = None
+        segment_score_weight = 0.0
+        if segment_scores is not None:
+            segment_aux_scores = torch.full_like(trajectory_scores, -float("inf"))
+            segment_aux_scores[segment_local_start:segment_local_end] = segment_scores[start:end].to(
+                device=trajectory_scores.device,
+                dtype=torch.float32,
+            )
+            segment_aux_local_scores = segment_aux_scores[segment_local_start:segment_local_end]
+            segment_score_finite = torch.isfinite(segment_aux_local_scores)
+            if bool(segment_score_finite.any().item()):
+                segment_score_weight = float(SEGMENT_SCORE_POINT_BLEND_WEIGHT)
         selected = _select_with_spacing(
             trajectory_scores,
             int(keep_count),
@@ -510,6 +586,9 @@ def simplify_with_learned_segment_budget_v1_with_trace(
             existing_indices=existing,
             min_spacing=min_spacing,
             local_points=None if points is None else points[trajectory_start:trajectory_end],
+            geometry_gain_weight=float(geometry_gain_weight),
+            segment_aux_scores=segment_aux_scores,
+            segment_score_weight=float(segment_score_weight) if segment_scores is not None else 0.0,
         )
         absolute_selected = trajectory_start + selected
         new_selected = absolute_selected[~retained[absolute_selected]]
@@ -552,6 +631,7 @@ def simplify_with_learned_segment_budget_v1(
     max_budget_share_per_ship: float = 0.20,
     segment_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
+    geometry_gain_weight: float = GEOMETRY_TIE_BREAKER_WEIGHT,
 ) -> torch.Tensor:
     """Retain a minimal skeleton, then allocate remaining budget by learned segment value."""
     retained, _trace = simplify_with_learned_segment_budget_v1_with_trace(
@@ -563,6 +643,7 @@ def simplify_with_learned_segment_budget_v1(
         max_budget_share_per_ship=max_budget_share_per_ship,
         segment_scores=segment_scores,
         points=points,
+        geometry_gain_weight=geometry_gain_weight,
     )
     return retained
 

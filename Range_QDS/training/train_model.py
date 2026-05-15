@@ -249,6 +249,7 @@ def train_model(
                 )
             ),
             train_workload_seed=prior_seed,
+            out_of_extent_sampling="nearest",
         )
     points = build_model_point_features(
         all_points,

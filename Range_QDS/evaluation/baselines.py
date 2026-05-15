@@ -222,9 +222,7 @@ class MLQDSMethod:
                 except ValueError:
                     segment_head_idx = -1
                 if segment_head_idx >= 0 and int(head_logits.shape[-1]) > segment_head_idx:
-                    self._segment_score_cache = torch.sigmoid(
-                        head_logits[:, segment_head_idx].detach().cpu().float()
-                    )
+                    self._segment_score_cache = head_logits[:, segment_head_idx].detach().cpu().float()
             else:
                 self._head_logit_cache = None
                 self._segment_score_cache = None

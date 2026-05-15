@@ -846,3 +846,120 @@ Current decision:
 - Keep the checkpoint 18 fixes. They remove real confounds and make the artifact harder to misread.
 - Do not claim final success. The first strict support-valid cell is now a cleaner failure: support exists and strict workload generation is acceptable, but learned transfer still is not convincing.
 - Next work should target actual learned signal and global geometry preservation, not a full 4x7 grid. Running the grid now would mostly document a failure already visible in the single-cell probe.
+
+## Checkpoint 19 - Trajectory-level learned-slot fairness in learned segment allocation
+
+Status: implemented selector fairness guard; no improvement to blockers in strict probes
+
+Scope:
+- Add a guardrail against trajectory starvation during learned segment allocation.
+- Ensure each trajectory can receive at least one interior learned slot when the remaining budget is sufficient to cover active trajectories.
+- Preserve existing score-weighted diminishing-return allocation for the remaining slots.
+
+Extra fix:
+- Ensure `_weighted_choice_with_deterministic_key` with `deterministic_value` does not consume RNG state.
+- Add regression coverage test in `tests/test_query_driven_rework.py` for deterministic-profile sampling state preservation.
+
+Rationale:
+- Current strict support-valid probes showed acceptable workload support and target-diffusion behavior but weak length preservation relative to baselines.
+- The most likely structural failure is concentrated allocation: some trajectories receive only endpoints while others absorb learned budget.
+- This change is query-free and purely geometric/selection-level; it does not use eval queries, target values, or temporal scaffolding.
+
+Changes:
+- In `simplify_with_learned_segment_budget_v1`, segment allocation now pre-allocates one slot per active trajectory when `remaining_learned_slots >= trajectory_count`.
+- The pre-allocation chooses each trajectory’s highest-scoring segment and respects existing max budget per trajectory constraints.
+- Remaining slots still allocate with score-weighted diminishing-returns logic, so high-score regions continue to dominate.
+
+Current decision:
+- This is a protocol-safe fix for the length-preservation blocker candidate, but no hard blockers were removed in strict support-valid probes.
+
+Strict support-valid shared-route probes (with strict gate settings from checkpoint 18):
+- `cd /home/aleks_dev/dev_projects/P8/Range_QDS && /home/aleks_dev/dev_projects/P8/.venv/bin/python -m experiments.run_ais_experiment --results_dir ../artifacts/results/query_driven_v2_checkpoint19_strict_support_probe_ratio05 --n_ships 8 --n_points 128 --synthetic_route_families 1 --seed 1818 --n_queries 48 --query_coverage 0.10 --max_queries 512 --range_max_coverage_overshoot 0.0075 --range_train_workload_replicates 4 --workload_profile_id range_workload_v1 --coverage_calibration_mode profile_sampled_query_count --model_type workload_blind_range_v2 --range_training_target_mode query_useful_v1_factorized --selector_type learned_segment_budget_v1 --checkpoint_score_variant query_useful_v1 --checkpoint_selection_metric uniform_gap --validation_score_every 1 --checkpoint_full_score_every 1 --epochs 3 --embed_dim 32 --num_heads 2 --num_layers 1 --train_batch_size 8 --inference_batch_size 8 --compression_ratio 0.05 --mlqds_temporal_fraction 0.0 --mlqds_hybrid_mode fill --mlqds_score_mode rank_confidence --range_acceptance_max_attempts 6000 --final_metrics_mode diagnostic`
+- `cd /home/aleks_dev/dev_projects/P8/Range_QDS && /home/aleks_dev/dev_projects/P8/.venv/bin/python -m experiments.run_ais_experiment --results_dir ../artifacts/results/query_driven_v2_checkpoint19_strict_support_probe_ratio20 --n_ships 8 --n_points 128 --synthetic_route_families 1 --seed 1818 --n_queries 48 --query_coverage 0.10 --max_queries 512 --range_max_coverage_overshoot 0.0075 --range_train_workload_replicates 4 --workload_profile_id range_workload_v1 --coverage_calibration_mode profile_sampled_query_count --model_type workload_blind_range_v2 --range_training_target_mode query_useful_v1_factorized --selector_type learned_segment_budget_v1 --checkpoint_score_variant query_useful_v1 --checkpoint_selection_metric uniform_gap --validation_score_every 1 --checkpoint_full_score_every 1 --epochs 3 --embed_dim 32 --num_heads 2 --num_layers 1 --train_batch_size 8 --inference_batch_size 8 --compression_ratio 0.20 --mlqds_temporal_fraction 0.0 --mlqds_hybrid_mode fill --mlqds_score_mode rank_confidence --range_acceptance_max_attempts 6000 --final_metrics_mode diagnostic`
+- Artifact:
+  - `artifacts/results/query_driven_v2_checkpoint19_strict_support_probe_ratio05/example_run.json`
+  - `artifacts/results/query_driven_v2_checkpoint19_strict_support_probe_ratio20/example_run.json`
+- Outcome:
+  - Ratio 0.05: MLQDS `0.1688` vs uniform `0.1642` (slight gain), Douglas-Peucker `0.2280`.
+  - Ratio 0.20: MLQDS `0.4035` vs uniform `0.4731`, Douglas-Peucker `0.3795`.
+  - `workload_stability_gate`: pass for both.
+  - `support_overlap_gate`: pass for both.
+  - `workload_signature_gate`: fail for both; anchor-family L1, footprint-family L1, point-hit KS, ship-hit KS all above thresholds.
+  - `predictability_gate`: fail for both; Spearman `-0.6023`, lift@1/2/5% `0.0`, PR-AUC lift `< 1.0`.
+  - `learning_causality_gate`: fail for both; controls and/or ablations still invalidate learned-material impact.
+  - Global sanity:
+    - Ratio 0.05 fails length preservation (`0.5379` vs required `0.8`).
+    - Ratio 0.20 passes length preservation (`0.8450`) but fails SED ratio (`1.778 > 1.5`).
+- Decision remains unchanged: final claims remain blocked by predictability, workload-signature, learning causality, and global sanity.
+
+## Checkpoint 20 - Workload stability gate mode-aware query-count floor
+
+Status: implemented blocker-fidelity fix; final blockers unchanged
+
+Scope:
+- Stop rejecting calibrated-profile runs purely because target-coverage calibration naturally finishes with fewer than 8 queries.
+- Keep minimum query-count checks for non-calibrated/fixed-count workloads.
+
+Changes:
+- `_workload_stability_gate` in `experiments/experiment_pipeline.py` now reads `query_count_mode` from workload diagnostics.
+- For `query_count_mode == "calibrated_to_coverage"`, `too_few_queries` uses a minimal floor of `1` instead of the default `8`.
+- Workload rows now include `query_count_mode`.
+- Stability tests were updated with calibrated fixtures, and a regression test was added for a `0.05` target workload with `7` calibrated queries.
+
+Decision:
+- Final claim remains blocked by predictability, workload-signature, learning causality, and global sanity. This is a gate-fidelity fix, not a blocker pass.
+
+Validation:
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/pytest Range_QDS/tests/test_query_driven_rework.py -k "workload_stability_gate" -q`: passed, 4 tests.
+
+## Checkpoint 21 - Segment-score blending and selector-selection bugfix
+
+Status: implemented critical selector correctness; no blocker change yet
+
+Scope:
+- Actually apply segment-budget head values inside allocated-segment point selection.
+- Ensure `_select_with_spacing` never returns `None` and correctly handles full `keep` paths.
+- Remove right-biased pre-allocation ties in learned segment fairness logic so neutral-head ablations are a real control.
+
+Changes:
+- In `simplification/learned_segment_budget.py`, segment-local selection now supports optional `segment_aux_scores`.
+- `_select_with_spacing` blends normalized local point scores with normalized segment head scores when provided (`SEGMENT_SCORE_POINT_BLEND_WEIGHT = 0.25`).
+- `simplify_with_learned_segment_budget_v1_with_trace` now constructs per-trajectory segment-head vectors and forwards them to the selector.
+- `_select_with_spacing` now always returns a tensor (empty when needed).
+- Learned-segment pre-allocation tie-breaks now prefer earlier segments when segment scores are equal, making neutral constant segment-score ablations behave as a weaker control instead of accidentally inheriting the same high-score tail selection.
+
+Validation:
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/pytest Range_QDS/tests/test_query_driven_rework.py -k "learned_segment_budget or no_segment_budget_head_ablation or point_score_top20_mean or trajectory_retained_anchors" -q`: passed, 4 passed, 38 deselected.
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/pytest Range_QDS/tests/test_query_driven_rework.py::test_no_segment_budget_head_ablation_uses_neutral_segment_scores Range_QDS/tests/test_query_driven_rework.py::test_learned_segment_allocation_guarantees_one_slot_per_trajectory_when_possible Range_QDS/tests/test_training_does_not_collapse.py::test_validation_query_score_matches_final_mlqds_scoring -q`: passed, 9 passed.
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/ruff check Range_QDS/simplification/learned_segment_budget.py`: passed.
+
+Current decision:
+- This closes a correctness gap in the selector path and keeps the ablation/control logic coherent.
+- It does not change final pass/fail blocker status from checkpoint 20 by itself.
+
+## Checkpoint 22 - Selector trace parity fix
+
+Status: implemented; consistency fixed, blockers unchanged
+
+Scope:
+- Align `simplify_with_learned_segment_budget_v1_with_trace` defaults with the non-trace path so trace mode is a true diagnostic shadow, not a different selector.
+
+Changes:
+- `simplify_with_learned_segment_budget_v1_with_trace` now defaults `min_temporal_spacing_fraction_within_segment` to `0.10` (same as `simplify_with_learned_segment_budget_v1`), closing a silent selector-behavior mismatch.
+
+Validation:
+- `/home/aleks_dev/dev_projects/P8/.venv/bin/pytest Range_QDS/tests/test_query_driven_rework.py -k "learned_segment_budget or no_segment_budget_head_ablation or point_score_top20_mean or trajectory_retained_anchors" -q`: passed, 4 passed, 38 deselected.
+- `cd /home/aleks_dev/dev_projects/P8/Range_QDS && /home/aleks_dev/dev_projects/P8/.venv/bin/python -m experiments.run_ais_experiment --results_dir ../artifacts/results/query_driven_v2_checkpoint21_strict_support_probe_ratio20_v2 --n_ships 8 --n_points 128 --synthetic_route_families 1 --seed 1818 --n_queries 48 --query_coverage 0.10 --max_queries 512 --range_max_coverage_overshoot 0.0075 --range_train_workload_replicates 4 --workload_profile_id range_workload_v1 --coverage_calibration_mode profile_sampled_query_count --model_type workload_blind_range_v2 --range_training_target_mode query_useful_v1_factorized --selector_type learned_segment_budget_v1 --checkpoint_score_variant query_useful_v1 --checkpoint_selection_metric uniform_gap --validation_score_every 1 --checkpoint_full_score_every 1 --epochs 3 --embed_dim 32 --num_heads 2 --num_layers 1 --train_batch_size 8 --inference_batch_size 8 --compression_ratio 0.20 --mlqds_temporal_fraction 0.0 --mlqds_hybrid_mode fill --mlqds_score_mode rank_confidence --range_acceptance_max_attempts 6000 --final_metrics_mode diagnostic`
+- Artifact:
+  - `artifacts/results/query_driven_v2_checkpoint21_strict_support_probe_ratio20_v2/example_run.json`
+- Probe outcome:
+  - `selector_trace_retained_mask_matches_primary`: `True` (alignment restored).
+  - `workload_stability_gate`: pass.
+  - `support_overlap_gate`: pass.
+  - `global_sanity_gate`: fails (`avg_sed_ratio_vs_uniform_too_high`, MLQDS `0.9445` vs uniform `0.4865`, ratio `1.94`).
+  - `predictability_gate`: fail.
+  - `learning_causality_gate`: fail (`shuffled_prior_fields_should_lose`, `without_query_prior_features_should_lose`, `without_behavior_utility_head_should_lose`, `without_segment_budget_head_should_lose`, `prior_field_only_should_not_match_trained`).
+
+Current decision:
+- Trace parity was a real implementation consistency fix.
+- Core blockers remain unchanged: predictability, workload-signature visibility, learning causality, and global sanity SED ratio.

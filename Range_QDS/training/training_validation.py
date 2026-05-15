@@ -233,7 +233,7 @@ def _validation_checkpoint_scores(
         except ValueError:
             segment_head_idx = -1
         if segment_head_idx >= 0 and int(head_logits.shape[-1]) > segment_head_idx:
-            segment_scores = torch.sigmoid(head_logits[:, segment_head_idx].detach().cpu().float())
+            segment_scores = head_logits[:, segment_head_idx].detach().cpu().float()
     retained_mask = simplify_mlqds_predictions(
         predictions,
         boundaries,

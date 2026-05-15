@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any
 
@@ -231,22 +232,71 @@ def _weighted_choice(mapping: dict[str, float], generator: torch.Generator, fall
     return keys[int(idx)]
 
 
+def _deterministic_unit_from_payload(*parts: object) -> float:
+    """Return a deterministic unit-uniform-like value from arbitrary key material."""
+    payload = "|".join(str(part) for part in parts)
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    raw = int.from_bytes(digest[:8], byteorder="big", signed=False)
+    return (raw / float(1 << 64))
+
+
+def _weighted_choice_with_deterministic_key(
+    mapping: dict[str, float],
+    generator: torch.Generator,
+    fallback: str,
+    deterministic_value: float | None = None,
+) -> str:
+    """Sample one key from a non-negative weight mapping using deterministic ordering."""
+    if not mapping:
+        return fallback
+    keys = [str(key) for key in mapping]
+    weights = torch.tensor([max(0.0, float(mapping[key])) for key in keys], dtype=torch.float32)
+    total = float(weights.sum().item())
+    if total <= 0.0:
+        idx = _weighted_sample_one(torch.ones((max(1, len(keys)),), dtype=torch.float32), generator)
+        return keys[min(int(idx), len(keys) - 1)]
+    if deterministic_value is None:
+        idx = _weighted_sample_one(weights, generator)
+        return keys[int(idx)]
+    u = float(deterministic_value) % 1.0
+    cdf = torch.cumsum(weights, dim=0)
+    target = u * total
+    idx = int(torch.searchsorted(cdf, torch.tensor(target, dtype=cdf.dtype)).item())
+    return keys[min(max(idx, 0), len(keys) - 1)]
+
+
 def _profile_query_settings(
     profile: RangeWorkloadProfile,
     generator: torch.Generator,
+    query_index: int | None = None,
+    workload_seed: int | None = None,
 ) -> dict[str, Any]:
     """Sample query-level profile settings for one range_workload_v1 query."""
     if profile.profile_id == LEGACY_GENERATOR_PROFILE.profile_id:
         return {}
-    anchor_family = _weighted_choice(
+    query_key = str(int(workload_seed) if workload_seed is not None else "unseeded")
+    if query_index is None or query_index < 0:
+        anchor_value: float | None = None
+        footprint_value: float | None = None
+    else:
+        anchor_value = _deterministic_unit_from_payload(profile.profile_id, "anchor", query_key, query_index)
+        footprint_value = _deterministic_unit_from_payload(
+            profile.profile_id,
+            "footprint",
+            query_key,
+            query_index,
+        )
+    anchor_family = _weighted_choice_with_deterministic_key(
         profile.anchor_family_weights,
         generator,
         fallback="density_route",
+        deterministic_value=anchor_value,
     )
-    footprint_family = _weighted_choice(
+    footprint_family = _weighted_choice_with_deterministic_key(
         profile.footprint_family_weights,
         generator,
         fallback="medium_operational",
+        deterministic_value=footprint_value,
     )
     footprint = dict(profile.footprint_families.get(footprint_family) or {})
     return {
@@ -835,14 +885,26 @@ def generate_typed_query_workload(
         range_acceptance["accepted"] = int(range_acceptance["accepted"]) + 1
         accepted_range_queries.append({"params": query["params"], "query_index": len(accepted_range_queries)})
 
-    def build_query(anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
+    def build_query(
+        anchor_mask: torch.Tensor | None = None,
+        query_index: int | None = None,
+    ) -> dict[str, Any] | None:
         """Build one query, applying optional range acceptance filters."""
         if acceptance_enabled:
             if max_range_attempts is not None and int(range_acceptance["attempts"]) >= max_range_attempts:
                 range_acceptance["exhausted"] = True
                 return None
             range_acceptance["attempts"] = int(range_acceptance["attempts"]) + 1
-        profile_query = _profile_query_settings(profile, generator) if profile_enabled else {}
+        profile_query = (
+            _profile_query_settings(
+                profile,
+                generator,
+                query_index=query_index,
+                workload_seed=int(seed),
+            )
+            if profile_enabled
+            else {}
+        )
         query_anchor_weights = anchor_weights
         query_anchor_probability = anchor_weight_probability
         query_spatial_km = range_spatial_km
@@ -910,10 +972,15 @@ def generate_typed_query_workload(
 
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
         stop_reason = "max_queries_reached"
+        calibrated_query_count_mode = profile.query_count_mode == "calibrated_to_coverage"
 
         while len(generated_queries) < query_limit:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
-            if len(generated_queries) >= requested_queries and current_coverage >= coverage_target:
+            if (
+                not calibrated_query_count_mode
+                and len(generated_queries) >= requested_queries
+                and current_coverage >= coverage_target
+            ):
                 stop_reason = "target_coverage_reached"
                 break
             anchor_mask = (
@@ -921,7 +988,7 @@ def generate_typed_query_workload(
                 if coverage_mode == "uncovered_anchor_chasing" and current_coverage < coverage_target
                 else None
             )
-            query = build_query(anchor_mask=anchor_mask)
+            query = build_query(anchor_mask=anchor_mask, query_index=len(generated_queries))
             if query is None:
                 if range_acceptance.get("exhausted"):
                     stop_reason = "range_acceptance_exhausted"
@@ -949,6 +1016,18 @@ def generate_typed_query_workload(
             if target_reached_query_count is None and new_coverage >= coverage_target:
                 target_reached_query_count = int(len(generated_queries))
                 coverage_at_target_reached = float(new_coverage)
+                if calibrated_query_count_mode:
+                    stop_reason = "target_coverage_reached"
+                    break
+
+            final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
+            if (
+                stop_reason == "max_queries_reached"
+                and len(generated_queries) >= requested_queries
+                and final_coverage >= coverage_target
+            ):
+                stop_reason = "target_coverage_reached"
+                break
 
         final_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
         if (
@@ -1002,7 +1081,7 @@ def generate_typed_query_workload(
     requested_queries = max(0, int(n_queries))
     stop_reason = "fixed_count_completed"
     while len(generated_queries) < requested_queries:
-        query = build_query()
+        query = build_query(query_index=len(generated_queries))
         if query is None:
             if range_acceptance.get("exhausted"):
                 stop_reason = "range_acceptance_exhausted"

@@ -24,7 +24,13 @@ from experiments.experiment_pipeline import (
 )
 from experiments.range_diagnostics import _range_workload_distribution_comparison
 from models.workload_blind_range_v2 import WorkloadBlindRangeV2Model
-from queries.query_generator import _anchor_weights_for_family, _make_range_query, generate_typed_query_workload
+from queries.query_generator import (
+    _anchor_weights_for_family,
+    _make_range_query,
+    _profile_query_settings,
+    _weighted_choice_with_deterministic_key,
+    generate_typed_query_workload,
+)
 from queries.query_types import QUERY_TYPE_ID_RANGE
 from queries.workload_profiles import range_workload_profile
 from simplification.learned_segment_budget import (
@@ -82,6 +88,39 @@ def test_range_workload_v1_records_profile_signature() -> None:
     assert sum(signature["anchor_family_counts"].values()) == len(workload.typed_queries)
     assert sum(signature["footprint_family_counts"].values()) == len(workload.typed_queries)
     assert signature["query_count"] == len(workload.typed_queries)
+
+
+def test_deterministic_profile_sampling_does_not_advance_generator() -> None:
+    profile = range_workload_profile("range_workload_v1")
+    gen = torch.Generator().manual_seed(12345)
+    before = gen.get_state()
+
+    chosen_anchor = _weighted_choice_with_deterministic_key(
+        profile.anchor_family_weights,
+        gen,
+        fallback="density_route",
+        deterministic_value=0.33,
+    )
+    chosen_footprint = _weighted_choice_with_deterministic_key(
+        profile.footprint_family_weights,
+        gen,
+        fallback="medium_operational",
+        deterministic_value=0.77,
+    )
+
+    settings = _profile_query_settings(profile, torch.Generator().manual_seed(1), query_index=7, workload_seed=19)
+    settings_deterministic = _profile_query_settings(profile, torch.Generator().manual_seed(1), query_index=7, workload_seed=19)
+    assert settings == settings_deterministic
+
+    after = gen.get_state()
+    assert chosen_anchor in profile.anchor_family_weights
+    assert chosen_footprint in profile.footprint_family_weights
+    assert torch.equal(before, after)
+
+    baseline = torch.Generator().manual_seed(12345)
+    expected_seq = torch.randint(0, 999, (3,), generator=baseline).tolist()
+    observed_seq = torch.randint(0, 999, (3,), generator=gen).tolist()
+    assert observed_seq == expected_seq
 
 
 def test_synthetic_route_families_create_same_support_trajectories() -> None:
@@ -381,6 +420,44 @@ def test_query_prior_field_rasterizes_query_boxes_not_only_hit_points() -> None:
     assert torch.allclose(sampled[1], torch.zeros_like(sampled[1]))
 
 
+def test_sample_query_prior_fields_nearest_mode_clamps_out_of_extent_points() -> None:
+    train_points = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
+    eval_points = torch.tensor(
+        [[0.5, 5.0, 5.0], [0.25, -2.0, -3.0]],
+        dtype=torch.float32,
+    )
+    query = {
+        "type": "range",
+        "params": {
+            "t_start": 0.0,
+            "t_end": 1.0,
+            "lat_min": 0.0,
+            "lat_max": 1.0,
+            "lon_min": 0.0,
+            "lon_max": 1.0,
+        },
+    }
+    prior = build_train_query_prior_fields(
+        points=train_points,
+        boundaries=[(0, 2)],
+        typed_queries=[query],
+        workload_profile_id="range_workload_v1",
+        grid_bins=8,
+        time_bins=2,
+        smoothing_passes=0,
+        out_of_extent_sampling="nearest",
+    )
+    sampled_nearest = sample_query_prior_fields(eval_points, prior)
+    sampled_zero = sample_query_prior_fields(
+        eval_points,
+        dict(prior, out_of_extent_sampling="zero"),
+    )
+
+    assert prior["out_of_extent_sampling"] == "nearest"
+    assert bool((sampled_nearest.abs().sum(dim=1) > 0.0).all().item())
+    assert torch.allclose(sampled_zero, torch.zeros_like(sampled_zero))
+
+
 def test_zero_prior_field_like_preserves_metadata_and_shape() -> None:
     points = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
     query = {
@@ -539,7 +616,7 @@ def test_workload_blind_range_v2_features_and_selector_are_query_free() -> None:
         head_logits,
         disabled_head_names=("conditional_behavior_utility",),
     )
-    segment_scores = torch.sigmoid(head_logits.squeeze(0)[:, 4])
+    segment_scores = head_logits.squeeze(0)[:, 4]
     retained = simplify_with_learned_segment_budget_v1(
         pred.squeeze(0),
         boundaries,
@@ -734,6 +811,40 @@ def test_no_segment_budget_head_ablation_uses_neutral_segment_scores() -> None:
     assert bool(learned_retained[27].item()) is True
     assert bool(ablated_retained[27].item()) is False
     assert not torch.equal(learned_retained, ablated_retained)
+
+
+def test_learned_segment_allocation_guarantees_one_slot_per_trajectory_when_possible() -> None:
+    scores = torch.ones((24,), dtype=torch.float32)
+    # Favor trajectory 0 strongly in segment scores and keep trajectory 1 low.
+    segment_scores = torch.zeros((24,), dtype=torch.float32)
+    segment_scores[0:12] = 10.0
+    segment_scores[12:] = 0.1
+
+    boundaries = [(0, 12), (12, 24)]
+    retained = simplify_with_learned_segment_budget_v1(
+        scores,
+        boundaries,
+        compression_ratio=0.30,
+        segment_size=4,
+        segment_scores=segment_scores,
+    )
+    _, trace = simplify_with_learned_segment_budget_v1_with_trace(
+        scores,
+        boundaries,
+        compression_ratio=0.30,
+        segment_size=4,
+        segment_scores=segment_scores,
+    )
+
+    learned_counts = trace["trajectory_learned_decision_counts"]
+    assert len(learned_counts) == 2
+    assert int(learned_counts[0]) >= 1
+    assert int(learned_counts[1]) >= 1
+    assert bool(retained[0].item()) is True
+    assert bool(retained[11].item()) is True
+    assert bool(retained[12].item()) is True
+    assert bool(retained[23].item()) is True
+    assert trace["trajectories_with_at_least_one_learned_decision"] >= 2
 
 
 def test_segment_budget_head_has_segment_level_loss() -> None:
@@ -1150,15 +1261,16 @@ def test_workload_stability_gate_accepts_coverage_calibrated_replicates() -> Non
             typed_queries=[{} for _ in range(8)],
             coverage_fraction=0.105,
             generation_diagnostics={
-                "query_generation": {
-                    "mode": "target_coverage",
-                    "workload_profile_id": "range_workload_v1",
-                    "coverage_calibration_mode": "profile_sampled_query_count",
-                    "target_coverage": 0.10,
-                    "coverage_guard_enabled": True,
-                    "stop_reason": "target_coverage_reached",
-                }
-            },
+            "query_generation": {
+                "mode": "target_coverage",
+                "workload_profile_id": "range_workload_v1",
+                "coverage_calibration_mode": "profile_sampled_query_count",
+                "query_count_mode": "calibrated_to_coverage",
+                "target_coverage": 0.10,
+                "coverage_guard_enabled": True,
+                "stop_reason": "target_coverage_reached",
+            }
+        },
         )
 
     gate = _workload_stability_gate(
@@ -1185,6 +1297,7 @@ def test_workload_stability_gate_accepts_exhausted_stop_after_coverage_satisfied
                 "mode": "target_coverage",
                 "workload_profile_id": "range_workload_v1",
                 "coverage_calibration_mode": "profile_sampled_query_count",
+                "query_count_mode": "calibrated_to_coverage",
                 "target_coverage": 0.10,
                 "coverage_guard_enabled": True,
                 "stop_reason": "range_acceptance_exhausted",
@@ -1202,6 +1315,37 @@ def test_workload_stability_gate_accepts_exhausted_stop_after_coverage_satisfied
     assert gate["gate_pass"] is True
     assert gate["failed_checks"] == []
     assert gate["workloads"][0]["coverage_target_satisfied"] is True
+
+
+def test_workload_stability_gate_allows_calibrated_low_query_count() -> None:
+    config = SimpleNamespace(
+        query=SimpleNamespace(target_coverage=0.05, range_max_coverage_overshoot=0.005)
+    )
+    workload = SimpleNamespace(
+        typed_queries=[{} for _ in range(7)],
+        coverage_fraction=0.054,
+        generation_diagnostics={
+            "query_generation": {
+                "mode": "target_coverage",
+                "workload_profile_id": "range_workload_v1",
+                "coverage_calibration_mode": "profile_sampled_query_count",
+                "query_count_mode": "calibrated_to_coverage",
+                "target_coverage": 0.05,
+                "coverage_guard_enabled": True,
+                "stop_reason": "target_coverage_reached",
+            }
+        },
+    )
+
+    gate = _workload_stability_gate(
+        config=cast(Any, config),
+        train_label_workloads=[workload, workload, workload, workload],
+        eval_workload=workload,
+        selection_workload=None,
+    )
+
+    assert gate["gate_pass"] is True
+    assert gate["failed_checks"] == []
 
 
 def test_global_sanity_gate_enforces_endpoint_length_and_sed_ratio() -> None:

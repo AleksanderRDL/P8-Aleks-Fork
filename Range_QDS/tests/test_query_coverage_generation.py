@@ -86,6 +86,37 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
     )
 
 
+def test_coverage_generation_profile_calibrated_mode_stops_at_target_coverage() -> None:
+    """Assert calibrated profiles can stop as soon as target coverage is reached."""
+    trajectories = generate_synthetic_ais_data(n_ships=8, n_points_per_ship=128, seed=1818)
+
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=48,
+        workload_map={"range": 1.0},
+        seed=1818,
+        target_coverage=0.05,
+        max_queries=300,
+        workload_profile_id="range_workload_v1",
+        range_max_coverage_overshoot=0.0075,
+        range_acceptance_max_attempts=6000,
+    )
+
+    assert workload.coverage_fraction is not None
+    assert workload.coverage_fraction >= 0.05
+    assert workload.generation_diagnostics is not None
+    generation = workload.generation_diagnostics["query_generation"]
+    assert generation["mode"] == "target_coverage"
+    assert generation["query_count_mode"] == "calibrated_to_coverage"
+    assert generation["coverage_calibration_mode"] == "profile_sampled_query_count"
+    assert generation["minimum_queries"] == 48
+    assert generation["stop_reason"] == "target_coverage_reached"
+    assert generation["target_reached_query_count"] is not None
+    assert generation["coverage_at_target_reached"] is not None
+    assert generation["extra_queries_after_target_reached"] == 0
+    assert generation["final_query_count"] == generation["target_reached_query_count"]
+
+
 def test_coverage_overshoot_guard_rejects_over_broad_queries() -> None:
     trajectories = generate_synthetic_ais_data(n_ships=3, n_points_per_ship=24, seed=782)
 
