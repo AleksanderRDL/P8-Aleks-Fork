@@ -2305,6 +2305,10 @@ def run_experiment_pipeline(
     douglas_peucker_eval = matched.get("DouglasPeucker")
     workload_signature_gate = workload_distribution_comparison.get("workload_signature_gate", {})
     predictability_gate_pass = bool(predictability_audit.get("gate_pass", False))
+    prior_predictive_alignment_gate = predictability_audit.get("prior_predictive_alignment_gate", {})
+    prior_predictive_alignment_gate_pass = bool(
+        isinstance(prior_predictive_alignment_gate, dict) and prior_predictive_alignment_gate.get("gate_pass", False)
+    )
     signature_gate_pass = bool(
         isinstance(workload_signature_gate, dict)
         and workload_signature_gate.get("all_available")
@@ -2463,6 +2467,7 @@ def run_experiment_pipeline(
         "learned_controlled_slot_fraction_min": learned_slot_fraction_min,
         "learning_causality_ablation_status": ablation_status,
         "predictability_gate_pass": predictability_gate_pass,
+        "prior_predictive_alignment_gate_pass": prior_predictive_alignment_gate_pass,
         "workload_signature_gate_pass": signature_gate_pass,
         "support_overlap_gate_pass": support_overlap_gate_pass,
     }
@@ -2480,6 +2485,8 @@ def run_experiment_pipeline(
             blocking_gates.append("support_overlap_gate")
         if not predictability_gate_pass:
             blocking_gates.append("predictability_gate")
+        if not prior_predictive_alignment_gate_pass:
+            blocking_gates.append("prior_predictive_alignment_gate")
         if not target_diffusion_gate_pass:
             blocking_gates.append("target_diffusion_gate")
         if not signature_gate_pass:
@@ -2497,6 +2504,7 @@ def run_experiment_pipeline(
             "workload_stability_gate_pass": workload_stability_gate_pass,
             "support_overlap_gate_pass": support_overlap_gate_pass,
             "predictability_gate_pass": predictability_gate_pass,
+            "prior_predictive_alignment_gate_pass": prior_predictive_alignment_gate_pass,
             "target_diffusion_gate_pass": target_diffusion_gate_pass,
             "workload_signature_gate_pass": signature_gate_pass,
             "learning_causality_gate_pass": learning_causality_gate_pass,
@@ -2531,6 +2539,7 @@ def run_experiment_pipeline(
             "range_component_diagnostics_available": True,
             "workload_blind_protocol_available": True,
             "predictability_audit_available": bool(predictability_audit.get("available", False)),
+            "prior_predictive_alignment_gate_available": isinstance(prior_predictive_alignment_gate, dict),
             "workload_stability_gate_available": bool(workload_stability_gate),
             "support_overlap_gate_available": bool(support_overlap_gate),
             "global_sanity_gate_available": bool(global_sanity_gate),

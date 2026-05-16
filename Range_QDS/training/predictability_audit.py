@@ -6,8 +6,8 @@ from typing import Any
 
 import torch
 
-from training.query_prior_fields import sample_query_prior_fields
-from training.query_useful_targets import build_query_useful_v1_targets
+from training.query_prior_fields import QUERY_PRIOR_FIELD_NAMES, sample_query_prior_fields
+from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES, build_query_useful_v1_targets
 
 PREDICTABILITY_AUDIT_SCHEMA_VERSION = 1
 PREDICTABILITY_GATE_THRESHOLDS = {
@@ -16,6 +16,12 @@ PREDICTABILITY_GATE_THRESHOLDS = {
     "lift_at_5_percent": 1.20,
     "spearman_min": 0.15,
     "pr_auc_lift_over_base_rate": 1.25,
+}
+PRIOR_ALIGNMENT_GATE_THRESHOLDS = {
+    "query_hit_spearman_min": 0.10,
+    "query_hit_lift_at_5_percent_min": 1.10,
+    "segment_budget_lift_at_5_percent_min": 1.05,
+    "min_positive_spearman_head_count": 2,
 }
 
 
@@ -149,6 +155,160 @@ def _lift_at(score: torch.Tensor, target: torch.Tensor, ratio: float) -> float:
     return float(target_cpu[idx].mean().item() / base)
 
 
+def _score_target_metrics(
+    *,
+    score: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> dict[str, Any]:
+    """Return predictability metrics for one score-target pair."""
+    score_cpu = score.detach().cpu().float().flatten()
+    target_cpu = target.detach().cpu().float().flatten().clamp(min=0.0)
+    if valid_mask is None:
+        valid = torch.ones_like(target_cpu, dtype=torch.bool)
+    else:
+        valid = valid_mask.detach().cpu().bool().flatten()
+    valid = valid & torch.isfinite(score_cpu) & torch.isfinite(target_cpu)
+    if not bool(valid.any().item()):
+        return {
+            "available": False,
+            "reason": "no_valid_pairs",
+            "valid_count": 0,
+        }
+    score_valid = score_cpu[valid]
+    target_valid = target_cpu[valid]
+    positive = target_valid > 0.0
+    base_rate = float(positive.float().mean().item()) if int(target_valid.numel()) > 0 else 0.0
+    pr_auc = _pr_auc(score_valid, positive)
+    auc = _auc(score_valid, positive)
+    pr_auc_lift = float(pr_auc / max(base_rate, 1e-12)) if pr_auc is not None else None
+    budget_ratios = (0.01, 0.02, 0.05, 0.10)
+    lifts = {f"lift_at_{int(ratio * 100)}_percent": _lift_at(score_valid, target_valid, ratio) for ratio in budget_ratios}
+    ndcg = {f"ndcg_at_{int(ratio * 100)}_percent": _ndcg_at(score_valid, target_valid, ratio) for ratio in budget_ratios}
+    return {
+        "available": True,
+        "valid_count": int(target_valid.numel()),
+        "positive_count": int(positive.sum().item()),
+        "base_positive_rate": base_rate,
+        "target_mean": float(target_valid.mean().item()),
+        "target_mass": float(target_valid.sum().item()),
+        "score_mean": float(score_valid.mean().item()),
+        "score_std": float(score_valid.std(unbiased=False).item()) if int(score_valid.numel()) > 1 else 0.0,
+        "spearman": _spearman(score_valid, target_valid),
+        "kendall_tau": _kendall_tau_sampled(score_valid, target_valid),
+        "auc": auc,
+        "pr_auc": pr_auc,
+        "pr_auc_lift_over_base_rate": pr_auc_lift,
+        **lifts,
+        **ndcg,
+    }
+
+
+def _prior_channel_scores(points: torch.Tensor, query_prior_field: dict[str, Any]) -> dict[str, torch.Tensor]:
+    """Return sampled prior channels and derived prior scores."""
+    sampled = sample_query_prior_fields(points, query_prior_field).detach().cpu().float()
+    point_count = int(points.shape[0])
+    channels: dict[str, torch.Tensor] = {}
+    for idx, name in enumerate(QUERY_PRIOR_FIELD_NAMES):
+        if idx < int(sampled.shape[1]):
+            channels[name] = sampled[:, idx].clamp(0.0, 1.0)
+        else:
+            channels[name] = torch.zeros((point_count,), dtype=torch.float32)
+    query_mass = torch.clamp(
+        0.70 * channels["spatial_query_hit_probability"]
+        + 0.30 * channels["spatiotemporal_query_hit_probability"],
+        0.0,
+        1.0,
+    )
+    boundary_event = torch.maximum(
+        channels["boundary_entry_exit_likelihood"],
+        channels["crossing_likelihood"],
+    )
+    behavior = channels["behavior_utility_prior"]
+    replacement = torch.clamp(query_mass * (0.50 + behavior) + 0.25 * boundary_event.square(), 0.0, 1.0)
+    segment_budget = torch.clamp(
+        0.70 * replacement + 0.30 * channels["route_density_prior"],
+        0.0,
+        1.0,
+    )
+    channels.update(
+        {
+            "query_mass_prior": query_mass,
+            "boundary_event_prior": boundary_event,
+            "replacement_representative_prior": replacement,
+            "segment_budget_prior": segment_budget,
+            "combined_prior_score": _prior_predictability_score(points, query_prior_field).detach().cpu().float(),
+        }
+    )
+    return channels
+
+
+def _per_head_predictability(
+    *,
+    points: torch.Tensor,
+    query_prior_field: dict[str, Any],
+    head_targets: torch.Tensor,
+    head_mask: torch.Tensor,
+) -> dict[str, Any]:
+    """Return per-head prior predictability diagnostics for factorized targets."""
+    channels = _prior_channel_scores(points, query_prior_field)
+    head_score_map = {
+        "query_hit_probability": "query_mass_prior",
+        "conditional_behavior_utility": "behavior_utility_prior",
+        "boundary_event_utility": "boundary_event_prior",
+        "replacement_representative_value": "replacement_representative_prior",
+        "segment_budget_target": "segment_budget_prior",
+    }
+    per_head: dict[str, Any] = {}
+    positive_spearman_count = 0
+    for head_idx, head_name in enumerate(QUERY_USEFUL_V1_HEAD_NAMES):
+        if head_idx >= int(head_targets.shape[1]):
+            continue
+        score_name = head_score_map.get(head_name, "combined_prior_score")
+        metrics = _score_target_metrics(
+            score=channels[score_name],
+            target=head_targets[:, head_idx],
+            valid_mask=head_mask[:, head_idx],
+        )
+        metrics["score_source"] = score_name
+        per_head[head_name] = metrics
+        if metrics.get("available") and float(metrics.get("spearman", 0.0)) > 0.0:
+            positive_spearman_count += 1
+
+    query_hit = per_head.get("query_hit_probability", {})
+    segment_budget = per_head.get("segment_budget_target", {})
+    failed_checks: list[str] = []
+    if float(query_hit.get("spearman", 0.0)) < PRIOR_ALIGNMENT_GATE_THRESHOLDS["query_hit_spearman_min"]:
+        failed_checks.append("query_hit_spearman_below_min")
+    if float(query_hit.get("lift_at_5_percent", 0.0)) < PRIOR_ALIGNMENT_GATE_THRESHOLDS["query_hit_lift_at_5_percent_min"]:
+        failed_checks.append("query_hit_lift_at_5_percent_below_min")
+    if float(segment_budget.get("lift_at_5_percent", 0.0)) < PRIOR_ALIGNMENT_GATE_THRESHOLDS["segment_budget_lift_at_5_percent_min"]:
+        failed_checks.append("segment_budget_lift_at_5_percent_below_min")
+    if positive_spearman_count < int(PRIOR_ALIGNMENT_GATE_THRESHOLDS["min_positive_spearman_head_count"]):
+        failed_checks.append("too_few_positive_spearman_heads")
+
+    channel_vs_final: dict[str, Any] = {}
+    final_target = head_targets[:, list(QUERY_USEFUL_V1_HEAD_NAMES).index("segment_budget_target")]
+    final_mask = head_mask[:, list(QUERY_USEFUL_V1_HEAD_NAMES).index("segment_budget_target")]
+    for channel_name, score in channels.items():
+        channel_vs_final[channel_name] = _score_target_metrics(
+            score=score,
+            target=final_target,
+            valid_mask=final_mask,
+        )
+    return {
+        "schema_version": 1,
+        "per_head": per_head,
+        "channel_vs_segment_budget_target": channel_vs_final,
+        "prior_predictive_alignment_gate": {
+            "gate_pass": not failed_checks,
+            "failed_checks": failed_checks,
+            "thresholds": dict(PRIOR_ALIGNMENT_GATE_THRESHOLDS),
+            "positive_spearman_head_count": int(positive_spearman_count),
+        },
+    }
+
+
 def _prior_predictability_score(points: torch.Tensor, query_prior_field: dict[str, Any]) -> torch.Tensor:
     """Build a simple train-prior score from sampled prior-field channels."""
     sampled = sample_query_prior_fields(points, query_prior_field).float()
@@ -232,6 +392,12 @@ def query_prior_predictability_audit(
             and pr_auc_lift >= PREDICTABILITY_GATE_THRESHOLDS["pr_auc_lift_over_base_rate"]
         ),
     }
+    per_head_predictability = _per_head_predictability(
+        points=points,
+        query_prior_field=query_prior_field,
+        head_targets=eval_targets.head_targets.detach().cpu().float(),
+        head_mask=eval_targets.head_mask.detach().cpu().bool(),
+    )
     return {
         "schema_version": PREDICTABILITY_AUDIT_SCHEMA_VERSION,
         "available": True,
@@ -243,6 +409,9 @@ def query_prior_predictability_audit(
         "used_for_retained_mask_decision": False,
         "thresholds": dict(PREDICTABILITY_GATE_THRESHOLDS),
         "metrics": metrics,
+        "per_head_predictability": per_head_predictability["per_head"],
+        "prior_channel_predictability": per_head_predictability["channel_vs_segment_budget_target"],
+        "prior_predictive_alignment_gate": per_head_predictability["prior_predictive_alignment_gate"],
         "gate_checks": checks,
         "gate_pass": all(checks.values()),
         "eval_point_count": int(points.shape[0]),
