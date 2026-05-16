@@ -364,6 +364,21 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
                 "lift_at_5_percent": 1.18,
                 "pr_auc_lift_over_base_rate": 1.20,
             },
+            "prior_predictive_alignment_gate": {
+                "gate_pass": False,
+                "failed_checks": ["query_hit_spearman_below_min"],
+                "positive_spearman_head_count": 1,
+            },
+            "per_head_predictability": {
+                "query_hit_probability": {"spearman": 0.03, "lift_at_5_percent": 1.04, "pr_auc_lift_over_base_rate": 1.01},
+                "conditional_behavior_utility": {"spearman": -0.02, "lift_at_5_percent": 0.95},
+                "replacement_representative_value": {"spearman": 0.08, "lift_at_5_percent": 1.06},
+                "segment_budget_target": {"spearman": 0.01, "lift_at_5_percent": 1.02},
+            },
+            "prior_channel_predictability": {
+                "query_mass_prior": {"spearman": 0.04},
+                "combined_prior_score": {"lift_at_5_percent": 1.03},
+            },
         },
         "workload_stability_gate": {
             "gate_pass": False,
@@ -409,6 +424,12 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "no_query_prior_field_ablation_delta": 0.03,
             "no_behavior_head_ablation_delta": 0.07,
             "no_segment_budget_head_ablation_delta": 0.08,
+            "no_trajectory_fairness_preallocation_ablation_delta": 0.015,
+            "learned_segment_selector_config": {
+                "geometry_gain_weight": 0.12,
+                "segment_score_blend_weight": 0.05,
+                "fairness_preallocation_enabled": True,
+            },
             "learning_causality_delta_gate": {
                 "min_material_query_useful_delta": 0.005,
                 "shuffled_score_delta_fraction_of_uniform_gap_min": 0.60,
@@ -925,6 +946,13 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["predictability_spearman"] == 0.12
     assert row["predictability_lift_at_5_percent"] == 1.18
     assert row["predictability_pr_auc_lift_over_base_rate"] == 1.20
+    assert row["prior_predictive_alignment_gate_pass"] is False
+    assert row["prior_predictive_alignment_failed_checks"] == ["query_hit_spearman_below_min"]
+    assert row["prior_positive_spearman_head_count"] == 1
+    assert row["predictability_query_hit_spearman"] == 0.03
+    assert row["predictability_segment_budget_lift_at_5_percent"] == 1.02
+    assert row["prior_channel_query_mass_spearman"] == 0.04
+    assert row["prior_channel_combined_score_lift_at_5_percent"] == 1.03
     assert row["workload_signature_gate_available"] is True
     assert row["workload_signature_gate_pass"] is False
     assert row["workload_signature_pair_count"] == 1
@@ -951,6 +979,10 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["no_query_prior_field_ablation_delta"] == 0.03
     assert row["no_behavior_head_ablation_delta"] == 0.07
     assert row["no_segment_budget_head_ablation_delta"] == 0.08
+    assert row["no_trajectory_fairness_preallocation_ablation_delta"] == 0.015
+    assert row["learned_segment_geometry_gain_weight"] == 0.12
+    assert row["learned_segment_score_blend_weight"] == 0.05
+    assert row["learned_segment_fairness_preallocation_enabled"] is True
     assert row["learning_causality_min_material_delta"] == 0.005
     assert row["learning_causality_shuffled_fraction_of_uniform_gap_min"] == 0.60
     assert row["learning_causality_mlqds_uniform_gap"] == 0.05
@@ -1135,6 +1167,7 @@ def _final_grid_row(coverage: float, *, mlqds_delta: float = 0.05) -> dict[str, 
         "douglas_peucker_query_useful_v1_score": 0.49,
         "workload_stability_gate_pass": True,
         "predictability_gate_pass": True,
+        "prior_predictive_alignment_gate_pass": True,
         "target_diffusion_gate_pass": True,
         "workload_signature_gate_pass": True,
         "learning_causality_gate_pass": True,
@@ -1190,6 +1223,22 @@ def test_query_driven_final_grid_summary_blocks_missing_or_failed_evidence() -> 
     assert "too_few_uniform_queryuseful_wins" in summary["failed_checks"]
     assert "required_single_run_gates_failed" in summary["failed_checks"]
     assert summary["child_gate_failures"][0]["failed_gates"] == ["predictability_gate_pass"]
+
+
+def test_query_driven_final_grid_summary_blocks_prior_alignment_failure() -> None:
+    rows = [_final_grid_row(coverage) for coverage in (0.05, 0.10, 0.15, 0.30)]
+    rows[0]["prior_predictive_alignment_gate_pass"] = False
+
+    summary = query_driven_final_grid_summary(
+        rows,
+        {"profile_settings": {"final_product_candidate": True}},
+    )
+
+    assert summary["status"] == "final_grid_blocked"
+    assert summary["final_success_allowed"] is False
+    assert "required_single_run_gates_failed" in summary["failed_checks"]
+    assert "prior_predictive_alignment_gate_pass" in summary["required_single_run_gate_names"]
+    assert summary["child_gate_failures"][0]["failed_gates"] == ["prior_predictive_alignment_gate_pass"]
 
 
 def test_query_floor_fields_flags_coverage_target_miss() -> None:
