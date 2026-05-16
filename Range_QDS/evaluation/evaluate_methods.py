@@ -377,6 +377,8 @@ def _query_local_interpolation_fidelity(
     removed_offsets = in_offsets[~query_retained]
     if int(removed_offsets.numel()) == 0:
         return 1.0
+    retained_in_query_count = int(query_retained.sum().item())
+    local_evidence_factor = min(1.0, float(retained_in_query_count) / 2.0)
     pos = torch.searchsorted(retained_idx, removed_offsets)
     valid = (pos > 0) & (pos < int(retained_idx.numel()))
     if not bool(valid.any().item()):
@@ -408,7 +410,8 @@ def _query_local_interpolation_fidelity(
     ped_km = torch.abs(bx_km * py_km - by_km * px_km) / chord_len
     avg_error_km = float(((sed_km + ped_km) * 0.5).mean().item())
     avg_segment_km = support.full_length_km / float(max(1, int(in_offsets.numel()) - 1))
-    return float(max(0.0, min(1.0, 1.0 / (1.0 + avg_error_km / max(avg_segment_km, 1e-6)))))
+    raw_fidelity = 1.0 / (1.0 + avg_error_km / max(avg_segment_km, 1e-6))
+    return float(max(0.0, min(1.0, raw_fidelity * local_evidence_factor)))
 
 
 def _range_trajectory_detail_scores_for_query(
@@ -424,8 +427,6 @@ def _range_trajectory_detail_scores_for_query(
     gap_distance_scores: list[float] = []
     turn_scores: list[float] = []
     shape_scores: list[float] = []
-    interpolation_scores: list[float] = []
-    interpolation_scores: list[float] = []
     interpolation_scores: list[float] = []
     times = points_cpu[:, 0]
     for support in trajectory_support:

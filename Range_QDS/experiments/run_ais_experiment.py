@@ -181,6 +181,7 @@ def main() -> None:
         range_train_workload_replicates=args.range_train_workload_replicates,
         workload_profile_id=args.workload_profile_id,
         coverage_calibration_mode=args.coverage_calibration_mode,
+        workload_stability_gate_mode=args.workload_stability_gate_mode,
         epochs=args.epochs,
         lr=args.lr,
         embed_dim=args.embed_dim,
@@ -235,6 +236,9 @@ def main() -> None:
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         mlqds_hybrid_mode=args.mlqds_hybrid_mode,
         selector_type=args.selector_type,
+        learned_segment_geometry_gain_weight=args.learned_segment_geometry_gain_weight,
+        learned_segment_score_blend_weight=args.learned_segment_score_blend_weight,
+        learned_segment_fairness_preallocation=args.learned_segment_fairness_preallocation,
         mlqds_stratified_center_weight=args.mlqds_stratified_center_weight,
         mlqds_min_learned_swaps=args.mlqds_min_learned_swaps,
         mlqds_score_mode=args.mlqds_score_mode,
@@ -326,6 +330,7 @@ def main() -> None:
         f"range_train_workload_replicates={args.range_train_workload_replicates}  "
         f"workload_profile_id={args.workload_profile_id}  "
         f"coverage_calibration_mode={args.coverage_calibration_mode}  "
+        f"workload_stability_gate_mode={args.workload_stability_gate_mode}  "
         f"historical_prior_k={args.historical_prior_k}  "
         f"historical_prior_clock_weight={args.historical_prior_clock_weight}  "
         f"historical_prior_mmsi_weight={args.historical_prior_mmsi_weight}  "
@@ -336,6 +341,9 @@ def main() -> None:
         f"mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"mlqds_hybrid_mode={args.mlqds_hybrid_mode}  "
         f"selector_type={args.selector_type}  "
+        f"learned_segment_geometry_gain_weight={args.learned_segment_geometry_gain_weight}  "
+        f"learned_segment_score_blend_weight={args.learned_segment_score_blend_weight}  "
+        f"learned_segment_fairness_preallocation={args.learned_segment_fairness_preallocation}  "
         f"mlqds_stratified_center_weight={args.mlqds_stratified_center_weight}  "
         f"mlqds_min_learned_swaps={args.mlqds_min_learned_swaps}  "
         f"mlqds_score_mode={args.mlqds_score_mode}  "

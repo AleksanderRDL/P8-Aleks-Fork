@@ -72,7 +72,7 @@ def _segment_rows(
                     max(1, int(math.ceil(0.20 * int(local_segment.numel())))),
                 )
                 segment_score = float(torch.topk(local_segment, k=head_top_count).values.mean().item())
-                segment_score_source = "segment_budget_head_mean"
+                segment_score_source = "segment_budget_head_top20_mean"
             rows.append(
                 {
                     "trajectory_id": int(trajectory_id),
@@ -165,6 +165,7 @@ def _allocate_segment_budgets(
     budget: int,
     boundaries: list[tuple[int, int]],
     max_budget_share_per_ship: float,
+    fairness_preallocation_enabled: bool = True,
 ) -> dict[int, int]:
     """Allocate learned slots with score-weighted diminishing returns."""
     if remaining <= 0 or not segment_rows:
@@ -179,9 +180,12 @@ def _allocate_segment_budgets(
     remaining_slots = int(remaining)
 
     # Trajectories with enough total learned budget should not be reduced to
-    # endpoints-only retention. Guarantee one learned slot on at least one segment
-    # per active trajectory before score-weighted diminishing allocations.
-    if remaining_slots >= max(1, valid_trajectory_count):
+    # endpoints-only retention. This is query-free sanity structure, so expose
+    # it as a switch and as a diagnostic ablation rather than hiding it.
+    if (
+        fairness_preallocation_enabled
+        and remaining_slots >= max(1, valid_trajectory_count)
+    ):
         trajectory_best_rows: dict[int, tuple[float, int, int]] = {}
         for segment_idx, row in enumerate(segment_rows):
             trajectory_id = int(row["trajectory_id"])
@@ -319,6 +323,9 @@ def _selector_trace(
     segment_score_source: str,
     segment_score_stats: dict[str, float | int] | None = None,
     segment_budget_allocation_method: str = "none",
+    fairness_preallocation_enabled: bool = True,
+    geometry_gain_weight: float = GEOMETRY_TIE_BREAKER_WEIGHT,
+    segment_score_point_blend_weight: float = SEGMENT_SCORE_POINT_BLEND_WEIGHT,
 ) -> dict[str, Any]:
     """Return JSON-serializable attribution for the retained mask."""
     retained_count = int(retained.sum().item())
@@ -359,6 +366,9 @@ def _selector_trace(
         "segment_budget_entropy_normalized": entropy_normalized,
         "segment_score_source": str(segment_score_source),
         "segment_budget_allocation_method": str(segment_budget_allocation_method),
+        "trajectory_fairness_preallocation_enabled": bool(fairness_preallocation_enabled),
+        "geometry_tie_breaker_weight": float(geometry_gain_weight),
+        "segment_score_point_blend_weight": float(segment_score_point_blend_weight),
         "no_fixed_85_percent_temporal_scaffold": True,
         "point_attribution_available": True,
         **(segment_score_stats or {}),
@@ -452,6 +462,8 @@ def simplify_with_learned_segment_budget_v1_with_trace(
     segment_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
     geometry_gain_weight: float = GEOMETRY_TIE_BREAKER_WEIGHT,
+    segment_score_point_blend_weight: float = SEGMENT_SCORE_POINT_BLEND_WEIGHT,
+    fairness_preallocation_enabled: bool = True,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Retain points and return skeleton/learned/fallback attribution."""
     point_total = int(scores.numel())
@@ -473,6 +485,9 @@ def simplify_with_learned_segment_budget_v1_with_trace(
             segment_count=0,
             segment_score_source="none",
             segment_budget_allocation_method="none",
+            fairness_preallocation_enabled=fairness_preallocation_enabled,
+            geometry_gain_weight=geometry_gain_weight,
+            segment_score_point_blend_weight=segment_score_point_blend_weight,
         )
         return retained, trace
     budget = min(point_total, _total_budget(boundaries, compression_ratio))
@@ -522,6 +537,9 @@ def simplify_with_learned_segment_budget_v1_with_trace(
             segment_count=0,
             segment_score_source="none",
             segment_budget_allocation_method="none",
+            fairness_preallocation_enabled=fairness_preallocation_enabled,
+            geometry_gain_weight=geometry_gain_weight,
+            segment_score_point_blend_weight=segment_score_point_blend_weight,
         )
         return retained, trace
 
@@ -543,6 +561,7 @@ def simplify_with_learned_segment_budget_v1_with_trace(
         budget=budget,
         boundaries=boundaries,
         max_budget_share_per_ship=max_budget_share_per_ship,
+        fairness_preallocation_enabled=fairness_preallocation_enabled,
     )
 
     for segment_idx, keep_count in segment_allocations.items():
@@ -578,7 +597,7 @@ def simplify_with_learned_segment_budget_v1_with_trace(
             segment_aux_local_scores = segment_aux_scores[segment_local_start:segment_local_end]
             segment_score_finite = torch.isfinite(segment_aux_local_scores)
             if bool(segment_score_finite.any().item()):
-                segment_score_weight = float(SEGMENT_SCORE_POINT_BLEND_WEIGHT)
+                segment_score_weight = float(segment_score_point_blend_weight)
         selected = _select_with_spacing(
             trajectory_scores,
             int(keep_count),
@@ -617,6 +636,9 @@ def simplify_with_learned_segment_budget_v1_with_trace(
         segment_score_source=segment_score_source,
         segment_score_stats=segment_score_stats,
         segment_budget_allocation_method="score_weighted_diminishing_priority",
+        fairness_preallocation_enabled=fairness_preallocation_enabled,
+        geometry_gain_weight=geometry_gain_weight,
+        segment_score_point_blend_weight=segment_score_point_blend_weight,
     )
     return retained, trace
 
@@ -632,6 +654,8 @@ def simplify_with_learned_segment_budget_v1(
     segment_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
     geometry_gain_weight: float = GEOMETRY_TIE_BREAKER_WEIGHT,
+    segment_score_point_blend_weight: float = SEGMENT_SCORE_POINT_BLEND_WEIGHT,
+    fairness_preallocation_enabled: bool = True,
 ) -> torch.Tensor:
     """Retain a minimal skeleton, then allocate remaining budget by learned segment value."""
     retained, _trace = simplify_with_learned_segment_budget_v1_with_trace(
@@ -644,6 +668,8 @@ def simplify_with_learned_segment_budget_v1(
         segment_scores=segment_scores,
         points=points,
         geometry_gain_weight=geometry_gain_weight,
+        segment_score_point_blend_weight=segment_score_point_blend_weight,
+        fairness_preallocation_enabled=fairness_preallocation_enabled,
     )
     return retained
 

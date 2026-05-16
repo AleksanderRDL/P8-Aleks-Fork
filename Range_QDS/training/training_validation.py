@@ -252,6 +252,9 @@ def _validation_checkpoint_scores(
         selector_type=str(getattr(model_config, "selector_type", "temporal_hybrid")),
         segment_scores=segment_scores,
         points=points,
+        learned_segment_geometry_gain_weight=float(getattr(model_config, "learned_segment_geometry_gain_weight", 0.12)),
+        learned_segment_score_blend_weight=float(getattr(model_config, "learned_segment_score_blend_weight", 0.05)),
+        learned_segment_fairness_preallocation=bool(getattr(model_config, "learned_segment_fairness_preallocation", True)),
     )
     answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
