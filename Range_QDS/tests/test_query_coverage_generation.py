@@ -86,8 +86,8 @@ def test_coverage_generation_keeps_requested_query_count_after_target_is_met() -
     )
 
 
-def test_coverage_generation_profile_calibrated_mode_stops_at_target_coverage() -> None:
-    """Assert calibrated profiles can stop as soon as target coverage is reached."""
+def test_coverage_generation_profile_calibrated_mode_keeps_requested_query_floor() -> None:
+    """Assert final profiles keep the requested query count after reaching target coverage."""
     trajectories = generate_synthetic_ais_data(n_ships=8, n_points_per_ship=128, seed=1818)
 
     workload = generate_typed_query_workload(
@@ -113,8 +113,9 @@ def test_coverage_generation_profile_calibrated_mode_stops_at_target_coverage() 
     assert generation["stop_reason"] == "target_coverage_reached"
     assert generation["target_reached_query_count"] is not None
     assert generation["coverage_at_target_reached"] is not None
-    assert generation["extra_queries_after_target_reached"] == 0
-    assert generation["final_query_count"] == generation["target_reached_query_count"]
+    assert generation["final_query_count"] >= generation["minimum_queries"]
+    assert generation["extra_queries_after_target_reached"] >= 0
+    assert len(workload.typed_queries) == generation["final_query_count"]
 
 
 def test_coverage_overshoot_guard_rejects_over_broad_queries() -> None:

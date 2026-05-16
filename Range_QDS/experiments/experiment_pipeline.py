@@ -752,7 +752,11 @@ def _workload_stability_gate(
         if query_count < row_min_queries_per_workload:
             row_failed.append("too_few_queries")
         if gate_mode != "smoke":
-            if bool(acceptance.get("exhausted", False)):
+            if (
+                bool(acceptance.get("exhausted", False))
+                or stop_reason == "range_acceptance_exhausted"
+                or stop_reason == "range_coverage_guard_exhausted"
+            ):
                 row_failed.append("range_acceptance_or_coverage_guard_exhausted")
             attempts = int(acceptance.get("attempts", 0) or 0)
             rejected = int(acceptance.get("rejected", 0) or 0)
