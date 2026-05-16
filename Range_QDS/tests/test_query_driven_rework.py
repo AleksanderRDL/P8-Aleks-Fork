@@ -1158,8 +1158,9 @@ def test_prior_sample_gate_failures_explain_empty_or_out_of_extent_priors() -> N
 def test_workload_signature_gate_reports_pass_for_matching_profiles() -> None:
     signature = {
         "profile_id": "range_workload_v1",
-        "anchor_family_counts": {"density_route": 3, "boundary_entry_exit": 1},
-        "footprint_family_counts": {"medium_operational": 4},
+        "query_count": 8,
+        "anchor_family_counts": {"density_route": 6, "boundary_entry_exit": 2},
+        "footprint_family_counts": {"medium_operational": 8},
         "point_hits_per_query": {"p10": 3.0, "p50": 5.0, "p90": 8.0},
         "ship_hits_per_query": {"p10": 1.0, "p50": 2.0, "p90": 3.0},
         "near_duplicate_rate": 0.0,
@@ -1374,9 +1375,13 @@ def test_workload_stability_gate_accepts_coverage_calibrated_replicates() -> Non
     assert gate["train_workload_replicate_count"] == 4
 
 
-def test_workload_stability_gate_accepts_exhausted_stop_after_coverage_satisfied() -> None:
+def test_workload_stability_gate_rejects_exhausted_generation_after_coverage_satisfied() -> None:
     config = SimpleNamespace(
-        query=SimpleNamespace(target_coverage=0.10, range_max_coverage_overshoot=0.0075)
+        query=SimpleNamespace(
+            target_coverage=0.10,
+            range_max_coverage_overshoot=0.0075,
+            workload_stability_gate_mode="final",
+        )
     )
     workload = SimpleNamespace(
         typed_queries=[{} for _ in range(12)],
@@ -1391,6 +1396,14 @@ def test_workload_stability_gate_accepts_exhausted_stop_after_coverage_satisfied
                 "coverage_guard_enabled": True,
                 "stop_reason": "range_acceptance_exhausted",
             }
+        ,
+            "range_acceptance": {
+                "enabled": True,
+                "attempts": 6000,
+                "accepted": 12,
+                "rejected": 5988,
+                "exhausted": True,
+            },
         },
     )
 
@@ -1401,14 +1414,55 @@ def test_workload_stability_gate_accepts_exhausted_stop_after_coverage_satisfied
         selection_workload=None,
     )
 
-    assert gate["gate_pass"] is True
-    assert gate["failed_checks"] == []
+    assert gate["gate_pass"] is False
+    assert "train_r0:range_acceptance_or_coverage_guard_exhausted" in gate["failed_checks"]
+    assert "eval:range_acceptance_or_coverage_guard_exhausted" in gate["failed_checks"]
     assert gate["workloads"][0]["coverage_target_satisfied"] is True
 
 
-def test_workload_stability_gate_allows_calibrated_low_query_count() -> None:
+def test_workload_stability_gate_rejects_calibrated_low_query_count_in_final_mode() -> None:
     config = SimpleNamespace(
-        query=SimpleNamespace(target_coverage=0.05, range_max_coverage_overshoot=0.005)
+        query=SimpleNamespace(
+            target_coverage=0.05,
+            range_max_coverage_overshoot=0.005,
+            workload_stability_gate_mode="final",
+        )
+    )
+    workload = SimpleNamespace(
+        typed_queries=[{} for _ in range(7)],
+        coverage_fraction=0.054,
+        generation_diagnostics={
+            "query_generation": {
+                "mode": "target_coverage",
+                "workload_profile_id": "range_workload_v1",
+                "coverage_calibration_mode": "profile_sampled_query_count",
+                "query_count_mode": "calibrated_to_coverage",
+                "target_coverage": 0.05,
+                "coverage_guard_enabled": True,
+                "stop_reason": "target_coverage_reached",
+            }
+        },
+    )
+
+    gate = _workload_stability_gate(
+        config=cast(Any, config),
+        train_label_workloads=[workload, workload, workload, workload],
+        eval_workload=workload,
+        selection_workload=None,
+    )
+
+    assert gate["gate_pass"] is False
+    assert "train_r0:too_few_queries" in gate["failed_checks"]
+    assert "eval:too_few_queries" in gate["failed_checks"]
+
+
+def test_workload_stability_gate_smoke_mode_allows_calibrated_low_query_count() -> None:
+    config = SimpleNamespace(
+        query=SimpleNamespace(
+            target_coverage=0.05,
+            range_max_coverage_overshoot=0.005,
+            workload_stability_gate_mode="smoke",
+        )
     )
     workload = SimpleNamespace(
         typed_queries=[{} for _ in range(7)],
@@ -1435,6 +1489,7 @@ def test_workload_stability_gate_allows_calibrated_low_query_count() -> None:
 
     assert gate["gate_pass"] is True
     assert gate["failed_checks"] == []
+    assert gate["gate_mode"] == "smoke"
 
 
 def test_global_sanity_gate_enforces_endpoint_length_and_sed_ratio() -> None:

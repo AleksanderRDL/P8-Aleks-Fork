@@ -513,7 +513,6 @@ def _absolute_range_v2_features(points: torch.Tensor, query_prior_field: dict[st
         ).clamp(0.0, 1.0)
     else:
         t_norm = torch.remainder(points[:, 0].float(), 86_400.0) / 86_400.0
-    t_span = max(1e-9, float(extent["t_max"]) - float(extent["t_min"]))
     lat_span = max(1e-9, float(extent["lat_max"]) - float(extent["lat_min"]))
     lon_span = max(1e-9, float(extent["lon_max"]) - float(extent["lon_min"]))
     lat_norm = ((points[:, 1].float() - float(extent["lat_min"])) / lat_span).clamp(0.0, 1.0)
