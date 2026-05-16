@@ -180,6 +180,9 @@ def simplify_mlqds_predictions(
     selector_type: str = "temporal_hybrid",
     segment_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
+    learned_segment_geometry_gain_weight: float = 0.12,
+    learned_segment_score_blend_weight: float = 0.05,
+    learned_segment_fairness_preallocation: bool = True,
 ) -> torch.Tensor:
     """Simplify using canonical MLQDS score conversion and retained-mask logic."""
     scores = mlqds_simplification_scores(
@@ -199,6 +202,9 @@ def simplify_mlqds_predictions(
             compression_ratio,
             segment_scores=segment_scores,
             points=points,
+            geometry_gain_weight=learned_segment_geometry_gain_weight,
+            segment_score_point_blend_weight=learned_segment_score_blend_weight,
+            fairness_preallocation_enabled=learned_segment_fairness_preallocation,
         )
     return simplify_with_temporal_score_hybrid(
         scores,

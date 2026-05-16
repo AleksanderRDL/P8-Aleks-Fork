@@ -367,6 +367,20 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
         "near_duplicate_rate_max": 0.05,
         "broad_query_rate_max": 0.05,
     }
+    train_query_count = int(train_sig.get("query_count", 0) or 0)
+    eval_query_count = int(eval_sig.get("query_count", 0) or 0)
+    min_signature_query_count = 8
+    count_failed: list[str] = []
+    if train_query_count < min_signature_query_count:
+        count_failed.append("train_signature_query_count_below_min")
+    if eval_query_count < min_signature_query_count:
+        count_failed.append("eval_signature_query_count_below_min")
+    train_profile = str(train_sig.get("profile_id", ""))
+    eval_profile = str(eval_sig.get("profile_id", ""))
+    profile_failed: list[str] = []
+    if train_profile != eval_profile:
+        profile_failed.append("profile_id_mismatch")
+
     point_hit_ks = _ks_distance(
         train_sig.get("point_hit_counts_per_query"),
         eval_sig.get("point_hit_counts_per_query"),
@@ -436,7 +450,7 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
         name
         for name, (value, threshold) in checks.items()
         if not isinstance(value, (int, float)) or float(value) > float(threshold)
-    ]
+    ] + count_failed + profile_failed
     return {
         "gate_available": True,
         "gate_pass": not failed,
@@ -445,6 +459,9 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
         "metrics": metrics,
         "profile_id_train": train_sig.get("profile_id"),
         "profile_id_eval": eval_sig.get("profile_id"),
+        "train_query_count": train_query_count,
+        "eval_query_count": eval_query_count,
+        "min_signature_query_count": min_signature_query_count,
         "distribution_metric_note": (
             "Point/ship hit distribution checks use persisted per-query hit-count KS distance when available; "
             "older signatures fall back to p10/p50/p90 quantile-distance proxies."

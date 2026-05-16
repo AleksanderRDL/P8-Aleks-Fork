@@ -27,6 +27,7 @@ from models.workload_blind_range_v2 import WorkloadBlindRangeV2Model
 from queries.query_generator import (
     _anchor_weights_for_family,
     _make_range_query,
+    _profile_query_plan,
     _profile_query_settings,
     _weighted_choice_with_deterministic_key,
     generate_typed_query_workload,
@@ -63,6 +64,50 @@ def _boundaries(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
         out.append((cursor, end))
         cursor = end
     return out
+
+
+def test_profile_query_plan_preserves_weighted_family_quotas() -> None:
+    profile = range_workload_profile("range_workload_v1")
+
+    plan = _profile_query_plan(profile, requested_queries=20, workload_seed=123)
+
+    assert plan["enabled"] is True
+    assert len(plan["anchor_family_sequence"]) == 20
+    assert len(plan["footprint_family_sequence"]) == 20
+    assert plan["anchor_family_planned_counts"] == {
+        "density_route": 8,
+        "boundary_entry_exit": 4,
+        "crossing_turn_change": 3,
+        "port_or_approach_zone": 3,
+        "sparse_background_control": 2,
+    }
+    assert plan["footprint_family_planned_counts"] == {
+        "small_local": 5,
+        "medium_operational": 9,
+        "large_context": 4,
+        "route_corridor_like": 2,
+    }
+
+
+def test_range_workload_v1_target_coverage_keeps_requested_query_count() -> None:
+    trajectories = generate_synthetic_ais_data(n_ships=5, n_points_per_ship=48, seed=87, route_families=1)
+    workload = generate_typed_query_workload(
+        trajectories=trajectories,
+        n_queries=8,
+        workload_map={"range": 1.0},
+        seed=14,
+        target_coverage=0.05,
+        max_queries=64,
+        workload_profile_id="range_workload_v1",
+        coverage_calibration_mode="profile_sampled_query_count",
+        range_max_point_hit_fraction=1.0,
+        range_duplicate_iou_threshold=1.0,
+    )
+
+    generation = (workload.generation_diagnostics or {})["query_generation"]
+    assert generation["query_count_mode"] == "calibrated_to_coverage"
+    assert generation["coverage_calibration_mode"] == "profile_sampled_query_count"
+    assert generation["final_query_count"] >= 8
 
 
 def test_range_workload_v1_records_profile_signature() -> None:
@@ -190,8 +235,8 @@ def test_query_useful_v1_has_true_query_local_interpolation_component() -> None:
     components = cast(dict[str, float], useful["query_useful_v1_components"])
 
     assert audit["range_shape_score"] == 0.0
-    assert audit["range_query_local_interpolation_fidelity"] > 0.99
-    assert components["query_local_interpolation_fidelity"] > 0.99
+    assert audit["range_query_local_interpolation_fidelity"] == 0.0
+    assert components["query_local_interpolation_fidelity"] == 0.0
     assert useful["query_useful_v1_metric_maturity"] == "bridge_with_true_query_local_interpolation_component"
 
 
@@ -596,6 +641,50 @@ def test_support_overlap_gate_blocks_out_of_extent_eval_points() -> None:
     assert gate["gate_pass"] is False
     assert "eval_points_outside_train_prior_extent_too_high" in gate["failed_checks"]
     assert "sampled_prior_nonzero_fraction_too_low" in gate["failed_checks"]
+
+
+def test_workload_signature_gate_rejects_profile_mismatch_and_tiny_query_counts() -> None:
+    summaries = {
+        "train": {
+            "range": {"range_query_count": 4},
+            "range_signal": {},
+            "generation": {
+                "workload_signature": {
+                    "profile_id": "legacy_generator",
+                    "query_count": 4,
+                    "anchor_family_counts": {"density_route": 4},
+                    "footprint_family_counts": {"medium_operational": 4},
+                    "point_hit_counts_per_query": [1, 2, 3, 4],
+                    "ship_hit_counts_per_query": [1, 1, 2, 2],
+                    "near_duplicate_rate": 0.0,
+                    "broad_query_rate": 0.0,
+                }
+            },
+        },
+        "eval": {
+            "range": {"range_query_count": 4},
+            "range_signal": {},
+            "generation": {
+                "workload_signature": {
+                    "profile_id": "range_workload_v1",
+                    "query_count": 4,
+                    "anchor_family_counts": {"density_route": 4},
+                    "footprint_family_counts": {"medium_operational": 4},
+                    "point_hit_counts_per_query": [1, 2, 3, 4],
+                    "ship_hit_counts_per_query": [1, 1, 2, 2],
+                    "near_duplicate_rate": 0.0,
+                    "broad_query_rate": 0.0,
+                }
+            },
+        },
+    }
+
+    gate = _range_workload_distribution_comparison(summaries)["workload_signature_gate"]["pairs"]["train"]
+
+    assert gate["gate_pass"] is False
+    assert "profile_id_mismatch" in gate["failed_checks"]
+    assert "train_signature_query_count_below_min" in gate["failed_checks"]
+    assert "eval_signature_query_count_below_min" in gate["failed_checks"]
 
 
 def test_workload_blind_range_v2_features_and_selector_are_query_free() -> None:

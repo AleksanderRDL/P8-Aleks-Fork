@@ -569,6 +569,7 @@ def query_driven_final_grid_summary(
         "workload_stability_gate_pass",
         "support_overlap_gate_pass",
         "predictability_gate_pass",
+        "prior_predictive_alignment_gate_pass",
         "target_diffusion_gate_pass",
         "workload_signature_gate_pass",
         "learning_causality_gate_pass",
@@ -802,6 +803,68 @@ def _query_generation(run_json: dict[str, Any] | None, split: str) -> dict[str, 
     query_generation = split_payload.get("query_generation") or {}
     return query_generation if isinstance(query_generation, dict) else {}
 
+
+def _range_acceptance(run_json: dict[str, Any] | None, split: str) -> dict[str, Any]:
+    """Return range-acceptance diagnostics for one split."""
+    diagnostics = (run_json or {}).get("query_generation_diagnostics") or {}
+    split_payload = diagnostics.get(split) or {}
+    if not isinstance(split_payload, dict):
+        return {}
+    acceptance = split_payload.get("range_acceptance") or {}
+    return acceptance if isinstance(acceptance, dict) else {}
+
+
+def _range_acceptance_health_fields(prefix: str, acceptance: dict[str, Any]) -> dict[str, Any]:
+    """Return final-profile generator health fields for one split."""
+    attempts = _as_float(acceptance.get("attempts"))
+    accepted = _as_float(acceptance.get("accepted"))
+    rejected = _as_float(acceptance.get("rejected"))
+    reasons = acceptance.get("rejection_reasons") or {}
+    if not isinstance(reasons, dict):
+        reasons = {}
+    coverage_rejections = _as_float(reasons.get("coverage_overshoot")) or 0.0
+    rejection_rate = (
+        float(rejected) / max(1.0, float(attempts))
+        if rejected is not None and attempts is not None
+        else None
+    )
+    coverage_guard_rejection_pressure = (
+        float(coverage_rejections) / max(1.0, float(accepted))
+        if accepted is not None
+        else None
+    )
+    return {
+        f"{prefix}_range_acceptance_enabled": acceptance.get("enabled"),
+        f"{prefix}_range_acceptance_exhausted": acceptance.get("exhausted"),
+        f"{prefix}_range_acceptance_attempts": attempts,
+        f"{prefix}_range_acceptance_accepted": accepted,
+        f"{prefix}_range_acceptance_rejected": rejected,
+        f"{prefix}_range_generation_rejection_rate": rejection_rate,
+        f"{prefix}_coverage_guard_rejection_count": coverage_rejections,
+        f"{prefix}_coverage_guard_rejection_pressure": coverage_guard_rejection_pressure,
+        f"{prefix}_range_rejection_reasons": reasons,
+        f"{prefix}_range_rejection_reasons_by_anchor_family": acceptance.get(
+            "rejection_reasons_by_anchor_family"
+        ),
+        f"{prefix}_range_rejection_reasons_by_footprint_family": acceptance.get(
+            "rejection_reasons_by_footprint_family"
+        ),
+    }
+
+
+def _profile_query_plan_fields(prefix: str, generation: dict[str, Any]) -> dict[str, Any]:
+    """Return planned workload-family quota fields for one split."""
+    plan = generation.get("profile_query_plan") or {}
+    if not isinstance(plan, dict):
+        plan = {}
+    return {
+        f"{prefix}_profile_query_plan_enabled": plan.get("enabled"),
+        f"{prefix}_profile_query_plan_requested_queries": plan.get("requested_queries"),
+        f"{prefix}_profile_anchor_family_planned_counts": plan.get("anchor_family_planned_counts"),
+        f"{prefix}_profile_footprint_family_planned_counts": plan.get("footprint_family_planned_counts"),
+    }
+
+
 def _workload_distribution_summary(run_json: dict[str, Any] | None, split: str) -> dict[str, Any]:
     """Return workload distribution summary for one split."""
     summaries = ((run_json or {}).get("workload_distribution_comparison") or {}).get("summaries") or {}
@@ -869,8 +932,11 @@ def _query_floor_fields(prefix: str, generation: dict[str, Any]) -> dict[str, An
 def _workload_generation_fields(run_json: dict[str, Any] | None, split: str) -> dict[str, Any]:
     """Flatten query-generation and workload-distribution diagnostics for one split."""
     generation = _query_generation(run_json, split)
+    acceptance = _range_acceptance(run_json, split)
     summary = _workload_distribution_summary(run_json, split)
     fields = _query_floor_fields(split, generation)
+    fields.update(_range_acceptance_health_fields(split, acceptance))
+    fields.update(_profile_query_plan_fields(split, generation))
     fields.update(
         {
             f"{split}_workload_range_query_count": summary.get("range_query_count"),
@@ -933,8 +999,16 @@ def _row_from_run(
     legacy_range_useful_summary = (run_json or {}).get("legacy_range_useful_summary") or {}
     predictability_audit = (run_json or {}).get("predictability_audit") or {}
     predictability_metrics = predictability_audit.get("metrics") or {}
+    prior_predictive_alignment_gate = predictability_audit.get("prior_predictive_alignment_gate") or {}
+    per_head_predictability = predictability_audit.get("per_head_predictability") or {}
+    query_hit_predictability = per_head_predictability.get("query_hit_probability") or {}
+    behavior_predictability = per_head_predictability.get("conditional_behavior_utility") or {}
+    replacement_predictability = per_head_predictability.get("replacement_representative_value") or {}
+    segment_budget_predictability = per_head_predictability.get("segment_budget_target") or {}
+    prior_channel_predictability = predictability_audit.get("prior_channel_predictability") or {}
     learning_causality = (run_json or {}).get("learning_causality_summary") or {}
     learning_delta_gate = learning_causality.get("learning_causality_delta_gate") or {}
+    learned_segment_selector_config = learning_causality.get("learned_segment_selector_config") or {}
     prior_sensitivity = learning_causality.get("prior_sensitivity_diagnostics") or {}
     shuffled_prior_sample = (
         (prior_sensitivity.get("shuffled_prior_fields") or {}).get("sampled_prior_features") or {}
@@ -1053,6 +1127,7 @@ def _row_from_run(
         "workload_stability_configured_target_coverage": workload_stability_gate.get(
             "configured_target_coverage"
         ),
+        "workload_stability_gate_mode": workload_stability_gate.get("gate_mode", query_config.get("workload_stability_gate_mode")),
         "support_overlap_gate_pass": support_overlap_gate.get("gate_pass"),
         "support_overlap_failed_checks": support_overlap_gate.get("failed_checks"),
         "support_eval_points_outside_train_prior_extent_fraction": support_overlap_gate.get(
@@ -1087,6 +1162,35 @@ def _row_from_run(
         "predictability_lift_at_2_percent": predictability_metrics.get("lift_at_2_percent"),
         "predictability_lift_at_5_percent": predictability_metrics.get("lift_at_5_percent"),
         "predictability_pr_auc_lift_over_base_rate": predictability_metrics.get("pr_auc_lift_over_base_rate"),
+        "prior_predictive_alignment_gate_pass": prior_predictive_alignment_gate.get("gate_pass"),
+        "prior_predictive_alignment_failed_checks": prior_predictive_alignment_gate.get("failed_checks"),
+        "prior_predictive_alignment_thresholds": prior_predictive_alignment_gate.get("thresholds"),
+        "prior_positive_spearman_head_count": prior_predictive_alignment_gate.get("positive_spearman_head_count"),
+        "predictability_query_hit_spearman": query_hit_predictability.get("spearman"),
+        "predictability_query_hit_lift_at_5_percent": query_hit_predictability.get("lift_at_5_percent"),
+        "predictability_query_hit_pr_auc_lift_over_base_rate": query_hit_predictability.get(
+            "pr_auc_lift_over_base_rate"
+        ),
+        "predictability_behavior_spearman": behavior_predictability.get("spearman"),
+        "predictability_behavior_lift_at_5_percent": behavior_predictability.get("lift_at_5_percent"),
+        "predictability_replacement_spearman": replacement_predictability.get("spearman"),
+        "predictability_replacement_lift_at_5_percent": replacement_predictability.get(
+            "lift_at_5_percent"
+        ),
+        "predictability_segment_budget_spearman": segment_budget_predictability.get("spearman"),
+        "predictability_segment_budget_lift_at_5_percent": segment_budget_predictability.get(
+            "lift_at_5_percent"
+        ),
+        "prior_channel_query_mass_spearman": (
+            (prior_channel_predictability.get("query_mass_prior") or {}).get("spearman")
+            if isinstance(prior_channel_predictability, dict)
+            else None
+        ),
+        "prior_channel_combined_score_lift_at_5_percent": (
+            (prior_channel_predictability.get("combined_prior_score") or {}).get("lift_at_5_percent")
+            if isinstance(prior_channel_predictability, dict)
+            else None
+        ),
         "workload_signature_gate_pass": workload_signature_gate.get("all_pass"),
         "workload_signature_gate_available": workload_signature_gate.get("all_available"),
         "workload_signature_pair_count": len(signature_pairs) if isinstance(signature_pairs, dict) else None,
@@ -1142,6 +1246,9 @@ def _row_from_run(
         "no_query_prior_field_ablation_delta": learning_causality.get("no_query_prior_field_ablation_delta"),
         "no_behavior_head_ablation_delta": learning_causality.get("no_behavior_head_ablation_delta"),
         "no_segment_budget_head_ablation_delta": learning_causality.get("no_segment_budget_head_ablation_delta"),
+        "no_trajectory_fairness_preallocation_ablation_delta": learning_causality.get(
+            "no_trajectory_fairness_preallocation_ablation_delta"
+        ),
         "learning_causality_min_material_delta": learning_delta_gate.get("min_material_query_useful_delta"),
         "learning_causality_shuffled_fraction_of_uniform_gap_min": learning_delta_gate.get(
             "shuffled_score_delta_fraction_of_uniform_gap_min"
@@ -1149,6 +1256,15 @@ def _row_from_run(
         "learning_causality_mlqds_uniform_gap": learning_delta_gate.get("mlqds_uniform_query_useful_gap"),
         "learning_causality_delta_thresholds": learning_delta_gate.get("thresholds"),
         "segment_budget_head_ablation_mode": learning_causality.get("segment_budget_head_ablation_mode"),
+        "learned_segment_geometry_gain_weight": learned_segment_selector_config.get(
+            "geometry_gain_weight", model_config.get("learned_segment_geometry_gain_weight")
+        ),
+        "learned_segment_score_blend_weight": learned_segment_selector_config.get(
+            "segment_score_blend_weight", model_config.get("learned_segment_score_blend_weight")
+        ),
+        "learned_segment_fairness_preallocation_enabled": learned_segment_selector_config.get(
+            "fairness_preallocation_enabled", model_config.get("learned_segment_fairness_preallocation")
+        ),
         "prior_sample_gate_pass": learning_causality.get("prior_sample_gate_pass"),
         "prior_sample_gate_failures": learning_causality.get("prior_sample_gate_failures"),
         "shuffled_prior_sampled_inputs_changed": shuffled_prior_sample.get("sampled_inputs_changed"),
@@ -1381,7 +1497,9 @@ def _row_from_run(
         "range_train_anchor_modes": query_config.get("range_train_anchor_modes"),
         "range_train_footprints": query_config.get("range_train_footprints"),
         "range_max_coverage_overshoot": query_config.get("range_max_coverage_overshoot"),
+        "workload_profile_id": query_config.get("workload_profile_id"),
         "coverage_calibration_mode": query_config.get("coverage_calibration_mode"),
+        "workload_stability_gate_mode_config": query_config.get("workload_stability_gate_mode"),
         **_workload_generation_fields(run_json, "train"),
         **_workload_generation_fields(run_json, "eval"),
         **_workload_generation_fields(run_json, "selection"),
@@ -1543,6 +1661,7 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "final_claim_status",
         "final_success_allowed",
         "predictability_gate_pass",
+        "prior_predictive_alignment_gate_pass",
         "target_diffusion_gate_pass",
         "workload_signature_gate_pass",
         "workload_stability_gate_pass",
@@ -1613,11 +1732,19 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "range_train_anchor_modes",
         "range_train_footprints",
         "range_max_coverage_overshoot",
+        "workload_profile_id",
+        "coverage_calibration_mode",
+        "workload_stability_gate_mode",
         "train_query_final_count",
         "train_query_final_coverage",
         "train_query_target_reached",
         "train_query_target_shortfall",
         "train_query_extra_after_target_reached",
+        "train_range_acceptance_exhausted",
+        "train_range_generation_rejection_rate",
+        "train_coverage_guard_rejection_pressure",
+        "train_profile_anchor_family_planned_counts",
+        "train_profile_footprint_family_planned_counts",
         "eval_query_final_count",
         "eval_query_final_coverage",
         "eval_query_target_reached",
@@ -1627,6 +1754,11 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "eval_query_extra_after_target_fraction",
         "eval_query_floor_dominated",
         "eval_query_generation_stop_reason",
+        "eval_range_acceptance_exhausted",
+        "eval_range_generation_rejection_rate",
+        "eval_coverage_guard_rejection_pressure",
+        "eval_profile_anchor_family_planned_counts",
+        "eval_profile_footprint_family_planned_counts",
         "eval_workload_near_duplicate_query_rate",
         "selection_query_final_count",
         "selection_query_final_coverage",
@@ -1676,6 +1808,9 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "mlqds_diversity_bonus",
         "mlqds_effective_diversity_bonus",
         "mlqds_hybrid_mode",
+        "learned_segment_geometry_gain_weight",
+        "learned_segment_score_blend_weight",
+        "learned_segment_fairness_preallocation_enabled",
         "mlqds_stratified_center_weight",
         "mlqds_min_learned_swaps",
         "mlqds_range_geometry_blend",
@@ -1698,6 +1833,15 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "historical_prior_teacher_positive_score_fraction",
         "train_target_residual_label_mass_fraction",
         "train_fit_score_target_kendall_tau",
+        "predictability_query_hit_spearman",
+        "predictability_query_hit_lift_at_5_percent",
+        "predictability_behavior_spearman",
+        "predictability_replacement_spearman",
+        "predictability_segment_budget_spearman",
+        "predictability_segment_budget_lift_at_5_percent",
+        "prior_channel_query_mass_spearman",
+        "prior_channel_combined_score_lift_at_5_percent",
+        "no_trajectory_fairness_preallocation_ablation_delta",
         "train_fit_model_fits_stored_train_support",
         "train_fit_matched_mlqds_vs_uniform_target_recall",
         "train_fit_low_budget_mean_mlqds_vs_uniform_target_recall",

@@ -87,6 +87,9 @@ class MLQDSMethod:
     stratified_center_weight: float = 0.0
     min_learned_swaps: int = 0
     selector_type: str = "temporal_hybrid"
+    learned_segment_geometry_gain_weight: float = 0.12
+    learned_segment_score_blend_weight: float = 0.05
+    learned_segment_fairness_preallocation: bool = True
     range_geometry_blend: float = 0.0
     range_geometry_scores: torch.Tensor | None = None
     trajectory_mmsis: list[int] | None = None
@@ -148,6 +151,9 @@ class MLQDSMethod:
             tuple(int(mmsi) for mmsi in self.trajectory_mmsis) if self.trajectory_mmsis is not None else None,
             int(self.min_learned_swaps),
             str(self.selector_type),
+            float(self.learned_segment_geometry_gain_weight),
+            float(self.learned_segment_score_blend_weight),
+            bool(self.learned_segment_fairness_preallocation),
             str(self.inference_device),
             str(self.amp_mode),
             int(self.inference_batch_size),
@@ -274,6 +280,9 @@ class MLQDSMethod:
                 compression_ratio,
                 segment_scores=self._segment_score_cache,
                 points=points,
+                geometry_gain_weight=float(self.learned_segment_geometry_gain_weight),
+                segment_score_point_blend_weight=float(self.learned_segment_score_blend_weight),
+                fairness_preallocation_enabled=bool(self.learned_segment_fairness_preallocation),
             )
         return simplify_with_temporal_score_hybrid(
             scores,

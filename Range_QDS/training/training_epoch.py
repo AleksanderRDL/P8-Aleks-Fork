@@ -56,6 +56,7 @@ def _factorized_query_useful_loss(
     head_targets: torch.Tensor,
     head_mask: torch.Tensor,
     global_indices: torch.Tensor | None = None,
+    segment_ids: torch.Tensor | None = None,
     segment_size: int = 32,
 ) -> torch.Tensor:
     """Return auxiliary multi-head QueryUsefulV1 loss for v2 models."""
@@ -80,6 +81,7 @@ def _factorized_query_useful_loss(
         head_targets=head_targets,
         head_mask=head_mask,
         global_indices=global_indices,
+        segment_ids=segment_ids,
         segment_size=segment_size,
     )
     return point_loss + 0.25 * segment_loss
@@ -91,6 +93,7 @@ def _segment_budget_head_segment_level_loss(
     head_targets: torch.Tensor,
     head_mask: torch.Tensor,
     global_indices: torch.Tensor | None = None,
+    segment_ids: torch.Tensor | None = None,
     segment_size: int = 32,
 ) -> torch.Tensor:
     """Return segment-level/listwise loss for the segment-budget head."""
@@ -104,6 +107,8 @@ def _segment_budget_head_segment_level_loss(
     seg_mask = head_mask[..., 4].to(dtype=torch.bool)
     if global_indices is not None:
         seg_mask = seg_mask & (global_indices >= 0)
+    if segment_ids is not None and segment_ids.shape[:2] != seg_mask.shape:
+        raise ValueError("segment_ids must match factorized head batch dimensions.")
     losses: list[torch.Tensor] = []
     for row in range(int(seg_logits.shape[0])):
         valid_positions = torch.where(seg_mask[row])[0]
@@ -111,12 +116,25 @@ def _segment_budget_head_segment_level_loss(
             continue
         row_segment_logits: list[torch.Tensor] = []
         row_segment_targets: list[torch.Tensor] = []
-        for start in range(0, int(valid_positions.numel()), size):
-            positions = valid_positions[start : start + size]
-            if int(positions.numel()) <= 0:
+        if segment_ids is not None:
+            row_segment_ids = segment_ids[row].to(device=seg_logits.device, dtype=torch.long)
+            valid_positions = valid_positions[row_segment_ids[valid_positions] >= 0]
+            if int(valid_positions.numel()) <= 0:
                 continue
-            row_segment_logits.append(seg_logits[row, positions].mean())
-            row_segment_targets.append(seg_targets[row, positions].mean())
+            unique_segment_ids = torch.unique(row_segment_ids[valid_positions], sorted=True)
+            for segment_id in unique_segment_ids.tolist():
+                positions = valid_positions[row_segment_ids[valid_positions] == int(segment_id)]
+                if int(positions.numel()) <= 0:
+                    continue
+                row_segment_logits.append(seg_logits[row, positions].mean())
+                row_segment_targets.append(seg_targets[row, positions].mean())
+        else:
+            for start in range(0, int(valid_positions.numel()), size):
+                positions = valid_positions[start : start + size]
+                if int(positions.numel()) <= 0:
+                    continue
+                row_segment_logits.append(seg_logits[row, positions].mean())
+                row_segment_targets.append(seg_targets[row, positions].mean())
         if not row_segment_logits:
             continue
         pooled_logits = torch.stack(row_segment_logits)
@@ -157,6 +175,7 @@ def _train_one_epoch(
     training_sample_generator: torch.Generator,
     factorized_targets_dev: torch.Tensor | None = None,
     factorized_mask_dev: torch.Tensor | None = None,
+    canonical_segment_ids_dev: torch.Tensor | None = None,
 ) -> TrainingEpochResult:
     """Run forward/loss/backward optimization over all training windows."""
     timing = {
@@ -209,11 +228,20 @@ def _train_one_epoch(
         ):
             batch_head_targets = factorized_targets_dev[safe_global_idx].float()
             batch_head_mask = factorized_mask_dev[safe_global_idx] & valid_batch.unsqueeze(-1)
+            batch_segment_ids = None
+            if canonical_segment_ids_dev is not None:
+                batch_segment_ids = canonical_segment_ids_dev[safe_global_idx].to(device=device, dtype=torch.long)
+                batch_segment_ids = torch.where(
+                    valid_batch,
+                    batch_segment_ids,
+                    torch.full_like(batch_segment_ids, -1),
+                )
             aux_loss = _factorized_query_useful_loss(
                 head_logits=head_logits_batch.float(),
                 head_targets=batch_head_targets,
                 head_mask=batch_head_mask,
                 global_indices=batch_global_idx,
+                segment_ids=batch_segment_ids,
             )
         positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
         positive_windows[active_type_id] += int(positive_row_mask.sum().item())

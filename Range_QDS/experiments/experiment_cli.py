@@ -375,6 +375,17 @@ def build_parser() -> argparse.ArgumentParser:
             "profile_sampled_query_count; uncovered_anchor_chasing is legacy/diagnostic only."
         ),
     )
+    parser.add_argument(
+        "--workload_stability_gate_mode",
+        type=str,
+        default="final",
+        choices=["final", "smoke"],
+        help=(
+            "Gate strictness for workload-stability checks. 'final' requires enough queries "
+            "and healthy generation. 'smoke' is only for tiny implementation smoke tests and "
+            "is never final-success evidence."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--embed_dim", type=int, default=64, help="Transformer hidden dimension.")
@@ -687,6 +698,31 @@ def build_parser() -> argparse.ArgumentParser:
             "Retained-mask selector. Use learned_segment_budget_v1 for query-driven final-candidate runs; "
             "temporal_hybrid keeps legacy selector behavior."
         ),
+    )
+    parser.add_argument(
+        "--learned_segment_geometry_gain_weight",
+        type=float,
+        default=0.12,
+        help=(
+            "Geometry-gain tie-breaker weight for learned_segment_budget_v1. "
+            "This is query-free selector structure and is reported for causality audits."
+        ),
+    )
+    parser.add_argument(
+        "--learned_segment_score_blend_weight",
+        type=float,
+        default=0.05,
+        help=(
+            "Within-segment blend weight for the segment-budget head in "
+            "learned_segment_budget_v1. Exposed so it cannot silently mask weak heads."
+        ),
+    )
+    parser.add_argument(
+        "--disable_learned_segment_fairness_preallocation",
+        dest="learned_segment_fairness_preallocation",
+        action="store_false",
+        default=True,
+        help="Disable the query-free one-learned-slot-per-active-trajectory selector preallocation.",
     )
     parser.add_argument(
         "--mlqds_stratified_center_weight",

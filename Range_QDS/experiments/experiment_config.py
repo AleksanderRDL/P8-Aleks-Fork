@@ -76,6 +76,7 @@ class QueryConfig:
     range_train_workload_replicates: int = 1
     workload_profile_id: str | None = None
     coverage_calibration_mode: str | None = None
+    workload_stability_gate_mode: str = "final"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See experiments/README.md for details."""
@@ -153,14 +154,17 @@ class ModelConfig:
     checkpoint_candidate_pool_size: int = 1
     checkpoint_score_variant: str = "range_usefulness"
     validation_global_sanity_penalty_enabled: bool = True
-    validation_global_sanity_penalty_weight: float = 0.10
-    validation_sed_penalty_weight: float = 0.05
+    validation_global_sanity_penalty_weight: float = 0.35
+    validation_sed_penalty_weight: float = 0.15
     validation_endpoint_penalty_weight: float = 0.10
     validation_length_preservation_min: float = 0.80
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.0
     mlqds_hybrid_mode: str = "fill"
     selector_type: str = "temporal_hybrid"
+    learned_segment_geometry_gain_weight: float = 0.12
+    learned_segment_score_blend_weight: float = 0.05
+    learned_segment_fairness_preallocation: bool = True
     mlqds_stratified_center_weight: float = 0.0
     mlqds_min_learned_swaps: int = 0
     mlqds_score_mode: str = "rank"
@@ -298,6 +302,7 @@ def build_experiment_config(
     range_train_workload_replicates: int = 1,
     workload_profile_id: str | None = None,
     coverage_calibration_mode: str | None = None,
+    workload_stability_gate_mode: str = "final",
     epochs: int = 6,
     lr: float = 5e-4,
     embed_dim: int = 64,
@@ -346,14 +351,17 @@ def build_experiment_config(
     checkpoint_candidate_pool_size: int = 1,
     checkpoint_score_variant: str | None = None,
     validation_global_sanity_penalty_enabled: bool = True,
-    validation_global_sanity_penalty_weight: float = 0.10,
-    validation_sed_penalty_weight: float = 0.05,
+    validation_global_sanity_penalty_weight: float = 0.35,
+    validation_sed_penalty_weight: float = 0.15,
     validation_endpoint_penalty_weight: float = 0.10,
     validation_length_preservation_min: float = 0.80,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.0,
     mlqds_hybrid_mode: str = "fill",
     selector_type: str = "temporal_hybrid",
+    learned_segment_geometry_gain_weight: float = 0.12,
+    learned_segment_score_blend_weight: float = 0.05,
+    learned_segment_fairness_preallocation: bool = True,
     mlqds_stratified_center_weight: float = 0.0,
     mlqds_min_learned_swaps: int = 0,
     mlqds_score_mode: str = "rank",
@@ -436,6 +444,7 @@ def build_experiment_config(
             range_train_workload_replicates=range_train_workload_replicates,
             workload_profile_id=workload_profile_id,
             coverage_calibration_mode=coverage_calibration_mode,
+            workload_stability_gate_mode=workload_stability_gate_mode,
             workload=workload,
         ),
         model=ModelConfig(
@@ -485,6 +494,9 @@ def build_experiment_config(
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             mlqds_hybrid_mode=mlqds_hybrid_mode,
             selector_type=selector_type,
+            learned_segment_geometry_gain_weight=learned_segment_geometry_gain_weight,
+            learned_segment_score_blend_weight=learned_segment_score_blend_weight,
+            learned_segment_fairness_preallocation=learned_segment_fairness_preallocation,
             mlqds_stratified_center_weight=mlqds_stratified_center_weight,
             mlqds_min_learned_swaps=mlqds_min_learned_swaps,
             mlqds_score_mode=mlqds_score_mode,

@@ -105,11 +105,32 @@ def _require_validation_inputs(
     return validation_trajectories, validation_boundaries, validation_workload
 
 
+def _canonical_segment_ids_for_boundaries(
+    *,
+    point_count: int,
+    boundaries: list[tuple[int, int]],
+    segment_size: int,
+) -> torch.Tensor:
+    """Return stable selector-aligned segment ids for every flattened point."""
+    ids = torch.full((int(point_count),), -1, dtype=torch.long)
+    size = max(1, int(segment_size))
+    segment_id = 0
+    for start, end in boundaries:
+        for seg_start in range(int(start), int(end), size):
+            seg_end = min(int(end), seg_start + size)
+            if seg_end <= seg_start:
+                continue
+            ids[seg_start:seg_end] = int(segment_id)
+            segment_id += 1
+    return ids
+
+
 def _segment_head_fit_diagnostics(
     *,
     head_logits: torch.Tensor | None,
     factorized_targets: torch.Tensor | None,
     factorized_mask: torch.Tensor | None,
+    canonical_segment_ids: torch.Tensor | None = None,
     seed: int,
 ) -> dict[str, Any]:
     """Summarize training-set fit for the segment-budget auxiliary head."""
@@ -141,13 +162,81 @@ def _segment_head_fit_diagnostics(
     ideal = torch.topk(valid_targets, k=k, largest=True).indices
     selected_mass = float(valid_targets[selected].sum().item())
     ideal_mass = float(valid_targets[ideal].sum().item())
-    return {
+    diagnostics: dict[str, Any] = {
         "segment_head_diagnostics_available": True,
-        "segment_head_tau": float(tau),
-        "segment_head_topk_mass_recall_at_5_percent": float(selected_mass / max(ideal_mass, 1e-12)),
+        "segment_head_point_tau": float(tau),
+        "segment_head_point_topk_mass_recall_at_5_percent": float(selected_mass / max(ideal_mass, 1e-12)),
         "segment_head_valid_point_count": int(valid_scores.numel()),
         "segment_head_target_mass": float(valid_targets.sum().item()),
     }
+    if canonical_segment_ids is None:
+        diagnostics["segment_head_canonical_segment_diagnostics_available"] = False
+        diagnostics["segment_head_diagnostics_note"] = "point_level_only_missing_canonical_segment_ids"
+        # Preserve old field names for downstream reports while making source explicit.
+        diagnostics["segment_head_tau"] = diagnostics["segment_head_point_tau"]
+        diagnostics["segment_head_topk_mass_recall_at_5_percent"] = diagnostics[
+            "segment_head_point_topk_mass_recall_at_5_percent"
+        ]
+        return diagnostics
+
+    segment_ids = canonical_segment_ids.detach().cpu().long()
+    if int(segment_ids.numel()) != int(valid.numel()):
+        diagnostics["segment_head_canonical_segment_diagnostics_available"] = False
+        diagnostics["segment_head_canonical_segment_reason"] = "segment_id_shape_mismatch"
+        diagnostics["segment_head_tau"] = diagnostics["segment_head_point_tau"]
+        diagnostics["segment_head_topk_mass_recall_at_5_percent"] = diagnostics[
+            "segment_head_point_topk_mass_recall_at_5_percent"
+        ]
+        return diagnostics
+
+    valid_segment_mask = valid & (segment_ids >= 0)
+    if not bool(valid_segment_mask.any().item()):
+        diagnostics["segment_head_canonical_segment_diagnostics_available"] = False
+        diagnostics["segment_head_canonical_segment_reason"] = "no_valid_canonical_segments"
+        diagnostics["segment_head_tau"] = diagnostics["segment_head_point_tau"]
+        diagnostics["segment_head_topk_mass_recall_at_5_percent"] = diagnostics[
+            "segment_head_point_topk_mass_recall_at_5_percent"
+        ]
+        return diagnostics
+
+    pooled_scores: list[torch.Tensor] = []
+    pooled_targets: list[torch.Tensor] = []
+    for segment_id in torch.unique(segment_ids[valid_segment_mask], sorted=True).tolist():
+        local = valid_segment_mask & (segment_ids == int(segment_id))
+        if bool(local.any().item()):
+            pooled_scores.append(scores[local].mean())
+            pooled_targets.append(targets[local].mean())
+    if pooled_scores:
+        segment_scores = torch.stack(pooled_scores)
+        segment_targets = torch.stack(pooled_targets)
+        segment_sampled_scores, segment_sampled_targets = _discriminative_sample(
+            segment_scores,
+            segment_targets,
+            n_each=200,
+            generator=generator,
+        )
+        segment_k = max(1, int(math.ceil(0.05 * int(segment_scores.numel()))))
+        segment_selected = torch.topk(segment_scores, k=segment_k, largest=True).indices
+        segment_ideal = torch.topk(segment_targets, k=segment_k, largest=True).indices
+        segment_selected_mass = float(segment_targets[segment_selected].sum().item())
+        segment_ideal_mass = float(segment_targets[segment_ideal].sum().item())
+        diagnostics.update(
+            {
+                "segment_head_canonical_segment_diagnostics_available": True,
+                "segment_head_canonical_segment_count": int(segment_scores.numel()),
+                "segment_head_canonical_segment_tau": float(
+                    _kendall_tau(segment_sampled_scores, segment_sampled_targets)
+                ),
+                "segment_head_canonical_segment_topk_mass_recall_at_5_percent": float(
+                    segment_selected_mass / max(segment_ideal_mass, 1e-12)
+                ),
+                "segment_head_tau": float(_kendall_tau(segment_sampled_scores, segment_sampled_targets)),
+                "segment_head_topk_mass_recall_at_5_percent": float(
+                    segment_selected_mass / max(segment_ideal_mass, 1e-12)
+                ),
+            }
+        )
+    return diagnostics
 
 
 def train_model(
@@ -196,6 +285,7 @@ def train_model(
     factorized_targets: torch.Tensor | None = None
     factorized_mask: torch.Tensor | None = None
     factorized_target_diagnostics: dict[str, Any] = {}
+    canonical_segment_ids: torch.Tensor | None = None
     if str(getattr(model_config, "range_training_target_mode", "")).lower() == "query_useful_v1_factorized":
         factorized_bundle = build_query_useful_v1_targets(
             points=all_points,
@@ -207,6 +297,20 @@ def train_model(
         factorized_targets = factorized_bundle.head_targets
         factorized_mask = factorized_bundle.head_mask
         factorized_target_diagnostics = factorized_bundle.diagnostics
+        factorized_segment_size = int(factorized_target_diagnostics.get("segment_size_points", 32))
+        canonical_segment_ids = _canonical_segment_ids_for_boundaries(
+            point_count=int(all_points.shape[0]),
+            boundaries=train_boundaries,
+            segment_size=factorized_segment_size,
+        )
+        factorized_target_diagnostics["canonical_segment_ids_available"] = True
+        factorized_target_diagnostics["canonical_segment_size_points"] = int(factorized_segment_size)
+        factorized_target_diagnostics["canonical_segment_count"] = int(
+            torch.unique(canonical_segment_ids[canonical_segment_ids >= 0]).numel()
+        )
+        factorized_target_diagnostics["segment_budget_target_training"] = (
+            "point_repeated_plus_canonical_segment_level_listwise_loss"
+        )
     elif precomputed_labels is None:
         labels, labelled_mask = compute_typed_importance_labels(
             points=all_points,
@@ -521,6 +625,9 @@ def train_model(
     labelled_mask_dev = training_labelled_mask.to(device)
     factorized_targets_dev = factorized_targets.to(device) if factorized_targets is not None else None
     factorized_mask_dev = factorized_mask.to(device) if factorized_mask is not None else None
+    canonical_segment_ids_dev = (
+        canonical_segment_ids.to(device) if canonical_segment_ids is not None else None
+    )
     if temporal_residual_budget_masks:
         temporal_residual_budget_masks = tuple(
             (total_ratio, effective_ratio, base_mask.to(device=device, non_blocking=True))
@@ -680,6 +787,7 @@ def train_model(
             training_sample_generator=training_sample_generator,
             factorized_targets_dev=factorized_targets_dev,
             factorized_mask_dev=factorized_mask_dev,
+            canonical_segment_ids_dev=canonical_segment_ids_dev,
         )
         epoch_timing = {
             "forward_s": float(epoch_result.timing["forward_s"]),
@@ -1143,6 +1251,7 @@ def train_model(
                 head_logits=train_head_logits,
                 factorized_targets=factorized_targets,
                 factorized_mask=factorized_mask,
+                canonical_segment_ids=canonical_segment_ids,
                 seed=seed,
             )
         )

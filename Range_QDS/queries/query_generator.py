@@ -265,11 +265,98 @@ def _weighted_choice_with_deterministic_key(
     return keys[min(max(idx, 0), len(keys) - 1)]
 
 
+def _largest_remainder_counts(mapping: dict[str, float], count: int) -> dict[str, int]:
+    """Return deterministic integer family quotas whose sum is ``count``."""
+    keys = [str(key) for key in mapping]
+    total_count = max(0, int(count))
+    if total_count <= 0 or not keys:
+        return {key: 0 for key in keys}
+    weights = [max(0.0, float(mapping[key])) for key in keys]
+    total_weight = sum(weights)
+    if total_weight <= 0.0:
+        base = total_count // len(keys)
+        remainder = total_count - base * len(keys)
+        return {key: base + (1 if idx < remainder else 0) for idx, key in enumerate(keys)}
+    exact = [total_count * weight / total_weight for weight in weights]
+    floors = [int(math.floor(value)) for value in exact]
+    remainder = total_count - sum(floors)
+    order = sorted(
+        range(len(keys)),
+        key=lambda idx: (exact[idx] - floors[idx], weights[idx], -idx),
+        reverse=True,
+    )
+    counts = dict(zip(keys, floors, strict=True))
+    for idx in order[:remainder]:
+        counts[keys[idx]] += 1
+    return counts
+
+
+def _deterministic_permutation(length: int, seed: int, namespace: str) -> list[int]:
+    """Return a deterministic pseudo-random permutation independent of torch RNG state."""
+    indexed = [
+        (_deterministic_unit_from_payload(namespace, seed, idx), idx)
+        for idx in range(max(0, int(length)))
+    ]
+    return [idx for _value, idx in sorted(indexed, key=lambda item: (item[0], item[1]))]
+
+
+def _quota_sequence(mapping: dict[str, float], count: int, *, seed: int, namespace: str) -> list[str]:
+    """Return a deterministic shuffled sequence matching weighted quotas exactly."""
+    quotas = _largest_remainder_counts(mapping, count)
+    ordered_values: list[str] = []
+    for family, family_count in quotas.items():
+        ordered_values.extend([str(family)] * int(family_count))
+    if not ordered_values:
+        return []
+    order = _deterministic_permutation(len(ordered_values), seed, namespace)
+    return [ordered_values[idx] for idx in order]
+
+
+def _profile_query_plan(
+    profile: RangeWorkloadProfile,
+    *,
+    requested_queries: int,
+    workload_seed: int,
+) -> dict[str, Any]:
+    """Return deterministic final-profile family assignments for planned query slots."""
+    if profile.profile_id == LEGACY_GENERATOR_PROFILE.profile_id:
+        return {
+            "enabled": False,
+            "requested_queries": int(max(0, requested_queries)),
+            "anchor_family_sequence": [],
+            "footprint_family_sequence": [],
+            "anchor_family_planned_counts": {},
+            "footprint_family_planned_counts": {},
+        }
+    count = max(1, int(requested_queries))
+    anchor_sequence = _quota_sequence(
+        profile.anchor_family_weights,
+        count,
+        seed=int(workload_seed),
+        namespace=f"{profile.profile_id}:anchor_family",
+    )
+    footprint_sequence = _quota_sequence(
+        profile.footprint_family_weights,
+        count,
+        seed=int(workload_seed),
+        namespace=f"{profile.profile_id}:footprint_family",
+    )
+    return {
+        "enabled": True,
+        "requested_queries": int(count),
+        "anchor_family_sequence": anchor_sequence,
+        "footprint_family_sequence": footprint_sequence,
+        "anchor_family_planned_counts": _largest_remainder_counts(profile.anchor_family_weights, count),
+        "footprint_family_planned_counts": _largest_remainder_counts(profile.footprint_family_weights, count),
+    }
+
+
 def _profile_query_settings(
     profile: RangeWorkloadProfile,
     generator: torch.Generator,
     query_index: int | None = None,
     workload_seed: int | None = None,
+    query_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Sample query-level profile settings for one range_workload_v1 query."""
     if profile.profile_id == LEGACY_GENERATOR_PROFILE.profile_id:
@@ -286,18 +373,34 @@ def _profile_query_settings(
             query_key,
             query_index,
         )
-    anchor_family = _weighted_choice_with_deterministic_key(
-        profile.anchor_family_weights,
-        generator,
-        fallback="density_route",
-        deterministic_value=anchor_value,
+    anchor_sequence = (
+        query_plan.get("anchor_family_sequence")
+        if isinstance(query_plan, dict)
+        else None
     )
-    footprint_family = _weighted_choice_with_deterministic_key(
-        profile.footprint_family_weights,
-        generator,
-        fallback="medium_operational",
-        deterministic_value=footprint_value,
+    footprint_sequence = (
+        query_plan.get("footprint_family_sequence")
+        if isinstance(query_plan, dict)
+        else None
     )
+    if isinstance(query_index, int) and query_index >= 0 and isinstance(anchor_sequence, list) and query_index < len(anchor_sequence):
+        anchor_family = str(anchor_sequence[query_index])
+    else:
+        anchor_family = _weighted_choice_with_deterministic_key(
+            profile.anchor_family_weights,
+            generator,
+            fallback="density_route",
+            deterministic_value=anchor_value,
+        )
+    if isinstance(query_index, int) and query_index >= 0 and isinstance(footprint_sequence, list) and query_index < len(footprint_sequence):
+        footprint_family = str(footprint_sequence[query_index])
+    else:
+        footprint_family = _weighted_choice_with_deterministic_key(
+            profile.footprint_family_weights,
+            generator,
+            fallback="medium_operational",
+            deterministic_value=footprint_value,
+        )
     footprint = dict(profile.footprint_families.get(footprint_family) or {})
     return {
         "anchor_family": anchor_family,
@@ -756,6 +859,24 @@ def _record_rejection(state: dict[str, Any], reason: str) -> None:
     reasons[reason] = int(reasons.get(reason, 0)) + 1
 
 
+def _record_rejection_for_query(state: dict[str, Any], reason: str, query: dict[str, Any]) -> None:
+    """Update rejection counters, including profile-family attribution when available."""
+    _record_rejection(state, reason)
+    metadata = query.get("_metadata") or {}
+    anchor_family = metadata.get("anchor_family")
+    footprint_family = metadata.get("footprint_family")
+    if anchor_family is not None:
+        by_anchor = state.setdefault("rejection_reasons_by_anchor_family", {})
+        anchor_key = str(anchor_family)
+        anchor_reasons = by_anchor.setdefault(anchor_key, {})
+        anchor_reasons[reason] = int(anchor_reasons.get(reason, 0)) + 1
+    if footprint_family is not None:
+        by_footprint = state.setdefault("rejection_reasons_by_footprint_family", {})
+        footprint_key = str(footprint_family)
+        footprint_reasons = by_footprint.setdefault(footprint_key, {})
+        footprint_reasons[reason] = int(footprint_reasons.get(reason, 0)) + 1
+
+
 def _accept_range_query(
     query: dict[str, Any],
     points: torch.Tensor,
@@ -877,6 +998,9 @@ def generate_typed_query_workload(
         raise ValueError("range_acceptance_max_attempts must be positive when provided.")
     range_acceptance = _range_acceptance_state(acceptance_enabled, max_range_attempts, requested_for_attempts)
     accepted_range_queries: list[dict[str, Any]] = []
+    profile_query_plan = _profile_query_plan(
+        profile, requested_queries=requested_for_attempts, workload_seed=int(seed)
+    )
 
     def commit_query(query: dict[str, Any]) -> None:
         """Record a query as accepted after all filters have passed."""
@@ -901,6 +1025,7 @@ def generate_typed_query_workload(
                 generator,
                 query_index=query_index,
                 workload_seed=int(seed),
+                query_plan=profile_query_plan,
             )
             if profile_enabled
             else {}
@@ -957,7 +1082,7 @@ def generate_typed_query_workload(
             range_duplicate_iou_threshold=range_duplicate_iou_threshold,
         )
         if not accepted:
-            _record_rejection(range_acceptance, reason)
+            _record_rejection_for_query(range_acceptance, reason, query)
             return None
         return query
 
@@ -1000,7 +1125,7 @@ def generate_typed_query_workload(
                     float((covered | query_mask).float().mean().item()) if points.shape[0] > 0 else 0.0
                 )
                 if candidate_coverage > max_allowed_coverage:
-                    _record_rejection(range_acceptance, "coverage_overshoot")
+                    _record_rejection_for_query(range_acceptance, "coverage_overshoot", query)
                     if (
                         max_range_attempts is not None
                         and int(range_acceptance.get("attempts", 0)) >= max_range_attempts
@@ -1016,7 +1141,7 @@ def generate_typed_query_workload(
             if target_reached_query_count is None and new_coverage >= coverage_target:
                 target_reached_query_count = int(len(generated_queries))
                 coverage_at_target_reached = float(new_coverage)
-                if calibrated_query_count_mode:
+                if calibrated_query_count_mode and len(generated_queries) >= requested_queries:
                     stop_reason = "target_coverage_reached"
                     break
 
@@ -1064,6 +1189,12 @@ def generate_typed_query_workload(
                 if target_reached_query_count is not None
                 else None
             ),
+            "profile_query_plan": {
+                "enabled": bool(profile_query_plan.get("enabled", False)),
+                "requested_queries": int(profile_query_plan.get("requested_queries", requested_queries)),
+                "anchor_family_planned_counts": dict(profile_query_plan.get("anchor_family_planned_counts") or {}),
+                "footprint_family_planned_counts": dict(profile_query_plan.get("footprint_family_planned_counts") or {}),
+            },
         }
         return _finalize_workload(
             points,
@@ -1119,6 +1250,12 @@ def generate_typed_query_workload(
                 "coverage_guard_enabled": False,
                 "max_allowed_coverage": None,
                 "stop_reason": stop_reason,
+                "profile_query_plan": {
+                    "enabled": bool(profile_query_plan.get("enabled", False)),
+                    "requested_queries": int(profile_query_plan.get("requested_queries", requested_queries)),
+                    "anchor_family_planned_counts": dict(profile_query_plan.get("anchor_family_planned_counts") or {}),
+                    "footprint_family_planned_counts": dict(profile_query_plan.get("footprint_family_planned_counts") or {}),
+                },
             },
         },
     )

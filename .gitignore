@@ -20,6 +20,7 @@ QDS/artifacts/*
 !QDS/artifacts/README.md
 QDS/src/models/saved_models/
 
+patch/
 
 # ---------------------------------
 # Frontend_ work currently on hold

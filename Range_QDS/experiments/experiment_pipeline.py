@@ -222,6 +222,9 @@ def _learned_segment_frozen_method(
     compression_ratio: float,
     segment_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
+    learned_segment_geometry_gain_weight: float = 0.12,
+    learned_segment_score_blend_weight: float = 0.05,
+    learned_segment_fairness_preallocation: bool = True,
 ) -> FrozenMaskMethod:
     """Freeze a score-based learned-segment diagnostic mask before query scoring."""
     retained_mask = simplify_with_learned_segment_budget_v1(
@@ -230,6 +233,9 @@ def _learned_segment_frozen_method(
         compression_ratio,
         segment_scores=None if segment_scores is None else segment_scores.detach().cpu().float(),
         points=None if points is None else points.detach().cpu().float(),
+        geometry_gain_weight=float(learned_segment_geometry_gain_weight),
+        segment_score_point_blend_weight=float(learned_segment_score_blend_weight),
+        fairness_preallocation_enabled=bool(learned_segment_fairness_preallocation),
     )
     return FrozenMaskMethod(name=name, retained_mask=retained_mask.detach().cpu())
 
@@ -691,6 +697,7 @@ def _workload_stability_gate(
     allowed_coverage_targets = (0.05, 0.10, 0.15, 0.30)
     min_train_replicates = 4
     min_queries_per_workload = 8
+    gate_mode = str(getattr(config.query, "workload_stability_gate_mode", "final")).lower()
     required_profile_id = "range_workload_v1"
     coverage_tolerance = 1e-6
     failed_checks: list[str] = []
@@ -731,7 +738,10 @@ def _workload_stability_gate(
         coverage_guard_enabled = bool(generation.get("coverage_guard_enabled", False))
         stop_reason = str(generation.get("stop_reason", ""))
         is_calibrated_query_count_mode = query_count_mode == "calibrated_to_coverage"
-        row_min_queries_per_workload = 1 if is_calibrated_query_count_mode else min_queries_per_workload
+        row_min_queries_per_workload = 1 if gate_mode == "smoke" and is_calibrated_query_count_mode else min_queries_per_workload
+        acceptance = (getattr(workload, "generation_diagnostics", None) or {}).get("range_acceptance", {})
+        if not isinstance(acceptance, dict):
+            acceptance = {}
         row_failed: list[str] = []
         if profile_id != required_profile_id:
             row_failed.append("wrong_workload_profile")
@@ -741,6 +751,18 @@ def _workload_stability_gate(
             row_failed.append("coverage_calibration_not_profile_sampled")
         if query_count < row_min_queries_per_workload:
             row_failed.append("too_few_queries")
+        if gate_mode != "smoke":
+            if bool(acceptance.get("exhausted", False)):
+                row_failed.append("range_acceptance_or_coverage_guard_exhausted")
+            attempts = int(acceptance.get("attempts", 0) or 0)
+            rejected = int(acceptance.get("rejected", 0) or 0)
+            accepted = int(acceptance.get("accepted", 0) or 0)
+            rejection_rate = float(rejected / max(1, attempts))
+            if attempts > 0 and rejection_rate > 0.85:
+                row_failed.append("range_generation_rejection_rate_too_high")
+            coverage_rejections = int((acceptance.get("rejection_reasons", {}) or {}).get("coverage_overshoot", 0))
+            if accepted > 0 and coverage_rejections / max(1, accepted) > 2.0:
+                row_failed.append("coverage_guard_rejection_pressure_too_high")
         if not coverage_guard_enabled:
             row_failed.append("coverage_guard_disabled")
         coverage_target_satisfied = False
@@ -775,6 +797,7 @@ def _workload_stability_gate(
                 "final_coverage": final_coverage,
                 "coverage_guard_enabled": coverage_guard_enabled,
                 "stop_reason": stop_reason,
+                "range_acceptance": acceptance,
                 "coverage_target_satisfied": bool(coverage_target_satisfied),
                 "failed_checks": row_failed,
             }
@@ -787,6 +810,7 @@ def _workload_stability_gate(
         "configured_target_coverage": configured_target,
         "allowed_coverage_targets": list(allowed_coverage_targets),
         "configured_target_in_grid": bool(configured_target_in_grid),
+        "gate_mode": gate_mode,
         "train_workload_replicate_count": int(len(train_label_workloads)),
         "min_train_workload_replicates": int(min_train_replicates),
         "min_queries_per_workload": int(min_queries_per_workload),
@@ -1684,6 +1708,9 @@ def run_experiment_pipeline(
                     float(config.model.compression_ratio),
                     segment_scores=primary_segment_scores,
                     points=test_points.detach().cpu().float(),
+                    geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                    segment_score_point_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                    fairness_preallocation_enabled=bool(config.model.learned_segment_fairness_preallocation),
                 )
                 frozen_mlqds_mask = frozen_primary_masks.get("MLQDS")
                 if isinstance(frozen_mlqds_mask, torch.Tensor):
@@ -1706,6 +1733,9 @@ def run_experiment_pipeline(
                         compression_ratio=float(config.model.compression_ratio),
                         segment_scores=shuffled_segment_scores,
                         points=test_points,
+                        learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                        learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                        learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
                     )
                 )
                 if primary_segment_scores is not None:
@@ -1719,8 +1749,25 @@ def run_experiment_pipeline(
                             compression_ratio=float(config.model.compression_ratio),
                             segment_scores=neutral_segment_scores,
                             points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                            learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
                         )
                     )
+                    if bool(config.model.learned_segment_fairness_preallocation):
+                        causality_ablation_methods.append(
+                            _learned_segment_frozen_method(
+                                name="MLQDS_without_trajectory_fairness_preallocation",
+                                scores=primary_scores,
+                                boundaries=test_boundaries,
+                                compression_ratio=float(config.model.compression_ratio),
+                                segment_scores=primary_segment_scores,
+                                points=test_points,
+                                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                                learned_segment_fairness_preallocation=False,
+                            )
+                        )
                 primary_head_logits = frozen_primary_head_logits.get("MLQDS")
                 if primary_head_logits is not None:
                     try:
@@ -1742,6 +1789,9 @@ def run_experiment_pipeline(
                                 compression_ratio=float(config.model.compression_ratio),
                                 segment_scores=primary_segment_scores,
                                 points=test_points,
+                                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                                learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
                             )
                         )
                     except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
@@ -1777,6 +1827,9 @@ def run_experiment_pipeline(
                         inference_device=None,
                         amp_mode=config.model.amp_mode,
                         inference_batch_size=config.model.inference_batch_size,
+                        learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
+                        learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
+                        learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
                     )
                     untrained_mask = untrained_method.simplify(
                         test_points,
@@ -1801,6 +1854,9 @@ def run_experiment_pipeline(
                             boundaries=test_boundaries,
                             compression_ratio=float(config.model.compression_ratio),
                             points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                            learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
                         )
                     )
                     try:
@@ -1848,6 +1904,9 @@ def run_experiment_pipeline(
                             inference_device=None,
                             amp_mode=config.model.amp_mode,
                             inference_batch_size=config.model.inference_batch_size,
+                            learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
+                            learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
+                            learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
                         )
                         shuffled_prior_mask = shuffled_prior_method.simplify(
                             test_points,
@@ -1926,6 +1985,9 @@ def run_experiment_pipeline(
                             inference_device=None,
                             amp_mode=config.model.amp_mode,
                             inference_batch_size=config.model.inference_batch_size,
+                            learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
+                            learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
+                            learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
                         )
                         zero_prior_mask = zero_prior_method.simplify(
                             test_points,
@@ -2243,6 +2305,10 @@ def run_experiment_pipeline(
     douglas_peucker_eval = matched.get("DouglasPeucker")
     workload_signature_gate = workload_distribution_comparison.get("workload_signature_gate", {})
     predictability_gate_pass = bool(predictability_audit.get("gate_pass", False))
+    prior_predictive_alignment_gate = predictability_audit.get("prior_predictive_alignment_gate", {})
+    prior_predictive_alignment_gate_pass = bool(
+        isinstance(prior_predictive_alignment_gate, dict) and prior_predictive_alignment_gate.get("gate_pass", False)
+    )
     signature_gate_pass = bool(
         isinstance(workload_signature_gate, dict)
         and workload_signature_gate.get("all_available")
@@ -2314,6 +2380,11 @@ def run_experiment_pipeline(
         causality_ablation_evaluations,
         "MLQDS_without_segment_budget_head",
     )
+    no_fairness_preallocation_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_without_trajectory_fairness_preallocation",
+    )
     required_causality_ablation_names = (
         "MLQDS_shuffled_scores",
         "MLQDS_untrained_model",
@@ -2373,7 +2444,13 @@ def run_experiment_pipeline(
         "no_query_prior_field_ablation_delta": no_query_prior_delta,
         "no_behavior_head_ablation_delta": no_behavior_head_delta,
         "no_segment_budget_head_ablation_delta": no_segment_budget_head_delta,
+        "no_trajectory_fairness_preallocation_ablation_delta": no_fairness_preallocation_delta,
         "segment_budget_head_ablation_mode": segment_budget_head_ablation_mode,
+        "learned_segment_selector_config": {
+            "geometry_gain_weight": float(config.model.learned_segment_geometry_gain_weight),
+            "segment_score_blend_weight": float(config.model.learned_segment_score_blend_weight),
+            "fairness_preallocation_enabled": bool(config.model.learned_segment_fairness_preallocation),
+        },
         "prior_field_only_score_ablation_delta": prior_only_delta,
         "without_query_prior_features_delta": no_query_prior_delta,
         "learning_causality_delta_gate": delta_gate_config,
@@ -2390,6 +2467,7 @@ def run_experiment_pipeline(
         "learned_controlled_slot_fraction_min": learned_slot_fraction_min,
         "learning_causality_ablation_status": ablation_status,
         "predictability_gate_pass": predictability_gate_pass,
+        "prior_predictive_alignment_gate_pass": prior_predictive_alignment_gate_pass,
         "workload_signature_gate_pass": signature_gate_pass,
         "support_overlap_gate_pass": support_overlap_gate_pass,
     }
@@ -2407,6 +2485,8 @@ def run_experiment_pipeline(
             blocking_gates.append("support_overlap_gate")
         if not predictability_gate_pass:
             blocking_gates.append("predictability_gate")
+        if not prior_predictive_alignment_gate_pass:
+            blocking_gates.append("prior_predictive_alignment_gate")
         if not target_diffusion_gate_pass:
             blocking_gates.append("target_diffusion_gate")
         if not signature_gate_pass:
@@ -2424,6 +2504,7 @@ def run_experiment_pipeline(
             "workload_stability_gate_pass": workload_stability_gate_pass,
             "support_overlap_gate_pass": support_overlap_gate_pass,
             "predictability_gate_pass": predictability_gate_pass,
+            "prior_predictive_alignment_gate_pass": prior_predictive_alignment_gate_pass,
             "target_diffusion_gate_pass": target_diffusion_gate_pass,
             "workload_signature_gate_pass": signature_gate_pass,
             "learning_causality_gate_pass": learning_causality_gate_pass,
@@ -2458,6 +2539,7 @@ def run_experiment_pipeline(
             "range_component_diagnostics_available": True,
             "workload_blind_protocol_available": True,
             "predictability_audit_available": bool(predictability_audit.get("available", False)),
+            "prior_predictive_alignment_gate_available": isinstance(prior_predictive_alignment_gate, dict),
             "workload_stability_gate_available": bool(workload_stability_gate),
             "support_overlap_gate_available": bool(support_overlap_gate),
             "global_sanity_gate_available": bool(global_sanity_gate),
