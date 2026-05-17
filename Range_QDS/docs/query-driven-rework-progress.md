@@ -13,6 +13,7 @@ Best current code candidate:
 - hidden prior residual scale `0.25`
 - no direct prior-to-head residual
 - `learned_segment_score_blend_weight=0.05`
+- `learned_segment_length_repair_fraction=0.6`
 
 Best current strict artifact:
 - path: `artifacts/results/query_driven_v2_checkpoint04_no_route_density_strict_probe_c10_r05`
@@ -35,6 +36,11 @@ Current decision:
 - Do not increase workload/caps yet; current standard strict cell already has healthy accepted query counts.
 - Do not lower gates for a success claim while learning causality still fails.
 - Next scientific checkpoint should target either selector/length allocation or material causality from the Checkpoint 4.74 candidate.
+
+Current extra discoveries:
+- The best candidate depends materially on `learned_segment_length_repair_fraction=0.6`; summaries must carry this knob because no-repair has stronger score causality but invalid global geometry.
+- The score-protected length frontier in the best/no-repair artifacts only clears the `0.80` length gate while protecting about `10%` of budget for top learned-score points. At the guide's `25%` learned-slot materiality floor, the length upper bound is about `0.7911`, so the current selector/score distribution has a real learned-control-vs-length tension.
+- `max_budget_share_per_ship` in `simplification/learned_segment_budget.py` is not a strict per-ship cap when the fair-share cap is larger; it is effectively `max(share_cap, fair_share_cap)`. Treat the name as misleading when reasoning about selector allocation caps.
 
 ## Checkpoint 1 — Workload Generator And Profile Health
 
@@ -626,3 +632,61 @@ Key results:
 Decision:
 - Codebase is ready for a checkpoint commit.
 - Remaining rework blockers after the save are learning-causality materiality and length preservation.
+
+## Checkpoint 4.83 — No-Length-Repair Causality Diagnostic
+
+Status: completed; diagnostic failed
+
+Goal:
+- Test whether the current query-free length-repair swaps are suppressing material learned-score causality.
+
+Changes:
+- No code changes.
+- Removed one aborted non-comparable artifact before rerunning with the same split geometry as Checkpoint 4.74.
+
+Tests:
+- Not run; this checkpoint was experiment-only.
+
+Experiment artifact:
+- path: `artifacts/results/query_driven_v2_checkpoint04_no_length_repair_causality_diag_c10_r05`
+- command: strict synthetic single-cell matching Checkpoint 4.74 scale/seed/workload, with `learned_segment_length_repair_fraction=0.0`.
+
+Key results:
+- MLQDS QueryUsefulV1: `0.1759846099523811`
+- uniform QueryUsefulV1: `0.14223795796380634`
+- Douglas-Peucker QueryUsefulV1: `0.16362459837911367`
+- length: `0.6790996203798462`
+- learned-controlled slot fraction: `0.8461538461538461`
+- gates passed: workload stability, support overlap, predictability, prior-predictive alignment, target diffusion, workload signature
+- gates failed: learning causality, global sanity
+- causality passed for shuffled scores, untrained model, prior-field-only, and segment-budget-head ablation.
+- causality failed for shuffled prior fields, no query-prior features, and no behavior head.
+
+Decision:
+- Reject no-repair as a candidate: it destroys global sanity and still does not pass learning causality.
+- Do not increase workload/caps for this blocker; the strict cell already has healthy workload scale.
+- Next checkpoint should target either score-protected length filling as a query-free selector diagnostic, or a model/prior-path change that makes train-derived priors materially affect retained masks without reintroducing harmful route density.
+
+## Checkpoint 4.84 — Discovery Log Hygiene
+
+Status: completed
+
+Goal:
+- Make sure relevant extra discoveries are preserved in log and summary outputs.
+
+Changes:
+- Added a current extra-discoveries section near the top of this log.
+- Promoted the material length-repair knob, score-protected length frontier conflict, and per-ship-cap naming issue into durable notes.
+
+Tests:
+- `git diff --check`
+
+Experiment artifact:
+- path: not generated
+- command: no probe was run; this was documentation hygiene.
+
+Key results:
+- Relevant extra discoveries are now recorded in this log instead of only in chat summaries.
+
+Decision:
+- Continue future checkpoints from the Checkpoint 4.74 candidate and keep extra discoveries in both progress-log updates and final summaries.
