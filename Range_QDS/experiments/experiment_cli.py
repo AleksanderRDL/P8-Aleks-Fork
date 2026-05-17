@@ -730,7 +730,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["temporal_hybrid", "learned_segment_budget_v1"],
         help=(
             "Retained-mask selector. Use learned_segment_budget_v1 for query-driven final-candidate runs; "
-            "temporal_hybrid keeps legacy selector behavior."
+            "temporal_hybrid is diagnostic-only selector behavior."
         ),
     )
     parser.add_argument(

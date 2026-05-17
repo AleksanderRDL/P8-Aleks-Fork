@@ -745,7 +745,7 @@ def _counts_from_metadata(typed_queries: list[dict[str, Any]], key: str) -> dict
     counts: dict[str, int] = {}
     for query in typed_queries:
         metadata = query.get("_metadata") or {}
-        value = str(metadata.get(key, "legacy_or_unspecified"))
+        value = str(metadata.get(key, "unspecified"))
         counts[value] = int(counts.get(value, 0)) + 1
     return counts
 

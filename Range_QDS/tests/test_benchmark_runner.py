@@ -273,7 +273,7 @@ def test_blind_profiles_use_small_query_floor_for_coverage_control() -> None:
         assert args[args.index("--n_queries") + 1] == str(RANGE_BLIND_COVERAGE_MIN_QUERY_FLOOR)
         assert settings["n_queries"] == RANGE_BLIND_COVERAGE_MIN_QUERY_FLOOR
         assert settings["workload_blind"] is True
-        assert settings["profile_legacy_diagnostic"] is True
+        assert settings["profile_diagnostic_only"] is True
         assert settings["final_success_allowed"] is False
         assert settings["final_product_candidate"] is False
         assert settings["final_product_claim"] is False

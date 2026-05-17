@@ -4625,7 +4625,8 @@ def run_experiment_pipeline(
         "selector_diagnostics_present": bool(selector_budget_diagnostics),
         "training_fit_diagnostics_present": bool(trained.fit_diagnostics),
         "selector_type": str(getattr(config.model, "selector_type", "temporal_hybrid")),
-        "legacy_temporal_hybrid_selector": str(getattr(config.model, "selector_type", "temporal_hybrid")) != "learned_segment_budget_v1",
+        "selector_final_candidate": str(getattr(config.model, "selector_type", "temporal_hybrid"))
+        == "learned_segment_budget_v1",
         "query_prior_field_available": bool(trained.feature_context.get("query_prior_field")),
         **learned_slot_summary,
         "shuffled_score_ablation_delta": shuffled_delta,

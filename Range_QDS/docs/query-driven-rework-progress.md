@@ -893,3 +893,49 @@ Key results:
 Decision:
 - Documentation correction is complete.
 - Continue from the documentation/tooling checkpoint state.
+
+## Checkpoint 4.88 — Code Cleanup
+
+Status: completed
+
+Goal:
+- Remove clearly stale or unused compatibility code from active production paths.
+- Improve misleading names where the current meaning is clear and covered by tests.
+- Keep intentional diagnostic legacy paths that still have a real use case.
+
+Changes:
+- Removed unused compatibility modules: `training/training_pipeline.py`, `simplification/selector_diagnostics.py`, and `simplification/legacy_temporal_hybrid.py`.
+- Removed the unused `training.query_useful_targets.build` wrapper; active code imports `build_query_useful_v1_targets` directly.
+- Dropped unimplemented benchmark-profile stubs from `PROFILE_CHOICES` so CLIs no longer advertise profiles that immediately fail.
+- Renamed historical-prior route-context feature constants/functions away from misleading `legacy`/`old` wording.
+- Renamed benchmark-profile settings from `profile_legacy_diagnostic` / `legacy_reason` to `profile_diagnostic_only` / `profile_note`.
+- Renamed the learning-causality artifact flag from `legacy_temporal_hybrid_selector` to `selector_final_candidate`.
+- Changed missing range-query metadata family counts from `legacy_or_unspecified` to `unspecified`.
+
+Tests:
+- `git diff --check`
+- `uv run --group dev -- ruff check --select F401,F821,F822,F823 ...` on edited Python files
+- `uv run --group dev -- pyright ...` on edited production modules
+- `uv run --group dev -- pyright Range_QDS/data Range_QDS/evaluation Range_QDS/experiments Range_QDS/models Range_QDS/queries Range_QDS/simplification Range_QDS/training Range_QDS/scripts Range_QDS/tests`
+- `uv run --group dev -- pytest Range_QDS/tests/test_model_features.py Range_QDS/tests/test_pre_rework_cleanup.py Range_QDS/tests/test_benchmark_runner.py -q`
+- `uv run --group dev -- pytest Range_QDS/tests/test_query_driven_rework.py -q`
+- `uv run --group dev -- pytest Range_QDS/tests -q`
+
+Experiment artifact:
+- path: not generated
+- command: no scientific probe was run; this was code cleanup only.
+
+Key results:
+- Full pytest passed: `415 passed, 1 warning`.
+- Full Pyright passed.
+- No deleted module had in-repository imports.
+- Broad Ruff on the edited large files still hits existing project lint debt; focused undefined/unused checks passed.
+
+Extra discoveries:
+- `workload_blind_range_v2.calibration_head` is still retained only for checkpoint-state compatibility and is frozen/unused in final score composition. It may be removable later, but doing so needs an explicit checkpoint-loading policy decision rather than a cleanup guess.
+- The benchmark/runtime Makefile defaults still point at legacy diagnostic profiles; this checkpoint cleaned profile definitions but did not change run defaults.
+- Intentional legacy diagnostics remain: `RangeUsefulLegacy`, legacy generator profiles, and non-final scalar-target modes. They are still used for comparability and guardrail tests, so deleting them would be wrong right now.
+
+Decision:
+- Code cleanup is safe to save.
+- Continue scientific iterations from the existing candidate; this checkpoint does not change model evidence or gate status.

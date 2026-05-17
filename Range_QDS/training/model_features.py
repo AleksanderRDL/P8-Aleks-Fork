@@ -13,10 +13,8 @@ from training.query_prior_fields import QUERY_PRIOR_FIELD_NAMES, sample_query_pr
 
 RANGE_AWARE_EXTRA_DIM = 8
 RANGE_AWARE_POINT_DIM = 8 + RANGE_AWARE_EXTRA_DIM
-OLD_WORKLOAD_BLIND_EXTRA_DIM = 9
-OLD_WORKLOAD_BLIND_POINT_DIM = 8 + OLD_WORKLOAD_BLIND_EXTRA_DIM
-WORKLOAD_BLIND_EXTRA_DIM = OLD_WORKLOAD_BLIND_EXTRA_DIM
-WORKLOAD_BLIND_POINT_DIM = OLD_WORKLOAD_BLIND_POINT_DIM
+WORKLOAD_BLIND_EXTRA_DIM = 9
+WORKLOAD_BLIND_POINT_DIM = 8 + WORKLOAD_BLIND_EXTRA_DIM
 CONTEXT_WORKLOAD_BLIND_EXTRA_DIM = 16
 CONTEXT_WORKLOAD_BLIND_POINT_DIM = 8 + CONTEXT_WORKLOAD_BLIND_EXTRA_DIM
 RANGE_PRIOR_CLOCK_DENSITY_POINT_DIM = CONTEXT_WORKLOAD_BLIND_POINT_DIM + 4
@@ -36,19 +34,39 @@ WORKLOAD_BLIND_RANGE_V2_POINT_DIM = (
     + WORKLOAD_BLIND_RANGE_V2_PRIOR_DIM
 )
 WORKLOAD_BLIND_RANGE_V2_MODEL_DISABLED_PRIOR_FIELDS = ("route_density_prior",)
-HISTORICAL_PRIOR_FEATURE_INDICES = (0, 1, 2, 3, 4, 7, 8, 9, 11, 12, 13, 14, 15, 17, 18, 20, 21, 22, 23)
-OLD_HISTORICAL_PRIOR_POINT_DIM = len(HISTORICAL_PRIOR_FEATURE_INDICES)
+HISTORICAL_PRIOR_ROUTE_CONTEXT_FEATURE_INDICES = (
+    0,
+    1,
+    2,
+    3,
+    4,
+    7,
+    8,
+    9,
+    11,
+    12,
+    13,
+    14,
+    15,
+    17,
+    18,
+    20,
+    21,
+    22,
+    23,
+)
+HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM = len(HISTORICAL_PRIOR_ROUTE_CONTEXT_FEATURE_INDICES)
 HISTORICAL_PRIOR_MMSI_DIM = 4
 HISTORICAL_PRIOR_CLOCK_DIM = 2
 HISTORICAL_PRIOR_DENSITY_DIM = 2
-HISTORICAL_PRIOR_DENSITY_POINT_DIM = OLD_HISTORICAL_PRIOR_POINT_DIM + HISTORICAL_PRIOR_DENSITY_DIM
+HISTORICAL_PRIOR_DENSITY_POINT_DIM = HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM + HISTORICAL_PRIOR_DENSITY_DIM
 HISTORICAL_PRIOR_POINT_DIM = (
-    OLD_HISTORICAL_PRIOR_POINT_DIM
+    HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM
     + HISTORICAL_PRIOR_CLOCK_DIM
     + HISTORICAL_PRIOR_DENSITY_DIM
 )
 HISTORICAL_PRIOR_MMSI_POINT_DIM = (
-    OLD_HISTORICAL_PRIOR_POINT_DIM
+    HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM
     + HISTORICAL_PRIOR_MMSI_DIM
     + HISTORICAL_PRIOR_CLOCK_DIM
     + HISTORICAL_PRIOR_DENSITY_DIM
@@ -440,15 +458,15 @@ def _mmsi_hash_features(point_mmsis: torch.Tensor) -> torch.Tensor:
     return torch.where(valid.unsqueeze(1), features, torch.zeros_like(features))
 
 
-def _legacy_historical_prior_point_features(points: torch.Tensor) -> torch.Tensor:
+def _historical_prior_route_context_features(points: torch.Tensor) -> torch.Tensor:
     """Build the query-free route-context features used by historical-prior KNN."""
     features = _build_workload_blind_context_point_features(points)
-    return features[:, list(HISTORICAL_PRIOR_FEATURE_INDICES)]
+    return features[:, list(HISTORICAL_PRIOR_ROUTE_CONTEXT_FEATURE_INDICES)]
 
 
 def build_historical_prior_point_features(points: torch.Tensor) -> torch.Tensor:
     """Build query-free route, clock-time, and density features for historical-prior KNN."""
-    route_context = _legacy_historical_prior_point_features(points)
+    route_context = _historical_prior_route_context_features(points)
     clock = _clock_time_features(points)
     density = _spatial_density_features(points)
     return torch.cat([route_context, clock, density], dim=1)
@@ -462,7 +480,7 @@ def build_historical_prior_mmsi_point_features(
     """Build historical-prior features with deterministic vessel-identity hashes."""
     if boundaries is None or trajectory_mmsis is None:
         raise ValueError("model_type='historical_prior_mmsi' requires trajectory_mmsis and boundaries.")
-    route_context = _legacy_historical_prior_point_features(points)
+    route_context = _historical_prior_route_context_features(points)
     point_mmsis = point_mmsis_from_trajectory_mmsis(
         point_count=int(points.shape[0]),
         boundaries=boundaries,
@@ -626,12 +644,12 @@ def _build_query_free_point_features_for_dim(
         return build_workload_blind_point_features_for_dim(points, CONTEXT_WORKLOAD_BLIND_POINT_DIM)
     if point_dim_int == RANGE_PRIOR_CLOCK_DENSITY_POINT_DIM:
         return build_range_prior_clock_density_point_features(points)
-    if point_dim_int == OLD_HISTORICAL_PRIOR_POINT_DIM:
-        return _legacy_historical_prior_point_features(points)
+    if point_dim_int == HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM:
+        return _historical_prior_route_context_features(points)
     if point_dim_int == HISTORICAL_PRIOR_DENSITY_POINT_DIM:
-        legacy = _legacy_historical_prior_point_features(points)
+        route_context = _historical_prior_route_context_features(points)
         density = _spatial_density_features(points)
-        return torch.cat([legacy, density], dim=1)
+        return torch.cat([route_context, density], dim=1)
     if point_dim_int == HISTORICAL_PRIOR_POINT_DIM:
         return build_historical_prior_point_features(points)
     if point_dim_int == HISTORICAL_PRIOR_MMSI_POINT_DIM:

@@ -578,8 +578,3 @@ def build_query_useful_v1_targets(
         }
     )
     return QueryUsefulTargetBundle(labels, labelled_mask, head_targets, head_mask, diagnostics)
-
-
-def build(*args: object, **kwargs: object) -> QueryUsefulTargetBundle:
-    """Compatibility wrapper for the factorized target builder."""
-    return build_query_useful_v1_targets(*args, **kwargs)

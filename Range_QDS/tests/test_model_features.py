@@ -14,8 +14,7 @@ from training.model_features import (
     HISTORICAL_PRIOR_DENSITY_POINT_DIM,
     HISTORICAL_PRIOR_MMSI_POINT_DIM,
     HISTORICAL_PRIOR_POINT_DIM,
-    OLD_HISTORICAL_PRIOR_POINT_DIM,
-    OLD_WORKLOAD_BLIND_POINT_DIM,
+    HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM,
     RANGE_AWARE_POINT_DIM,
     RANGE_PRIOR_CLOCK_DENSITY_POINT_DIM,
     SUPPORTED_MODEL_TYPES,
@@ -187,22 +186,22 @@ def test_workload_blind_range_v2_absolute_features_without_prior_are_day_invaria
     assert torch.allclose(features[:, prior_start:prior_end], torch.zeros_like(features[:, prior_start:prior_end]))
 
 
-def test_old_workload_blind_checkpoint_feature_dim_stays_supported() -> None:
+def test_workload_blind_base_feature_dim_stays_supported() -> None:
     points = torch.zeros((4, 8), dtype=torch.float32)
     points[0, 5] = 1.0
     points[-1, 6] = 1.0
     workload = _range_workload()
 
-    old_features = build_model_point_features_for_dim(points, workload, OLD_WORKLOAD_BLIND_POINT_DIM)
+    base_features = build_model_point_features_for_dim(points, workload, WORKLOAD_BLIND_POINT_DIM)
     current_features = build_model_point_features_for_dim(points, workload, WORKLOAD_BLIND_POINT_DIM)
     context_features = build_model_point_features_for_dim(points, workload, CONTEXT_WORKLOAD_BLIND_POINT_DIM)
     prior_features = build_model_point_features_for_dim(points, workload, RANGE_PRIOR_CLOCK_DENSITY_POINT_DIM)
 
-    assert old_features.shape == (4, OLD_WORKLOAD_BLIND_POINT_DIM)
+    assert base_features.shape == (4, WORKLOAD_BLIND_POINT_DIM)
     assert current_features.shape == (4, WORKLOAD_BLIND_POINT_DIM)
     assert context_features.shape == (4, CONTEXT_WORKLOAD_BLIND_POINT_DIM)
     assert prior_features.shape == (4, RANGE_PRIOR_CLOCK_DENSITY_POINT_DIM)
-    assert torch.equal(old_features, current_features[:, :OLD_WORKLOAD_BLIND_POINT_DIM])
+    assert torch.equal(base_features, current_features)
     assert torch.equal(current_features, context_features[:, :WORKLOAD_BLIND_POINT_DIM])
     assert torch.equal(context_features, prior_features[:, :CONTEXT_WORKLOAD_BLIND_POINT_DIM])
 
@@ -390,7 +389,7 @@ def test_historical_prior_uses_query_free_route_context_subset() -> None:
     assert features[:, :3].abs().sum().item() > 0.0
 
 
-def test_historical_prior_features_include_spatial_density_and_legacy_shape() -> None:
+def test_historical_prior_features_include_spatial_density_and_route_context_shape() -> None:
     workload = _range_workload()
     points = torch.tensor(
         [
@@ -403,19 +402,19 @@ def test_historical_prior_features_include_spatial_density_and_legacy_shape() ->
     )
 
     features = build_model_point_features(points, workload, "historical_prior")
-    legacy = build_model_point_features_for_dim(points, workload, OLD_HISTORICAL_PRIOR_POINT_DIM)
-    density_compat = build_model_point_features_for_dim(points, workload, HISTORICAL_PRIOR_DENSITY_POINT_DIM)
+    route_context = build_model_point_features_for_dim(points, workload, HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM)
+    density_features = build_model_point_features_for_dim(points, workload, HISTORICAL_PRIOR_DENSITY_POINT_DIM)
 
-    assert legacy.shape == (4, OLD_HISTORICAL_PRIOR_POINT_DIM)
-    assert density_compat.shape == (4, HISTORICAL_PRIOR_DENSITY_POINT_DIM)
+    assert route_context.shape == (4, HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM)
+    assert density_features.shape == (4, HISTORICAL_PRIOR_DENSITY_POINT_DIM)
     assert features.shape == (4, HISTORICAL_PRIOR_POINT_DIM)
-    assert torch.allclose(features[:, :OLD_HISTORICAL_PRIOR_POINT_DIM], legacy)
-    assert torch.allclose(density_compat[:, :OLD_HISTORICAL_PRIOR_POINT_DIM], legacy)
-    assert torch.allclose(density_compat[:, -2:], features[:, -2:])
+    assert torch.allclose(features[:, :HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM], route_context)
+    assert torch.allclose(density_features[:, :HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM], route_context)
+    assert torch.allclose(density_features[:, -2:], features[:, -2:])
     assert torch.allclose(build_query_free_point_features_for_dim(points, HISTORICAL_PRIOR_POINT_DIM), features)
-    assert features[0, OLD_HISTORICAL_PRIOR_POINT_DIM].item() == pytest.approx(0.0)
-    assert features[1, OLD_HISTORICAL_PRIOR_POINT_DIM].item() == pytest.approx(1.0)
-    assert features[2, OLD_HISTORICAL_PRIOR_POINT_DIM + 1].item() == pytest.approx(-1.0)
+    assert features[0, HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM].item() == pytest.approx(0.0)
+    assert features[1, HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM].item() == pytest.approx(1.0)
+    assert features[2, HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM + 1].item() == pytest.approx(-1.0)
     assert features[0, -2].item() > features[-1, -2].item()
     assert features[0, -1].item() < features[-1, -1].item()
 
@@ -447,7 +446,7 @@ def test_historical_prior_mmsi_features_are_query_free_and_identity_stable() -> 
         trajectory_mmsis=[205000000, 205000001],
     )
 
-    mmsi_start = OLD_HISTORICAL_PRIOR_POINT_DIM
+    mmsi_start = HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM
     mmsi_end = mmsi_start + 4
     assert features.shape == (4, HISTORICAL_PRIOR_MMSI_POINT_DIM)
     assert torch.allclose(features, inferred)
@@ -672,10 +671,10 @@ def test_historical_prior_mmsi_weight_changes_identity_dimension_distance() -> N
         historical_prior_k=1,
         historical_prior_mmsi_weight=8.0,
     )
-    mmsi_start = OLD_HISTORICAL_PRIOR_POINT_DIM
+    mmsi_start = HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM
     mmsi_end = mmsi_start + 4
     prior = torch.zeros((2, HISTORICAL_PRIOR_MMSI_POINT_DIM), dtype=torch.float32)
-    prior[1, :OLD_HISTORICAL_PRIOR_POINT_DIM] = 0.4
+    prior[1, :HISTORICAL_PRIOR_ROUTE_CONTEXT_POINT_DIM] = 0.4
     prior[1, mmsi_start:mmsi_end] = 0.2
     targets = torch.tensor([0.1, 0.9], dtype=torch.float32)
     weak_identity.set_prior(prior, targets)

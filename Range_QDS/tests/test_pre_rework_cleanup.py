@@ -59,13 +59,13 @@ def test_legacy_profiles_final_success_allowed_false(profile_name: str) -> None:
     settings = benchmark_profile_settings(profile_name)
 
     assert profile.final_success_allowed is False
-    assert settings["profile_legacy_diagnostic"] is True
+    assert settings["profile_diagnostic_only"] is True
     assert settings["primary_metric_family"] == "RangeUsefulLegacy"
     assert settings["final_success_allowed"] is False
     assert settings["final_product_candidate"] is False
 
 
-def test_rework_profiles_fail_until_implemented() -> None:
+def test_query_driven_v2_profile_is_final_candidate() -> None:
     profile = benchmark_profile(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
     settings = benchmark_profile_settings(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
     args = benchmark_profile_args(RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE)
