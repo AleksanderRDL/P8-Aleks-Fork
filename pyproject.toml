@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AIS cleaning and query-driven simplification research utilities."
 requires-python = ">=3.14"
 dependencies = [
-    "numpy==2.4.4",
+    "numpy==2.4.5",
     "pandas==3.0.3",
     "psycopg[binary]==3.3.4",
     "pyarrow==24.0.0",
@@ -22,7 +22,13 @@ dev = [
     "pyright==1.1.409",
     "pytest==9.0.3",
     "ruff==0.15.13",
+
+    # Python bindings for jq. Install the jq CLI separately in WSL if shell jq is required.
     "jq==1.11.0",
+
+    "hypothesis[numpy,pandas]==6.152.7",
+    "pytest-regressions[dataframe,num]==2.10.0",
+    "rich==15.0.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -41,17 +47,76 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["Range_QDS/tests"]
 pythonpath = [".", "Range_QDS"]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "-ra",
+]
+xfail_strict = true
+markers = [
+    "integration: tests that require external services, databases, or large local artifacts",
+    "slow: tests that are intentionally slow",
+    "spark: tests that require Spark",
+]
+
+[tool.pyright]
+include = [".", "Range_QDS"]
+exclude = [
+    "**/.git",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/.venv",
+    "**/__pycache__",
+    "**/AISDATA",
+    "**/artifacts",
+    "**/build",
+    "**/dist",
+    "**/spark_temp",
+]
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = "none"
 
 [tool.ruff]
+line-length = 100
+target-version = "py314"
 src = [".", "Range_QDS"]
 exclude = [
     ".git",
+    ".pytest_cache",
     ".ruff_cache",
     ".venv",
     "AISDATA",
     "artifacts",
+    "build",
+    "dist",
     "spark_temp",
 ]
 
 [tool.ruff.lint]
-select = ["F", "E9"]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "B",
+    "PT",
+    "RUF",
+    "UP",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "ais_pipeline",
+    "data",
+    "evaluation",
+    "experiments",
+    "models",
+    "queries",
+    "simplification",
+    "training",
+]
+
+[tool.ruff.format]
+docstring-code-format = true
