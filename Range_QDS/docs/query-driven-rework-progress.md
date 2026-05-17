@@ -984,3 +984,45 @@ Extra discoveries:
 Decision:
 - Test cleanup is safe to save.
 - Continue scientific iterations from the existing candidate; this checkpoint does not change model evidence or gate status.
+
+## Checkpoint 4.90 — Code Organization Audit
+
+Status: completed
+
+Goal:
+- Identify structural and modularization improvements that would make `Range_QDS` easier to reason about from the top down.
+- Avoid speculative behavior-changing refactors while the scientific candidate is still unresolved.
+
+Changes:
+- Expanded `CODE_LAYOUT.md` from a terse directory list into a top-down architecture map.
+- Added package ownership boundaries and "should not own" guidance.
+- Recorded the current layering exception where `training.train_model` imports experiment-owned config/runtime helpers.
+- Recorded concrete modularization pressure points and recommended split order.
+- Added refactor rules for future structure work.
+
+Tests:
+- `git diff --check`
+- No Python tests were run; this checkpoint changed documentation only.
+
+Experiment artifact:
+- path: not generated
+- command: no scientific probe was run; this was structure-audit documentation only.
+
+Key results:
+- Biggest maintainability pressure points by approximate line count:
+  - `experiments/experiment_pipeline.py`: `4965` lines
+  - `training/training_targets.py`: `3090` lines
+  - `experiments/benchmark_report.py`: `1957` lines
+  - `simplification/learned_segment_budget.py`: `1485` lines
+  - `queries/query_generator.py`: `1280` lines
+- The highest-value first extraction is `experiments/gates.py`: support overlap, workload stability, target diffusion, and global sanity gates are pure enough to move later and are already heavily tested.
+- A full split of `experiment_pipeline.py` is not safe as a drive-by cleanup because its private helpers are imported by tests and several helpers are tied to artifact schemas.
+
+Extra discoveries:
+- `training/` currently depends upward on `experiments/` through `ModelConfig` and torch runtime helpers. This is an architectural smell. The right fix is a neutral config/runtime package, not more experiment imports from lower layers.
+- `training_targets.py` mixes old scalar diagnostic target families with newer query-driven/factorized target paths. That is intentional historically, but it is a readability cost and should be split by target family after scientific behavior stabilizes.
+- Future refactors should preserve artifact field names unless the checkpoint explicitly changes the schema; report and gate fields are part of the debugging protocol.
+
+Decision:
+- Do not perform a broad module split now.
+- Use the documented extraction order for future cleanup: gates first, then causality diagnostics, segment audits, benchmark row/report helpers, target-family splits, selector allocation/repair splits, and query generator planning/acceptance splits.
