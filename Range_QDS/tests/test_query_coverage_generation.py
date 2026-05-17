@@ -13,6 +13,7 @@ from experiments.workload_cache import generate_typed_query_workload_for_config
 from queries.coverage_estimator import best_query_count, estimate_range_coverage, sample_trajectories_by_stride
 from queries.query_generator import (
     _dataset_bounds,
+    _counts_from_metadata,
     _make_range_query,
     generate_typed_query_workload,
     point_coverage_mask_for_query,
@@ -33,6 +34,18 @@ def _density_test_trajectories() -> list[torch.Tensor]:
 
 def _near_dense_region(lat: float, lon: float) -> bool:
     return abs(float(lat) - 10.0) <= 1.0 and abs(float(lon) - 10.0) <= 1.0
+
+
+def test_missing_range_family_metadata_is_reported_as_unspecified() -> None:
+    queries = [
+        {"type": "range", "params": {}},
+        {"type": "range", "params": {}, "_metadata": {"anchor_family": "density_route"}},
+    ]
+
+    assert _counts_from_metadata(queries, "anchor_family") == {
+        "unspecified": 1,
+        "density_route": 1,
+    }
 
 
 def test_query_generation_can_expand_toward_coverage_target() -> None:

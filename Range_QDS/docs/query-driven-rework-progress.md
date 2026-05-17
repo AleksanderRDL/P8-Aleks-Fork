@@ -939,3 +939,48 @@ Extra discoveries:
 Decision:
 - Code cleanup is safe to save.
 - Continue scientific iterations from the existing candidate; this checkpoint does not change model evidence or gate status.
+
+## Checkpoint 4.89 — Test Cleanup and Coverage
+
+Status: completed
+
+Goal:
+- Remove or update stale, outdated, or misleading test logic.
+- Identify important behavior coverage gaps in the current test suite and add focused tests where the gap is concrete.
+
+Changes:
+- Renamed `tests/test_pre_rework_cleanup.py` to `tests/test_rework_guardrails.py` and updated its stale pre-rework module description.
+- Renamed the v2 checkpoint compatibility test from a vague legacy-prior name to `test_workload_blind_range_v2_checkpoint_accepts_missing_prior_feature_encoder`.
+- Added guardrails that removed compatibility shims stay removed and that the removed `query_useful_targets.build` alias does not return.
+- Added a profile-choice guardrail: every advertised benchmark profile must be implemented and loadable.
+- Added assertions that profile settings use current `profile_diagnostic_only` / `profile_note` keys instead of stale `profile_legacy_diagnostic` / `legacy_reason` keys.
+- Added coverage that missing range workload family metadata is counted as `unspecified`.
+- Added pipeline-smoke coverage for the renamed `learning_causality_summary.selector_final_candidate` key and absence of the stale `legacy_temporal_hybrid_selector` key.
+
+Tests:
+- `git diff --check`
+- `uv run --group dev -- ruff check --select F401,F821,F822,F823 Range_QDS/tests/test_beats_random_in_distribution.py Range_QDS/tests/test_rework_guardrails.py Range_QDS/tests/test_model_features.py Range_QDS/tests/test_query_coverage_generation.py`
+- `uv run --group dev -- pyright Range_QDS/tests/test_rework_guardrails.py Range_QDS/tests/test_model_features.py Range_QDS/tests/test_query_coverage_generation.py`
+- `uv run --group dev -- pyright Range_QDS/data Range_QDS/evaluation Range_QDS/experiments Range_QDS/models Range_QDS/queries Range_QDS/simplification Range_QDS/training Range_QDS/scripts Range_QDS/tests`
+- `uv run --group dev -- pytest Range_QDS/tests/test_rework_guardrails.py Range_QDS/tests/test_model_features.py Range_QDS/tests/test_query_coverage_generation.py -q`
+- `uv run --group dev -- pytest Range_QDS/tests/test_beats_random_in_distribution.py::test_pipeline_reports_f1_scores -q`
+- `uv run --group dev -- pytest Range_QDS/tests -q`
+
+Experiment artifact:
+- path: not generated
+- command: no scientific probe was run; this was tests-only.
+
+Key results:
+- Full pytest passed: `421 passed, 1 warning`.
+- Full Pyright passed.
+- Focused undefined/unused Ruff checks passed.
+- The test suite now covers the main cleanup outcomes from Checkpoint 4.88 instead of only relying on grep/manual review.
+
+Extra discoveries:
+- Remaining `legacy` references in tests are mostly intentional comparability or diagnostic guardrails: `RangeUsefulLegacy`, legacy generator behavior, scalar-target separation, and checkpoint backward-loading tests.
+- The suite already has broad coverage for workload gates, protocol flags, benchmark row guardrails, and selector learned-slot accounting. The concrete missing coverage was around stale cleanup regressions and renamed artifact/profile keys, which this checkpoint added.
+- Full Ruff remains unsuitable as a project-wide test cleanup gate until existing lint debt is addressed; focused correctness selectors are still the practical save gate.
+
+Decision:
+- Test cleanup is safe to save.
+- Continue scientific iterations from the existing candidate; this checkpoint does not change model evidence or gate status.

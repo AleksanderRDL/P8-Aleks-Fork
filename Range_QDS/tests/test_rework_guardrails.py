@@ -1,16 +1,19 @@
-"""Guardrails for the pre-rework Range_QDS cleanup checkpoint."""
+"""Guardrails for active Range_QDS rework cleanup decisions."""
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pytest
+import training.query_useful_targets as query_useful_targets
 
 from experiments.benchmark_profiles import (
     BLIND_EXPECTED_USEFULNESS_PROFILE,
     BLIND_RETAINED_FREQUENCY_PROFILE,
     BLIND_TEACHER_DISTILL_PROFILE,
     DEFAULT_PROFILE,
+    PROFILE_CHOICES,
     RANGE_WORKLOAD_V1_WORKLOAD_BLIND_V2_PROFILE,
     benchmark_profile,
     benchmark_profile_args,
@@ -22,6 +25,22 @@ from training.training_targets import LEGACY_RANGE_TARGET_MODES, QUERY_USEFUL_V1
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "training.training_pipeline",
+        "simplification.selector_diagnostics",
+        "simplification.legacy_temporal_hybrid",
+    ],
+)
+def test_removed_compatibility_shims_stay_removed(module_name: str) -> None:
+    assert importlib.util.find_spec(module_name) is None
+
+
+def test_removed_query_useful_target_build_alias_stays_removed() -> None:
+    assert not hasattr(query_useful_targets, "build")
 
 
 def test_root_makefile_points_to_range_qds() -> None:
@@ -54,7 +73,7 @@ def test_pyproject_uses_range_qds_paths() -> None:
         BLIND_TEACHER_DISTILL_PROFILE,
     ],
 )
-def test_legacy_profiles_final_success_allowed_false(profile_name: str) -> None:
+def test_diagnostic_profiles_block_final_success(profile_name: str) -> None:
     profile = benchmark_profile(profile_name)
     settings = benchmark_profile_settings(profile_name)
 
@@ -63,6 +82,19 @@ def test_legacy_profiles_final_success_allowed_false(profile_name: str) -> None:
     assert settings["primary_metric_family"] == "RangeUsefulLegacy"
     assert settings["final_success_allowed"] is False
     assert settings["final_product_candidate"] is False
+    assert "profile_legacy_diagnostic" not in settings
+    assert "legacy_reason" not in settings
+
+
+def test_advertised_benchmark_profiles_are_implemented() -> None:
+    for profile_name in PROFILE_CHOICES:
+        profile = benchmark_profile(profile_name)
+        args = benchmark_profile_args(profile_name)
+        settings = benchmark_profile_settings(profile_name)
+
+        assert profile.name == profile_name
+        assert args
+        assert settings["profile_note"]
 
 
 def test_query_driven_v2_profile_is_final_candidate() -> None:
@@ -79,6 +111,9 @@ def test_query_driven_v2_profile_is_final_candidate() -> None:
     assert settings["primary_metric_family"] == "QueryUsefulV1"
     assert settings["final_success_allowed"] is True
     assert settings["range_train_workload_replicates"] == 4
+    assert settings["profile_diagnostic_only"] is False
+    assert "profile_legacy_diagnostic" not in settings
+    assert "legacy_reason" not in settings
     assert args[args.index("--range_train_workload_replicates") + 1] == "4"
 
 

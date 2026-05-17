@@ -299,7 +299,7 @@ def test_segment_context_model_ignores_queries_and_round_trips_checkpoint(tmp_pa
     assert torch.allclose(scores_a, loaded_scores)
 
 
-def test_workload_blind_range_v2_checkpoint_accepts_legacy_prior_branch_absence(tmp_path) -> None:
+def test_workload_blind_range_v2_checkpoint_accepts_missing_prior_feature_encoder(tmp_path) -> None:
     model = WorkloadBlindRangeV2Model(
         point_dim=WORKLOAD_BLIND_RANGE_V2_POINT_DIM,
         query_dim=12,
@@ -321,7 +321,7 @@ def test_workload_blind_range_v2_checkpoint_accepts_legacy_prior_branch_absence(
         query_min=torch.zeros((12,), dtype=torch.float32),
         query_max=torch.ones((12,), dtype=torch.float32),
     )
-    checkpoint = tmp_path / "range_v2_legacy.pt"
+    checkpoint = tmp_path / "range_v2_missing_prior_encoder.pt"
     save_checkpoint(str(checkpoint), ModelArtifacts(model=model, scaler=scaler, config=cfg))
     payload = torch.load(checkpoint, map_location="cpu")
     payload["model_state"] = {

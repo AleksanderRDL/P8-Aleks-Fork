@@ -39,6 +39,8 @@ def test_pipeline_reports_f1_scores(synthetic_dataset, tmp_path) -> None:
     assert "range_usefulness_score" in out.metrics_dump["matched"]["MLQDS"]
     assert out.metrics_dump["checkpoint_selection_metric"] == "score"
     assert out.metrics_dump["checkpoint_score_variant"] == "range_usefulness"
+    assert out.metrics_dump["learning_causality_summary"]["selector_final_candidate"] is False
+    assert "legacy_temporal_hybrid_selector" not in out.metrics_dump["learning_causality_summary"]
     assert abs(out.metrics_dump["range_usefulness_weight_summary"]["total_weight"] - 1.0) < 1e-9
     assert out.metrics_dump["checkpoint_smoothing_window"] == 1
     learned_fill_summary = out.metrics_dump["range_learned_fill_summary"]
