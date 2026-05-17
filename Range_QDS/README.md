@@ -1,21 +1,19 @@
 # AIS-QDS
 
-AIS-QDS trains and evaluates trajectory simplification models for AIS data.
-The active long-term target is workload-blind range compression: compress once,
-before future range queries are known, then score the frozen retained set.
+AIS-QDS trains and evaluates trajectory simplification models for AIS data. The
+active target is workload-blind range compression: choose retained points before
+future eval queries are known, then score the frozen retained set.
 
-The implemented strong range profile is currently
-`range_workload_aware_diagnostic`. It is useful as a diagnostic/teacher path,
-but it is not final workload-blind evidence.
-The canonical redesign source of truth is
-[`docs/query-driven-rework-guide.md`](docs/query-driven-rework-guide.md), with
-checkpoint state in
-[`docs/query-driven-rework-progress.md`](docs/query-driven-rework-progress.md).
+Current source of truth:
+
+- redesign protocol and gates: [`docs/query-driven-rework-guide.md`](docs/query-driven-rework-guide.md)
+- checkpoint log: [`docs/query-driven-rework-progress.md`](docs/query-driven-rework-progress.md)
+- tooling commands: [`docs/dev-tooling-guide.md`](docs/dev-tooling-guide.md)
 
 ## Setup
 
-Run commands from `Range_QDS/`. The project uses `uv` from the repository root
-with the `dev` dependency group.
+Run commands from `Range_QDS/`. Make delegates Python commands through root
+`uv --group dev`.
 
 ```bash
 cd Range_QDS
@@ -34,11 +32,15 @@ make lint-yaml
 make smoke
 make smoke-csv CLEANED_CSV=../AISDATA/cleaned/<file-or-directory>
 make benchmark-preflight
-ATTACH=0 BENCHMARK_RUN_ID=range_workload_aware_diagnostic_a make range-benchmark-tmux
+ATTACH=0 BENCHMARK_PROFILE=range_workload_v1_workload_blind_v2 make range-benchmark-tmux
 ATTACH=0 BENCHMARK_SEEDS=42,43,44 make range-benchmark-queue-tmux
 make list-runs
 make clean-smoke-artifacts CONFIRM=1
 ```
+
+The tmux benchmark Makefile defaults still point at legacy diagnostic artifact
+families. Override `BENCHMARK_PROFILE`, `BENCHMARK_FAMILY`, and
+`BENCHMARK_CACHE` for comparable query-driven runs.
 
 Direct CLI example:
 
@@ -60,13 +62,14 @@ uv run --group dev -- python -m experiments.run_ais_experiment \
 | --- | --- |
 | Redesign objective and acceptance criteria | [`docs/query-driven-rework-guide.md`](docs/query-driven-rework-guide.md) |
 | Code layout | [`CODE_LAYOUT.md`](CODE_LAYOUT.md) |
-| Benchmark profile, CLI modes, artifact names | [`experiments/README.md`](experiments/README.md) |
+| Experiment CLI, benchmark profiles, artifact names | [`experiments/README.md`](experiments/README.md) |
 | Generated artifact layout and cleanup | [`artifacts/README.md`](artifacts/README.md) |
 | Training labels, loss, checkpoint selection | [`training/README.md`](training/README.md) |
 | Query generation and execution | [`queries/README.md`](queries/README.md) |
 | Evaluation metrics and baselines | [`evaluation/README.md`](evaluation/README.md) |
 | Data loading and segmented cache | [`data/README.md`](data/README.md) |
 | Model architecture | [`models/README.md`](models/README.md) |
+| Developer tooling | [`docs/dev-tooling-guide.md`](docs/dev-tooling-guide.md) |
 
 ## Requirements
 

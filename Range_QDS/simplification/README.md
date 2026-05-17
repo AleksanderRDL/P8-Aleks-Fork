@@ -8,6 +8,7 @@ Turns per-point scores into retained-point masks.
 | --- | --- |
 | `mlqds_scoring.py` | Canonical score conversion used by validation and final evaluation. |
 | `simplify_trajectories.py` | Per-trajectory top-k retention with endpoint preservation. |
+| `learned_segment_budget.py` | Active learned-segment selector and attribution diagnostics. |
 
 ## Rules
 
@@ -16,3 +17,6 @@ Turns per-point scores into retained-point masks.
 - Equal scores get deterministic pseudo-random jitter to avoid positional bias.
 - Supported MLQDS score modes include `rank`, `rank_tie`, `raw`, `sigmoid`,
   `temperature_sigmoid`, `zscore_sigmoid`, and `rank_confidence`.
+- `learned_segment_budget_v1` must report skeleton, learned, fallback, and
+  length-repair attribution so causality diagnostics can distinguish genuine
+  learned control from scaffolding.

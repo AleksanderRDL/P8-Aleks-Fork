@@ -15,7 +15,7 @@ the supported training, evaluation, or benchmark contract.
 | `query_executor.py` | Range query execution. |
 | `range_geometry.py` | Shared range-box and geographic distance helpers. |
 | `workload_diagnostics.py` | Range workload quality and label diagnostics. |
-| `workload_profiles.py` | Placeholder for versioned product workload profiles such as `range_workload_v1`. |
+| `workload_profiles.py` | Versioned product workload profiles, including `range_workload_v1`. |
 
 ## Query Types
 
@@ -56,6 +56,10 @@ Range generation controls:
 Use `scripts/estimate_range_coverage.py` before changing query count,
 footprint, or coverage targets.
 
+`range_workload_v1` is the active product workload profile for the query-driven
+rework. Legacy ad hoc generator settings remain useful for diagnostics, but
+they are not final-success eligible.
+
 ## Execution
 
 - `execute_range_query`: trajectory IDs with points inside the box.
@@ -63,7 +67,3 @@ footprint, or coverage targets.
 
 The generator defines the future-query prior for workload-blind training. Do
 not tune final claims only to one narrow generator setting.
-
-Until `workload_profile_id` is implemented, generated workloads are treated as
-`legacy_generator` and are not final-success eligible for the query-driven
-rework.

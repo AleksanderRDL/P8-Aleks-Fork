@@ -12,7 +12,7 @@ with baseline and diagnostic methods.
 | `query_cache.py` | Retained-independent query/audit cache. |
 | `evaluate_methods.py` | Method execution and retained-mask scoring. |
 | `tables.py` | Text tables for reports. |
-| `query_useful_v1.py` | Placeholder for the future primary query-driven metric. |
+| `query_useful_v1.py` | Active primary query-driven metric for `range_workload_v1`. |
 
 ## Methods
 
@@ -32,8 +32,9 @@ Current range diagnostics:
   query-driven rework and cannot support final acceptance by itself.
 - `RangePointF1`: retained in-box point-hit F1. Useful, but too narrow for
   final claims.
-- `QueryUsefulV1`: planned primary metric for `range_workload_v1`. It is not
-  implemented in this checkpoint.
+- `QueryUsefulV1`: active primary metric for the query-driven rework. It
+  combines retained query-hit support, query-local behavior, replacement
+  usefulness, and guardrails such as length preservation.
 
 Range audit components:
 
@@ -61,9 +62,9 @@ diagnostic ablations. Current benchmark work is range-only.
 ## Reporting Rules
 
 - Final benchmark audits should use exact retained-mask scoring.
-- `final_claim_summary` must stay unavailable until `QueryUsefulV1` is
-  implemented. Old RangeUseful results belong under
-  `legacy_range_useful_summary`.
+- `final_claim_summary` is allowed only for the QueryUsefulV1 protocol and must
+  block if required single-run gates or final-grid gates fail. Old RangeUseful
+  results belong under `legacy_range_useful_summary`.
 - Checkpoint diagnostics may use cheaper sampling where explicitly configured.
 - `EvaluationQueryCache` should be reused across MLQDS, baselines, oracle
   diagnostics, and compression-ratio audits.

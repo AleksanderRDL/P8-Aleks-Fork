@@ -826,3 +826,70 @@ Decision:
 - Tooling is implemented and usable.
 - Treat the checkpoint as partial because the guide's full Ruff check remains blocked by existing lint debt.
 - Continue scientific iterations only after the user decides whether to commit this tooling checkpoint with the documented Ruff debt or spend a separate cleanup checkpoint on project-wide Ruff.
+
+## Checkpoint 4.86 — Documentation Cleanup
+
+Status: completed
+
+Goal:
+- Remove or update clearly stale Range_QDS documentation.
+- Deduplicate active docs and condense long prose so high-value guidance is easier to find.
+
+Changes:
+- Condensed `docs/dev-tooling-guide.md` from rollout essay to compact operating reference.
+- Condensed `experiments/README.md` and `training/README.md` to active commands, active profiles, final-candidate settings, and current mode classifications.
+- Updated stale statements that described `QueryUsefulV1`, `workload_profile_id`, and `query_useful_v1_factorized` as future/unimplemented.
+- Updated model, query, evaluation, simplification, and code-layout READMEs for the current workload-blind v2 path.
+- Added clearer warnings that the tmux benchmark Makefile defaults still point at legacy diagnostic artifact families unless profile/family/cache variables are overridden.
+
+Tests:
+- `git diff --check`
+- `uv run --group dev -- yamllint .`
+- stale-doc grep for old active command styles and known obsolete placeholder phrases
+
+Experiment artifact:
+- path: not generated
+- command: no scientific probe was run; this was documentation-only.
+
+Key results:
+- Active non-historical docs no longer claim key rework components are unimplemented placeholders.
+- Markdown line count dropped from about `5146` to `3479` lines.
+- Remaining `.venv` references are historical entries in this progress log, not active instructions.
+
+Extra discoveries:
+- `Range_QDS/Makefile` still defaults benchmark profile/family/cache variables to legacy diagnostic paths. The docs now warn about this, but a future tooling cleanup should consider changing defaults or adding explicit query-driven benchmark targets.
+- The canonical rework guide remains intentionally long because it is still the source of truth for protocol gates and evidence levels; this checkpoint avoided rewriting acceptance criteria.
+
+Decision:
+- Documentation is clean enough for the checkpoint save.
+- Continue scientific iterations from the current candidate after committing the tooling/docs cleanup.
+
+## Checkpoint 4.87 — Tooling Guide Conceptual Restoration
+
+Status: completed
+
+Goal:
+- Restore durable developer-tooling principles that were over-condensed from `docs/dev-tooling-guide.md`.
+- Keep rollout prose removed while preserving conceptual usage rules for Hypothesis, pytest-regressions, and tooling risks.
+
+Changes:
+- Restored tooling principles around invariant enforcement, uv command consistency, noisy experiment metrics, hot-path isolation, and small readable checks.
+- Added compact Hypothesis good targets, good properties, bad uses, and default settings guidance.
+- Added compact pytest-regressions good uses, bad uses, snapshot update policy, and schema-protection purpose.
+- Added concise tooling risks: uv drift, dependency syntax drift, lockfile drift, jq-as-acceptance, flaky property tests, noisy snapshots, Rich replacing JSON, and tooling distraction.
+
+Tests:
+- `git diff --check`
+- `uv run --group dev -- yamllint .`
+
+Experiment artifact:
+- path: not generated
+- command: no scientific probe was run; this was documentation-only.
+
+Key results:
+- `docs/dev-tooling-guide.md` remains compact at about `250` lines instead of reverting to the old rollout-length guide.
+- Durable conceptual guidance is back in active docs.
+
+Decision:
+- Documentation correction is complete.
+- Continue from the documentation/tooling checkpoint state.

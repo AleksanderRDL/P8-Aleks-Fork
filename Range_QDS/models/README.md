@@ -1,11 +1,12 @@
 # Models Module
 
-Contains the implemented query-conditioned trajectory encoder.
+Contains query-conditioned diagnostics, historical-prior diagnostics, and the
+trainable workload-blind range scorers.
 
-Important caveat: current models are workload-aware because points attend to
-query embeddings during prediction. They are useful diagnostics and teacher
-candidates, but final workload-blind range compression needs a separate
-query-free scoring path.
+Important caveat: query-conditioned models are workload-aware because points
+attend to query embeddings during prediction. They are useful diagnostics and
+teacher candidates, but final range compression must use a query-free scoring
+path such as `workload_blind_range_v2`.
 
 ## Files
 
