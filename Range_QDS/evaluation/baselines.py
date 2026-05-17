@@ -12,7 +12,7 @@ import torch
 
 from queries.workload import TypedQueryWorkload
 from simplification.mlqds_scoring import mlqds_simplification_scores, workload_type_head
-from simplification.learned_segment_budget import simplify_with_learned_segment_budget_v1
+from simplification.learned_segment_budget import blend_segment_support_scores, simplify_with_learned_segment_budget_v1
 from simplification.simplify_trajectories import (
     evenly_spaced_indices,
     simplify_with_global_score_budget,
@@ -90,6 +90,8 @@ class MLQDSMethod:
     learned_segment_geometry_gain_weight: float = 0.12
     learned_segment_score_blend_weight: float = 0.05
     learned_segment_fairness_preallocation: bool = True
+    learned_segment_length_repair_fraction: float = 0.0
+    learned_segment_length_support_blend_weight: float = 0.0
     range_geometry_blend: float = 0.0
     range_geometry_scores: torch.Tensor | None = None
     trajectory_mmsis: list[int] | None = None
@@ -101,6 +103,8 @@ class MLQDSMethod:
     _raw_pred_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
     _head_logit_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
     _segment_score_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _path_length_support_score_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _selector_segment_score_cache: torch.Tensor | None = field(default=None, init=False, repr=False)
 
     def _current_score_cache_key(
         self,
@@ -154,6 +158,8 @@ class MLQDSMethod:
             float(self.learned_segment_geometry_gain_weight),
             float(self.learned_segment_score_blend_weight),
             bool(self.learned_segment_fairness_preallocation),
+            float(self.learned_segment_length_repair_fraction),
+            float(self.learned_segment_length_support_blend_weight),
             str(self.inference_device),
             str(self.amp_mode),
             int(self.inference_batch_size),
@@ -176,6 +182,8 @@ class MLQDSMethod:
             self._raw_pred_cache = pred.detach().cpu().float()
             self._head_logit_cache = None
             self._segment_score_cache = None
+            self._path_length_support_score_cache = None
+            self._selector_segment_score_cache = None
         else:
             point_dim = _model_point_dim(self.trained.model)
             model_points = build_model_point_features_for_dim(
@@ -223,15 +231,33 @@ class MLQDSMethod:
                 head_logits = None
             if head_logits is not None:
                 self._head_logit_cache = head_logits.detach().cpu().float()
+                self._segment_score_cache = None
+                self._path_length_support_score_cache = None
+                self._selector_segment_score_cache = None
                 try:
                     segment_head_idx = tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("segment_budget_target")
                 except ValueError:
                     segment_head_idx = -1
                 if segment_head_idx >= 0 and int(head_logits.shape[-1]) > segment_head_idx:
                     self._segment_score_cache = head_logits[:, segment_head_idx].detach().cpu().float()
+                try:
+                    path_length_head_idx = tuple(QUERY_USEFUL_V1_HEAD_NAMES).index("path_length_support_target")
+                except ValueError:
+                    path_length_head_idx = -1
+                if path_length_head_idx >= 0 and int(head_logits.shape[-1]) > path_length_head_idx:
+                    self._path_length_support_score_cache = (
+                        head_logits[:, path_length_head_idx].detach().cpu().float()
+                    )
+                self._selector_segment_score_cache = blend_segment_support_scores(
+                    segment_scores=self._segment_score_cache,
+                    path_length_support_scores=self._path_length_support_score_cache,
+                    path_length_support_weight=float(self.learned_segment_length_support_blend_weight),
+                )
             else:
                 self._head_logit_cache = None
                 self._segment_score_cache = None
+                self._path_length_support_score_cache = None
+                self._selector_segment_score_cache = None
             self._raw_pred_cache = pred.detach().cpu().float()
 
         scores = mlqds_simplification_scores(
@@ -278,11 +304,13 @@ class MLQDSMethod:
                 scores,
                 boundaries,
                 compression_ratio,
-                segment_scores=self._segment_score_cache,
+                segment_scores=self._selector_segment_score_cache,
+                segment_point_scores=self._segment_score_cache,
                 points=points,
                 geometry_gain_weight=float(self.learned_segment_geometry_gain_weight),
                 segment_score_point_blend_weight=float(self.learned_segment_score_blend_weight),
                 fairness_preallocation_enabled=bool(self.learned_segment_fairness_preallocation),
+                length_repair_fraction=float(self.learned_segment_length_repair_fraction),
             )
         return simplify_with_temporal_score_hybrid(
             scores,

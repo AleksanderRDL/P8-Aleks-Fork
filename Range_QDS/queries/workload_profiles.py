@@ -73,8 +73,8 @@ RANGE_WORKLOAD_V1_PROFILE = RangeWorkloadProfile(
     },
     footprint_families={
         "small_local": {
-            "spatial_radius_km": 1.0,
-            "time_half_window_hours": 1.0,
+            "spatial_radius_km": 1.1,
+            "time_half_window_hours": 2.5,
             "elongation_allowed": False,
         },
         "medium_operational": {
@@ -83,13 +83,13 @@ RANGE_WORKLOAD_V1_PROFILE = RangeWorkloadProfile(
             "elongation_allowed": False,
         },
         "large_context": {
-            "spatial_radius_km": 4.5,
-            "time_half_window_hours": 10.0,
+            "spatial_radius_km": 4.0,
+            "time_half_window_hours": 8.0,
             "elongation_allowed": False,
         },
         "route_corridor_like": {
-            "spatial_radius_km": 3.0,
-            "time_half_window_hours": 6.0,
+            "spatial_radius_km": 2.2,
+            "time_half_window_hours": 5.0,
             "elongation_allowed": True,
         },
     },

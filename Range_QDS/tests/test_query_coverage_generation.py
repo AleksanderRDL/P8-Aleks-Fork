@@ -115,6 +115,7 @@ def test_coverage_generation_profile_calibrated_mode_keeps_requested_query_floor
     assert generation["coverage_at_target_reached"] is not None
     assert generation["final_query_count"] >= generation["minimum_queries"]
     assert generation["extra_queries_after_target_reached"] >= 0
+    assert generation["profile_query_plan"]["requested_queries"] == 300
     assert len(workload.typed_queries) == generation["final_query_count"]
 
 

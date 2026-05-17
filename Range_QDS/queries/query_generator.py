@@ -291,25 +291,34 @@ def _largest_remainder_counts(mapping: dict[str, float], count: int) -> dict[str
     return counts
 
 
-def _deterministic_permutation(length: int, seed: int, namespace: str) -> list[int]:
-    """Return a deterministic pseudo-random permutation independent of torch RNG state."""
-    indexed = [
-        (_deterministic_unit_from_payload(namespace, seed, idx), idx)
-        for idx in range(max(0, int(length)))
-    ]
-    return [idx for _value, idx in sorted(indexed, key=lambda item: (item[0], item[1]))]
-
-
 def _quota_sequence(mapping: dict[str, float], count: int, *, seed: int, namespace: str) -> list[str]:
-    """Return a deterministic shuffled sequence matching weighted quotas exactly."""
+    """Return a deterministic prefix-balanced sequence matching weighted quotas exactly."""
     quotas = _largest_remainder_counts(mapping, count)
-    ordered_values: list[str] = []
-    for family, family_count in quotas.items():
-        ordered_values.extend([str(family)] * int(family_count))
-    if not ordered_values:
+    total_count = sum(int(value) for value in quotas.values())
+    if total_count <= 0:
         return []
-    order = _deterministic_permutation(len(ordered_values), seed, namespace)
-    return [ordered_values[idx] for idx in order]
+    used = {str(family): 0 for family in quotas}
+    sequence: list[str] = []
+    for slot_index in range(total_count):
+        candidates = [
+            str(family)
+            for family, quota in quotas.items()
+            if used[str(family)] < int(quota)
+        ]
+        if not candidates:
+            break
+
+        def candidate_key(family: str) -> tuple[float, int, float]:
+            quota = int(quotas[family])
+            desired = float(slot_index + 1) * float(quota) / float(total_count)
+            deficit = desired - float(used[family])
+            tie_breaker = _deterministic_unit_from_payload(namespace, seed, slot_index, family)
+            return deficit, quota, tie_breaker
+
+        chosen = max(candidates, key=candidate_key)
+        used[chosen] += 1
+        sequence.append(chosen)
+    return sequence
 
 
 def _profile_query_plan(
@@ -761,6 +770,8 @@ def _range_workload_signature(
     query_rows = diagnostics["queries"]
     point_hit_counts = [int(row["point_hits"]) for row in query_rows]
     trajectory_hit_counts = [int(row["trajectory_hits"]) for row in query_rows]
+    point_hit_fractions = [float(row["point_hit_fraction"]) for row in query_rows]
+    trajectory_hit_fractions = [float(row["trajectory_hit_fraction"]) for row in query_rows]
     spatial_radii = []
     time_spans = []
     for query in typed_queries:
@@ -786,6 +797,8 @@ def _range_workload_signature(
         "profile_id": profile_id,
         "coverage_actual": float(coverage_fraction),
         "query_count": int(len(typed_queries)),
+        "total_points": int(points.shape[0]),
+        "total_trajectories": int(len(boundaries)),
         "anchor_family_counts": _counts_from_metadata(typed_queries, "anchor_family"),
         "footprint_family_counts": _counts_from_metadata(typed_queries, "footprint_family"),
         "point_hits_per_query": {
@@ -794,18 +807,21 @@ def _range_workload_signature(
             "p90": float(summary["point_hit_count_p90"]),
         },
         "point_hit_counts_per_query": point_hit_counts,
+        "point_hit_fractions_per_query": point_hit_fractions,
         "ship_hits_per_query": {
             "p10": float(summary["trajectory_hit_count_p10"]),
             "p50": float(summary["trajectory_hit_count_p50"]),
             "p90": float(summary["trajectory_hit_count_p90"]),
         },
         "ship_hit_counts_per_query": trajectory_hit_counts,
+        "ship_hit_fractions_per_query": trajectory_hit_fractions,
         "trajectory_hits_per_query": {
             "p10": float(summary["trajectory_hit_count_p10"]),
             "p50": float(summary["trajectory_hit_count_p50"]),
             "p90": float(summary["trajectory_hit_count_p90"]),
         },
         "trajectory_hit_counts_per_query": trajectory_hit_counts,
+        "trajectory_hit_fractions_per_query": trajectory_hit_fractions,
         "time_span_hours_per_query": quantiles(time_spans),
         "spatial_radius_km_per_query": quantiles(spatial_radii),
         "near_duplicate_rate": float(summary["near_duplicate_query_rate"]),
@@ -998,8 +1014,11 @@ def generate_typed_query_workload(
         raise ValueError("range_acceptance_max_attempts must be positive when provided.")
     range_acceptance = _range_acceptance_state(acceptance_enabled, max_range_attempts, requested_for_attempts)
     accepted_range_queries: list[dict[str, Any]] = []
+    profile_query_plan_slots = requested_for_attempts
+    if coverage_target is not None and max_queries is not None and int(max_queries) > 0:
+        profile_query_plan_slots = max(profile_query_plan_slots, int(max_queries))
     profile_query_plan = _profile_query_plan(
-        profile, requested_queries=requested_for_attempts, workload_seed=int(seed)
+        profile, requested_queries=profile_query_plan_slots, workload_seed=int(seed)
     )
 
     def commit_query(query: dict[str, Any]) -> None:

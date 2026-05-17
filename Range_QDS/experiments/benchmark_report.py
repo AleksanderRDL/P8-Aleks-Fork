@@ -1009,6 +1009,12 @@ def _row_from_run(
     learning_causality = (run_json or {}).get("learning_causality_summary") or {}
     learning_delta_gate = learning_causality.get("learning_causality_delta_gate") or {}
     learned_segment_selector_config = learning_causality.get("learned_segment_selector_config") or {}
+    causality_mask_diagnostics = learning_causality.get("causality_ablation_mask_diagnostics") or {}
+    shuffled_prior_mask = causality_mask_diagnostics.get("MLQDS_shuffled_prior_fields") or {}
+    no_query_prior_mask = causality_mask_diagnostics.get("MLQDS_without_query_prior_features") or {}
+    no_behavior_mask = causality_mask_diagnostics.get("MLQDS_without_behavior_utility_head") or {}
+    no_segment_budget_mask = causality_mask_diagnostics.get("MLQDS_without_segment_budget_head") or {}
+    no_geometry_mask = causality_mask_diagnostics.get("MLQDS_without_geometry_tie_breaker") or {}
     prior_sensitivity = learning_causality.get("prior_sensitivity_diagnostics") or {}
     shuffled_prior_sample = (
         (prior_sensitivity.get("shuffled_prior_fields") or {}).get("sampled_prior_features") or {}
@@ -1034,6 +1040,8 @@ def _row_from_run(
         "ship_hit_distribution_ks",
         signature_train_metrics.get("ship_hit_distribution_ks_proxy"),
     )
+    point_hit_fraction_signature_distance = signature_train_metrics.get("point_hit_fraction_distribution_ks")
+    ship_hit_fraction_signature_distance = signature_train_metrics.get("ship_hit_fraction_distribution_ks")
     eval_selector_diagnostics = ((run_json or {}).get("selector_budget_diagnostics") or {}).get("eval") or {}
     target_budget_row = _target_budget_row(target_diagnostics, model_config.get("compression_ratio"))
     selector_budget_row = _selector_budget_row(eval_selector_diagnostics, model_config.get("compression_ratio"))
@@ -1207,12 +1215,20 @@ def _row_from_run(
         "train_eval_footprint_family_l1_distance": signature_train_metrics.get("footprint_family_l1_distance"),
         "train_eval_point_hit_distribution_ks": point_hit_signature_distance,
         "train_eval_ship_hit_distribution_ks": ship_hit_signature_distance,
+        "train_eval_point_hit_fraction_distribution_ks": point_hit_fraction_signature_distance,
+        "train_eval_ship_hit_fraction_distribution_ks": ship_hit_fraction_signature_distance,
+        "train_eval_query_count_delta": signature_train_metrics.get("query_count_delta"),
+        "train_eval_query_count_relative_delta": signature_train_metrics.get("query_count_relative_delta"),
         "train_eval_point_hit_distribution_used_quantile_proxy": signature_train_metrics.get(
             "point_hit_distribution_used_quantile_proxy"
         ),
         "train_eval_ship_hit_distribution_used_quantile_proxy": signature_train_metrics.get(
             "ship_hit_distribution_used_quantile_proxy"
         ),
+        "train_signature_total_points": signature_train_metrics.get("train_total_points"),
+        "eval_signature_total_points": signature_train_metrics.get("eval_total_points"),
+        "train_signature_total_trajectories": signature_train_metrics.get("train_total_trajectories"),
+        "eval_signature_total_trajectories": signature_train_metrics.get("eval_total_trajectories"),
         "train_eval_point_hit_distribution_ks_proxy": point_hit_signature_distance,
         "train_eval_ship_hit_distribution_ks_proxy": ship_hit_signature_distance,
         "learning_causality_ablation_status": learning_causality.get("learning_causality_ablation_status"),
@@ -1249,6 +1265,29 @@ def _row_from_run(
         "no_trajectory_fairness_preallocation_ablation_delta": learning_causality.get(
             "no_trajectory_fairness_preallocation_ablation_delta"
         ),
+        "shuffled_prior_retained_mask_jaccard": shuffled_prior_mask.get("retained_mask_jaccard"),
+        "shuffled_prior_retained_symmetric_difference_count": shuffled_prior_mask.get(
+            "retained_symmetric_difference_count"
+        ),
+        "no_query_prior_retained_mask_jaccard": no_query_prior_mask.get("retained_mask_jaccard"),
+        "no_query_prior_retained_symmetric_difference_count": no_query_prior_mask.get(
+            "retained_symmetric_difference_count"
+        ),
+        "no_behavior_retained_mask_jaccard": no_behavior_mask.get("retained_mask_jaccard"),
+        "no_behavior_retained_symmetric_difference_count": no_behavior_mask.get(
+            "retained_symmetric_difference_count"
+        ),
+        "no_segment_budget_retained_mask_jaccard": no_segment_budget_mask.get("retained_mask_jaccard"),
+        "no_segment_budget_retained_symmetric_difference_count": no_segment_budget_mask.get(
+            "retained_symmetric_difference_count"
+        ),
+        "no_geometry_tie_breaker_ablation_delta": learning_causality.get(
+            "no_geometry_tie_breaker_ablation_delta"
+        ),
+        "no_geometry_retained_mask_jaccard": no_geometry_mask.get("retained_mask_jaccard"),
+        "no_geometry_retained_symmetric_difference_count": no_geometry_mask.get(
+            "retained_symmetric_difference_count"
+        ),
         "learning_causality_min_material_delta": learning_delta_gate.get("min_material_query_useful_delta"),
         "learning_causality_shuffled_fraction_of_uniform_gap_min": learning_delta_gate.get(
             "shuffled_score_delta_fraction_of_uniform_gap_min"
@@ -1264,6 +1303,12 @@ def _row_from_run(
         ),
         "learned_segment_fairness_preallocation_enabled": learned_segment_selector_config.get(
             "fairness_preallocation_enabled", model_config.get("learned_segment_fairness_preallocation")
+        ),
+        "learned_segment_length_repair_fraction": learned_segment_selector_config.get(
+            "length_repair_fraction", model_config.get("learned_segment_length_repair_fraction")
+        ),
+        "learned_segment_length_support_blend_weight": learned_segment_selector_config.get(
+            "length_support_blend_weight", model_config.get("learned_segment_length_support_blend_weight")
         ),
         "prior_sample_gate_pass": learning_causality.get("prior_sample_gate_pass"),
         "prior_sample_gate_failures": learning_causality.get("prior_sample_gate_failures"),
@@ -1811,6 +1856,11 @@ def _format_report_table(rows: list[dict[str, Any]]) -> str:
         "learned_segment_geometry_gain_weight",
         "learned_segment_score_blend_weight",
         "learned_segment_fairness_preallocation_enabled",
+        "learned_segment_length_repair_fraction",
+        "learned_segment_length_support_blend_weight",
+        "no_geometry_tie_breaker_ablation_delta",
+        "no_geometry_retained_mask_jaccard",
+        "no_geometry_retained_symmetric_difference_count",
         "mlqds_stratified_center_weight",
         "mlqds_min_learned_swaps",
         "mlqds_range_geometry_blend",

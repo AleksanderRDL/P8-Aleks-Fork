@@ -35,6 +35,7 @@ WORKLOAD_BLIND_RANGE_V2_POINT_DIM = (
     + WORKLOAD_BLIND_RANGE_V2_ABSOLUTE_DIM
     + WORKLOAD_BLIND_RANGE_V2_PRIOR_DIM
 )
+WORKLOAD_BLIND_RANGE_V2_MODEL_DISABLED_PRIOR_FIELDS = ("route_density_prior",)
 HISTORICAL_PRIOR_FEATURE_INDICES = (0, 1, 2, 3, 4, 7, 8, 9, 11, 12, 13, 14, 15, 17, 18, 20, 21, 22, 23)
 OLD_HISTORICAL_PRIOR_POINT_DIM = len(HISTORICAL_PRIOR_FEATURE_INDICES)
 HISTORICAL_PRIOR_MMSI_DIM = 4
@@ -530,6 +531,15 @@ def build_workload_blind_range_v2_point_features(
     context = build_workload_blind_point_features_for_dim(points, CONTEXT_WORKLOAD_BLIND_POINT_DIM)
     absolute = _absolute_range_v2_features(points, query_prior_field)
     priors = sample_query_prior_fields(points, query_prior_field)
+    if int(priors.numel()) > 0:
+        priors = priors.clone()
+        for field_name in WORKLOAD_BLIND_RANGE_V2_MODEL_DISABLED_PRIOR_FIELDS:
+            try:
+                field_idx = QUERY_PRIOR_FIELD_NAMES.index(field_name)
+            except ValueError:
+                continue
+            if field_idx < int(priors.shape[1]):
+                priors[:, field_idx] = 0.0
     return torch.cat([context, absolute, priors], dim=1)
 
 

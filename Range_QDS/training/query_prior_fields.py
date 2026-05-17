@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 import copy
 from typing import Any
 
@@ -33,6 +34,36 @@ def zero_query_prior_field_like(prior_field: dict[str, Any]) -> dict[str, Any]:
     diagnostics["zeroed_prior_features_preserve_train_extent"] = True
     zeroed["diagnostics"] = diagnostics
     zeroed["ablation"] = "zero_query_prior_features"
+    zeroed["built_from_split"] = prior_field.get("built_from_split", "train_only")
+    zeroed["contains_eval_queries"] = False
+    zeroed["contains_validation_queries"] = False
+    return zeroed
+
+
+def zero_query_prior_field_channels(
+    prior_field: dict[str, Any],
+    channel_names: Collection[str],
+) -> dict[str, Any]:
+    """Return a prior field with selected prior channels zeroed, preserving support metadata."""
+    requested = {str(name) for name in channel_names}
+    if not requested:
+        raise ValueError("channel_names must contain at least one query-prior channel.")
+    known = {str(name) for name in prior_field.get("field_names", QUERY_PRIOR_FIELD_NAMES)}
+    unknown = sorted(requested - known)
+    if unknown:
+        raise ValueError(f"Unknown query-prior channel(s): {unknown!r}.")
+
+    zeroed = copy.deepcopy(prior_field)
+    for name in requested:
+        value = zeroed.get(name)
+        if isinstance(value, torch.Tensor):
+            zeroed[name] = torch.zeros_like(value)
+    diagnostics = dict(zeroed.get("diagnostics") or {})
+    diagnostics["ablation"] = "zero_query_prior_channels"
+    diagnostics["zeroed_prior_channels"] = sorted(requested)
+    zeroed["diagnostics"] = diagnostics
+    zeroed["ablation"] = "zero_query_prior_channels"
+    zeroed["zeroed_prior_channels"] = sorted(requested)
     zeroed["built_from_split"] = prior_field.get("built_from_split", "train_only")
     zeroed["contains_eval_queries"] = False
     zeroed["contains_validation_queries"] = False

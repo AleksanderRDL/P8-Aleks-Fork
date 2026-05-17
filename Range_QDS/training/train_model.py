@@ -34,7 +34,7 @@ from training.model_features import (
     build_model_point_features,
     is_workload_blind_model_type,
 )
-from training.query_prior_fields import build_train_query_prior_fields, query_prior_field_metadata
+from training.query_prior_fields import QUERY_PRIOR_FIELD_NAMES, build_train_query_prior_fields, query_prior_field_metadata
 from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES, build_query_useful_v1_targets
 from training.inference import windowed_predict_with_heads
 from training.training_diagnostics import (
@@ -94,6 +94,24 @@ def _historical_prior_support_mask(
     return support_mask
 
 
+def _fit_scaler_for_model(points: torch.Tensor, queries: torch.Tensor, model_type: str) -> FeatureScaler:
+    """Fit feature scaling, preserving semantic zero for v2 query-prior channels."""
+    scaler = FeatureScaler.fit(points, queries)
+    if str(model_type).lower() == "workload_blind_range_v2":
+        prior_dim = len(QUERY_PRIOR_FIELD_NAMES)
+        if int(scaler.point_min.numel()) >= prior_dim:
+            prior_slice = slice(-prior_dim, None)
+            scaler.point_min[prior_slice] = torch.minimum(
+                scaler.point_min[prior_slice],
+                torch.zeros_like(scaler.point_min[prior_slice]),
+            )
+            scaler.point_max[prior_slice] = torch.maximum(
+                scaler.point_max[prior_slice],
+                torch.ones_like(scaler.point_max[prior_slice]),
+            )
+    return scaler
+
+
 def _require_validation_inputs(
     validation_trajectories: list[torch.Tensor] | None,
     validation_boundaries: list[tuple[int, int]] | None,
@@ -123,6 +141,75 @@ def _canonical_segment_ids_for_boundaries(
             ids[seg_start:seg_end] = int(segment_id)
             segment_id += 1
     return ids
+
+
+def _scalar_training_target_for_mode(
+    *,
+    labels: torch.Tensor,
+    labelled_mask: torch.Tensor,
+    workload_type_id: int,
+    range_training_target_mode: str,
+) -> tuple[torch.Tensor, str]:
+    """Return the scalar target used by the primary loss and its diagnostic basis."""
+    mode = str(range_training_target_mode).lower()
+    if mode == "query_useful_v1_factorized":
+        return labels[:, int(workload_type_id)].clone().float().clamp(0.0, 1.0), (
+            "raw_query_useful_v1_final_label_for_loss"
+        )
+    return _scaled_training_target_for_type(labels, labelled_mask, int(workload_type_id)), (
+        "scaled_training_target_for_loss"
+    )
+
+
+def _initialize_factorized_head_output_biases_from_targets(
+    model: torch.nn.Module,
+    *,
+    head_targets: torch.Tensor | None,
+    head_mask: torch.Tensor | None,
+    min_probability: float = 1e-4,
+) -> dict[str, Any]:
+    """Center factorized sigmoid heads on their empirical training base rates."""
+    head_names = tuple(str(name) for name in getattr(model, "head_names", ()))
+    heads = getattr(model, "heads", None)
+    if head_targets is None or head_mask is None or not head_names or heads is None:
+        return {"available": False, "reason": "missing_factorized_heads_or_targets"}
+    if head_targets.shape != head_mask.shape or int(head_targets.shape[-1]) != len(head_names):
+        return {"available": False, "reason": "shape_mismatch"}
+    rows: dict[str, dict[str, float | int | bool | None]] = {}
+    clamp = max(1e-8, min(0.49, float(min_probability)))
+    with torch.no_grad():
+        for head_idx, head_name in enumerate(head_names):
+            try:
+                head_module = heads[head_name]
+            except (KeyError, TypeError):
+                rows[head_name] = {"initialized": False, "target_mean": None, "bias": None, "valid_count": 0}
+                continue
+            linear_layers = [module for module in head_module.modules() if isinstance(module, torch.nn.Linear)]
+            if not linear_layers or linear_layers[-1].bias is None:
+                rows[head_name] = {"initialized": False, "target_mean": None, "bias": None, "valid_count": 0}
+                continue
+            valid = head_mask[..., head_idx].to(dtype=torch.bool)
+            valid_count = int(valid.sum().item())
+            if valid_count <= 0:
+                rows[head_name] = {"initialized": False, "target_mean": None, "bias": None, "valid_count": 0}
+                continue
+            target_mean = float(head_targets[..., head_idx][valid].float().mean().item())
+            probability = min(1.0 - clamp, max(clamp, target_mean))
+            bias_value = math.log(probability / (1.0 - probability))
+            linear_layers[-1].bias.fill_(float(bias_value))
+            rows[head_name] = {
+                "initialized": True,
+                "target_mean": float(target_mean),
+                "clamped_probability": float(probability),
+                "bias": float(bias_value),
+                "valid_count": int(valid_count),
+            }
+    return {
+        "available": True,
+        "method": "empirical_target_mean_logit_output_bias",
+        "min_probability": float(clamp),
+        "heads": rows,
+    }
 
 
 def _segment_head_fit_diagnostics(
@@ -239,6 +326,181 @@ def _segment_head_fit_diagnostics(
     return diagnostics
 
 
+def _factorized_head_fit_diagnostics(
+    *,
+    head_logits: torch.Tensor | None,
+    factorized_targets: torch.Tensor | None,
+    factorized_mask: torch.Tensor | None,
+    seed: int,
+) -> dict[str, Any]:
+    """Summarize training-set fit for every factorized QueryUsefulV1 head."""
+    if head_logits is None or factorized_targets is None or factorized_mask is None:
+        return {"factorized_head_fit_diagnostics_available": False}
+    if head_logits.shape != factorized_targets.shape or factorized_mask.shape != head_logits.shape:
+        return {"factorized_head_fit_diagnostics_available": False, "reason": "shape_mismatch"}
+    if int(head_logits.shape[-1]) != len(QUERY_USEFUL_V1_HEAD_NAMES):
+        return {"factorized_head_fit_diagnostics_available": False, "reason": "head_count_mismatch"}
+
+    diagnostics: dict[str, Any] = {
+        "factorized_head_fit_diagnostics_available": True,
+        "factorized_head_fit": {},
+    }
+    head_rows: dict[str, dict[str, Any]] = {}
+    generator = torch.Generator().manual_seed(int(seed) + 1201)
+    for head_idx, head_name in enumerate(QUERY_USEFUL_V1_HEAD_NAMES):
+        valid = factorized_mask[:, head_idx].detach().cpu().bool()
+        if not bool(valid.any().item()):
+            head_rows[str(head_name)] = {"available": False, "reason": "no_valid_targets"}
+            continue
+        scores = torch.sigmoid(head_logits[:, head_idx].detach().cpu().float())[valid]
+        targets = factorized_targets[:, head_idx].detach().cpu().float().clamp(0.0, 1.0)[valid]
+        sampled_scores, sampled_targets = _discriminative_sample(
+            scores,
+            targets,
+            n_each=200,
+            generator=generator,
+        )
+        k = max(1, int(math.ceil(0.05 * int(scores.numel()))))
+        selected = torch.topk(scores, k=k, largest=True).indices
+        ideal = torch.topk(targets, k=k, largest=True).indices
+        selected_mass = float(targets[selected].sum().item())
+        ideal_mass = float(targets[ideal].sum().item())
+        tau = float(_kendall_tau(sampled_scores, sampled_targets))
+        topk_recall = float(selected_mass / max(ideal_mass, 1e-12))
+        head_rows[str(head_name)] = {
+            "available": True,
+            "valid_point_count": int(scores.numel()),
+            "positive_target_count": int((targets > 0.0).sum().item()),
+            "positive_target_fraction": float((targets > 0.0).float().mean().item()),
+            "target_mean": float(targets.mean().item()),
+            "target_std": float(targets.std(unbiased=False).item()) if int(targets.numel()) > 1 else 0.0,
+            "target_mass": float(targets.sum().item()),
+            "prediction_mean": float(scores.mean().item()),
+            "prediction_std": float(scores.std(unbiased=False).item()) if int(scores.numel()) > 1 else 0.0,
+            "kendall_tau": tau,
+            "topk_mass_recall_at_5_percent": topk_recall,
+        }
+        diagnostics[f"{head_name}_head_tau"] = tau
+        diagnostics[f"{head_name}_head_topk_mass_recall_at_5_percent"] = topk_recall
+    diagnostics["factorized_head_fit"] = head_rows
+    return diagnostics
+
+
+def _factorized_final_score_composition_diagnostics(
+    *,
+    head_logits: torch.Tensor | None,
+    factorized_targets: torch.Tensor | None,
+    scalar_target: torch.Tensor | None,
+    scalar_mask: torch.Tensor | None,
+    seed: int,
+) -> dict[str, Any]:
+    """Summarize how the factorized heads compose into the scalar QueryUseful score."""
+    if head_logits is None or scalar_target is None or scalar_mask is None:
+        return {"factorized_final_score_composition_available": False}
+    logits = head_logits.detach().cpu().float()
+    target = scalar_target.detach().cpu().float().flatten().clamp(0.0, 1.0)
+    mask = scalar_mask.detach().cpu().bool().flatten()
+    if logits.ndim != 2 or int(logits.shape[1]) != len(QUERY_USEFUL_V1_HEAD_NAMES):
+        return {"factorized_final_score_composition_available": False, "reason": "head_shape_mismatch"}
+    if int(logits.shape[0]) != int(target.numel()) or int(mask.numel()) != int(target.numel()):
+        return {"factorized_final_score_composition_available": False, "reason": "target_shape_mismatch"}
+    if not bool(mask.any().item()):
+        return {"factorized_final_score_composition_available": False, "reason": "no_labelled_points"}
+
+    def composed_score(probabilities: torch.Tensor) -> torch.Tensor:
+        q_hit = probabilities[:, 0].float().clamp(0.0, 1.0)
+        behavior = probabilities[:, 1].float().clamp(0.0, 1.0)
+        boundary = probabilities[:, 2].float().clamp(0.0, 1.0)
+        replacement = probabilities[:, 3].float().clamp(0.0, 1.0)
+        return (q_hit * (0.5 + behavior) * (0.75 + 0.25 * replacement) + 0.25 * boundary).clamp(0.0, 1.0)
+
+    def topk_mass_and_overlap(scores: torch.Tensor, reference: torch.Tensor) -> tuple[float, float]:
+        k = max(1, int(math.ceil(0.05 * int(scores.numel()))))
+        selected = torch.topk(scores, k=k, largest=True).indices
+        ideal = torch.topk(reference, k=k, largest=True).indices
+        selected_mass = float(reference[selected].sum().item())
+        ideal_mass = float(reference[ideal].sum().item())
+        selected_mask = torch.zeros_like(reference, dtype=torch.bool)
+        ideal_mask = torch.zeros_like(reference, dtype=torch.bool)
+        selected_mask[selected] = True
+        ideal_mask[ideal] = True
+        return float(selected_mass / max(ideal_mass, 1e-12)), float((selected_mask & ideal_mask).sum().item() / k)
+
+    probabilities = torch.sigmoid(logits)
+    composed = composed_score(probabilities)[mask]
+    target_valid = target[mask]
+    generator = torch.Generator().manual_seed(int(seed) + 1701)
+    sampled_scores, sampled_targets = _discriminative_sample(
+        composed,
+        target_valid,
+        n_each=200,
+        generator=generator,
+    )
+    topk_recall, topk_overlap = topk_mass_and_overlap(composed, target_valid)
+    target_std = float(target_valid.std(unbiased=False).item()) if int(target_valid.numel()) > 1 else 0.0
+    prediction_std = float(composed.std(unbiased=False).item()) if int(composed.numel()) > 1 else 0.0
+    prediction_p05 = float(_safe_quantile(composed, 0.05).item())
+    prediction_p95 = float(_safe_quantile(composed, 0.95).item())
+    target_p05 = float(_safe_quantile(target_valid, 0.05).item())
+    target_p95 = float(_safe_quantile(target_valid, 0.95).item())
+    replacement_multiplier = (0.75 + 0.25 * probabilities[:, 3].float().clamp(0.0, 1.0))[mask]
+    behavior_multiplier = (0.5 + probabilities[:, 1].float().clamp(0.0, 1.0))[mask]
+    diagnostics: dict[str, Any] = {
+        "factorized_final_score_composition_available": True,
+        "factorized_final_score_formula": (
+            "q_hit_times_behavior_multiplier_times_replacement_multiplier_plus_boundary_bonus"
+        ),
+        "factorized_final_score_prediction_mean": float(composed.mean().item()),
+        "factorized_final_score_prediction_std": prediction_std,
+        "factorized_final_score_prediction_p05": prediction_p05,
+        "factorized_final_score_prediction_p95": prediction_p95,
+        "factorized_final_score_prediction_p95_minus_p05": float(prediction_p95 - prediction_p05),
+        "factorized_final_score_target_mean": float(target_valid.mean().item()),
+        "factorized_final_score_target_std": target_std,
+        "factorized_final_score_target_p05": target_p05,
+        "factorized_final_score_target_p95": target_p95,
+        "factorized_final_score_target_p95_minus_p05": float(target_p95 - target_p05),
+        "factorized_final_score_prediction_std_to_target_std": (
+            None if target_std <= 1e-12 else float(prediction_std / target_std)
+        ),
+        "factorized_final_score_tau": float(_kendall_tau(sampled_scores, sampled_targets)),
+        "factorized_final_score_topk_mass_recall_at_5_percent": topk_recall,
+        "factorized_final_score_topk_overlap_at_5_percent": topk_overlap,
+        "factorized_replacement_multiplier_mean": float(replacement_multiplier.mean().item()),
+        "factorized_replacement_multiplier_std": (
+            float(replacement_multiplier.std(unbiased=False).item())
+            if int(replacement_multiplier.numel()) > 1
+            else 0.0
+        ),
+        "factorized_behavior_multiplier_mean": float(behavior_multiplier.mean().item()),
+        "factorized_behavior_multiplier_std": (
+            float(behavior_multiplier.std(unbiased=False).item())
+            if int(behavior_multiplier.numel()) > 1
+            else 0.0
+        ),
+    }
+
+    if factorized_targets is not None and factorized_targets.shape == logits.shape:
+        target_probabilities = factorized_targets.detach().cpu().float().clamp(0.0, 1.0)
+        target_composed = composed_score(target_probabilities)[mask]
+        sampled_target_composed, sampled_label = _discriminative_sample(
+            target_composed,
+            target_valid,
+            n_each=200,
+            generator=generator,
+        )
+        target_topk_recall, target_topk_overlap = topk_mass_and_overlap(target_composed, target_valid)
+        diagnostics.update(
+            {
+                "factorized_target_formula_label_mae": float((target_composed - target_valid).abs().mean().item()),
+                "factorized_target_formula_label_tau": float(_kendall_tau(sampled_target_composed, sampled_label)),
+                "factorized_target_formula_topk_mass_recall_at_5_percent": target_topk_recall,
+                "factorized_target_formula_topk_overlap_at_5_percent": target_topk_overlap,
+            }
+        )
+    return diagnostics
+
+
 def train_model(
     train_trajectories: list[torch.Tensor],
     train_boundaries: list[tuple[int, int]],
@@ -286,7 +548,8 @@ def train_model(
     factorized_mask: torch.Tensor | None = None
     factorized_target_diagnostics: dict[str, Any] = {}
     canonical_segment_ids: torch.Tensor | None = None
-    if str(getattr(model_config, "range_training_target_mode", "")).lower() == "query_useful_v1_factorized":
+    range_training_target_mode = str(getattr(model_config, "range_training_target_mode", "")).lower()
+    if range_training_target_mode == "query_useful_v1_factorized":
         factorized_bundle = build_query_useful_v1_targets(
             points=all_points,
             boundaries=train_boundaries,
@@ -353,6 +616,8 @@ def train_model(
                 )
             ),
             train_workload_seed=prior_seed,
+            grid_bins=int(getattr(model_config, "query_prior_grid_bins", 64)),
+            smoothing_passes=int(getattr(model_config, "query_prior_smoothing_passes", 2)),
             out_of_extent_sampling="nearest",
         )
     points = build_model_point_features(
@@ -417,7 +682,12 @@ def train_model(
             compression_ratio=model_config.compression_ratio,
             temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
         )
-    training_target = _scaled_training_target_for_type(labels, labelled_mask, workload_type_id)
+    training_target, training_target_basis = _scalar_training_target_for_mode(
+        labels=labels,
+        labelled_mask=labelled_mask,
+        workload_type_id=workload_type_id,
+        range_training_target_mode=range_training_target_mode,
+    )
     training_labelled_mask = labelled_mask[:, workload_type_id]
     base_type_weights_cpu = _workload_map_tensor(
         train_workload_map or _query_frequency_workload_map(workload),
@@ -439,10 +709,20 @@ def train_model(
         temporal_residual_label_mode=temporal_residual_label_mode,
         loss_objective=loss_objective,
         temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
-        range_training_target_mode=str(getattr(model_config, "range_training_target_mode", "point_value")),
+        range_training_target_mode=range_training_target_mode,
     )
+    target_diagnostics["supervised_scalar_target_basis"] = training_target_basis
     if factorized_target_diagnostics:
         target_diagnostics["query_useful_v1_factorized"] = factorized_target_diagnostics
+        target_diagnostics["query_useful_v1_loss_weights"] = {
+            "aux_loss_weight": float(getattr(model_config, "query_useful_aux_loss_weight", 0.50)),
+            "segment_budget_head_weight": float(
+                getattr(model_config, "query_useful_segment_budget_head_weight", 0.10)
+            ),
+            "segment_level_loss_weight": float(
+                getattr(model_config, "query_useful_segment_level_loss_weight", 0.25)
+            ),
+        }
     if query_prior_field is not None:
         target_diagnostics["query_prior_field"] = query_prior_field_metadata(query_prior_field)
     if budget_ratios != configured_budget_ratios:
@@ -463,7 +743,14 @@ def train_model(
             flush=True,
         )
 
-    scaler = FeatureScaler.fit(points, workload.query_features)
+    scaler = _fit_scaler_for_model(points, workload.query_features, model_config.model_type)
+    if str(model_config.model_type).lower() == "workload_blind_range_v2":
+        target_diagnostics["range_v2_prior_feature_scaling"] = {
+            "semantic_zero_preserved": True,
+            "prior_feature_names": list(QUERY_PRIOR_FIELD_NAMES),
+            "point_min": scaler.point_min[-len(QUERY_PRIOR_FIELD_NAMES) :].detach().cpu().tolist(),
+            "point_max": scaler.point_max[-len(QUERY_PRIOR_FIELD_NAMES) :].detach().cpu().tolist(),
+        }
     norm_points, norm_queries = scaler.transform(points, workload.query_features)
 
     uses_historical_prior = model_config.model_type in HISTORICAL_PRIOR_MODEL_TYPES
@@ -509,6 +796,13 @@ def train_model(
             getattr(model_config, "historical_prior_source_aggregation", "none")
         )
     model: torch.nn.Module = model_cls(**model_kwargs)
+    head_bias_initialization = _initialize_factorized_head_output_biases_from_targets(
+        model,
+        head_targets=factorized_targets,
+        head_mask=factorized_mask,
+    )
+    if bool(head_bias_initialization.get("available", False)):
+        target_diagnostics["factorized_head_bias_initialization"] = head_bias_initialization
     if query_prior_field is not None:
         setattr(model, "query_prior_field", query_prior_field)
     if uses_historical_prior:
@@ -1245,6 +1539,24 @@ def train_model(
             model_config=model_config,
             workload_type=ID_TO_QUERY_NAME.get(workload_type_id, str(workload_type_id)),
             seed=seed,
+        )
+        fit_diagnostics["target_basis"] = training_target_basis
+        fit_diagnostics.update(
+            _factorized_head_fit_diagnostics(
+                head_logits=train_head_logits,
+                factorized_targets=factorized_targets,
+                factorized_mask=factorized_mask,
+                seed=seed,
+            )
+        )
+        fit_diagnostics.update(
+            _factorized_final_score_composition_diagnostics(
+                head_logits=train_head_logits,
+                factorized_targets=factorized_targets,
+                scalar_target=training_target,
+                scalar_mask=training_labelled_mask,
+                seed=seed,
+            )
         )
         fit_diagnostics.update(
             _segment_head_fit_diagnostics(

@@ -156,6 +156,8 @@ def main() -> None:
         validation_max_segments=args.validation_max_segments,
         eval_max_segments=args.eval_max_segments,
         max_trajectories=args.max_trajectories,
+        train_fraction=args.train_fraction,
+        val_fraction=args.val_fraction,
         cache_dir=args.cache_dir,
         refresh_cache=args.refresh_cache,
         n_queries=args.n_queries,
@@ -194,6 +196,9 @@ def main() -> None:
         loss_objective=args.loss_objective,
         budget_loss_ratios=args.budget_loss_ratios,
         budget_loss_temperature=args.budget_loss_temperature,
+        query_useful_aux_loss_weight=args.query_useful_aux_loss_weight,
+        query_useful_segment_budget_head_weight=args.query_useful_segment_budget_head_weight,
+        query_useful_segment_level_loss_weight=args.query_useful_segment_level_loss_weight,
         temporal_distribution_loss_weight=args.temporal_distribution_loss_weight,
         gradient_clip_norm=args.gradient_clip_norm,
         compression_ratio=args.compression_ratio,
@@ -239,6 +244,8 @@ def main() -> None:
         learned_segment_geometry_gain_weight=args.learned_segment_geometry_gain_weight,
         learned_segment_score_blend_weight=args.learned_segment_score_blend_weight,
         learned_segment_fairness_preallocation=args.learned_segment_fairness_preallocation,
+        learned_segment_length_repair_fraction=args.learned_segment_length_repair_fraction,
+        learned_segment_length_support_blend_weight=args.learned_segment_length_support_blend_weight,
         mlqds_stratified_center_weight=args.mlqds_stratified_center_weight,
         mlqds_min_learned_swaps=args.mlqds_min_learned_swaps,
         mlqds_score_mode=args.mlqds_score_mode,
@@ -267,6 +274,8 @@ def main() -> None:
         range_teacher_distillation_mode=args.range_teacher_distillation_mode,
         range_teacher_epochs=args.range_teacher_epochs,
         range_audit_compression_ratios=args.range_audit_compression_ratios,
+        query_prior_grid_bins=args.query_prior_grid_bins,
+        query_prior_smoothing_passes=args.query_prior_smoothing_passes,
         final_metrics_mode=args.final_metrics_mode,
         float32_matmul_precision=args.float32_matmul_precision,
         allow_tf32=args.allow_tf32,
@@ -293,6 +302,9 @@ def main() -> None:
         f"loss_objective={args.loss_objective}  "
         f"budget_loss_ratios={args.budget_loss_ratios}  "
         f"budget_loss_temperature={args.budget_loss_temperature}  "
+        f"query_useful_aux_loss_weight={args.query_useful_aux_loss_weight}  "
+        f"query_useful_segment_budget_head_weight={args.query_useful_segment_budget_head_weight}  "
+        f"query_useful_segment_level_loss_weight={args.query_useful_segment_level_loss_weight}  "
         f"temporal_distribution_loss_weight={args.temporal_distribution_loss_weight}  "
         f"gradient_clip_norm={args.gradient_clip_norm}  "
         f"train_batch_size={args.train_batch_size}  "
@@ -300,6 +312,7 @@ def main() -> None:
         f"query_chunk_size={args.query_chunk_size}  "
         f"range_diagnostics_mode={args.range_diagnostics_mode}  "
         f"validation_split_mode={args.validation_split_mode}  "
+        f"train_fraction={args.train_fraction}  val_fraction={args.val_fraction}  "
         f"final_metrics_mode={args.final_metrics_mode}  "
         f"synthetic_route_families={args.synthetic_route_families}  "
         f"diagnostic_every={args.diagnostic_every}  "
@@ -344,6 +357,8 @@ def main() -> None:
         f"learned_segment_geometry_gain_weight={args.learned_segment_geometry_gain_weight}  "
         f"learned_segment_score_blend_weight={args.learned_segment_score_blend_weight}  "
         f"learned_segment_fairness_preallocation={args.learned_segment_fairness_preallocation}  "
+        f"learned_segment_length_repair_fraction={args.learned_segment_length_repair_fraction}  "
+        f"learned_segment_length_support_blend_weight={args.learned_segment_length_support_blend_weight}  "
         f"mlqds_stratified_center_weight={args.mlqds_stratified_center_weight}  "
         f"mlqds_min_learned_swaps={args.mlqds_min_learned_swaps}  "
         f"mlqds_score_mode={args.mlqds_score_mode}  "
@@ -372,6 +387,8 @@ def main() -> None:
         f"range_teacher_distillation_mode={args.range_teacher_distillation_mode}  "
         f"range_teacher_epochs={args.range_teacher_epochs}  "
         f"range_audit_compression_ratios={args.range_audit_compression_ratios}  "
+        f"query_prior_grid_bins={args.query_prior_grid_bins}  "
+        f"query_prior_smoothing_passes={args.query_prior_smoothing_passes}  "
         f"min_points_per_segment={args.min_points_per_segment}  "
         f"max_points_per_segment={args.max_points_per_segment}  "
         f"max_time_gap_seconds={normalized_gap_arg(args.max_time_gap_seconds)}  "

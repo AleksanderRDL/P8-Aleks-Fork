@@ -366,6 +366,7 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
         "ship_hit_distribution_ks_max": 0.20,
         "near_duplicate_rate_max": 0.05,
         "broad_query_rate_max": 0.05,
+        "query_count_relative_delta_max": 0.15,
     }
     train_query_count = int(train_sig.get("query_count", 0) or 0)
     eval_query_count = int(eval_sig.get("query_count", 0) or 0)
@@ -375,6 +376,10 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
         count_failed.append("train_signature_query_count_below_min")
     if eval_query_count < min_signature_query_count:
         count_failed.append("eval_signature_query_count_below_min")
+    query_count_delta = abs(train_query_count - eval_query_count)
+    query_count_relative_delta = query_count_delta / float(max(train_query_count, eval_query_count, 1))
+    if query_count_relative_delta > thresholds["query_count_relative_delta_max"]:
+        count_failed.append("query_count_mismatch")
     train_profile = str(train_sig.get("profile_id", ""))
     eval_profile = str(eval_sig.get("profile_id", ""))
     profile_failed: list[str] = []
@@ -388,6 +393,14 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
     ship_hit_ks = _ks_distance(
         train_sig.get("ship_hit_counts_per_query"),
         eval_sig.get("ship_hit_counts_per_query"),
+    )
+    point_hit_fraction_ks = _ks_distance(
+        train_sig.get("point_hit_fractions_per_query"),
+        eval_sig.get("point_hit_fractions_per_query"),
+    )
+    ship_hit_fraction_ks = _ks_distance(
+        train_sig.get("ship_hit_fractions_per_query"),
+        eval_sig.get("ship_hit_fractions_per_query"),
     )
     point_hit_proxy = _quantile_linf_distance(
         train_sig.get("point_hits_per_query"),
@@ -408,8 +421,16 @@ def _workload_signature_gate_for_pair(train_like: dict[str, Any], eval_like: dic
         ),
         "point_hit_distribution_ks": point_hit_ks if point_hit_ks is not None else point_hit_proxy,
         "ship_hit_distribution_ks": ship_hit_ks if ship_hit_ks is not None else ship_hit_proxy,
+        "point_hit_fraction_distribution_ks": point_hit_fraction_ks,
+        "ship_hit_fraction_distribution_ks": ship_hit_fraction_ks,
         "point_hit_distribution_used_quantile_proxy": point_hit_ks is None,
         "ship_hit_distribution_used_quantile_proxy": ship_hit_ks is None,
+        "query_count_delta": query_count_delta,
+        "query_count_relative_delta": query_count_relative_delta,
+        "train_total_points": train_sig.get("total_points"),
+        "eval_total_points": eval_sig.get("total_points"),
+        "train_total_trajectories": train_sig.get("total_trajectories"),
+        "eval_total_trajectories": eval_sig.get("total_trajectories"),
         "near_duplicate_rate_max_observed": max(
             float(train_sig.get("near_duplicate_rate", 1.0)),
             float(eval_sig.get("near_duplicate_rate", 1.0)),

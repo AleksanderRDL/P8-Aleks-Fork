@@ -113,6 +113,21 @@ def _fallback_validation_indices(
     )
 
 
+def _single_dataset_split_fractions(config: ExperimentConfig) -> tuple[float, float]:
+    """Return validated train/validation fractions for single-dataset splits."""
+    train_fraction = float(config.data.train_fraction)
+    val_fraction = float(config.data.val_fraction)
+    if not 0.0 < train_fraction < 1.0:
+        raise ValueError(f"train_fraction must be in (0, 1); got {train_fraction!r}.")
+    if not 0.0 <= val_fraction < 1.0:
+        raise ValueError(f"val_fraction must be in [0, 1); got {val_fraction!r}.")
+    if train_fraction + val_fraction >= 1.0:
+        raise ValueError(
+            "train_fraction + val_fraction must be less than 1.0 so a held-out eval split remains."
+        )
+    return train_fraction, val_fraction
+
+
 def prepare_experiment_split(
     *,
     config: ExperimentConfig,
@@ -141,10 +156,11 @@ def prepare_experiment_split(
         trajectory_count = len(trajectories)
         generator = torch.Generator().manual_seed(int(seeds.split_seed))
         permutation = torch.randperm(trajectory_count, generator=generator).tolist()
-        train_count = max(1, int(trajectory_count * config.data.train_fraction))
+        train_fraction, val_fraction = _single_dataset_split_fractions(config)
+        train_count = max(1, int(trajectory_count * train_fraction))
         val_count = (
-            max(1, int(trajectory_count * config.data.val_fraction))
-            if trajectory_count - train_count > 1
+            max(1, int(trajectory_count * val_fraction))
+            if val_fraction > 0.0 and trajectory_count - train_count > 1
             else 0
         )
         train_traj = [trajectories[i] for i in permutation[:train_count]]

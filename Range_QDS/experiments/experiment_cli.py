@@ -143,6 +143,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--train_fraction",
+        type=float,
+        default=0.70,
+        help="Single-dataset train trajectory fraction. Ignored when --eval_csv_path is provided.",
+    )
+    parser.add_argument(
+        "--val_fraction",
+        type=float,
+        default=0.15,
+        help="Single-dataset checkpoint-validation trajectory fraction. Ignored when validation CSVs are provided.",
+    )
+    parser.add_argument(
         "--final_metrics_mode",
         type=str,
         default="diagnostic",
@@ -216,7 +228,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--query_coverage",
         type=float,
         default=None,
-        help="Bias generated queries toward this point-coverage target while keeping --n_queries fixed. Accepts 0.30 or 30 for 30%%.",
+        help=(
+            "Bias generated queries toward this point-coverage target. Final calibrated profiles "
+            "treat --n_queries as a minimum floor and may expand up to --max_queries. "
+            "Accepts 0.30 or 30 for 30%%."
+        ),
     )
     parser.add_argument(
         "--max_queries",
@@ -439,6 +455,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_BUDGET_LOSS_TEMPERATURE,
         help="Soft top-k temperature for --loss_objective budget_topk.",
+    )
+    parser.add_argument(
+        "--query_useful_aux_loss_weight",
+        type=float,
+        default=0.50,
+        help="Overall auxiliary loss weight for QueryUsefulV1 factorized heads.",
+    )
+    parser.add_argument(
+        "--query_useful_segment_budget_head_weight",
+        type=float,
+        default=0.10,
+        help="BCE head weight for the QueryUsefulV1 segment-budget factorized head.",
+    )
+    parser.add_argument(
+        "--query_useful_segment_level_loss_weight",
+        type=float,
+        default=0.25,
+        help="Listwise segment-level loss weight inside the QueryUsefulV1 auxiliary loss.",
     )
     parser.add_argument(
         "--temporal_distribution_loss_weight",
@@ -723,6 +757,44 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=True,
         help="Disable the query-free one-learned-slot-per-active-trajectory selector preallocation.",
+    )
+    parser.add_argument(
+        "--learned_segment_length_repair_fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional query-free learned-slot repair fraction for learned_segment_budget_v1. "
+            "0.0 leaves selected learned slots unchanged; values above 0 swap a bounded share "
+            "toward path-length gain and are experimental until strict gates pass."
+        ),
+    )
+    parser.add_argument(
+        "--learned_segment_length_support_blend_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional learned-segment allocation blend weight for the query-free "
+            "path_length_support_target head. 0.0 keeps segment-budget allocation; "
+            "1.0 uses the length-support head as the segment allocation signal."
+        ),
+    )
+    parser.add_argument(
+        "--query_prior_grid_bins",
+        type=int,
+        default=64,
+        help=(
+            "Lat/lon grid resolution for train-derived workload-blind query-prior fields. "
+            "Higher values preserve sharper workload-local priors but can overfit small train splits."
+        ),
+    )
+    parser.add_argument(
+        "--query_prior_smoothing_passes",
+        type=int,
+        default=2,
+        help=(
+            "Number of binomial smoothing passes for train-derived query-prior fields. "
+            "Set 0 for unsmoothed priors when strict predictability diagnostics justify it."
+        ),
     )
     parser.add_argument(
         "--mlqds_stratified_center_weight",

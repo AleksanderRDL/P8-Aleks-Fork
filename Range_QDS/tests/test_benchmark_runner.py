@@ -425,10 +425,35 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
             "no_behavior_head_ablation_delta": 0.07,
             "no_segment_budget_head_ablation_delta": 0.08,
             "no_trajectory_fairness_preallocation_ablation_delta": 0.015,
+            "no_geometry_tie_breaker_ablation_delta": -0.01,
+            "causality_ablation_mask_diagnostics": {
+                "MLQDS_shuffled_prior_fields": {
+                    "retained_mask_jaccard": 0.82,
+                    "retained_symmetric_difference_count": 12,
+                },
+                "MLQDS_without_query_prior_features": {
+                    "retained_mask_jaccard": 0.74,
+                    "retained_symmetric_difference_count": 18,
+                },
+                "MLQDS_without_behavior_utility_head": {
+                    "retained_mask_jaccard": 0.97,
+                    "retained_symmetric_difference_count": 2,
+                },
+                "MLQDS_without_segment_budget_head": {
+                    "retained_mask_jaccard": 0.51,
+                    "retained_symmetric_difference_count": 44,
+                },
+                "MLQDS_without_geometry_tie_breaker": {
+                    "retained_mask_jaccard": 0.62,
+                    "retained_symmetric_difference_count": 30,
+                },
+            },
             "learned_segment_selector_config": {
                 "geometry_gain_weight": 0.12,
                 "segment_score_blend_weight": 0.05,
                 "fairness_preallocation_enabled": True,
+                "length_repair_fraction": 0.25,
+                "length_support_blend_weight": 1.0,
             },
             "learning_causality_delta_gate": {
                 "min_material_query_useful_delta": 0.005,
@@ -533,6 +558,14 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
                             "footprint_family_l1_distance": 0.05,
                             "point_hit_distribution_ks": 0.22,
                             "ship_hit_distribution_ks": 0.10,
+                            "point_hit_fraction_distribution_ks": 0.12,
+                            "ship_hit_fraction_distribution_ks": 0.08,
+                            "query_count_delta": 8,
+                            "query_count_relative_delta": 0.125,
+                            "train_total_points": 1000,
+                            "eval_total_points": 500,
+                            "train_total_trajectories": 20,
+                            "eval_total_trajectories": 10,
                             "point_hit_distribution_used_quantile_proxy": False,
                             "ship_hit_distribution_used_quantile_proxy": False,
                         }
@@ -959,6 +992,14 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["workload_signature_failed_pairs"] == ["train"]
     assert row["train_eval_anchor_family_l1_distance"] == 0.16
     assert row["train_eval_point_hit_distribution_ks"] == 0.22
+    assert row["train_eval_point_hit_fraction_distribution_ks"] == 0.12
+    assert row["train_eval_ship_hit_fraction_distribution_ks"] == 0.08
+    assert row["train_eval_query_count_delta"] == 8
+    assert row["train_eval_query_count_relative_delta"] == 0.125
+    assert row["train_signature_total_points"] == 1000
+    assert row["eval_signature_total_points"] == 500
+    assert row["train_signature_total_trajectories"] == 20
+    assert row["eval_signature_total_trajectories"] == 10
     assert row["train_eval_point_hit_distribution_ks_proxy"] == 0.22
     assert row["train_eval_point_hit_distribution_used_quantile_proxy"] is False
     assert row["learning_causality_ablation_status"] == "partial"
@@ -980,9 +1021,22 @@ def test_benchmark_row_records_effective_child_torch_runtime(tmp_path) -> None:
     assert row["no_behavior_head_ablation_delta"] == 0.07
     assert row["no_segment_budget_head_ablation_delta"] == 0.08
     assert row["no_trajectory_fairness_preallocation_ablation_delta"] == 0.015
+    assert row["shuffled_prior_retained_mask_jaccard"] == 0.82
+    assert row["shuffled_prior_retained_symmetric_difference_count"] == 12
+    assert row["no_query_prior_retained_mask_jaccard"] == 0.74
+    assert row["no_query_prior_retained_symmetric_difference_count"] == 18
+    assert row["no_behavior_retained_mask_jaccard"] == 0.97
+    assert row["no_behavior_retained_symmetric_difference_count"] == 2
+    assert row["no_segment_budget_retained_mask_jaccard"] == 0.51
+    assert row["no_segment_budget_retained_symmetric_difference_count"] == 44
+    assert row["no_geometry_tie_breaker_ablation_delta"] == -0.01
+    assert row["no_geometry_retained_mask_jaccard"] == 0.62
+    assert row["no_geometry_retained_symmetric_difference_count"] == 30
     assert row["learned_segment_geometry_gain_weight"] == 0.12
     assert row["learned_segment_score_blend_weight"] == 0.05
     assert row["learned_segment_fairness_preallocation_enabled"] is True
+    assert row["learned_segment_length_repair_fraction"] == 0.25
+    assert row["learned_segment_length_support_blend_weight"] == 1.0
     assert row["learning_causality_min_material_delta"] == 0.005
     assert row["learning_causality_shuffled_fraction_of_uniform_gap_min"] == 0.60
     assert row["learning_causality_mlqds_uniform_gap"] == 0.05

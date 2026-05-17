@@ -21,6 +21,7 @@ from training.training_losses import (
     _pointwise_bce_loss_rows,
     _ranking_loss_for_type,
 )
+from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES
 from training.training_windows import _trajectory_batch_to_device
 from training.trajectory_batching import TrajectoryBatch
 
@@ -58,6 +59,8 @@ def _factorized_query_useful_loss(
     global_indices: torch.Tensor | None = None,
     segment_ids: torch.Tensor | None = None,
     segment_size: int = 32,
+    segment_budget_head_weight: float = 0.10,
+    segment_level_loss_weight: float = 0.25,
 ) -> torch.Tensor:
     """Return auxiliary multi-head QueryUsefulV1 loss for v2 models."""
     if head_logits.shape != head_targets.shape or head_mask.shape != head_logits.shape:
@@ -72,7 +75,20 @@ def _factorized_query_useful_loss(
         head_targets.clamp(0.0, 1.0),
         reduction="none",
     )
-    head_weights = head_logits.new_tensor([0.30, 0.25, 0.15, 0.20, 0.10]).view(1, 1, -1)
+    segment_weight = max(0.0, float(segment_budget_head_weight))
+    default_weights = {
+        "query_hit_probability": 0.30,
+        "conditional_behavior_utility": 0.25,
+        "boundary_event_utility": 0.15,
+        "replacement_representative_value": 0.20,
+        "segment_budget_target": segment_weight,
+        "path_length_support_target": 0.05,
+    }
+    if int(head_logits.shape[-1]) == len(QUERY_USEFUL_V1_HEAD_NAMES):
+        weights = [default_weights.get(str(name), 0.05) for name in QUERY_USEFUL_V1_HEAD_NAMES]
+    else:
+        weights = [1.0 for _idx in range(int(head_logits.shape[-1]))]
+    head_weights = head_logits.new_tensor(weights).view(1, 1, -1)
     weighted = per_element * head_weights * valid.to(dtype=per_element.dtype)
     denom = (head_weights * valid.to(dtype=per_element.dtype)).sum().clamp(min=1.0)
     point_loss = weighted.sum() / denom
@@ -84,7 +100,7 @@ def _factorized_query_useful_loss(
         segment_ids=segment_ids,
         segment_size=segment_size,
     )
-    return point_loss + 0.25 * segment_loss
+    return point_loss + max(0.0, float(segment_level_loss_weight)) * segment_loss
 
 
 def _segment_budget_head_segment_level_loss(
@@ -221,6 +237,7 @@ def _train_one_epoch(
         batch_labels = training_target_dev[safe_global_idx]
         batch_label_mask = labelled_mask_dev[safe_global_idx] & valid_batch
         aux_loss = pred_batch.new_tensor(0.0)
+        aux_loss_weight = max(0.0, float(getattr(model_config, "query_useful_aux_loss_weight", 0.50)))
         if (
             head_logits_batch is not None
             and factorized_targets_dev is not None
@@ -242,6 +259,12 @@ def _train_one_epoch(
                 head_mask=batch_head_mask,
                 global_indices=batch_global_idx,
                 segment_ids=batch_segment_ids,
+                segment_budget_head_weight=float(
+                    getattr(model_config, "query_useful_segment_budget_head_weight", 0.10)
+                ),
+                segment_level_loss_weight=float(
+                    getattr(model_config, "query_useful_segment_level_loss_weight", 0.25)
+                ),
             )
         positive_row_mask = (batch_label_mask & (batch_labels > 0)).any(dim=1)
         positive_windows[active_type_id] += int(positive_row_mask.sum().item())
@@ -300,7 +323,7 @@ def _train_one_epoch(
                     row_losses = row_losses + temporal_distribution_weight * temporal_distribution_rows
                 loss = (
                     row_losses[positive_row_mask].sum() / float(batch_size)
-                    + 0.50 * aux_loss
+                    + aux_loss_weight * aux_loss
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         elif loss_objective == "pointwise_bce":
@@ -312,7 +335,7 @@ def _train_one_epoch(
             if bool(pointwise_direct_active_rows.any().item()):
                 loss = (
                     pointwise_direct_rows[pointwise_direct_active_rows].sum() / float(batch_size)
-                    + 0.50 * aux_loss
+                    + aux_loss_weight * aux_loss
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         else:
@@ -337,7 +360,7 @@ def _train_one_epoch(
             if loss_terms:
                 loss = (
                     torch.stack(loss_terms).sum() / float(batch_size)
-                    + 0.50 * aux_loss
+                    + aux_loss_weight * aux_loss
                     + model_config.l2_score_weight * (pred_batch ** 2).mean()
                 )
         timing["loss_s"] += time.perf_counter() - loss_t0

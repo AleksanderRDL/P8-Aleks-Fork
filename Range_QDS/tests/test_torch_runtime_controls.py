@@ -91,6 +91,9 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         loss_objective="ranking_bce",
         budget_loss_ratios=[0.02, 0.05],
         budget_loss_temperature=0.2,
+        query_useful_aux_loss_weight=0.75,
+        query_useful_segment_budget_head_weight=0.35,
+        query_useful_segment_level_loss_weight=0.90,
         temporal_distribution_loss_weight=0.07,
         ranking_pairs_per_type=192,
         ranking_top_quantile=0.9,
@@ -114,6 +117,8 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
         checkpoint_candidate_pool_size=2,
         range_diagnostics_mode="cached",
         validation_split_mode="source_stratified",
+        train_fraction=0.34,
+        val_fraction=0.33,
         final_metrics_mode="core",
     )
     restored = ExperimentConfig.from_dict(cfg.to_dict())
@@ -131,6 +136,8 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.data.eval_max_segments == 24
     assert restored.data.range_diagnostics_mode == "cached"
     assert restored.data.validation_split_mode == "source_stratified"
+    assert restored.data.train_fraction == 0.34
+    assert restored.data.val_fraction == 0.33
     assert restored.baselines.final_metrics_mode == "core"
     assert restored.model.allow_tf32 is True
     assert restored.model.train_batch_size == 64
@@ -162,6 +169,9 @@ def test_experiment_config_roundtrips_precision_controls() -> None:
     assert restored.model.loss_objective == "ranking_bce"
     assert restored.model.budget_loss_ratios == [0.02, 0.05]
     assert restored.model.budget_loss_temperature == 0.2
+    assert restored.model.query_useful_aux_loss_weight == 0.75
+    assert restored.model.query_useful_segment_budget_head_weight == 0.35
+    assert restored.model.query_useful_segment_level_loss_weight == 0.90
     assert restored.model.temporal_distribution_loss_weight == 0.07
     assert restored.model.ranking_pairs_per_type == 192
     assert restored.model.ranking_top_quantile == 0.9
@@ -217,6 +227,10 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "0.40",
             "--validation_split_mode",
             "source_stratified",
+            "--train_fraction",
+            "0.34",
+            "--val_fraction",
+            "0.33",
             "--range_audit_compression_ratios",
             "0.01,0.02,0.10",
             "--range_label_mode",
@@ -263,12 +277,22 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
             "64",
             "--range_set_utility_mass_mode",
             "query",
+            "--query_prior_grid_bins",
+            "128",
+            "--query_prior_smoothing_passes",
+            "0",
             "--loss_objective",
             "budget_topk",
             "--budget_loss_ratios",
             "0.01,0.05",
             "--budget_loss_temperature",
             "0.20",
+            "--query_useful_aux_loss_weight",
+            "0.75",
+            "--query_useful_segment_budget_head_weight",
+            "0.35",
+            "--query_useful_segment_level_loss_weight",
+            "0.90",
             "--temporal_distribution_loss_weight",
             "0.20",
             "--checkpoint_full_score_every",
@@ -343,9 +367,14 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
         range_set_utility_multiplier=args.range_set_utility_multiplier,
         range_set_utility_candidate_limit=args.range_set_utility_candidate_limit,
         range_set_utility_mass_mode=args.range_set_utility_mass_mode,
+        query_prior_grid_bins=args.query_prior_grid_bins,
+        query_prior_smoothing_passes=args.query_prior_smoothing_passes,
         loss_objective=args.loss_objective,
         budget_loss_ratios=args.budget_loss_ratios,
         budget_loss_temperature=args.budget_loss_temperature,
+        query_useful_aux_loss_weight=args.query_useful_aux_loss_weight,
+        query_useful_segment_budget_head_weight=args.query_useful_segment_budget_head_weight,
+        query_useful_segment_level_loss_weight=args.query_useful_segment_level_loss_weight,
         temporal_distribution_loss_weight=args.temporal_distribution_loss_weight,
         checkpoint_full_score_every=args.checkpoint_full_score_every,
         checkpoint_candidate_pool_size=args.checkpoint_candidate_pool_size,
@@ -379,6 +408,8 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.mlqds_rank_confidence_weight == 0.30
     assert args.mlqds_range_geometry_blend == 0.40
     assert args.validation_split_mode == "source_stratified"
+    assert args.train_fraction == 0.34
+    assert args.val_fraction == 0.33
     assert args.range_audit_compression_ratios == [0.01, 0.02, 0.10]
     assert args.range_label_mode == "point_f1"
     assert args.range_target_balance_mode == "trajectory_unit_mass"
@@ -402,9 +433,14 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert args.range_set_utility_multiplier == 1.75
     assert args.range_set_utility_candidate_limit == 64
     assert args.range_set_utility_mass_mode == "query"
+    assert args.query_prior_grid_bins == 128
+    assert args.query_prior_smoothing_passes == 0
     assert args.loss_objective == "budget_topk"
     assert args.budget_loss_ratios == [0.01, 0.05]
     assert args.budget_loss_temperature == 0.20
+    assert args.query_useful_aux_loss_weight == 0.75
+    assert args.query_useful_segment_budget_head_weight == 0.35
+    assert args.query_useful_segment_level_loss_weight == 0.90
     assert args.temporal_distribution_loss_weight == 0.20
     assert args.checkpoint_full_score_every == 3
     assert args.checkpoint_candidate_pool_size == 2
@@ -458,9 +494,14 @@ def test_cli_exposes_training_and_scoring_tuning_controls() -> None:
     assert cfg.model.range_set_utility_multiplier == 1.75
     assert cfg.model.range_set_utility_candidate_limit == 64
     assert cfg.model.range_set_utility_mass_mode == "query"
+    assert cfg.model.query_prior_grid_bins == 128
+    assert cfg.model.query_prior_smoothing_passes == 0
     assert cfg.model.loss_objective == "budget_topk"
     assert cfg.model.budget_loss_ratios == [0.01, 0.05]
     assert cfg.model.budget_loss_temperature == 0.20
+    assert cfg.model.query_useful_aux_loss_weight == 0.75
+    assert cfg.model.query_useful_segment_budget_head_weight == 0.35
+    assert cfg.model.query_useful_segment_level_loss_weight == 0.90
     assert cfg.model.temporal_distribution_loss_weight == 0.20
     assert cfg.model.checkpoint_full_score_every == 3
     assert cfg.model.checkpoint_candidate_pool_size == 2
@@ -521,6 +562,8 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     payload["model"].pop("mlqds_min_learned_swaps")
     payload["model"].pop("checkpoint_full_score_every")
     payload["model"].pop("checkpoint_candidate_pool_size")
+    payload["model"].pop("query_prior_grid_bins")
+    payload["model"].pop("query_prior_smoothing_passes")
     payload["query"].pop("range_train_workload_replicates")
     payload["query"].pop("range_time_domain_mode")
     payload["query"].pop("range_anchor_mode")
@@ -577,6 +620,8 @@ def test_experiment_config_loads_missing_runtime_and_mlqds_defaults() -> None:
     assert restored.model.checkpoint_score_variant == "range_usefulness"
     assert restored.model.checkpoint_full_score_every == 1
     assert restored.model.checkpoint_candidate_pool_size == 1
+    assert restored.model.query_prior_grid_bins == 64
+    assert restored.model.query_prior_smoothing_passes == 2
     assert restored.query.range_train_workload_replicates == 1
     assert restored.query.range_time_domain_mode == "dataset"
     assert restored.query.range_anchor_mode == "mixed_density"
@@ -608,6 +653,10 @@ def test_validation_score_config_uses_current_names() -> None:
         validation_score_every=2,
         checkpoint_full_score_every=4,
         checkpoint_score_variant="answer",
+        learned_segment_length_repair_fraction=0.25,
+        learned_segment_length_support_blend_weight=0.75,
+        query_prior_grid_bins=128,
+        query_prior_smoothing_passes=0,
         temporal_residual_label_mode="none",
     ).to_dict()
     restored = ExperimentConfig.from_dict(payload)
@@ -619,6 +668,14 @@ def test_validation_score_config_uses_current_names() -> None:
             "5",
             "--checkpoint_score_variant",
             "combined",
+            "--learned_segment_length_repair_fraction",
+            "0.5",
+            "--learned_segment_length_support_blend_weight",
+            "1.0",
+            "--query_prior_grid_bins",
+            "96",
+            "--query_prior_smoothing_passes",
+            "1",
             "--temporal_residual_label_mode",
             "none",
         ]
@@ -627,12 +684,20 @@ def test_validation_score_config_uses_current_names() -> None:
     assert restored.model.validation_score_every == 2
     assert restored.model.checkpoint_full_score_every == 4
     assert restored.model.checkpoint_score_variant == "answer"
+    assert restored.model.learned_segment_length_repair_fraction == pytest.approx(0.25)
+    assert restored.model.learned_segment_length_support_blend_weight == pytest.approx(0.75)
+    assert restored.model.query_prior_grid_bins == 128
+    assert restored.model.query_prior_smoothing_passes == 0
     assert restored.model.temporal_residual_label_mode == "none"
     assert not hasattr(restored.model, "f1_diagnostic_every")
     assert not hasattr(restored.model, "residual_label_mode")
     assert args.validation_score_every == 3
     assert args.checkpoint_full_score_every == 5
     assert args.checkpoint_score_variant == "combined"
+    assert args.learned_segment_length_repair_fraction == pytest.approx(0.5)
+    assert args.learned_segment_length_support_blend_weight == pytest.approx(1.0)
+    assert args.query_prior_grid_bins == 96
+    assert args.query_prior_smoothing_passes == 1
     assert args.temporal_residual_label_mode == "none"
 
 

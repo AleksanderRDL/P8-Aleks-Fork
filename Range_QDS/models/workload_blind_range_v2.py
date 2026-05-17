@@ -9,8 +9,10 @@ from models.positional_encoding import CachedSinusoidalPositionalEncodingMixin
 from training.query_prior_fields import QUERY_PRIOR_FIELD_NAMES
 from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES
 
-WORKLOAD_BLIND_RANGE_V2_SCHEMA_VERSION = 2
+WORKLOAD_BLIND_RANGE_V2_SCHEMA_VERSION = 6
 WORKLOAD_BLIND_RANGE_V2_PRIOR_FEATURE_DIM = len(QUERY_PRIOR_FIELD_NAMES)
+_LEGACY_CALIBRATION_HEAD_INPUT_DIM = 5
+_PRIOR_FEATURE_SCALE_INIT = 0.25
 
 
 class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Module):
@@ -87,10 +89,15 @@ class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Modu
             }
         )
         self.calibration_head = nn.Sequential(
-            nn.Linear(len(self.head_names), self.embed_dim // 4),
+            nn.Linear(_LEGACY_CALIBRATION_HEAD_INPUT_DIM, self.embed_dim // 4),
             nn.GELU(),
             nn.Linear(self.embed_dim // 4, 1),
         )
+        # Retained for legacy checkpoint compatibility. The final score now
+        # uses only the factorized interpretable composition so head ablations
+        # cannot route around the disabled head through calibration.
+        for parameter in self.calibration_head.parameters():
+            parameter.requires_grad_(False)
         self.prior_feature_encoder = nn.Sequential(
             nn.Linear(self.prior_feature_dim, self.embed_dim),
             nn.GELU(),
@@ -99,9 +106,14 @@ class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Modu
         )
         prior_output = self.prior_feature_encoder[-1]
         if isinstance(prior_output, nn.Linear):
-            nn.init.normal_(prior_output.weight, mean=0.0, std=1e-3)
+            nn.init.xavier_uniform_(prior_output.weight)
             nn.init.zeros_(prior_output.bias)
-        self.prior_feature_scale = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+        self.prior_feature_scale = nn.Parameter(torch.tensor(_PRIOR_FEATURE_SCALE_INIT, dtype=torch.float32))
+
+    def reset_parameters(self) -> None:
+        """Reset standalone trainable parameters not owned by child modules."""
+        with torch.no_grad():
+            self.prior_feature_scale.fill_(_PRIOR_FEATURE_SCALE_INIT)
 
     def final_logit_from_head_logits(
         self,
@@ -116,12 +128,6 @@ class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Modu
                 f"got {int(head_logits.shape[-1])}, expected {len(self.head_names)}."
             )
         disabled = {str(name) for name in disabled_head_names}
-        calibration_logits = head_logits
-        if disabled:
-            calibration_logits = head_logits.clone()
-            for head_idx, head_name in enumerate(self.head_names):
-                if str(head_name) in disabled:
-                    calibration_logits[..., head_idx] = 0.0
         q_hit = torch.sigmoid(head_logits[..., 0])
         behavior = torch.sigmoid(head_logits[..., 1])
         boundary = torch.sigmoid(head_logits[..., 2])
@@ -129,14 +135,14 @@ class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Modu
         if "query_hit_probability" in disabled:
             q_hit = torch.full_like(q_hit, 0.5)
         if "conditional_behavior_utility" in disabled:
-            behavior = torch.full_like(behavior, 0.5)
+            behavior = torch.zeros_like(behavior)
         if "boundary_event_utility" in disabled:
             boundary = torch.zeros_like(boundary)
         if "replacement_representative_value" in disabled or "marginal_replacement_gain" in disabled:
             replacement = torch.full_like(replacement, 0.5)
-        interpretable_score = q_hit * replacement * (0.5 + behavior) + 0.25 * boundary
-        calibration = self.calibration_head(calibration_logits).squeeze(-1)
-        return torch.logit(interpretable_score.clamp(1e-5, 1.0 - 1e-5)) + 0.25 * calibration
+        replacement_multiplier = 0.75 + 0.25 * replacement
+        interpretable_score = q_hit * (0.5 + behavior) * replacement_multiplier + 0.25 * boundary
+        return torch.logit(interpretable_score.clamp(1e-5, 1.0 - 1e-5))
 
     def _encoded(
         self,
@@ -145,13 +151,17 @@ class WorkloadBlindRangeV2Model(CachedSinusoidalPositionalEncodingMixin, nn.Modu
     ) -> torch.Tensor:
         """Encode point, local, and segment context."""
         h = self.point_encoder(points)
-        prior_features = points[..., -self.prior_feature_dim :].float()
+        prior_features = self._prior_features(points)
         h = h + self.prior_feature_scale * self.prior_feature_encoder(prior_features)
         if self.local_context_encoder is not None:
             h = h + self._positional_encoding(h.shape[1], h.device, h.dtype).unsqueeze(0)
             h = self.local_context_encoder(h, src_key_padding_mask=padding_mask)
         segment = self.segment_context(h.transpose(1, 2)).transpose(1, 2)
         return self.prior_encoder(h + segment)
+
+    def _prior_features(self, points: torch.Tensor) -> torch.Tensor:
+        """Return normalized query-prior feature channels from the v2 point tensor."""
+        return points[..., -self.prior_feature_dim :].float()
 
     def forward_with_heads(
         self,

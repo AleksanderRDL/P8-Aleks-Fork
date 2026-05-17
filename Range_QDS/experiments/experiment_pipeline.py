@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import copy
+import math
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -17,8 +18,9 @@ from evaluation.baselines import (
     OracleMethod,
 )
 from evaluation.evaluate_methods import evaluate_method
-from evaluation.metrics import MethodEvaluation
+from evaluation.metrics import MethodEvaluation, compute_length_preservation
 from evaluation.query_cache import EvaluationQueryCache
+from evaluation.query_useful_v1 import QUERY_USEFUL_V1_COMPONENT_WEIGHTS
 from evaluation.range_usefulness import range_usefulness_weight_summary
 from evaluation.tables import (
     print_geometric_distortion_table,
@@ -60,6 +62,7 @@ from experiments.experiment_workloads import (
 from queries.query_types import QUERY_TYPE_ID_RANGE, single_workload_type
 from simplification.mlqds_scoring import mlqds_simplification_scores, workload_type_head
 from simplification.learned_segment_budget import (
+    blend_segment_support_scores,
     learned_segment_budget_diagnostics,
     simplify_with_learned_segment_budget_v1,
     simplify_with_learned_segment_budget_v1_with_trace,
@@ -73,8 +76,10 @@ from training.query_prior_fields import (
     QUERY_PRIOR_FIELD_NAMES,
     query_prior_field_metadata,
     sample_query_prior_fields,
+    zero_query_prior_field_channels,
     zero_query_prior_field_like,
 )
+from training.query_useful_targets import QUERY_USEFUL_V1_HEAD_NAMES, build_query_useful_v1_targets
 from training.training_outputs import TrainingOutputs
 from training.teacher_distillation import (
     build_range_teacher_config,
@@ -214,6 +219,749 @@ def _learned_slot_summary(
     return summary
 
 
+def _local_distance_matrix_km(local_points: torch.Tensor) -> torch.Tensor:
+    """Return pairwise haversine distances for one trajectory."""
+    points = local_points.detach().cpu().float()
+    point_count = int(points.shape[0])
+    if point_count <= 0:
+        return torch.empty((0, 0), dtype=torch.float32)
+    lat = torch.deg2rad(points[:, 1].float())
+    lon = torch.deg2rad(points[:, 2].float())
+    dlat = lat[:, None] - lat[None, :]
+    dlon = lon[:, None] - lon[None, :]
+    a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat[:, None]) * torch.cos(lat[None, :]) * torch.sin(dlon / 2.0) ** 2
+    c = 2.0 * torch.atan2(torch.sqrt(a), torch.sqrt(torch.clamp(1.0 - a, min=1e-9)))
+    return (6371.0 * c).to(dtype=torch.float32)
+
+
+def _max_length_required_mask(
+    local_points: torch.Tensor,
+    required_mask: torch.Tensor,
+    keep_count: int,
+) -> torch.Tensor:
+    """Return a max-length local mask with all required points retained."""
+    point_count = int(local_points.shape[0])
+    keep = max(0, min(int(keep_count), point_count))
+    required = required_mask.detach().cpu().bool().clone()
+    if point_count <= 0 or keep <= 0:
+        return torch.zeros((point_count,), dtype=torch.bool)
+    required[0] = True
+    required[-1] = True
+    required_count = int(required.sum().item())
+    if required_count > keep:
+        raise ValueError(f"required point count {required_count} exceeds keep_count {keep}.")
+    if keep >= point_count:
+        return torch.ones((point_count,), dtype=torch.bool)
+
+    distances = _local_distance_matrix_km(local_points)
+    neg_inf = -1.0e30
+    dp = torch.full((keep + 1, point_count), neg_inf, dtype=torch.float32)
+    previous = torch.full((keep + 1, point_count), -1, dtype=torch.long)
+    required_prefix = torch.cat(
+        [torch.zeros((1,), dtype=torch.long), torch.cumsum(required.to(dtype=torch.long), dim=0)]
+    )
+    dp[1, 0] = 0.0
+    for selected_count in range(2, keep + 1):
+        for right_idx in range(1, point_count):
+            left_indices = torch.arange(0, right_idx, dtype=torch.long)
+            skipped_required = required_prefix[right_idx] - required_prefix[left_indices + 1]
+            previous_scores = dp[selected_count - 1, :right_idx]
+            valid = (skipped_required == 0) & torch.isfinite(previous_scores) & (previous_scores > neg_inf * 0.5)
+            if not bool(valid.any().item()):
+                continue
+            candidates = previous_scores + distances[:right_idx, right_idx]
+            candidates[~valid] = neg_inf
+            best_left = int(torch.argmax(candidates).item())
+            dp[selected_count, right_idx] = candidates[best_left]
+            previous[selected_count, right_idx] = best_left
+
+    if not torch.isfinite(dp[keep, point_count - 1]) or float(dp[keep, point_count - 1].item()) <= neg_inf * 0.5:
+        raise ValueError("No feasible required-point max-length mask found.")
+    retained = torch.zeros((point_count,), dtype=torch.bool)
+    cursor = point_count - 1
+    for selected_count in range(keep, 0, -1):
+        retained[cursor] = True
+        if selected_count == 1:
+            break
+        cursor = int(previous[selected_count, cursor].item())
+        if cursor < 0:
+            raise ValueError("Failed to reconstruct required-point max-length mask.")
+    return retained
+
+
+def _score_protected_length_feasibility(
+    *,
+    scores: torch.Tensor,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    compression_ratio: float,
+    learned_slot_fraction_min: float,
+) -> dict[str, Any]:
+    """Estimate length feasibility while forcing a minimum set of high-score learned points."""
+    score_cpu = scores.detach().cpu().float()
+    points_cpu = points.detach().cpu().float()
+    if int(score_cpu.numel()) != int(points_cpu.shape[0]):
+        return {"available": False, "reason": "score_point_count_mismatch"}
+    ratio = max(0.0, min(1.0, float(compression_ratio)))
+    if ratio <= 0.0 or not boundaries:
+        return {"available": False, "reason": "empty_budget"}
+
+    local_budgets: list[int] = []
+    total_budget = 0
+    candidate_rows: list[tuple[float, int, int, int]] = []
+    positive_trajectory_count = 0
+    for trajectory_id, (start, end) in enumerate(boundaries):
+        start_i = int(start)
+        end_i = int(end)
+        count = max(0, end_i - start_i)
+        local_budget = min(count, max(2, int(math.ceil(ratio * count)))) if count > 0 else 0
+        local_budgets.append(local_budget)
+        total_budget += local_budget
+        if local_budget > 0:
+            positive_trajectory_count += 1
+        if local_budget <= 2 or count <= 2:
+            continue
+        for local_idx in range(1, count - 1):
+            point_idx = start_i + local_idx
+            candidate_rows.append((float(score_cpu[point_idx].item()), -point_idx, trajectory_id, local_idx))
+
+    protected_target = min(
+        max(0, int(math.ceil(float(total_budget) * max(0.0, float(learned_slot_fraction_min))))),
+        max(0, total_budget - 2 * positive_trajectory_count),
+    )
+    protected_by_trajectory: list[set[int]] = [set() for _ in boundaries]
+    protected_counts = [0 for _ in boundaries]
+    protected_total = 0
+    candidate_rows.sort(reverse=True)
+    for _score, _neg_idx, trajectory_id, local_idx in candidate_rows:
+        if protected_total >= protected_target:
+            break
+        local_capacity = max(0, int(local_budgets[trajectory_id]) - 2)
+        if protected_counts[trajectory_id] >= local_capacity:
+            continue
+        protected_by_trajectory[trajectory_id].add(int(local_idx))
+        protected_counts[trajectory_id] += 1
+        protected_total += 1
+
+    retained = torch.zeros((int(score_cpu.numel()),), dtype=torch.bool)
+    for trajectory_id, (start, end) in enumerate(boundaries):
+        start_i = int(start)
+        end_i = int(end)
+        count = max(0, end_i - start_i)
+        local_budget = int(local_budgets[trajectory_id])
+        if count <= 0 or local_budget <= 0:
+            continue
+        if local_budget >= count:
+            retained[start_i:end_i] = True
+            continue
+        required = torch.zeros((count,), dtype=torch.bool)
+        required[0] = True
+        required[-1] = True
+        for local_idx in protected_by_trajectory[trajectory_id]:
+            required[int(local_idx)] = True
+        try:
+            local_retained = _max_length_required_mask(
+                points_cpu[start_i:end_i],
+                required,
+                local_budget,
+            )
+        except ValueError as exc:
+            return {"available": False, "reason": "required_mask_infeasible", "error": str(exc)}
+        retained[start_i:end_i] = local_retained
+
+    retained_count = int(retained.sum().item())
+    length_preservation = compute_length_preservation(points_cpu, boundaries, retained)
+    return {
+        "available": True,
+        "diagnostic_only": True,
+        "description": "Max-length mask with endpoints plus top learned-score non-endpoint points protected.",
+        "compression_ratio": float(compression_ratio),
+        "total_budget_count": int(total_budget),
+        "retained_count": retained_count,
+        "protected_score_point_count": int(protected_total),
+        "protected_score_point_fraction_of_budget": float(protected_total / max(1, total_budget)),
+        "protected_score_point_fraction_min": float(learned_slot_fraction_min),
+        "length_preservation": float(length_preservation),
+        "length_gate_target": 0.80,
+        "length_gate_would_pass": bool(length_preservation >= 0.80),
+    }
+
+
+def _score_protected_length_frontier(
+    *,
+    scores: torch.Tensor,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    compression_ratio: float,
+    learned_slot_fraction_min: float,
+    protected_fractions: tuple[float, ...] = (0.0, 0.10, 0.15, 0.25),
+) -> dict[str, Any]:
+    """Return length upper-bound frontier as high-score point protection increases."""
+    rows: list[dict[str, Any]] = []
+    max_passing_fraction: float | None = None
+    materiality_row: dict[str, Any] | None = None
+    materiality_floor = float(learned_slot_fraction_min)
+    for raw_fraction in protected_fractions:
+        fraction = max(0.0, min(1.0, float(raw_fraction)))
+        diagnostic = _score_protected_length_feasibility(
+            scores=scores,
+            points=points,
+            boundaries=boundaries,
+            compression_ratio=compression_ratio,
+            learned_slot_fraction_min=fraction,
+        )
+        if not bool(diagnostic.get("available", False)):
+            return {
+                "available": False,
+                "reason": "frontier_row_unavailable",
+                "failed_fraction": fraction,
+                "row": diagnostic,
+            }
+        row = {
+            "protected_score_point_fraction_min": fraction,
+            "protected_score_point_count": int(diagnostic.get("protected_score_point_count", 0)),
+            "protected_score_point_fraction_of_budget": float(
+                diagnostic.get("protected_score_point_fraction_of_budget", 0.0)
+            ),
+            "length_preservation": float(diagnostic.get("length_preservation", 0.0)),
+            "length_gate_would_pass": bool(diagnostic.get("length_gate_would_pass", False)),
+        }
+        rows.append(row)
+        if row["length_gate_would_pass"]:
+            max_passing_fraction = fraction if max_passing_fraction is None else max(max_passing_fraction, fraction)
+        if abs(fraction - materiality_floor) <= 1e-12:
+            materiality_row = row
+    if materiality_row is None:
+        materiality_diagnostic = _score_protected_length_feasibility(
+            scores=scores,
+            points=points,
+            boundaries=boundaries,
+            compression_ratio=compression_ratio,
+            learned_slot_fraction_min=materiality_floor,
+        )
+        if bool(materiality_diagnostic.get("available", False)):
+            materiality_row = {
+                "protected_score_point_fraction_min": materiality_floor,
+                "protected_score_point_count": int(materiality_diagnostic.get("protected_score_point_count", 0)),
+                "protected_score_point_fraction_of_budget": float(
+                    materiality_diagnostic.get("protected_score_point_fraction_of_budget", 0.0)
+                ),
+                "length_preservation": float(materiality_diagnostic.get("length_preservation", 0.0)),
+                "length_gate_would_pass": bool(materiality_diagnostic.get("length_gate_would_pass", False)),
+            }
+    return {
+        "available": True,
+        "diagnostic_only": True,
+        "description": "Max-length upper-bound frontier while protecting increasing fractions of top learned-score points.",
+        "compression_ratio": float(compression_ratio),
+        "learned_slot_fraction_min": materiality_floor,
+        "length_gate_target": 0.80,
+        "rows": rows,
+        "max_protected_fraction_passing_length_gate": max_passing_fraction,
+        "materiality_floor_length_gate_would_pass": (
+            None if materiality_row is None else bool(materiality_row["length_gate_would_pass"])
+        ),
+        "materiality_floor_length_preservation": (
+            None if materiality_row is None else float(materiality_row["length_preservation"])
+        ),
+    }
+
+
+def _average_ranks(values: list[float]) -> list[float]:
+    """Return average ranks for deterministic Spearman diagnostics."""
+    if not values:
+        return []
+    ordered = sorted(enumerate(float(value) for value in values), key=lambda item: item[1])
+    ranks = [0.0 for _ in values]
+    cursor = 0
+    while cursor < len(ordered):
+        end = cursor + 1
+        while end < len(ordered) and ordered[end][1] == ordered[cursor][1]:
+            end += 1
+        average_rank = 0.5 * float(cursor + end - 1)
+        for idx, _value in ordered[cursor:end]:
+            ranks[idx] = average_rank
+        cursor = end
+    return ranks
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    """Return Pearson correlation for diagnostic lists."""
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    x_mean = sum(float(x) for x in xs) / float(len(xs))
+    y_mean = sum(float(y) for y in ys) / float(len(ys))
+    cov = 0.0
+    x_var = 0.0
+    y_var = 0.0
+    for x_raw, y_raw in zip(xs, ys):
+        x = float(x_raw) - x_mean
+        y = float(y_raw) - y_mean
+        cov += x * y
+        x_var += x * x
+        y_var += y * y
+    denom = math.sqrt(x_var * y_var)
+    if denom <= 1e-12:
+        return None
+    return float(cov / denom)
+
+
+def _spearman(xs: list[float], ys: list[float]) -> float | None:
+    """Return tie-aware Spearman correlation for diagnostic lists."""
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    return _pearson(_average_ranks(xs), _average_ranks(ys))
+
+
+def _segment_top_mean(values: torch.Tensor, start: int, end: int) -> float:
+    """Return top-20% mean for one segment, matching selector segment aggregation."""
+    local = values[int(start):int(end)].detach().cpu().float()
+    if int(local.numel()) <= 0:
+        return 0.0
+    top_count = min(int(local.numel()), max(1, int(math.ceil(0.20 * int(local.numel())))))
+    return float(torch.topk(local, k=top_count).values.mean().item())
+
+
+def _factorized_head_probability_sources_from_logits(head_logits: torch.Tensor | None) -> dict[str, torch.Tensor]:
+    """Return diagnostic-only per-head probability score sources from frozen logits."""
+    if head_logits is None:
+        return {}
+    logits = head_logits.detach().cpu().float()
+    if logits.ndim != 2:
+        return {}
+    point_count = int(logits.shape[0])
+    head_count = min(int(logits.shape[1]), len(QUERY_USEFUL_V1_HEAD_NAMES))
+    if point_count <= 0 or head_count <= 0:
+        return {}
+    probabilities = torch.sigmoid(logits[:, :head_count])
+    return {
+        f"head_{str(head_name)}_sigmoid_top20_mean": probabilities[:, head_idx].contiguous()
+        for head_idx, head_name in enumerate(QUERY_USEFUL_V1_HEAD_NAMES[:head_count])
+    }
+
+
+def _segment_oracle_alignment_for_scores(
+    *,
+    score_by_segment: list[float],
+    oracle_mass_by_segment: list[float],
+    top_fractions: tuple[float, ...] = (0.10, 0.25, 0.50),
+) -> dict[str, Any]:
+    """Return ranking alignment between one segment score and eval-only oracle mass."""
+    if len(score_by_segment) != len(oracle_mass_by_segment) or not score_by_segment:
+        return {"available": False, "reason": "segment_score_or_oracle_missing"}
+    total_oracle_mass = sum(max(0.0, float(value)) for value in oracle_mass_by_segment)
+    order = sorted(
+        range(len(score_by_segment)),
+        key=lambda idx: (float(score_by_segment[idx]), -idx),
+        reverse=True,
+    )
+    rows: list[dict[str, float | int]] = []
+    for fraction in top_fractions:
+        top_count = max(1, min(len(order), int(math.ceil(float(fraction) * len(order)))))
+        selected = order[:top_count]
+        selected_oracle_mass = sum(max(0.0, float(oracle_mass_by_segment[idx])) for idx in selected)
+        rows.append(
+            {
+                "top_fraction": float(fraction),
+                "segment_count": int(top_count),
+                "oracle_mass_recall": (
+                    0.0 if total_oracle_mass <= 1e-12 else float(selected_oracle_mass / total_oracle_mass)
+                ),
+                "mean_oracle_mass": float(selected_oracle_mass / float(top_count)),
+            }
+        )
+    return {
+        "available": True,
+        "spearman_vs_oracle_mass": _spearman(score_by_segment, oracle_mass_by_segment),
+        "pearson_vs_oracle_mass": _pearson(score_by_segment, oracle_mass_by_segment),
+        "top_fraction_rows": rows,
+    }
+
+
+def _descending_rank_and_order(values: list[float]) -> tuple[list[int], list[int]]:
+    """Return 1-based descending ranks and index order for compact diagnostics."""
+    order = sorted(range(len(values)), key=lambda idx: (float(values[idx]), -idx), reverse=True)
+    ranks = [0 for _ in values]
+    for rank, idx in enumerate(order, start=1):
+        ranks[int(idx)] = int(rank)
+    return ranks, order
+
+
+def _segment_transfer_rows(
+    *,
+    segment_rows: list[dict[str, Any]],
+    source_segment_scores: dict[str, list[float]],
+    oracle_mass_by_segment: list[float],
+    retained_count_by_segment: list[int] | None,
+    top_n: int = 16,
+) -> dict[str, Any]:
+    """Return paired segment rows for localizing score-to-allocation transfer failures."""
+    segment_count = int(len(segment_rows))
+    if segment_count <= 0 or len(oracle_mass_by_segment) != segment_count:
+        return {"available": False, "reason": "segment_rows_or_oracle_missing"}
+    source_names = [name for name, values in source_segment_scores.items() if len(values) == segment_count]
+    if not source_names:
+        return {"available": False, "reason": "source_scores_missing"}
+
+    row_limit = max(1, min(int(top_n), int(segment_count)))
+    oracle_ranks, oracle_order = _descending_rank_and_order(oracle_mass_by_segment)
+    source_ranks: dict[str, list[int]] = {}
+    selected_indices: set[int] = set(oracle_order[:row_limit])
+    selected_reasons: dict[int, set[str]] = {
+        int(idx): {"oracle_mass_top"} for idx in oracle_order[:row_limit]
+    }
+    for name in source_names:
+        ranks, order = _descending_rank_and_order(source_segment_scores[name])
+        source_ranks[name] = ranks
+        for idx in order[:row_limit]:
+            selected_indices.add(int(idx))
+            selected_reasons.setdefault(int(idx), set()).add(f"{name}_top")
+
+    retained_ranks: list[int] | None = None
+    retained_order: list[int] | None = None
+    if retained_count_by_segment is not None and len(retained_count_by_segment) == segment_count:
+        retained_values = [float(value) for value in retained_count_by_segment]
+        retained_ranks, retained_order = _descending_rank_and_order(retained_values)
+        for idx in retained_order[:row_limit]:
+            if retained_values[int(idx)] <= 0.0:
+                continue
+            selected_indices.add(int(idx))
+            selected_reasons.setdefault(int(idx), set()).add("retained_count_top")
+
+    def sort_key(idx: int) -> tuple[int, int, int]:
+        best_source_rank = min(source_ranks[name][idx] for name in source_names)
+        return (int(oracle_ranks[idx]), int(best_source_rank), int(idx))
+
+    rows: list[dict[str, Any]] = []
+    for idx in sorted(selected_indices, key=sort_key):
+        base = segment_rows[int(idx)]
+        row: dict[str, Any] = {
+            "segment_index": int(idx),
+            "trajectory_id": int(base["trajectory_id"]),
+            "start": int(base["start"]),
+            "end": int(base["end"]),
+            "length": int(base["length"]),
+            "oracle_mass": float(oracle_mass_by_segment[int(idx)]),
+            "oracle_mass_rank": int(oracle_ranks[int(idx)]),
+            "oracle_top20_mean": float(base.get("oracle_top20_mean", 0.0)),
+            "selection_reasons": sorted(selected_reasons.get(int(idx), set())),
+        }
+        for name in source_names:
+            row[f"{name}_score"] = float(source_segment_scores[name][int(idx)])
+            row[f"{name}_rank"] = int(source_ranks[name][int(idx)])
+        if retained_count_by_segment is not None and len(retained_count_by_segment) == segment_count:
+            retained_count = int(retained_count_by_segment[int(idx)])
+            row["frozen_primary_retained_count"] = retained_count
+            row["frozen_primary_retained_fraction"] = float(retained_count / max(1, int(base["length"])))
+            if retained_ranks is not None:
+                row["frozen_primary_retained_count_rank"] = int(retained_ranks[int(idx)])
+        rows.append(row)
+
+    result: dict[str, Any] = {
+        "available": True,
+        "row_selection": "union_of_top_oracle_top_source_and_top_retained_segments",
+        "row_limit_per_source": int(row_limit),
+        "row_count": int(len(rows)),
+        "rows": rows,
+    }
+    if retained_count_by_segment is not None and len(retained_count_by_segment) == segment_count:
+        retained_float = [float(value) for value in retained_count_by_segment]
+        total_oracle_mass = sum(max(0.0, float(value)) for value in oracle_mass_by_segment)
+        retained_oracle_mass = sum(
+            max(0.0, float(oracle_mass_by_segment[idx]))
+            for idx, count in enumerate(retained_count_by_segment)
+            if int(count) > 0
+        )
+        result["retained_segment_summary"] = {
+            "available": True,
+            "frozen_primary_retained_count_total": int(sum(retained_count_by_segment)),
+            "segments_with_any_frozen_primary_retained_point": int(
+                sum(1 for count in retained_count_by_segment if int(count) > 0)
+            ),
+            "retained_count_spearman_vs_oracle_mass": _spearman(retained_float, oracle_mass_by_segment),
+            "retained_count_pearson_vs_oracle_mass": _pearson(retained_float, oracle_mass_by_segment),
+            "oracle_mass_recall_in_segments_with_any_retained_point": (
+                0.0 if total_oracle_mass <= 1e-12 else float(retained_oracle_mass / total_oracle_mass)
+            ),
+        }
+    else:
+        result["retained_segment_summary"] = {"available": False, "reason": "retained_mask_missing"}
+    return result
+
+
+def _all_segment_transfer_rows(
+    *,
+    segment_rows: list[dict[str, Any]],
+    source_segment_scores: dict[str, list[float]],
+    oracle_mass_by_segment: list[float],
+    retained_count_by_segment: list[int] | None,
+) -> dict[str, Any]:
+    """Return eval-labeled rows for every segment after masks have been frozen."""
+    segment_count = int(len(segment_rows))
+    if segment_count <= 0 or len(oracle_mass_by_segment) != segment_count:
+        return {"available": False, "reason": "segment_rows_or_oracle_missing"}
+    source_names = [name for name, values in source_segment_scores.items() if len(values) == segment_count]
+    if not source_names:
+        return {"available": False, "reason": "source_scores_missing"}
+
+    oracle_ranks, _oracle_order = _descending_rank_and_order(oracle_mass_by_segment)
+    source_ranks: dict[str, list[int]] = {
+        name: _descending_rank_and_order(source_segment_scores[name])[0] for name in source_names
+    }
+    retained_ranks: list[int] | None = None
+    if retained_count_by_segment is not None and len(retained_count_by_segment) == segment_count:
+        retained_ranks = _descending_rank_and_order([float(value) for value in retained_count_by_segment])[0]
+
+    rows: list[dict[str, Any]] = []
+    for idx, base in enumerate(segment_rows):
+        row: dict[str, Any] = {
+            "segment_index": int(idx),
+            "trajectory_id": int(base["trajectory_id"]),
+            "start": int(base["start"]),
+            "end": int(base["end"]),
+            "length": int(base["length"]),
+            "oracle_mass": float(oracle_mass_by_segment[int(idx)]),
+            "oracle_mass_rank": int(oracle_ranks[int(idx)]),
+            "oracle_positive": bool(float(oracle_mass_by_segment[int(idx)]) > 0.0),
+            "oracle_top20_mean": float(base.get("oracle_top20_mean", 0.0)),
+            "canonical_order_rank": int(idx + 1),
+            "neutral_allocation_score": 0.0,
+            "neutral_allocation_order_rank": int(idx + 1),
+        }
+        for name in source_names:
+            row[f"{name}_score"] = float(source_segment_scores[name][int(idx)])
+            row[f"{name}_rank"] = int(source_ranks[name][int(idx)])
+        if retained_count_by_segment is not None and len(retained_count_by_segment) == segment_count:
+            retained_count = int(retained_count_by_segment[int(idx)])
+            row["frozen_primary_retained_count"] = retained_count
+            row["frozen_primary_retained_fraction"] = float(retained_count / max(1, int(base["length"])))
+            if retained_ranks is not None:
+                row["frozen_primary_retained_count_rank"] = int(retained_ranks[int(idx)])
+        rows.append(row)
+
+    return {
+        "available": True,
+        "diagnostic_only": True,
+        "uses_eval_labels_after_mask_freeze": True,
+        "row_scope": "all_segments",
+        "row_count": int(len(rows)),
+        "rows": rows,
+    }
+
+
+def _segment_oracle_allocation_audit(
+    *,
+    point_scores: torch.Tensor | None,
+    segment_budget_scores: torch.Tensor | None,
+    selector_segment_scores: torch.Tensor | None,
+    eval_labels: torch.Tensor | None,
+    boundaries: list[tuple[int, int]],
+    workload_type: str,
+    head_scores_by_name: dict[str, torch.Tensor] | None = None,
+    retained_mask: torch.Tensor | None = None,
+    segment_size: int = 32,
+    paired_row_limit: int = 16,
+) -> dict[str, Any]:
+    """Compare allocation score rankings with eval-only segment oracle mass.
+
+    This diagnostic must run only after workload-blind masks have been frozen.
+    It uses eval labels for audit only and is not an acceptance shortcut.
+    """
+    if eval_labels is None:
+        return {"available": False, "reason": "eval_labels_not_available"}
+    if point_scores is None:
+        return {"available": False, "reason": "point_scores_not_available"}
+    point_count = int(point_scores.numel())
+    labels = eval_labels.detach().cpu().float()
+    if labels.ndim != 2 or labels.shape[0] != point_count:
+        return {"available": False, "reason": "label_score_shape_mismatch"}
+    _workload_name, type_id = workload_type_head(workload_type)
+    if int(labels.shape[1]) <= int(type_id):
+        return {"available": False, "reason": "workload_type_label_missing"}
+    retained_values: torch.Tensor | None = None
+    if retained_mask is not None:
+        retained_candidate = retained_mask.detach().cpu().bool()
+        if int(retained_candidate.numel()) == point_count:
+            retained_values = retained_candidate
+
+    score_sources: dict[str, torch.Tensor] = {"point_score_top20_mean": point_scores.detach().cpu().float()}
+    if segment_budget_scores is not None and int(segment_budget_scores.numel()) == point_count:
+        score_sources["segment_budget_head_top20_mean"] = segment_budget_scores.detach().cpu().float()
+    if selector_segment_scores is not None and int(selector_segment_scores.numel()) == point_count:
+        score_sources["selector_allocation_score_top20_mean"] = selector_segment_scores.detach().cpu().float()
+    if isinstance(head_scores_by_name, dict):
+        for raw_name, raw_values in head_scores_by_name.items():
+            if not isinstance(raw_name, str) or raw_name in score_sources:
+                continue
+            if not isinstance(raw_values, torch.Tensor):
+                continue
+            values = raw_values.detach().cpu().float()
+            if values.ndim == 2 and int(values.shape[1]) == 1:
+                values = values[:, 0]
+            if values.ndim != 1 or int(values.numel()) != point_count:
+                continue
+            score_sources[raw_name] = values
+
+    oracle_values = labels[:, int(type_id)].float()
+    segment_rows: list[dict[str, Any]] = []
+    source_segment_scores: dict[str, list[float]] = {name: [] for name in score_sources}
+    oracle_mass_by_segment: list[float] = []
+    oracle_top_mean_by_segment: list[float] = []
+    retained_count_by_segment: list[int] | None = [] if retained_values is not None else None
+    size = max(1, int(segment_size))
+    for trajectory_id, (start, end) in enumerate(boundaries):
+        for seg_start in range(int(start), int(end), size):
+            seg_end = min(int(end), int(seg_start) + size)
+            if seg_end <= seg_start:
+                continue
+            oracle_segment = oracle_values[seg_start:seg_end]
+            oracle_mass = float(torch.clamp(oracle_segment, min=0.0).sum().item())
+            oracle_top_mean = _segment_top_mean(oracle_values, seg_start, seg_end)
+            oracle_mass_by_segment.append(oracle_mass)
+            oracle_top_mean_by_segment.append(oracle_top_mean)
+            if retained_count_by_segment is not None and retained_values is not None:
+                retained_count_by_segment.append(int(retained_values[seg_start:seg_end].sum().item()))
+            for name, values in score_sources.items():
+                source_segment_scores[name].append(_segment_top_mean(values, seg_start, seg_end))
+            segment_rows.append(
+                {
+                    "trajectory_id": int(trajectory_id),
+                    "start": int(seg_start),
+                    "end": int(seg_end),
+                    "length": int(seg_end - seg_start),
+                    "oracle_mass": oracle_mass,
+                    "oracle_top20_mean": oracle_top_mean,
+                }
+            )
+
+    source_alignment = {
+        name: _segment_oracle_alignment_for_scores(
+            score_by_segment=scores,
+            oracle_mass_by_segment=oracle_mass_by_segment,
+        )
+        for name, scores in source_segment_scores.items()
+    }
+    best_source = None
+    best_recall = -float("inf")
+    for name, alignment in source_alignment.items():
+        rows = alignment.get("top_fraction_rows") if isinstance(alignment, dict) else None
+        if not isinstance(rows, list):
+            continue
+        top25 = next((row for row in rows if abs(float(row.get("top_fraction", 0.0)) - 0.25) <= 1e-9), None)
+        if not isinstance(top25, dict):
+            continue
+        recall = float(top25.get("oracle_mass_recall", 0.0))
+        if recall > best_recall:
+            best_recall = recall
+            best_source = name
+
+    return {
+        "available": True,
+        "diagnostic_only": True,
+        "uses_eval_labels_after_mask_freeze": True,
+        "description": "Segment score ranking alignment against eval-only oracle label mass.",
+        "workload_type": str(workload_type),
+        "segment_size": int(size),
+        "segment_count": int(len(segment_rows)),
+        "oracle_mass_total": float(sum(oracle_mass_by_segment)),
+        "oracle_positive_segment_count": int(sum(value > 0.0 for value in oracle_mass_by_segment)),
+        "score_source_names": list(score_sources.keys()),
+        "source_alignment": source_alignment,
+        "paired_segment_transfer_rows": _segment_transfer_rows(
+            segment_rows=segment_rows,
+            source_segment_scores=source_segment_scores,
+            oracle_mass_by_segment=oracle_mass_by_segment,
+            retained_count_by_segment=retained_count_by_segment,
+            top_n=int(paired_row_limit),
+        ),
+        "all_segment_transfer_rows": _all_segment_transfer_rows(
+            segment_rows=segment_rows,
+            source_segment_scores=source_segment_scores,
+            oracle_mass_by_segment=oracle_mass_by_segment,
+            retained_count_by_segment=retained_count_by_segment,
+        ),
+        "best_source_by_top25_oracle_mass_recall": best_source,
+    }
+
+
+def _target_segment_oracle_alignment_audit(
+    *,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict[str, Any]],
+    eval_labels: torch.Tensor | None,
+    workload_type: str,
+    retained_mask: torch.Tensor | None = None,
+    segment_size: int = 32,
+    paired_row_limit: int = 16,
+) -> dict[str, Any]:
+    """Compare eval QueryUsefulV1 target heads with eval-only oracle segment mass after mask freeze."""
+    if eval_labels is None:
+        return {"available": False, "reason": "eval_labels_not_available"}
+    if not typed_queries:
+        return {"available": False, "reason": "typed_queries_not_available"}
+    _workload_name, type_id = workload_type_head(workload_type)
+    targets = build_query_useful_v1_targets(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=typed_queries,
+        segment_size=segment_size,
+    )
+    final_target = targets.labels[:, int(type_id)].detach().cpu().float()
+    head_targets = targets.head_targets.detach().cpu().float()
+    head_score_sources = {
+        f"target_head_{str(head_name)}_top20_mean": head_targets[:, head_idx]
+        for head_idx, head_name in enumerate(QUERY_USEFUL_V1_HEAD_NAMES)
+        if int(head_targets.shape[1]) > head_idx
+    }
+    audit = _segment_oracle_allocation_audit(
+        point_scores=final_target,
+        segment_budget_scores=None,
+        selector_segment_scores=None,
+        eval_labels=eval_labels,
+        boundaries=boundaries,
+        workload_type=workload_type,
+        head_scores_by_name=head_score_sources,
+        retained_mask=retained_mask,
+        segment_size=segment_size,
+        paired_row_limit=paired_row_limit,
+    )
+    if not bool(audit.get("available", False)):
+        audit["target_alignment_attempted"] = True
+        return audit
+
+    source_semantics = {
+        "point_score_top20_mean": "eval_query_useful_v1_final_target_top20_mean",
+    }
+    source_semantics.update(
+        {
+            f"target_head_{str(head_name)}_top20_mean": (
+                f"eval_query_useful_v1_factorized_target_head:{str(head_name)}"
+            )
+            for head_name in QUERY_USEFUL_V1_HEAD_NAMES
+        }
+    )
+    target_diagnostics = targets.diagnostics
+    audit.update(
+        {
+            "description": (
+                "Eval QueryUsefulV1 target-head segment alignment against eval-only oracle label mass."
+            ),
+            "target_alignment_attempted": True,
+            "target_family": target_diagnostics.get("target_family"),
+            "target_range_query_count": target_diagnostics.get("range_query_count"),
+            "source_semantics": source_semantics,
+            "target_diagnostics_summary": {
+                "final_label_positive_fraction": target_diagnostics.get("final_label_positive_fraction"),
+                "final_label_mass": target_diagnostics.get("final_label_mass"),
+                "segment_budget_target_base_source": target_diagnostics.get("segment_budget_target_base_source"),
+                "final_label_formula": target_diagnostics.get("final_label_formula"),
+            },
+        }
+    )
+    return audit
+
+
 def _learned_segment_frozen_method(
     *,
     name: str,
@@ -221,28 +969,167 @@ def _learned_segment_frozen_method(
     boundaries: list[tuple[int, int]],
     compression_ratio: float,
     segment_scores: torch.Tensor | None = None,
+    segment_point_scores: torch.Tensor | None = None,
+    path_length_support_scores: torch.Tensor | None = None,
     points: torch.Tensor | None = None,
     learned_segment_geometry_gain_weight: float = 0.12,
     learned_segment_score_blend_weight: float = 0.05,
     learned_segment_fairness_preallocation: bool = True,
+    learned_segment_length_repair_fraction: float = 0.0,
+    learned_segment_length_support_blend_weight: float = 0.0,
 ) -> FrozenMaskMethod:
     """Freeze a score-based learned-segment diagnostic mask before query scoring."""
+    selector_segment_scores = blend_segment_support_scores(
+        segment_scores=segment_scores,
+        path_length_support_scores=path_length_support_scores,
+        path_length_support_weight=float(learned_segment_length_support_blend_weight),
+    )
+    selector_segment_point_scores = (
+        None if segment_point_scores is None else segment_point_scores.detach().cpu().float()
+    )
     retained_mask = simplify_with_learned_segment_budget_v1(
         scores.detach().cpu().float(),
         boundaries,
         compression_ratio,
-        segment_scores=None if segment_scores is None else segment_scores.detach().cpu().float(),
+        segment_scores=selector_segment_scores,
+        segment_point_scores=selector_segment_point_scores,
         points=None if points is None else points.detach().cpu().float(),
         geometry_gain_weight=float(learned_segment_geometry_gain_weight),
         segment_score_point_blend_weight=float(learned_segment_score_blend_weight),
         fairness_preallocation_enabled=bool(learned_segment_fairness_preallocation),
+        length_repair_fraction=float(learned_segment_length_repair_fraction),
     )
     return FrozenMaskMethod(name=name, retained_mask=retained_mask.detach().cpu())
+
+
+def _pre_repair_frozen_method_from_trace(
+    *,
+    name: str,
+    selector_trace: dict[str, Any],
+    point_count: int,
+) -> FrozenMaskMethod:
+    """Build a frozen diagnostic method from trace-persisted pre-repair retained indices."""
+    payload = selector_trace.get("pre_repair_retained_mask")
+    if not isinstance(payload, dict) or not bool(payload.get("available", False)):
+        reason = payload.get("reason", "missing_pre_repair_retained_mask") if isinstance(payload, dict) else "missing_pre_repair_retained_mask"
+        raise ValueError(str(reason))
+    raw_indices = payload.get("indices")
+    if not isinstance(raw_indices, list):
+        raise ValueError("pre_repair_retained_mask.indices must be a list")
+    retained_mask = torch.zeros((int(point_count),), dtype=torch.bool)
+    seen: set[int] = set()
+    for raw_idx in raw_indices:
+        if isinstance(raw_idx, bool):
+            raise ValueError("pre_repair_retained_mask.indices must contain integer indices")
+        idx = int(raw_idx)
+        if idx < 0 or idx >= int(point_count):
+            raise ValueError(f"pre_repair_retained_mask index out of bounds: {idx}")
+        if idx in seen:
+            raise ValueError(f"pre_repair_retained_mask duplicate index: {idx}")
+        seen.add(idx)
+        retained_mask[idx] = True
+    declared_count = payload.get("retained_count")
+    if declared_count is not None and int(declared_count) != int(retained_mask.sum().item()):
+        raise ValueError(
+            "pre_repair_retained_mask retained_count mismatch: "
+            f"declared={int(declared_count)} actual={int(retained_mask.sum().item())}"
+        )
+    return FrozenMaskMethod(name=name, retained_mask=retained_mask)
+
+
+def _selector_segment_score_source_label(
+    *,
+    segment_scores: torch.Tensor | None,
+    path_length_support_scores: torch.Tensor | None,
+    length_support_blend_weight: float,
+) -> str:
+    """Return an honest selector trace label for segment allocation scores."""
+    weight = max(0.0, min(1.0, float(length_support_blend_weight)))
+    if path_length_support_scores is not None and weight >= 1.0 - 1e-12:
+        return "path_length_support_head_mean"
+    if path_length_support_scores is not None and weight > 0.0:
+        return "segment_budget_path_length_support_blend_mean"
+    if segment_scores is not None:
+        return "segment_budget_head_mean"
+    return "point_score_top20_mean"
 
 
 def _neutral_segment_scores_for_ablation(segment_scores: torch.Tensor) -> torch.Tensor:
     """Return neutral segment scores for the no-segment-budget-head ablation."""
     return torch.zeros_like(segment_scores.detach().cpu().float())
+
+
+def _segment_score_top_band_for_ablation(
+    segment_scores: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    *,
+    segment_size: int = 32,
+    top_fraction: float,
+) -> torch.Tensor:
+    """Return binary segment scores that keep only a top score band authoritative."""
+    scores = segment_scores.detach().cpu().float().flatten()
+    out = torch.zeros_like(scores)
+    segment_rows: list[tuple[float, int, int, int]] = []
+    size = max(1, int(segment_size))
+    for start, end in boundaries:
+        for seg_start in range(int(start), int(end), size):
+            seg_end = min(int(end), int(seg_start) + size)
+            if seg_end <= seg_start:
+                continue
+            segment_rows.append(
+                (
+                    _segment_top_mean(scores, seg_start, seg_end),
+                    -int(seg_start),
+                    int(seg_start),
+                    int(seg_end),
+                )
+            )
+    if not segment_rows:
+        return out.reshape(segment_scores.detach().cpu().shape)
+    fraction = max(0.0, min(1.0, float(top_fraction)))
+    keep_count = max(1, min(len(segment_rows), int(math.ceil(fraction * len(segment_rows)))))
+    for _score, _neg_start, seg_start, seg_end in sorted(segment_rows, reverse=True)[:keep_count]:
+        out[seg_start:seg_end] = 1.0
+    return out.reshape(segment_scores.detach().cpu().shape)
+
+
+def _segment_score_quantile_bands_for_ablation(
+    segment_scores: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    *,
+    segment_size: int = 32,
+    band_count: int,
+) -> torch.Tensor:
+    """Return segment scores collapsed into coarse rank bands."""
+    scores = segment_scores.detach().cpu().float().flatten()
+    out = torch.zeros_like(scores)
+    segment_rows: list[tuple[float, int, int, int]] = []
+    size = max(1, int(segment_size))
+    for start, end in boundaries:
+        for seg_start in range(int(start), int(end), size):
+            seg_end = min(int(end), int(seg_start) + size)
+            if seg_end <= seg_start:
+                continue
+            segment_rows.append(
+                (
+                    _segment_top_mean(scores, seg_start, seg_end),
+                    -int(seg_start),
+                    int(seg_start),
+                    int(seg_end),
+                )
+            )
+    if not segment_rows:
+        return out.reshape(segment_scores.detach().cpu().shape)
+    bands = max(1, int(band_count))
+    ordered = sorted(segment_rows, reverse=True)
+    total = len(ordered)
+    for rank_index, (_score, _neg_start, seg_start, seg_end) in enumerate(ordered):
+        band = (bands - 1) - min(
+            bands - 1,
+            int(math.floor(float(rank_index * bands) / float(total))),
+        )
+        out[seg_start:seg_end] = float(band)
+    return out.reshape(segment_scores.detach().cpu().shape)
 
 
 def _query_useful_delta(
@@ -255,6 +1142,192 @@ def _query_useful_delta(
     if ablation is None:
         return None
     return float(primary.query_useful_v1_score - ablation.query_useful_v1_score)
+
+
+def _query_useful_component_delta_summary(
+    *,
+    primary: MethodEvaluation,
+    ablations: dict[str, MethodEvaluation],
+    top_k: int = 5,
+) -> dict[str, Any]:
+    """Return component-level QueryUsefulV1 deltas for causality ablations."""
+    primary_components = dict(primary.query_useful_v1_components or {})
+    if not primary_components:
+        return {}
+    summary: dict[str, Any] = {}
+    limit = max(0, int(top_k))
+    for name, ablation in sorted(ablations.items()):
+        ablation_components = dict(ablation.query_useful_v1_components or {})
+        if not ablation_components:
+            summary[name] = {"available": False, "reason": "missing_ablation_components"}
+            continue
+        component_names = sorted(set(primary_components) | set(ablation_components))
+        component_deltas: dict[str, float] = {}
+        weighted_deltas: dict[str, float] = {}
+        for component in component_names:
+            delta = float(primary_components.get(component, 0.0)) - float(ablation_components.get(component, 0.0))
+            component_deltas[component] = delta
+            weighted_deltas[component] = delta * float(QUERY_USEFUL_V1_COMPONENT_WEIGHTS.get(component, 0.0))
+
+        rows = [
+            {
+                "component": component,
+                "component_delta": float(component_deltas[component]),
+                "weighted_delta": float(weighted_deltas[component]),
+            }
+            for component in component_names
+        ]
+        positive_rows = sorted(rows, key=lambda row: float(row["weighted_delta"]), reverse=True)
+        negative_rows = sorted(rows, key=lambda row: float(row["weighted_delta"]))
+        query_delta = float(primary.query_useful_v1_score - ablation.query_useful_v1_score)
+        weighted_sum = float(sum(weighted_deltas.values()))
+        summary[name] = {
+            "available": True,
+            "query_useful_v1_delta": query_delta,
+            "component_deltas": component_deltas,
+            "weighted_component_deltas": weighted_deltas,
+            "component_weighted_delta_sum": weighted_sum,
+            "component_delta_residual": float(query_delta - weighted_sum),
+            "top_positive_weighted_component_deltas": [
+                row for row in positive_rows if float(row["weighted_delta"]) > 0.0
+            ][:limit],
+            "top_negative_weighted_component_deltas": [
+                row for row in negative_rows if float(row["weighted_delta"]) < 0.0
+            ][:limit],
+        }
+    return summary
+
+
+def _causality_ablation_tradeoff_summary(
+    *,
+    component_deltas: dict[str, Any],
+    mask_diagnostics: dict[str, dict[str, Any]],
+    top_k: int = 5,
+) -> dict[str, Any]:
+    """Connect ablation mask movement to QueryUsefulV1 component movement."""
+
+    def _numeric(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    def _row_list(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for row in value:
+            if isinstance(row, dict):
+                rows.append(dict(row))
+        return rows[: max(0, int(top_k))]
+
+    summary: dict[str, Any] = {}
+    ablation_names = sorted(set(component_deltas) | set(mask_diagnostics))
+    for name in ablation_names:
+        component_row = component_deltas.get(name)
+        mask_row = mask_diagnostics.get(name, {})
+        mask_available = bool(mask_row.get("available", False)) if isinstance(mask_row, dict) else False
+        if not isinstance(component_row, dict) or not bool(component_row.get("available", False)):
+            reason = "missing_component_delta"
+            if isinstance(component_row, dict) and component_row.get("reason") is not None:
+                reason = str(component_row.get("reason"))
+            summary[name] = {
+                "available": False,
+                "reason": reason,
+                "retained_mask_available": mask_available,
+            }
+            continue
+
+        weighted_raw = component_row.get("weighted_component_deltas", {})
+        weighted_values = [
+            float(value)
+            for value in (weighted_raw.values() if isinstance(weighted_raw, dict) else [])
+            if not isinstance(value, bool) and isinstance(value, (int, float))
+        ]
+        positive_weighted_sum = float(sum(value for value in weighted_values if value > 0.0))
+        negative_weighted_sum = float(sum(value for value in weighted_values if value < 0.0))
+        absolute_weighted_sum = float(sum(abs(value) for value in weighted_values))
+
+        changed_count = _numeric(mask_row.get("retained_symmetric_difference_count")) if isinstance(mask_row, dict) else None
+        changed_denominator = changed_count if changed_count is not None and changed_count > 0.0 else None
+        query_delta = float(component_row.get("query_useful_v1_delta", 0.0))
+        top_positive = _row_list(component_row.get("top_positive_weighted_component_deltas"))
+        top_negative = _row_list(component_row.get("top_negative_weighted_component_deltas"))
+        if changed_denominator is None:
+            delta_per_changed_decision = None
+            positive_sum_per_changed_decision = None
+            negative_sum_per_changed_decision = None
+            tradeoff_status = "retained_mask_unchanged" if mask_available else "component_delta_without_mask_diagnostics"
+        else:
+            delta_per_changed_decision = float(query_delta / changed_denominator)
+            positive_sum_per_changed_decision = float(positive_weighted_sum / changed_denominator)
+            negative_sum_per_changed_decision = float(negative_weighted_sum / changed_denominator)
+            if query_delta > 0.0:
+                tradeoff_status = "mask_change_helped_primary_metric"
+            elif query_delta < 0.0:
+                tradeoff_status = "mask_change_hurt_primary_metric"
+            else:
+                tradeoff_status = "mask_change_neutral_primary_metric"
+
+        summary[name] = {
+            "available": True,
+            "tradeoff_status": tradeoff_status,
+            "query_useful_v1_delta": query_delta,
+            "component_weighted_delta_sum": component_row.get("component_weighted_delta_sum"),
+            "component_delta_residual": component_row.get("component_delta_residual"),
+            "positive_weighted_component_delta_sum": positive_weighted_sum,
+            "negative_weighted_component_delta_sum": negative_weighted_sum,
+            "absolute_weighted_component_delta_sum": absolute_weighted_sum,
+            "retained_mask_available": mask_available,
+            "retained_mask_changed": mask_row.get("retained_mask_changed") if isinstance(mask_row, dict) else None,
+            "retained_symmetric_difference_count": changed_count,
+            "retained_mask_jaccard": mask_row.get("retained_mask_jaccard") if isinstance(mask_row, dict) else None,
+            "retained_mask_hamming_fraction": (
+                mask_row.get("retained_mask_hamming_fraction") if isinstance(mask_row, dict) else None
+            ),
+            "query_useful_v1_delta_per_changed_retained_decision": delta_per_changed_decision,
+            "positive_weighted_component_delta_sum_per_changed_retained_decision": (
+                positive_sum_per_changed_decision
+            ),
+            "negative_weighted_component_delta_sum_per_changed_retained_decision": (
+                negative_sum_per_changed_decision
+            ),
+            "dominant_positive_weighted_component_delta": top_positive[0] if top_positive else None,
+            "dominant_negative_weighted_component_delta": top_negative[0] if top_negative else None,
+            "top_positive_weighted_component_deltas": top_positive,
+            "top_negative_weighted_component_deltas": top_negative,
+        }
+    return summary
+
+
+def _causality_ablation_diagnostics_payload(
+    *,
+    primary: MethodEvaluation,
+    ablations: dict[str, MethodEvaluation],
+    mask_diagnostics: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Return reusable score, component, and mask diagnostics for ablations."""
+    component_deltas = _query_useful_component_delta_summary(
+        primary=primary,
+        ablations=ablations,
+    )
+    tradeoff_diagnostics = _causality_ablation_tradeoff_summary(
+        component_deltas=component_deltas,
+        mask_diagnostics=mask_diagnostics,
+    )
+    return {
+        "available": True,
+        "primary_query_useful_v1_score": float(primary.query_useful_v1_score),
+        "ablation_scores": {
+            name: float(metrics.query_useful_v1_score) for name, metrics in sorted(ablations.items())
+        },
+        "ablation_query_useful_deltas": {
+            name: float(primary.query_useful_v1_score - metrics.query_useful_v1_score)
+            for name, metrics in sorted(ablations.items())
+        },
+        "component_deltas": component_deltas,
+        "mask_diagnostics": mask_diagnostics,
+        "tradeoff_diagnostics": tradeoff_diagnostics,
+    }
 
 
 LEARNING_CAUSALITY_MIN_MATERIAL_DELTA = 0.005
@@ -323,20 +1396,16 @@ def _score_ablation_sensitivity(
     primary_std = float(primary_f.std(unbiased=False).item()) if int(primary_f.numel()) > 1 else 0.0
     ablation_std = float(ablation_f.std(unbiased=False).item()) if int(ablation_f.numel()) > 1 else 0.0
 
-    retained_jaccard: float | None = None
-    retained_hamming_fraction: float | None = None
-    retained_changed: bool | None = None
     topk_jaccard: float | None = None
-    retained_count: int | None = None
+    mask_diagnostics = _retained_mask_comparison(
+        primary_mask=primary_mask,
+        ablation_mask=ablation_mask,
+        expected_shape=primary.shape,
+    )
     if primary_mask is not None and ablation_mask is not None:
         primary_bool = primary_mask.detach().cpu().bool().flatten()
         ablation_bool = ablation_mask.detach().cpu().bool().flatten()
         if primary_bool.shape == ablation_bool.shape == primary.shape:
-            intersection = int((primary_bool & ablation_bool).sum().item())
-            union = int((primary_bool | ablation_bool).sum().item())
-            retained_jaccard = float(intersection / max(1, union))
-            retained_hamming_fraction = float((primary_bool != ablation_bool).float().mean().item())
-            retained_changed = bool(not torch.equal(primary_bool, ablation_bool))
             retained_count = int(primary_bool.sum().item())
             if retained_count > 0:
                 k = min(retained_count, int(primary.numel()))
@@ -357,11 +1426,96 @@ def _score_ablation_sensitivity(
         "mean_signed_score_delta": float(delta.mean().item()),
         "primary_score_std": primary_std,
         "ablation_score_std": ablation_std,
-        "retained_count": retained_count,
-        "retained_mask_changed": retained_changed,
-        "retained_mask_jaccard": retained_jaccard,
-        "retained_mask_hamming_fraction": retained_hamming_fraction,
+        "retained_count": mask_diagnostics.get("primary_retained_count"),
+        "retained_mask_changed": mask_diagnostics.get("retained_mask_changed"),
+        "retained_mask_jaccard": mask_diagnostics.get("retained_mask_jaccard"),
+        "retained_mask_hamming_fraction": mask_diagnostics.get("retained_mask_hamming_fraction"),
         "score_topk_jaccard_at_retained_count": topk_jaccard,
+    }
+
+
+def _head_ablation_sensitivity(
+    *,
+    primary_scores: torch.Tensor | None,
+    ablation_scores: torch.Tensor | None,
+    primary_mask: torch.Tensor | None,
+    ablation_mask: torch.Tensor | None,
+    primary_raw_predictions: torch.Tensor | None = None,
+    ablation_raw_predictions: torch.Tensor | None = None,
+    primary_segment_scores: torch.Tensor | None = None,
+    ablation_segment_scores: torch.Tensor | None = None,
+) -> dict[str, Any]:
+    """Return score, raw-prediction, and segment-score sensitivity for one ablation."""
+    diagnostics: dict[str, Any] = {
+        "selector_score": _score_ablation_sensitivity(
+            primary_scores=primary_scores,
+            ablation_scores=ablation_scores,
+            primary_mask=primary_mask,
+            ablation_mask=ablation_mask,
+        )
+    }
+    if primary_raw_predictions is not None or ablation_raw_predictions is not None:
+        diagnostics["raw_prediction"] = _score_ablation_sensitivity(
+            primary_scores=primary_raw_predictions,
+            ablation_scores=ablation_raw_predictions,
+            primary_mask=primary_mask,
+            ablation_mask=ablation_mask,
+        )
+    if primary_segment_scores is not None or ablation_segment_scores is not None:
+        diagnostics["segment_score"] = _score_ablation_sensitivity(
+            primary_scores=primary_segment_scores,
+            ablation_scores=ablation_segment_scores,
+            primary_mask=primary_mask,
+            ablation_mask=ablation_mask,
+        )
+    return diagnostics
+
+
+def _retained_mask_comparison(
+    *,
+    primary_mask: torch.Tensor | None,
+    ablation_mask: torch.Tensor | None,
+    expected_shape: torch.Size | tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    """Return retained-mask overlap diagnostics for a frozen ablation."""
+    if primary_mask is None or ablation_mask is None:
+        return {"available": False, "reason": "missing_masks"}
+    primary_bool = primary_mask.detach().cpu().bool().flatten()
+    ablation_bool = ablation_mask.detach().cpu().bool().flatten()
+    if expected_shape is not None:
+        expected_numel = 1
+        for dim in tuple(expected_shape):
+            expected_numel *= int(dim)
+        if int(primary_bool.numel()) != expected_numel or int(ablation_bool.numel()) != expected_numel:
+            return {
+                "available": False,
+                "reason": "mask_shape_mismatch",
+                "primary_mask_count": int(primary_bool.numel()),
+                "ablation_mask_count": int(ablation_bool.numel()),
+                "expected_mask_count": expected_numel,
+            }
+    if primary_bool.shape != ablation_bool.shape:
+        return {
+            "available": False,
+            "reason": "mask_shape_mismatch",
+            "primary_mask_count": int(primary_bool.numel()),
+            "ablation_mask_count": int(ablation_bool.numel()),
+        }
+    intersection = int((primary_bool & ablation_bool).sum().item())
+    union = int((primary_bool | ablation_bool).sum().item())
+    primary_count = int(primary_bool.sum().item())
+    ablation_count = int(ablation_bool.sum().item())
+    symmetric_difference = int((primary_bool != ablation_bool).sum().item())
+    return {
+        "available": True,
+        "primary_retained_count": primary_count,
+        "ablation_retained_count": ablation_count,
+        "retained_intersection_count": intersection,
+        "retained_union_count": union,
+        "retained_symmetric_difference_count": symmetric_difference,
+        "retained_mask_changed": bool(symmetric_difference > 0),
+        "retained_mask_jaccard": float(intersection / max(1, union)),
+        "retained_mask_hamming_fraction": float(symmetric_difference / max(1, int(primary_bool.numel()))),
     }
 
 
@@ -468,6 +1622,438 @@ def _prior_sample_gate_failures(prior_sensitivity_diagnostics: dict[str, Any]) -
     if outside_fraction is not None and float(outside_fraction) > 0.50:
         failures.append("eval_points_mostly_outside_query_prior_extent")
     return failures
+
+
+def _selection_causality_diagnostics(
+    *,
+    trained: TrainingOutputs,
+    selection_points: torch.Tensor | None,
+    selection_boundaries: list[tuple[int, int]] | None,
+    selection_workload: Any | None,
+    eval_workload_map: dict[str, float],
+    selection_query_cache: EvaluationQueryCache | None,
+    config: ExperimentConfig,
+    seeds: Any,
+) -> dict[str, Any]:
+    """Return checkpoint-validation ablation diagnostics without changing selection."""
+    if selection_points is None or selection_boundaries is None or selection_workload is None:
+        return {"available": False, "reason": "missing_selection_split"}
+    if str(getattr(config.model, "selector_type", "")).lower() != "learned_segment_budget_v1":
+        return {"available": False, "reason": "requires_learned_segment_budget_v1"}
+
+    workload_type = single_workload_type(eval_workload_map)
+
+    def _mlqds_method(
+        *,
+        name: str,
+        trained_outputs: TrainingOutputs,
+        workload: Any,
+    ) -> MLQDSMethod:
+        return MLQDSMethod(
+            name=name,
+            trained=trained_outputs,
+            workload=workload,
+            workload_type=workload_type,
+            score_mode=config.model.mlqds_score_mode,
+            score_temperature=config.model.mlqds_score_temperature,
+            rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
+            temporal_fraction=config.model.mlqds_temporal_fraction,
+            diversity_bonus=config.model.mlqds_diversity_bonus,
+            hybrid_mode=config.model.mlqds_hybrid_mode,
+            stratified_center_weight=config.model.mlqds_stratified_center_weight,
+            min_learned_swaps=config.model.mlqds_min_learned_swaps,
+            selector_type=config.model.selector_type,
+            trajectory_mmsis=None,
+            inference_device=None,
+            amp_mode=config.model.amp_mode,
+            inference_batch_size=config.model.inference_batch_size,
+            learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
+            learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
+            learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
+            learned_segment_length_repair_fraction=config.model.learned_segment_length_repair_fraction,
+            learned_segment_length_support_blend_weight=config.model.learned_segment_length_support_blend_weight,
+        )
+
+    primary_method = _mlqds_method(
+        name="MLQDS_selection_primary",
+        trained_outputs=trained,
+        workload=selection_workload,
+    )
+    try:
+        primary_mask = primary_method.simplify(
+            selection_points,
+            selection_boundaries,
+            float(config.model.compression_ratio),
+        ).detach().cpu()
+    except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+        return {"available": False, "reason": "primary_mask_freeze_failed", "error": str(exc)}
+
+    primary_eval = evaluate_method(
+        method=FrozenMaskMethod(name="MLQDS", retained_mask=primary_mask),
+        points=selection_points,
+        boundaries=selection_boundaries,
+        typed_queries=selection_workload.typed_queries,
+        workload_map=eval_workload_map,
+        compression_ratio=config.model.compression_ratio,
+        query_cache=selection_query_cache,
+    )
+    primary_scores = getattr(primary_method, "_score_cache", None)
+    primary_raw_preds = getattr(primary_method, "_raw_pred_cache", None)
+    primary_head_logits = getattr(primary_method, "_head_logit_cache", None)
+    primary_segment_scores = getattr(primary_method, "_segment_score_cache", None)
+    primary_path_length_support_scores = getattr(primary_method, "_path_length_support_score_cache", None)
+    primary_selector_segment_scores = getattr(primary_method, "_selector_segment_score_cache", None)
+    if isinstance(primary_scores, torch.Tensor):
+        primary_scores = primary_scores.detach().cpu().float()
+    if isinstance(primary_raw_preds, torch.Tensor):
+        primary_raw_preds = primary_raw_preds.detach().cpu().float()
+    if isinstance(primary_head_logits, torch.Tensor):
+        primary_head_logits = primary_head_logits.detach().cpu().float()
+    if isinstance(primary_segment_scores, torch.Tensor):
+        primary_segment_scores = primary_segment_scores.detach().cpu().float()
+    if isinstance(primary_path_length_support_scores, torch.Tensor):
+        primary_path_length_support_scores = primary_path_length_support_scores.detach().cpu().float()
+    if isinstance(primary_selector_segment_scores, torch.Tensor):
+        primary_selector_segment_scores = primary_selector_segment_scores.detach().cpu().float()
+
+    ablation_methods: list[FrozenMaskMethod] = []
+    freeze_failures: dict[str, str] = {}
+    prior_sensitivity: dict[str, Any] = {}
+    head_sensitivity: dict[str, Any] = {}
+
+    geometry_gain_weight = float(config.model.learned_segment_geometry_gain_weight)
+    if isinstance(primary_scores, torch.Tensor) and geometry_gain_weight > 0.0:
+        try:
+            selection_segment_scores = (
+                primary_selector_segment_scores if isinstance(primary_selector_segment_scores, torch.Tensor) else None
+            )
+            ablation_methods.append(
+                _learned_segment_frozen_method(
+                    name="MLQDS_without_geometry_tie_breaker",
+                    scores=primary_scores,
+                    boundaries=selection_boundaries,
+                    compression_ratio=float(config.model.compression_ratio),
+                    segment_scores=selection_segment_scores,
+                    segment_point_scores=primary_segment_scores,
+                    points=selection_points,
+                    learned_segment_geometry_gain_weight=0.0,
+                    learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                    learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                    learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                )
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+            freeze_failures["MLQDS_without_geometry_tie_breaker"] = str(exc)
+
+    if isinstance(primary_scores, torch.Tensor) and isinstance(primary_segment_scores, torch.Tensor):
+        try:
+            neutral_segment_scores = _neutral_segment_scores_for_ablation(primary_segment_scores)
+            no_segment_selector_scores = blend_segment_support_scores(
+                segment_scores=neutral_segment_scores,
+                path_length_support_scores=(
+                    primary_path_length_support_scores
+                    if isinstance(primary_path_length_support_scores, torch.Tensor)
+                    else None
+                ),
+                path_length_support_weight=float(config.model.learned_segment_length_support_blend_weight),
+            )
+            no_segment = _learned_segment_frozen_method(
+                name="MLQDS_without_segment_budget_head",
+                scores=primary_scores,
+                boundaries=selection_boundaries,
+                compression_ratio=float(config.model.compression_ratio),
+                segment_scores=no_segment_selector_scores,
+                segment_point_scores=neutral_segment_scores,
+                points=selection_points,
+                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+            )
+            ablation_methods.append(no_segment)
+            head_sensitivity["MLQDS_without_segment_budget_head"] = {
+                **_head_ablation_sensitivity(
+                    primary_scores=primary_scores,
+                    ablation_scores=primary_scores,
+                    primary_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    ablation_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    primary_segment_scores=(
+                        primary_selector_segment_scores
+                        if isinstance(primary_selector_segment_scores, torch.Tensor)
+                        else primary_segment_scores
+                    ),
+                    ablation_segment_scores=no_segment_selector_scores,
+                    primary_mask=primary_mask,
+                    ablation_mask=no_segment.retained_mask,
+                ),
+                "disabled_head_name": "segment_budget_target",
+                "ablation_mode": "neutral_constant_segment_scores",
+            }
+        except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+            freeze_failures["MLQDS_without_segment_budget_head"] = str(exc)
+
+    if isinstance(primary_scores, torch.Tensor) and isinstance(primary_path_length_support_scores, torch.Tensor):
+        try:
+            path_length_segment_method = _learned_segment_frozen_method(
+                name="MLQDS_path_length_support_segment_head_diagnostic",
+                scores=primary_scores,
+                boundaries=selection_boundaries,
+                compression_ratio=float(config.model.compression_ratio),
+                segment_scores=primary_path_length_support_scores,
+                points=selection_points,
+                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+            )
+            ablation_methods.append(path_length_segment_method)
+            head_sensitivity["MLQDS_path_length_support_segment_head_diagnostic"] = {
+                **_head_ablation_sensitivity(
+                    primary_scores=primary_scores,
+                    ablation_scores=primary_scores,
+                    primary_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    ablation_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    primary_segment_scores=(
+                        primary_selector_segment_scores
+                        if isinstance(primary_selector_segment_scores, torch.Tensor)
+                        else primary_segment_scores
+                        if isinstance(primary_segment_scores, torch.Tensor)
+                        else None
+                    ),
+                    ablation_segment_scores=primary_path_length_support_scores,
+                    primary_mask=primary_mask,
+                    ablation_mask=path_length_segment_method.retained_mask,
+                ),
+                "diagnostic_only": True,
+                "replacement_head_name": "path_length_support_target",
+                "ablation_mode": "path_length_support_as_segment_scores",
+            }
+            path_length_allocation_method = _learned_segment_frozen_method(
+                name="MLQDS_path_length_support_allocation_only_diagnostic",
+                scores=primary_scores,
+                boundaries=selection_boundaries,
+                compression_ratio=float(config.model.compression_ratio),
+                segment_scores=primary_path_length_support_scores,
+                segment_point_scores=primary_segment_scores,
+                points=selection_points,
+                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+            )
+            ablation_methods.append(path_length_allocation_method)
+            head_sensitivity["MLQDS_path_length_support_allocation_only_diagnostic"] = {
+                **_head_ablation_sensitivity(
+                    primary_scores=primary_scores,
+                    ablation_scores=primary_scores,
+                    primary_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    ablation_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    primary_segment_scores=(
+                        primary_selector_segment_scores
+                        if isinstance(primary_selector_segment_scores, torch.Tensor)
+                        else primary_segment_scores
+                        if isinstance(primary_segment_scores, torch.Tensor)
+                        else None
+                    ),
+                    ablation_segment_scores=primary_path_length_support_scores,
+                    primary_mask=primary_mask,
+                    ablation_mask=path_length_allocation_method.retained_mask,
+                ),
+                "diagnostic_only": True,
+                "replacement_head_name": "path_length_support_target",
+                "ablation_mode": "path_length_support_allocation_only",
+            }
+        except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+            freeze_failures["MLQDS_path_length_support_segment_head_diagnostic"] = str(exc)
+
+    if (
+        isinstance(primary_scores, torch.Tensor)
+        and isinstance(primary_head_logits, torch.Tensor)
+        and isinstance(primary_selector_segment_scores, torch.Tensor)
+    ):
+        try:
+            behavior_raw_preds = _raw_predictions_without_factorized_head(
+                model=trained.model,
+                head_logits=primary_head_logits,
+                disabled_head_name="conditional_behavior_utility",
+            )
+            behavior_scores = _scores_without_factorized_head(
+                model=trained.model,
+                head_logits=primary_head_logits,
+                disabled_head_name="conditional_behavior_utility",
+                boundaries=selection_boundaries,
+                workload_type=workload_type,
+                score_mode=config.model.mlqds_score_mode,
+                score_temperature=float(config.model.mlqds_score_temperature),
+                rank_confidence_weight=float(config.model.mlqds_rank_confidence_weight),
+            )
+            no_behavior = _learned_segment_frozen_method(
+                name="MLQDS_without_behavior_utility_head",
+                scores=behavior_scores,
+                boundaries=selection_boundaries,
+                compression_ratio=float(config.model.compression_ratio),
+                segment_scores=primary_selector_segment_scores,
+                segment_point_scores=primary_segment_scores,
+                points=selection_points,
+                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+            )
+            ablation_methods.append(no_behavior)
+            head_sensitivity["MLQDS_without_behavior_utility_head"] = {
+                **_head_ablation_sensitivity(
+                    primary_scores=primary_scores,
+                    ablation_scores=behavior_scores,
+                    primary_raw_predictions=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                    ablation_raw_predictions=behavior_raw_preds,
+                    primary_segment_scores=primary_selector_segment_scores,
+                    ablation_segment_scores=primary_selector_segment_scores,
+                    primary_mask=primary_mask,
+                    ablation_mask=no_behavior.retained_mask,
+                ),
+                "disabled_head_name": "conditional_behavior_utility",
+                "ablation_mode": "neutral_multiplicative_head",
+            }
+        except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+            freeze_failures["MLQDS_without_behavior_utility_head"] = str(exc)
+
+    query_prior_field = trained.feature_context.get("query_prior_field")
+    if isinstance(query_prior_field, dict) and isinstance(primary_scores, torch.Tensor):
+        try:
+            prior_scores = query_prior_predictability_scores(selection_points, query_prior_field).detach().cpu()
+            ablation_methods.append(
+                _learned_segment_frozen_method(
+                    name="MLQDS_prior_field_only_score",
+                    scores=prior_scores,
+                    boundaries=selection_boundaries,
+                    compression_ratio=float(config.model.compression_ratio),
+                    points=selection_points,
+                    learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                    learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                    learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                    learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                )
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+            freeze_failures["MLQDS_prior_field_only_score"] = str(exc)
+        prior_ablation_fields = {
+            "MLQDS_shuffled_prior_fields": _shuffled_query_prior_field(
+                query_prior_field,
+                seed=int(seeds.eval_query_seed) + 72_003,
+            ),
+            "MLQDS_without_query_prior_features": zero_query_prior_field_like(query_prior_field),
+        }
+        for ablation_name, ablation_field in prior_ablation_fields.items():
+            try:
+                prior_sensitivity_key = (
+                    "shuffled_prior_fields"
+                    if ablation_name == "MLQDS_shuffled_prior_fields"
+                    else "without_query_prior_features"
+                )
+                prior_feature_sensitivity = _prior_feature_sample_sensitivity(
+                    points=selection_points,
+                    primary_prior_field=query_prior_field,
+                    ablation_prior_field=ablation_field,
+                )
+                ablation_trained = TrainingOutputs(
+                    model=trained.model,
+                    scaler=trained.scaler,
+                    labels=trained.labels,
+                    labelled_mask=trained.labelled_mask,
+                    history=trained.history,
+                    epochs_trained=trained.epochs_trained,
+                    best_epoch=trained.best_epoch,
+                    best_loss=trained.best_loss,
+                    best_selection_score=trained.best_selection_score,
+                    target_diagnostics=trained.target_diagnostics,
+                    fit_diagnostics=trained.fit_diagnostics,
+                    feature_context={
+                        **trained.feature_context,
+                        "query_prior_field": ablation_field,
+                        "query_prior_field_metadata": query_prior_field_metadata(ablation_field),
+                    },
+                )
+                ablation_method = _mlqds_method(
+                    name=ablation_name,
+                    trained_outputs=ablation_trained,
+                    workload=selection_workload,
+                )
+                ablation_mask = ablation_method.simplify(
+                    selection_points,
+                    selection_boundaries,
+                    float(config.model.compression_ratio),
+                )
+                ablation_scores = getattr(ablation_method, "_score_cache", None)
+                ablation_raw_preds = getattr(ablation_method, "_raw_pred_cache", None)
+                prior_sensitivity[prior_sensitivity_key] = {
+                    "sampled_prior_features": prior_feature_sensitivity,
+                    "selector_score": _score_ablation_sensitivity(
+                        primary_scores=primary_scores,
+                        ablation_scores=ablation_scores if isinstance(ablation_scores, torch.Tensor) else None,
+                        primary_mask=primary_mask,
+                        ablation_mask=ablation_mask,
+                    ),
+                    "raw_prediction": _score_ablation_sensitivity(
+                        primary_scores=primary_raw_preds if isinstance(primary_raw_preds, torch.Tensor) else None,
+                        ablation_scores=ablation_raw_preds if isinstance(ablation_raw_preds, torch.Tensor) else None,
+                        primary_mask=primary_mask,
+                        ablation_mask=ablation_mask,
+                    ),
+                }
+                ablation_methods.append(
+                    FrozenMaskMethod(
+                        name=ablation_name,
+                        retained_mask=ablation_mask.detach().cpu(),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                freeze_failures[ablation_name] = str(exc)
+
+    if not ablation_methods:
+        return {
+            "available": False,
+            "reason": "no_validation_ablations_frozen",
+            "ablation_freeze_failures": freeze_failures,
+        }
+
+    ablation_evaluations: dict[str, MethodEvaluation] = {}
+    mask_diagnostics: dict[str, dict[str, Any]] = {}
+    for method in ablation_methods:
+        mask_diagnostics[method.name] = _retained_mask_comparison(
+            primary_mask=primary_mask,
+            ablation_mask=method.retained_mask,
+            expected_shape=primary_mask.shape,
+        )
+        ablation_evaluations[method.name] = evaluate_method(
+            method=method,
+            points=selection_points,
+            boundaries=selection_boundaries,
+            typed_queries=selection_workload.typed_queries,
+            workload_map=eval_workload_map,
+            compression_ratio=config.model.compression_ratio,
+            query_cache=selection_query_cache,
+        )
+
+    payload = _causality_ablation_diagnostics_payload(
+        primary=primary_eval,
+        ablations=ablation_evaluations,
+        mask_diagnostics=mask_diagnostics,
+    )
+    for name, tradeoff_diagnostics in payload["tradeoff_diagnostics"].items():
+        if name in head_sensitivity:
+            head_sensitivity[name]["query_useful_component_tradeoff"] = tradeoff_diagnostics
+    payload.update(
+        {
+            "split": "checkpoint_selection",
+            "diagnostic_only": True,
+            "query_count": int(len(selection_workload.typed_queries)),
+            "ablation_freeze_failures": freeze_failures,
+            "prior_sensitivity_diagnostics": prior_sensitivity,
+            "head_ablation_sensitivity_diagnostics": head_sensitivity,
+        }
+    )
+    return payload
 
 
 def _points_outside_prior_extent_fraction(points: torch.Tensor, extent: dict[str, Any] | None) -> float | None:
@@ -631,18 +2217,13 @@ def _shuffled_query_prior_field(prior_field: dict[str, Any], seed: int) -> dict[
     return shuffled
 
 
-def _scores_without_factorized_head(
+def _raw_predictions_without_factorized_head(
     *,
     model: torch.nn.Module,
     head_logits: torch.Tensor,
     disabled_head_name: str,
-    boundaries: list[tuple[int, int]],
-    workload_type: str,
-    score_mode: str,
-    score_temperature: float,
-    rank_confidence_weight: float,
 ) -> torch.Tensor:
-    """Return simplification scores with one factorized head neutralized."""
+    """Return final raw predictions with one factorized head neutralized."""
     compose = getattr(model, "final_logit_from_head_logits", None)
     if not callable(compose):
         raise RuntimeError(f"{type(model).__name__} does not expose final_logit_from_head_logits.")
@@ -659,6 +2240,26 @@ def _scores_without_factorized_head(
             ).reshape(-1).detach().cpu()
     finally:
         model.train(original_training)
+    return pred
+
+
+def _scores_without_factorized_head(
+    *,
+    model: torch.nn.Module,
+    head_logits: torch.Tensor,
+    disabled_head_name: str,
+    boundaries: list[tuple[int, int]],
+    workload_type: str,
+    score_mode: str,
+    score_temperature: float,
+    rank_confidence_weight: float,
+) -> torch.Tensor:
+    """Return simplification scores with one factorized head neutralized."""
+    pred = _raw_predictions_without_factorized_head(
+        model=model,
+        head_logits=head_logits,
+        disabled_head_name=disabled_head_name,
+    )
     return mlqds_simplification_scores(
         pred,
         boundaries,
@@ -1668,16 +3269,33 @@ def run_experiment_pipeline(
                 min_learned_swaps=int(config.model.mlqds_min_learned_swaps),
             ),
         }
+    selection_causality_diagnostics: dict[str, Any] = {"available": False, "reason": "not_run"}
+    if workload_blind_eval:
+        with _phase("selection-causality-diagnostics"):
+            selection_causality_diagnostics = _selection_causality_diagnostics(
+                trained=trained,
+                selection_points=selection_points,
+                selection_boundaries=selection_boundaries,
+                selection_workload=selection_workload,
+                eval_workload_map=eval_workload_map,
+                selection_query_cache=selection_query_cache,
+                config=config,
+                seeds=seeds,
+            )
     frozen_primary_masks: dict[str, torch.Tensor] = {}
     frozen_audit_methods_by_ratio: dict[str, list[Method]] = {}
     frozen_primary_scores: dict[str, torch.Tensor] = {}
     frozen_primary_raw_preds: dict[str, torch.Tensor] = {}
     frozen_primary_head_logits: dict[str, torch.Tensor] = {}
     frozen_primary_segment_scores: dict[str, torch.Tensor] = {}
+    frozen_primary_path_length_support_scores: dict[str, torch.Tensor] = {}
+    frozen_primary_selector_segment_scores: dict[str, torch.Tensor] = {}
     primary_selector_trace: dict[str, Any] | None = None
     causality_ablation_methods: list[FrozenMaskMethod] = []
     causal_ablation_freeze_failures: dict[str, str] = {}
     prior_sensitivity_diagnostics: dict[str, Any] = {}
+    prior_channel_ablation_diagnostics: dict[str, Any] = {}
+    head_ablation_sensitivity_diagnostics: dict[str, Any] = {}
     segment_budget_head_ablation_mode: str | None = None
     if workload_blind_eval:
         with _phase("freeze-retained-masks"):
@@ -1702,19 +3320,38 @@ def run_experiment_pipeline(
                     segment_score_cache = getattr(method, "_segment_score_cache", None)
                     if isinstance(segment_score_cache, torch.Tensor):
                         frozen_primary_segment_scores[method.name] = segment_score_cache.detach().cpu().float()
+                    path_length_support_cache = getattr(method, "_path_length_support_score_cache", None)
+                    if isinstance(path_length_support_cache, torch.Tensor):
+                        frozen_primary_path_length_support_scores[method.name] = (
+                            path_length_support_cache.detach().cpu().float()
+                        )
+                    selector_segment_score_cache = getattr(method, "_selector_segment_score_cache", None)
+                    if isinstance(selector_segment_score_cache, torch.Tensor):
+                        frozen_primary_selector_segment_scores[method.name] = (
+                            selector_segment_score_cache.detach().cpu().float()
+                        )
             primary_scores = frozen_primary_scores.get("MLQDS")
             primary_raw_preds = frozen_primary_raw_preds.get("MLQDS")
             if primary_scores is not None and str(getattr(config.model, "selector_type", "")).lower() == "learned_segment_budget_v1":
                 primary_segment_scores = frozen_primary_segment_scores.get("MLQDS")
+                primary_path_length_support_scores = frozen_primary_path_length_support_scores.get("MLQDS")
+                primary_selector_segment_scores = frozen_primary_selector_segment_scores.get("MLQDS")
                 trace_mask, trace = simplify_with_learned_segment_budget_v1_with_trace(
                     primary_scores,
                     test_boundaries,
                     float(config.model.compression_ratio),
-                    segment_scores=primary_segment_scores,
+                    segment_scores=primary_selector_segment_scores,
+                    segment_point_scores=primary_segment_scores,
                     points=test_points.detach().cpu().float(),
                     geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
                     segment_score_point_blend_weight=float(config.model.learned_segment_score_blend_weight),
                     fairness_preallocation_enabled=bool(config.model.learned_segment_fairness_preallocation),
+                    length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                    segment_score_source_label=_selector_segment_score_source_label(
+                        segment_scores=primary_segment_scores,
+                        path_length_support_scores=primary_path_length_support_scores,
+                        length_support_blend_weight=float(config.model.learned_segment_length_support_blend_weight),
+                    ),
                 )
                 frozen_mlqds_mask = frozen_primary_masks.get("MLQDS")
                 if isinstance(frozen_mlqds_mask, torch.Tensor):
@@ -1722,12 +3359,88 @@ def run_experiment_pipeline(
                         torch.equal(trace_mask.detach().cpu(), frozen_mlqds_mask.detach().cpu())
                     )
                     trace["frozen_primary_retained_count"] = int(frozen_mlqds_mask.sum().item())
+                compression_for_trace = float(config.model.compression_ratio)
+                learned_fraction_min_for_trace = (
+                    0.35 if compression_for_trace >= 0.10 else 0.25 if compression_for_trace >= 0.05 else 0.0
+                )
+                if learned_fraction_min_for_trace > 0.0:
+                    trace["score_protected_length_feasibility"] = _score_protected_length_feasibility(
+                        scores=primary_scores,
+                        points=test_points,
+                        boundaries=test_boundaries,
+                        compression_ratio=compression_for_trace,
+                        learned_slot_fraction_min=learned_fraction_min_for_trace,
+                    )
+                    trace["score_protected_length_frontier"] = _score_protected_length_frontier(
+                        scores=primary_scores,
+                        points=test_points,
+                        boundaries=test_boundaries,
+                        compression_ratio=compression_for_trace,
+                        learned_slot_fraction_min=learned_fraction_min_for_trace,
+                    )
                 primary_selector_trace = trace
+                pre_repair_diagnostic_name = "MLQDS_pre_repair_allocation_diagnostic"
+                try:
+                    pre_repair_method = _pre_repair_frozen_method_from_trace(
+                        name=pre_repair_diagnostic_name,
+                        selector_trace=trace,
+                        point_count=int(test_points.shape[0]),
+                    )
+                    causality_ablation_methods.append(pre_repair_method)
+                    trace["pre_repair_frozen_method_diagnostic"] = {
+                        "available": True,
+                        "diagnostic_only": True,
+                        "query_free": True,
+                        "method_name": pre_repair_diagnostic_name,
+                        "source": "selector_trace.pre_repair_retained_mask.indices",
+                        "retained_count": int(pre_repair_method.retained_mask.sum().item()),
+                    }
+                except Exception as exc:  # pragma: no cover - optional diagnostic should not gate eval.
+                    trace["pre_repair_frozen_method_diagnostic"] = {
+                        "available": False,
+                        "diagnostic_only": True,
+                        "query_free": True,
+                        "method_name": pre_repair_diagnostic_name,
+                        "reason": "freeze_failed",
+                        "error": str(exc),
+                    }
+                if float(config.model.learned_segment_geometry_gain_weight) > 0.0:
+                    try:
+                        causality_ablation_methods.append(
+                            _learned_segment_frozen_method(
+                                name="MLQDS_without_geometry_tie_breaker",
+                                scores=primary_scores,
+                                boundaries=test_boundaries,
+                                compression_ratio=float(config.model.compression_ratio),
+                                segment_scores=primary_selector_segment_scores,
+                                segment_point_scores=primary_segment_scores,
+                                points=test_points,
+                                learned_segment_geometry_gain_weight=0.0,
+                                learned_segment_score_blend_weight=float(
+                                    config.model.learned_segment_score_blend_weight
+                                ),
+                                learned_segment_fairness_preallocation=bool(
+                                    config.model.learned_segment_fairness_preallocation
+                                ),
+                                learned_segment_length_repair_fraction=float(
+                                    config.model.learned_segment_length_repair_fraction
+                                ),
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                        causal_ablation_freeze_failures["MLQDS_without_geometry_tie_breaker"] = str(exc)
                 generator = torch.Generator().manual_seed(int(seeds.eval_query_seed) + 91_337)
                 shuffled_order = torch.randperm(int(primary_scores.numel()), generator=generator)
                 shuffled_scores = primary_scores[shuffled_order]
                 shuffled_segment_scores = (
-                    primary_segment_scores[shuffled_order] if primary_segment_scores is not None else None
+                    primary_selector_segment_scores[shuffled_order]
+                    if primary_selector_segment_scores is not None
+                    else None
+                )
+                shuffled_segment_point_scores = (
+                    primary_segment_scores[shuffled_order]
+                    if primary_segment_scores is not None
+                    else None
                 )
                 causality_ablation_methods.append(
                     _learned_segment_frozen_method(
@@ -1736,28 +3449,214 @@ def run_experiment_pipeline(
                         boundaries=test_boundaries,
                         compression_ratio=float(config.model.compression_ratio),
                         segment_scores=shuffled_segment_scores,
+                        segment_point_scores=shuffled_segment_point_scores,
                         points=test_points,
                         learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
                         learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
                         learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                        learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
                     )
                 )
                 if primary_segment_scores is not None:
                     neutral_segment_scores = _neutral_segment_scores_for_ablation(primary_segment_scores)
+                    no_segment_selector_scores = blend_segment_support_scores(
+                        segment_scores=neutral_segment_scores,
+                        path_length_support_scores=primary_path_length_support_scores,
+                        path_length_support_weight=float(config.model.learned_segment_length_support_blend_weight),
+                    )
                     segment_budget_head_ablation_mode = "neutral_constant_segment_scores"
-                    causality_ablation_methods.append(
-                        _learned_segment_frozen_method(
-                            name="MLQDS_without_segment_budget_head",
+                    segment_budget_ablation_method = _learned_segment_frozen_method(
+                        name="MLQDS_without_segment_budget_head",
+                        scores=primary_scores,
+                        boundaries=test_boundaries,
+                        compression_ratio=float(config.model.compression_ratio),
+                        segment_scores=no_segment_selector_scores,
+                        segment_point_scores=neutral_segment_scores,
+                        points=test_points,
+                        learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                        learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                        learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                        learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                    )
+                    causality_ablation_methods.append(segment_budget_ablation_method)
+                    segment_budget_sensitivity = _head_ablation_sensitivity(
+                        primary_scores=primary_scores,
+                        ablation_scores=primary_scores,
+                        primary_raw_predictions=primary_raw_preds,
+                        ablation_raw_predictions=primary_raw_preds,
+                        primary_segment_scores=primary_selector_segment_scores,
+                        ablation_segment_scores=no_segment_selector_scores,
+                        primary_mask=frozen_primary_masks.get("MLQDS"),
+                        ablation_mask=segment_budget_ablation_method.retained_mask,
+                    )
+                    segment_budget_sensitivity["disabled_head_name"] = "segment_budget_target"
+                    segment_budget_sensitivity["ablation_mode"] = segment_budget_head_ablation_mode
+                    head_ablation_sensitivity_diagnostics["MLQDS_without_segment_budget_head"] = (
+                        segment_budget_sensitivity
+                    )
+                    if primary_selector_segment_scores is not None:
+                        segment_allocation_ablation_method = _learned_segment_frozen_method(
+                            name="MLQDS_without_segment_budget_allocation_only",
                             scores=primary_scores,
                             boundaries=test_boundaries,
                             compression_ratio=float(config.model.compression_ratio),
-                            segment_scores=neutral_segment_scores,
+                            segment_scores=no_segment_selector_scores,
+                            segment_point_scores=primary_segment_scores,
                             points=test_points,
                             learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
                             learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
                             learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                            learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
                         )
-                    )
+                        causality_ablation_methods.append(segment_allocation_ablation_method)
+                        allocation_sensitivity = _head_ablation_sensitivity(
+                            primary_scores=primary_scores,
+                            ablation_scores=primary_scores,
+                            primary_raw_predictions=primary_raw_preds,
+                            ablation_raw_predictions=primary_raw_preds,
+                            primary_segment_scores=primary_selector_segment_scores,
+                            ablation_segment_scores=no_segment_selector_scores,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=segment_allocation_ablation_method.retained_mask,
+                        )
+                        allocation_sensitivity["disabled_head_name"] = "segment_budget_target"
+                        allocation_sensitivity["ablation_mode"] = "neutral_constant_segment_scores_for_allocation_only"
+                        allocation_sensitivity["diagnostic_only"] = True
+                        head_ablation_sensitivity_diagnostics[
+                            "MLQDS_without_segment_budget_allocation_only"
+                        ] = allocation_sensitivity
+
+                        point_score_allocation_method = _learned_segment_frozen_method(
+                            name="MLQDS_point_score_allocation_diagnostic",
+                            scores=primary_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            segment_scores=None,
+                            segment_point_scores=primary_segment_scores,
+                            points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                            learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                            learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                        )
+                        causality_ablation_methods.append(point_score_allocation_method)
+                        point_score_allocation_sensitivity = _head_ablation_sensitivity(
+                            primary_scores=primary_scores,
+                            ablation_scores=primary_scores,
+                            primary_raw_predictions=primary_raw_preds,
+                            ablation_raw_predictions=primary_raw_preds,
+                            primary_segment_scores=primary_selector_segment_scores,
+                            ablation_segment_scores=primary_scores,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=point_score_allocation_method.retained_mask,
+                        )
+                        point_score_allocation_sensitivity["disabled_head_name"] = "segment_budget_target"
+                        point_score_allocation_sensitivity["ablation_mode"] = "point_score_top20_mean_for_allocation_only"
+                        point_score_allocation_sensitivity["diagnostic_only"] = True
+                        point_score_allocation_sensitivity["allocation_score_source"] = "point_score_top20_mean"
+                        head_ablation_sensitivity_diagnostics[
+                            "MLQDS_point_score_allocation_diagnostic"
+                        ] = point_score_allocation_sensitivity
+
+                        allocation_authority_variants = [
+                            (
+                                "MLQDS_segment_allocation_top25_band_diagnostic",
+                                _segment_score_top_band_for_ablation(
+                                    primary_selector_segment_scores,
+                                    test_boundaries,
+                                    top_fraction=0.25,
+                                ),
+                                "top25_binary_selector_segment_scores_for_allocation_only",
+                            ),
+                            (
+                                "MLQDS_segment_allocation_top50_band_diagnostic",
+                                _segment_score_top_band_for_ablation(
+                                    primary_selector_segment_scores,
+                                    test_boundaries,
+                                    top_fraction=0.50,
+                                ),
+                                "top50_binary_selector_segment_scores_for_allocation_only",
+                            ),
+                            (
+                                "MLQDS_segment_allocation_quartile_band_diagnostic",
+                                _segment_score_quantile_bands_for_ablation(
+                                    primary_selector_segment_scores,
+                                    test_boundaries,
+                                    band_count=4,
+                                ),
+                                "quartile_banded_selector_segment_scores_for_allocation_only",
+                            ),
+                        ]
+                        for diagnostic_name, authority_scores, authority_mode in allocation_authority_variants:
+                            authority_method = _learned_segment_frozen_method(
+                                name=diagnostic_name,
+                                scores=primary_scores,
+                                boundaries=test_boundaries,
+                                compression_ratio=float(config.model.compression_ratio),
+                                segment_scores=authority_scores,
+                                segment_point_scores=primary_segment_scores,
+                                points=test_points,
+                                learned_segment_geometry_gain_weight=float(
+                                    config.model.learned_segment_geometry_gain_weight
+                                ),
+                                learned_segment_score_blend_weight=float(
+                                    config.model.learned_segment_score_blend_weight
+                                ),
+                                learned_segment_fairness_preallocation=bool(
+                                    config.model.learned_segment_fairness_preallocation
+                                ),
+                                learned_segment_length_repair_fraction=float(
+                                    config.model.learned_segment_length_repair_fraction
+                                ),
+                            )
+                            causality_ablation_methods.append(authority_method)
+                            authority_sensitivity = _head_ablation_sensitivity(
+                                primary_scores=primary_scores,
+                                ablation_scores=primary_scores,
+                                primary_raw_predictions=primary_raw_preds,
+                                ablation_raw_predictions=primary_raw_preds,
+                                primary_segment_scores=primary_selector_segment_scores,
+                                ablation_segment_scores=authority_scores,
+                                primary_mask=frozen_primary_masks.get("MLQDS"),
+                                ablation_mask=authority_method.retained_mask,
+                            )
+                            authority_sensitivity["disabled_head_name"] = "segment_budget_target"
+                            authority_sensitivity["ablation_mode"] = str(authority_mode)
+                            authority_sensitivity["diagnostic_only"] = True
+                            authority_sensitivity["allocation_authority_diagnostic"] = True
+                            authority_sensitivity["allocation_score_source"] = "selector_segment_score_bands"
+                            head_ablation_sensitivity_diagnostics[diagnostic_name] = authority_sensitivity
+
+                        segment_point_blend_ablation_method = _learned_segment_frozen_method(
+                            name="MLQDS_without_segment_budget_point_blend_only",
+                            scores=primary_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            segment_scores=primary_selector_segment_scores,
+                            segment_point_scores=primary_segment_scores,
+                            points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=0.0,
+                            learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                            learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                        )
+                        causality_ablation_methods.append(segment_point_blend_ablation_method)
+                        point_blend_sensitivity = _head_ablation_sensitivity(
+                            primary_scores=primary_scores,
+                            ablation_scores=primary_scores,
+                            primary_raw_predictions=primary_raw_preds,
+                            ablation_raw_predictions=primary_raw_preds,
+                            primary_segment_scores=primary_selector_segment_scores,
+                            ablation_segment_scores=primary_selector_segment_scores,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=segment_point_blend_ablation_method.retained_mask,
+                        )
+                        point_blend_sensitivity["disabled_head_name"] = "segment_budget_target"
+                        point_blend_sensitivity["ablation_mode"] = "disable_segment_score_point_blend_only"
+                        point_blend_sensitivity["diagnostic_only"] = True
+                        head_ablation_sensitivity_diagnostics[
+                            "MLQDS_without_segment_budget_point_blend_only"
+                        ] = point_blend_sensitivity
                     if bool(config.model.learned_segment_fairness_preallocation):
                         causality_ablation_methods.append(
                             _learned_segment_frozen_method(
@@ -1765,16 +3664,104 @@ def run_experiment_pipeline(
                                 scores=primary_scores,
                                 boundaries=test_boundaries,
                                 compression_ratio=float(config.model.compression_ratio),
-                                segment_scores=primary_segment_scores,
+                                segment_scores=primary_selector_segment_scores,
+                                segment_point_scores=primary_segment_scores,
                                 points=test_points,
                                 learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
                                 learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
                                 learned_segment_fairness_preallocation=False,
+                                learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
                             )
                         )
+                path_length_support_scores = frozen_primary_path_length_support_scores.get("MLQDS")
+                if path_length_support_scores is not None:
+                    try:
+                        path_length_segment_method = _learned_segment_frozen_method(
+                            name="MLQDS_path_length_support_segment_head_diagnostic",
+                            scores=primary_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            segment_scores=path_length_support_scores,
+                            points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                            learned_segment_fairness_preallocation=bool(
+                                config.model.learned_segment_fairness_preallocation
+                            ),
+                            learned_segment_length_repair_fraction=float(
+                                config.model.learned_segment_length_repair_fraction
+                            ),
+                        )
+                        causality_ablation_methods.append(path_length_segment_method)
+                        head_ablation_sensitivity_diagnostics[
+                            "MLQDS_path_length_support_segment_head_diagnostic"
+                        ] = {
+                            **_head_ablation_sensitivity(
+                                primary_scores=primary_scores,
+                                ablation_scores=primary_scores,
+                                primary_raw_predictions=primary_raw_preds,
+                                ablation_raw_predictions=primary_raw_preds,
+                                primary_segment_scores=primary_selector_segment_scores,
+                                ablation_segment_scores=path_length_support_scores,
+                                primary_mask=frozen_primary_masks.get("MLQDS"),
+                                ablation_mask=path_length_segment_method.retained_mask,
+                            ),
+                            "diagnostic_only": True,
+                            "replacement_head_name": "path_length_support_target",
+                            "ablation_mode": "path_length_support_as_segment_scores",
+                        }
+                        path_length_allocation_method = _learned_segment_frozen_method(
+                            name="MLQDS_path_length_support_allocation_only_diagnostic",
+                            scores=primary_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            segment_scores=path_length_support_scores,
+                            segment_point_scores=primary_segment_scores,
+                            points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                            learned_segment_fairness_preallocation=bool(
+                                config.model.learned_segment_fairness_preallocation
+                            ),
+                            learned_segment_length_repair_fraction=float(
+                                config.model.learned_segment_length_repair_fraction
+                            ),
+                        )
+                        causality_ablation_methods.append(path_length_allocation_method)
+                        head_ablation_sensitivity_diagnostics[
+                            "MLQDS_path_length_support_allocation_only_diagnostic"
+                        ] = {
+                            **_head_ablation_sensitivity(
+                                primary_scores=primary_scores,
+                                ablation_scores=primary_scores,
+                                primary_raw_predictions=primary_raw_preds,
+                                ablation_raw_predictions=primary_raw_preds,
+                                primary_segment_scores=primary_selector_segment_scores,
+                                ablation_segment_scores=path_length_support_scores,
+                                primary_mask=frozen_primary_masks.get("MLQDS"),
+                                ablation_mask=path_length_allocation_method.retained_mask,
+                            ),
+                            "diagnostic_only": True,
+                            "replacement_head_name": "path_length_support_target",
+                            "ablation_mode": "path_length_support_allocation_only",
+                        }
+                    except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+                        head_ablation_sensitivity_diagnostics[
+                            "MLQDS_path_length_support_segment_head_diagnostic"
+                        ] = {
+                            "available": False,
+                            "diagnostic_only": True,
+                            "reason": "freeze_failed",
+                            "error": str(exc),
+                        }
                 primary_head_logits = frozen_primary_head_logits.get("MLQDS")
                 if primary_head_logits is not None:
                     try:
+                        behavior_raw_preds = _raw_predictions_without_factorized_head(
+                            model=trained.model,
+                            head_logits=primary_head_logits,
+                            disabled_head_name="conditional_behavior_utility",
+                        )
                         behavior_scores = _scores_without_factorized_head(
                             model=trained.model,
                             head_logits=primary_head_logits,
@@ -1785,18 +3772,34 @@ def run_experiment_pipeline(
                             score_temperature=float(config.model.mlqds_score_temperature),
                             rank_confidence_weight=float(config.model.mlqds_rank_confidence_weight),
                         )
-                        causality_ablation_methods.append(
-                            _learned_segment_frozen_method(
-                                name="MLQDS_without_behavior_utility_head",
-                                scores=behavior_scores,
-                                boundaries=test_boundaries,
-                                compression_ratio=float(config.model.compression_ratio),
-                                segment_scores=primary_segment_scores,
-                                points=test_points,
-                                learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
-                                learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
-                                learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
-                            )
+                        behavior_ablation_method = _learned_segment_frozen_method(
+                            name="MLQDS_without_behavior_utility_head",
+                            scores=behavior_scores,
+                            boundaries=test_boundaries,
+                            compression_ratio=float(config.model.compression_ratio),
+                            segment_scores=primary_selector_segment_scores,
+                            segment_point_scores=primary_segment_scores,
+                            points=test_points,
+                            learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
+                            learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
+                            learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                            learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
+                        )
+                        causality_ablation_methods.append(behavior_ablation_method)
+                        behavior_sensitivity = _head_ablation_sensitivity(
+                            primary_scores=primary_scores,
+                            ablation_scores=behavior_scores,
+                            primary_raw_predictions=primary_raw_preds,
+                            ablation_raw_predictions=behavior_raw_preds,
+                            primary_segment_scores=primary_selector_segment_scores,
+                            ablation_segment_scores=primary_selector_segment_scores,
+                            primary_mask=frozen_primary_masks.get("MLQDS"),
+                            ablation_mask=behavior_ablation_method.retained_mask,
+                        )
+                        behavior_sensitivity["disabled_head_name"] = "conditional_behavior_utility"
+                        behavior_sensitivity["ablation_mode"] = "neutral_multiplicative_head"
+                        head_ablation_sensitivity_diagnostics["MLQDS_without_behavior_utility_head"] = (
+                            behavior_sensitivity
                         )
                     except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
                         causal_ablation_freeze_failures["MLQDS_without_behavior_utility_head"] = str(exc)
@@ -1834,6 +3837,10 @@ def run_experiment_pipeline(
                         learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
                         learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
                         learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
+                        learned_segment_length_repair_fraction=config.model.learned_segment_length_repair_fraction,
+                        learned_segment_length_support_blend_weight=(
+                            config.model.learned_segment_length_support_blend_weight
+                        ),
                     )
                     untrained_mask = untrained_method.simplify(
                         test_points,
@@ -1861,6 +3868,7 @@ def run_experiment_pipeline(
                             learned_segment_geometry_gain_weight=float(config.model.learned_segment_geometry_gain_weight),
                             learned_segment_score_blend_weight=float(config.model.learned_segment_score_blend_weight),
                             learned_segment_fairness_preallocation=bool(config.model.learned_segment_fairness_preallocation),
+                            learned_segment_length_repair_fraction=float(config.model.learned_segment_length_repair_fraction),
                         )
                     )
                     try:
@@ -1911,6 +3919,10 @@ def run_experiment_pipeline(
                             learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
                             learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
                             learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
+                            learned_segment_length_repair_fraction=config.model.learned_segment_length_repair_fraction,
+                            learned_segment_length_support_blend_weight=(
+                                config.model.learned_segment_length_support_blend_weight
+                            ),
                         )
                         shuffled_prior_mask = shuffled_prior_method.simplify(
                             test_points,
@@ -1992,6 +4004,10 @@ def run_experiment_pipeline(
                             learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
                             learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
                             learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
+                            learned_segment_length_repair_fraction=config.model.learned_segment_length_repair_fraction,
+                            learned_segment_length_support_blend_weight=(
+                                config.model.learned_segment_length_support_blend_weight
+                            ),
                         )
                         zero_prior_mask = zero_prior_method.simplify(
                             test_points,
@@ -2025,6 +4041,100 @@ def run_experiment_pipeline(
                         )
                     except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
                         causal_ablation_freeze_failures["MLQDS_without_query_prior_features"] = str(exc)
+                    for prior_channel_name in QUERY_PRIOR_FIELD_NAMES:
+                        channel_method_name = f"MLQDS_without_prior_channel_{prior_channel_name}"
+                        try:
+                            channel_prior_field = zero_query_prior_field_channels(
+                                query_prior_field,
+                                [prior_channel_name],
+                            )
+                            channel_feature_sensitivity = _prior_feature_sample_sensitivity(
+                                points=test_points,
+                                primary_prior_field=query_prior_field,
+                                ablation_prior_field=channel_prior_field,
+                            )
+                            channel_trained = TrainingOutputs(
+                                model=trained.model,
+                                scaler=trained.scaler,
+                                labels=trained.labels,
+                                labelled_mask=trained.labelled_mask,
+                                history=trained.history,
+                                epochs_trained=trained.epochs_trained,
+                                best_epoch=trained.best_epoch,
+                                best_loss=trained.best_loss,
+                                best_selection_score=trained.best_selection_score,
+                                target_diagnostics=trained.target_diagnostics,
+                                fit_diagnostics=trained.fit_diagnostics,
+                                feature_context={
+                                    **trained.feature_context,
+                                    "query_prior_field": channel_prior_field,
+                                    "query_prior_field_metadata": query_prior_field_metadata(channel_prior_field),
+                                },
+                            )
+                            channel_method = MLQDSMethod(
+                                name=channel_method_name,
+                                trained=channel_trained,
+                                workload=eval_workload,
+                                workload_type=single_workload_type(eval_workload_map),
+                                score_mode=config.model.mlqds_score_mode,
+                                score_temperature=config.model.mlqds_score_temperature,
+                                rank_confidence_weight=config.model.mlqds_rank_confidence_weight,
+                                temporal_fraction=config.model.mlqds_temporal_fraction,
+                                diversity_bonus=config.model.mlqds_diversity_bonus,
+                                hybrid_mode=config.model.mlqds_hybrid_mode,
+                                stratified_center_weight=config.model.mlqds_stratified_center_weight,
+                                min_learned_swaps=config.model.mlqds_min_learned_swaps,
+                                selector_type=config.model.selector_type,
+                                trajectory_mmsis=test_mmsis,
+                                inference_device=None,
+                                amp_mode=config.model.amp_mode,
+                                inference_batch_size=config.model.inference_batch_size,
+                                learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
+                                learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
+                                learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
+                                learned_segment_length_repair_fraction=config.model.learned_segment_length_repair_fraction,
+                                learned_segment_length_support_blend_weight=(
+                                    config.model.learned_segment_length_support_blend_weight
+                                ),
+                            )
+                            channel_mask = channel_method.simplify(
+                                test_points,
+                                test_boundaries,
+                                float(config.model.compression_ratio),
+                            )
+                            channel_scores = getattr(channel_method, "_score_cache", None)
+                            channel_raw_preds = getattr(channel_method, "_raw_pred_cache", None)
+                            prior_channel_ablation_diagnostics[prior_channel_name] = {
+                                "available": True,
+                                "method_name": channel_method_name,
+                                "sampled_prior_features": channel_feature_sensitivity,
+                                "selector_score": _score_ablation_sensitivity(
+                                    primary_scores=primary_scores,
+                                    ablation_scores=channel_scores if isinstance(channel_scores, torch.Tensor) else None,
+                                    primary_mask=frozen_primary_masks.get("MLQDS"),
+                                    ablation_mask=channel_mask,
+                                ),
+                                "raw_prediction": _score_ablation_sensitivity(
+                                    primary_scores=primary_raw_preds,
+                                    ablation_scores=(
+                                        channel_raw_preds if isinstance(channel_raw_preds, torch.Tensor) else None
+                                    ),
+                                    primary_mask=frozen_primary_masks.get("MLQDS"),
+                                    ablation_mask=channel_mask,
+                                ),
+                            }
+                            causality_ablation_methods.append(
+                                FrozenMaskMethod(
+                                    name=channel_method_name,
+                                    retained_mask=channel_mask.detach().cpu(),
+                                )
+                            )
+                        except Exception as exc:  # pragma: no cover - optional diagnostic only.
+                            prior_channel_ablation_diagnostics[prior_channel_name] = {
+                                "available": False,
+                                "method_name": channel_method_name,
+                                "error": str(exc),
+                            }
         methods = [
             FrozenMaskMethod(
                 name=method.name,
@@ -2068,6 +4178,8 @@ def run_experiment_pipeline(
     matched: dict[str, MethodEvaluation] = {}
     oracle_method: OracleMethod | None = None
     eval_labels: torch.Tensor | None = None
+    segment_oracle_allocation_audit: dict[str, Any] = {"available": False, "reason": "not_run"}
+    target_segment_oracle_alignment_audit: dict[str, Any] = {"available": False, "reason": "not_run"}
     save_masks = bool(save_simplified_dir)
     eval_is_range_only = len(range_only_queries(eval_workload.typed_queries)) == len(eval_workload.typed_queries)
     final_metrics_mode = str(getattr(config.baselines, "final_metrics_mode", "diagnostic")).lower()
@@ -2105,6 +4217,35 @@ def run_experiment_pipeline(
             eval_labels=eval_labels,
             eval_workload_map=eval_workload_map,
         )
+    if workload_blind_eval and str(getattr(config.model, "selector_type", "")).lower() == "learned_segment_budget_v1":
+        segment_oracle_allocation_audit = _segment_oracle_allocation_audit(
+            point_scores=frozen_primary_scores.get("MLQDS"),
+            segment_budget_scores=frozen_primary_segment_scores.get("MLQDS"),
+            selector_segment_scores=frozen_primary_selector_segment_scores.get("MLQDS"),
+            eval_labels=eval_labels,
+            boundaries=test_boundaries,
+            workload_type=single_workload_type(eval_workload_map),
+            head_scores_by_name=_factorized_head_probability_sources_from_logits(
+                frozen_primary_head_logits.get("MLQDS")
+            ),
+            retained_mask=frozen_primary_masks.get("MLQDS"),
+        )
+        try:
+            target_segment_oracle_alignment_audit = _target_segment_oracle_alignment_audit(
+                points=test_points,
+                boundaries=test_boundaries,
+                typed_queries=eval_workload.typed_queries,
+                eval_labels=eval_labels,
+                workload_type=single_workload_type(eval_workload_map),
+                retained_mask=frozen_primary_masks.get("MLQDS"),
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic should not break final eval.
+            target_segment_oracle_alignment_audit = {
+                "available": False,
+                "reason": "target_alignment_failed",
+                "diagnostic_only": True,
+                "error": str(exc),
+            }
     with _phase("evaluate-matched"):
         for method in methods:
             with _phase(f"  eval {method.name}"):
@@ -2135,9 +4276,20 @@ def run_experiment_pipeline(
                 )
 
     causality_ablation_evaluations: dict[str, MethodEvaluation] = {}
+    causality_ablation_mask_diagnostics: dict[str, dict[str, Any]] = {}
     if causality_ablation_methods:
+        primary_ablation_mask = frozen_primary_masks.get("MLQDS")
         with _phase("learning-causality-ablations"):
             for method in causality_ablation_methods:
+                causality_ablation_mask_diagnostics[method.name] = _retained_mask_comparison(
+                    primary_mask=primary_ablation_mask,
+                    ablation_mask=method.retained_mask,
+                    expected_shape=(
+                        primary_ablation_mask.shape
+                        if isinstance(primary_ablation_mask, torch.Tensor)
+                        else method.retained_mask.shape
+                    ),
+                )
                 with _phase(f"  ablation {method.name}"):
                     causality_ablation_evaluations[method.name] = evaluate_method(
                         method=method,
@@ -2389,6 +4541,40 @@ def run_experiment_pipeline(
         causality_ablation_evaluations,
         "MLQDS_without_trajectory_fairness_preallocation",
     )
+    no_geometry_tie_breaker_delta = _query_useful_delta(
+        primary_eval,
+        causality_ablation_evaluations,
+        "MLQDS_without_geometry_tie_breaker",
+    )
+    causality_ablation_component_deltas = _query_useful_component_delta_summary(
+        primary=primary_eval,
+        ablations=causality_ablation_evaluations,
+    )
+    causality_ablation_tradeoff_diagnostics = _causality_ablation_tradeoff_summary(
+        component_deltas=causality_ablation_component_deltas,
+        mask_diagnostics=causality_ablation_mask_diagnostics,
+    )
+    for name, tradeoff_diagnostics in causality_ablation_tradeoff_diagnostics.items():
+        if name in head_ablation_sensitivity_diagnostics:
+            head_ablation_sensitivity_diagnostics[name]["query_useful_component_tradeoff"] = tradeoff_diagnostics
+    for prior_channel_name, channel_diagnostics in prior_channel_ablation_diagnostics.items():
+        if not isinstance(channel_diagnostics, dict) or not bool(channel_diagnostics.get("available", False)):
+            continue
+        method_name = str(channel_diagnostics.get("method_name", ""))
+        channel_eval = causality_ablation_evaluations.get(method_name)
+        if channel_eval is not None:
+            channel_diagnostics["query_useful_v1_score"] = float(channel_eval.query_useful_v1_score)
+            channel_diagnostics["query_useful_v1_delta"] = _query_useful_delta(
+                primary_eval,
+                causality_ablation_evaluations,
+                method_name,
+            )
+        if method_name in causality_ablation_mask_diagnostics:
+            channel_diagnostics["retained_mask"] = causality_ablation_mask_diagnostics[method_name]
+        if method_name in causality_ablation_component_deltas:
+            channel_diagnostics["query_useful_component_deltas"] = causality_ablation_component_deltas[method_name]
+        if method_name in causality_ablation_tradeoff_diagnostics:
+            channel_diagnostics["query_useful_component_tradeoff"] = causality_ablation_tradeoff_diagnostics[method_name]
     required_causality_ablation_names = (
         "MLQDS_shuffled_scores",
         "MLQDS_untrained_model",
@@ -2449,21 +4635,42 @@ def run_experiment_pipeline(
         "no_behavior_head_ablation_delta": no_behavior_head_delta,
         "no_segment_budget_head_ablation_delta": no_segment_budget_head_delta,
         "no_trajectory_fairness_preallocation_ablation_delta": no_fairness_preallocation_delta,
+        "no_geometry_tie_breaker_ablation_delta": no_geometry_tie_breaker_delta,
         "segment_budget_head_ablation_mode": segment_budget_head_ablation_mode,
         "learned_segment_selector_config": {
             "geometry_gain_weight": float(config.model.learned_segment_geometry_gain_weight),
             "segment_score_blend_weight": float(config.model.learned_segment_score_blend_weight),
             "fairness_preallocation_enabled": bool(config.model.learned_segment_fairness_preallocation),
+            "length_repair_fraction": float(config.model.learned_segment_length_repair_fraction),
+            "length_support_blend_weight": float(config.model.learned_segment_length_support_blend_weight),
         },
         "prior_field_only_score_ablation_delta": prior_only_delta,
         "without_query_prior_features_delta": no_query_prior_delta,
         "learning_causality_delta_gate": delta_gate_config,
         "prior_sensitivity_diagnostics": prior_sensitivity_diagnostics,
+        "prior_channel_ablation_diagnostics": prior_channel_ablation_diagnostics,
+        "head_ablation_sensitivity_diagnostics": head_ablation_sensitivity_diagnostics,
+        "selection_causality_diagnostics": selection_causality_diagnostics,
+        "segment_oracle_allocation_audit": segment_oracle_allocation_audit,
+        "target_segment_oracle_alignment_audit": target_segment_oracle_alignment_audit,
+        "score_protected_length_feasibility": (
+            primary_selector_trace.get("score_protected_length_feasibility")
+            if isinstance(primary_selector_trace, dict)
+            else None
+        ),
+        "score_protected_length_frontier": (
+            primary_selector_trace.get("score_protected_length_frontier")
+            if isinstance(primary_selector_trace, dict)
+            else None
+        ),
         "prior_sample_gate_pass": not prior_sample_failures,
         "prior_sample_gate_failures": prior_sample_failures,
         "causality_ablation_scores": {
             name: metrics.query_useful_v1_score for name, metrics in causality_ablation_evaluations.items()
         },
+        "causality_ablation_component_deltas": causality_ablation_component_deltas,
+        "causality_ablation_mask_diagnostics": causality_ablation_mask_diagnostics,
+        "causality_ablation_tradeoff_diagnostics": causality_ablation_tradeoff_diagnostics,
         "causality_ablation_freeze_failures": causal_ablation_freeze_failures,
         "causality_ablation_missing": missing_causality_ablations,
         "learning_causality_gate_pass": learning_causality_gate_pass,
@@ -2499,7 +4706,19 @@ def run_experiment_pipeline(
             blocking_gates.append("learning_causality_ablations")
         if not global_sanity_gate_pass:
             blocking_gates.append("global_sanity_gates")
+        single_cell_blocking_gates = list(blocking_gates)
         blocking_gates.append("full_coverage_compression_grid")
+        if single_cell_blocking_gates:
+            final_claim_reason = (
+                "Strict single-cell evidence is blocked by required gates before the final grid: "
+                + ", ".join(single_cell_blocking_gates)
+                + "."
+            )
+        else:
+            final_claim_reason = (
+                "Strict single-cell gates passed; final success still requires the benchmark-level "
+                "full coverage/compression grid."
+            )
         final_claim_summary = {
             "primary_metric": "QueryUsefulV1",
             "status": "candidate_blocked_by_required_gates" if blocking_gates else "candidate_ready_for_final_claim",
@@ -2520,10 +4739,7 @@ def run_experiment_pipeline(
                 if douglas_peucker_eval is not None
                 else None
             ),
-            "reason": (
-                "Single runs remain blocked until the benchmark-level full coverage/compression "
-                "grid validates the numeric success bars."
-            ),
+            "reason": final_claim_reason,
         }
     else:
         final_claim_summary = {
@@ -2578,6 +4794,8 @@ def run_experiment_pipeline(
         "selector_trace_diagnostics": {
             "eval_primary": primary_selector_trace if primary_selector_trace is not None else {"available": False}
         },
+        "segment_oracle_allocation_audit": segment_oracle_allocation_audit,
+        "target_segment_oracle_alignment_audit": target_segment_oracle_alignment_audit,
         "matched": {name: _evaluation_metrics_payload(m) for name, m in matched.items()},
         "learning_causality_ablations": {
             name: _evaluation_metrics_payload(metrics)
@@ -2692,6 +4910,13 @@ def run_experiment_pipeline(
                     diversity_bonus=config.model.mlqds_diversity_bonus,
                     hybrid_mode=config.model.mlqds_hybrid_mode,
                     selector_type=config.model.selector_type,
+                    learned_segment_geometry_gain_weight=config.model.learned_segment_geometry_gain_weight,
+                    learned_segment_score_blend_weight=config.model.learned_segment_score_blend_weight,
+                    learned_segment_fairness_preallocation=config.model.learned_segment_fairness_preallocation,
+                    learned_segment_length_repair_fraction=config.model.learned_segment_length_repair_fraction,
+                    learned_segment_length_support_blend_weight=(
+                        config.model.learned_segment_length_support_blend_weight
+                    ),
                     stratified_center_weight=config.model.mlqds_stratified_center_weight,
                     min_learned_swaps=config.model.mlqds_min_learned_swaps,
                     trajectory_mmsis=test_mmsis,

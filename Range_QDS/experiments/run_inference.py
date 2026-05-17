@@ -75,7 +75,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--query_coverage",
         type=float,
         default=None,
-        help="Bias generated queries toward this point-coverage target while keeping --n_queries fixed. Accepts 0.30 or 30 for 30%%.",
+        help=(
+            "Bias generated queries toward this point-coverage target. Final calibrated profiles "
+            "treat --n_queries as a minimum floor and may expand up to --max_queries. "
+            "Accepts 0.30 or 30 for 30%%."
+        ),
     )
     p.add_argument(
         "--max_queries",
@@ -396,6 +400,21 @@ def main() -> None:
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.0)),
             hybrid_mode=str(getattr(saved_cfg.model, "mlqds_hybrid_mode", "fill")),
             selector_type=str(getattr(saved_cfg.model, "selector_type", "temporal_hybrid")),
+            learned_segment_geometry_gain_weight=float(
+                getattr(saved_cfg.model, "learned_segment_geometry_gain_weight", 0.12)
+            ),
+            learned_segment_score_blend_weight=float(
+                getattr(saved_cfg.model, "learned_segment_score_blend_weight", 0.05)
+            ),
+            learned_segment_fairness_preallocation=bool(
+                getattr(saved_cfg.model, "learned_segment_fairness_preallocation", True)
+            ),
+            learned_segment_length_repair_fraction=float(
+                getattr(saved_cfg.model, "learned_segment_length_repair_fraction", 0.0)
+            ),
+            learned_segment_length_support_blend_weight=float(
+                getattr(saved_cfg.model, "learned_segment_length_support_blend_weight", 0.0)
+            ),
             stratified_center_weight=float(getattr(saved_cfg.model, "mlqds_stratified_center_weight", 0.0)),
             min_learned_swaps=int(getattr(saved_cfg.model, "mlqds_min_learned_swaps", 0)),
             range_geometry_blend=range_geometry_blend,

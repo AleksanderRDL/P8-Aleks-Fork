@@ -59,3 +59,33 @@ def test_source_stratified_validation_requires_source_ids() -> None:
             eval_trajectories=[_trajectory(100.0)],
         )
 
+
+def test_single_dataset_split_respects_configured_fractions() -> None:
+    cfg = build_experiment_config(train_fraction=0.34, val_fraction=0.33)
+    trajectories = [_trajectory(float(value)) for value in range(12)]
+
+    split = prepare_experiment_split(
+        config=cfg,
+        seeds=_seeds(),
+        trajectories=trajectories,
+        needs_validation_score=True,
+    )
+
+    assert len(split.train_traj) == 4
+    assert len(split.selection_traj or []) == 3
+    assert len(split.test_traj) == 5
+    assert split.split_diagnostics["train_trajectory_count"] == 4
+    assert split.split_diagnostics["selection_trajectory_count"] == 3
+    assert split.split_diagnostics["eval_trajectory_count"] == 5
+
+
+def test_single_dataset_split_rejects_fractions_without_eval_holdout() -> None:
+    cfg = build_experiment_config(train_fraction=0.80, val_fraction=0.20)
+
+    with pytest.raises(ValueError, match="less than 1.0"):
+        prepare_experiment_split(
+            config=cfg,
+            seeds=_seeds(),
+            trajectories=[_trajectory(float(value)) for value in range(12)],
+            needs_validation_score=True,
+        )

@@ -137,6 +137,9 @@ class ModelConfig:
     loss_objective: str = "budget_topk"
     budget_loss_ratios: list[float] = field(default_factory=lambda: list(DEFAULT_BUDGET_LOSS_RATIOS))
     budget_loss_temperature: float = DEFAULT_BUDGET_LOSS_TEMPERATURE
+    query_useful_aux_loss_weight: float = 0.50
+    query_useful_segment_budget_head_weight: float = 0.10
+    query_useful_segment_level_loss_weight: float = 0.25
     temporal_distribution_loss_weight: float = 0.0
     gradient_clip_norm: float = 1.0
     l2_score_weight: float = 1e-4
@@ -165,6 +168,8 @@ class ModelConfig:
     learned_segment_geometry_gain_weight: float = 0.12
     learned_segment_score_blend_weight: float = 0.05
     learned_segment_fairness_preallocation: bool = True
+    learned_segment_length_repair_fraction: float = 0.0
+    learned_segment_length_support_blend_weight: float = 0.0
     mlqds_stratified_center_weight: float = 0.0
     mlqds_min_learned_swaps: int = 0
     mlqds_score_mode: str = "rank"
@@ -193,6 +198,8 @@ class ModelConfig:
     range_teacher_distillation_mode: str = "none"
     range_teacher_epochs: int = 4
     range_audit_compression_ratios: list[float] = field(default_factory=list)
+    query_prior_grid_bins: int = 64
+    query_prior_smoothing_passes: int = 2
     float32_matmul_precision: str = "highest"
     allow_tf32: bool = False
     amp_mode: str = "off"
@@ -279,6 +286,8 @@ def build_experiment_config(
     validation_max_segments: int | None = None,
     eval_max_segments: int | None = None,
     max_trajectories: int | None = None,
+    train_fraction: float = 0.70,
+    val_fraction: float = 0.15,
     n_queries: int = 128,
     query_coverage: float | None = None,
     max_queries: int | None = None,
@@ -315,6 +324,9 @@ def build_experiment_config(
     loss_objective: str = "budget_topk",
     budget_loss_ratios: list[float] | None = None,
     budget_loss_temperature: float = DEFAULT_BUDGET_LOSS_TEMPERATURE,
+    query_useful_aux_loss_weight: float = 0.50,
+    query_useful_segment_budget_head_weight: float = 0.10,
+    query_useful_segment_level_loss_weight: float = 0.25,
     temporal_distribution_loss_weight: float = 0.0,
     gradient_clip_norm: float = 1.0,
     compression_ratio: float = 0.2,
@@ -362,6 +374,8 @@ def build_experiment_config(
     learned_segment_geometry_gain_weight: float = 0.12,
     learned_segment_score_blend_weight: float = 0.05,
     learned_segment_fairness_preallocation: bool = True,
+    learned_segment_length_repair_fraction: float = 0.0,
+    learned_segment_length_support_blend_weight: float = 0.0,
     mlqds_stratified_center_weight: float = 0.0,
     mlqds_min_learned_swaps: int = 0,
     mlqds_score_mode: str = "rank",
@@ -390,6 +404,8 @@ def build_experiment_config(
     range_teacher_distillation_mode: str = "none",
     range_teacher_epochs: int = 4,
     range_audit_compression_ratios: list[float] | None = None,
+    query_prior_grid_bins: int = 64,
+    query_prior_smoothing_passes: int = 2,
     final_metrics_mode: str = "diagnostic",
     float32_matmul_precision: str = "highest",
     allow_tf32: bool = False,
@@ -410,6 +426,8 @@ def build_experiment_config(
             validation_max_segments=validation_max_segments,
             eval_max_segments=eval_max_segments,
             max_trajectories=max_trajectories,
+            train_fraction=float(train_fraction),
+            val_fraction=float(val_fraction),
             csv_path=csv_path,
             train_csv_path=train_csv_path,
             validation_csv_path=validation_csv_path,
@@ -460,6 +478,9 @@ def build_experiment_config(
             loss_objective=loss_objective,
             budget_loss_ratios=list(budget_loss_ratios or DEFAULT_BUDGET_LOSS_RATIOS),
             budget_loss_temperature=budget_loss_temperature,
+            query_useful_aux_loss_weight=query_useful_aux_loss_weight,
+            query_useful_segment_budget_head_weight=query_useful_segment_budget_head_weight,
+            query_useful_segment_level_loss_weight=query_useful_segment_level_loss_weight,
             temporal_distribution_loss_weight=temporal_distribution_loss_weight,
             gradient_clip_norm=gradient_clip_norm,
             compression_ratio=compression_ratio,
@@ -497,6 +518,8 @@ def build_experiment_config(
             learned_segment_geometry_gain_weight=learned_segment_geometry_gain_weight,
             learned_segment_score_blend_weight=learned_segment_score_blend_weight,
             learned_segment_fairness_preallocation=learned_segment_fairness_preallocation,
+            learned_segment_length_repair_fraction=learned_segment_length_repair_fraction,
+            learned_segment_length_support_blend_weight=learned_segment_length_support_blend_weight,
             mlqds_stratified_center_weight=mlqds_stratified_center_weight,
             mlqds_min_learned_swaps=mlqds_min_learned_swaps,
             mlqds_score_mode=mlqds_score_mode,
@@ -525,6 +548,8 @@ def build_experiment_config(
             range_teacher_distillation_mode=range_teacher_distillation_mode,
             range_teacher_epochs=range_teacher_epochs,
             range_audit_compression_ratios=list(range_audit_compression_ratios or []),
+            query_prior_grid_bins=query_prior_grid_bins,
+            query_prior_smoothing_passes=query_prior_smoothing_passes,
             float32_matmul_precision=float32_matmul_precision,
             allow_tf32=allow_tf32,
             amp_mode=amp_mode,
