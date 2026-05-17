@@ -16,17 +16,15 @@ AIS data tooling and query-driven trajectory simplification research.
 Root cleaning pipeline:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-python main.py
+uv python install 3.14
+uv sync --group dev
+uv run --group dev -- python main.py
 ```
 
 QDS work:
 
 ```bash
-cd Range_QDS
-PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
+uv sync --group dev
 make check-env
 make test
 ```

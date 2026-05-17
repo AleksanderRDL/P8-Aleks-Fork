@@ -13,25 +13,28 @@ Options:
   --cache-dir PATH     Cache directory. Default: artifacts/cache/range_workload_aware_diagnostic.
   --artifact-root PATH Benchmark family root. Default:
                        artifacts/benchmarks/range_workload_aware_diagnostic.
-  --python PATH        Python executable. Default: repo-root .venv absolute path.
+  --uv CMD            uv executable. Default: uv.
+  --uv-group NAME     uv dependency group. Default: dev.
   --min-free-gb N      Required free space on artifact filesystem. Default: 20.
   --min-ram-gb N       Warn below this available RAM threshold. Default: 24.
   --min-swap-gb N      Warn below this total swap threshold. Default: 8.
   -h, --help           Show this help.
 
 Environment variables with the same names used by the benchmark tmux launchers
-are honored: SESSION, CSV_PATH, CACHE_DIR, ARTIFACT_ROOT, PYTHON. Thresholds can
-also be set with MIN_FREE_GB, MIN_AVAILABLE_RAM_GB, and MIN_SWAP_GB.
+are honored: SESSION, CSV_PATH, CACHE_DIR, ARTIFACT_ROOT, UV, UV_GROUP.
+Thresholds can also be set with MIN_FREE_GB, MIN_AVAILABLE_RAM_GB, and
+MIN_SWAP_GB.
 EOF
 }
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$QDS_ROOT/.." && pwd)"
 SESSION="${SESSION:-qds-range-benchmark}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_aware_diagnostic}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts/benchmarks/range_workload_aware_diagnostic}"
-DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
-PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
+UV="${UV:-uv}"
+UV_GROUP="${UV_GROUP:-dev}"
 MIN_FREE_GB="${MIN_FREE_GB:-20}"
 MIN_AVAILABLE_RAM_GB="${MIN_AVAILABLE_RAM_GB:-24}"
 MIN_SWAP_GB="${MIN_SWAP_GB:-8}"
@@ -54,8 +57,12 @@ while [[ $# -gt 0 ]]; do
       ARTIFACT_ROOT="$2"
       shift 2
       ;;
-    --python)
-      PYTHON="$2"
+    --uv)
+      UV="$2"
+      shift 2
+      ;;
+    --uv-group)
+      UV_GROUP="$2"
       shift 2
       ;;
     --min-free-gb)
@@ -127,13 +134,17 @@ else
   fail "tmux is not installed or not on PATH"
 fi
 
-if [[ -x "$PYTHON" ]]; then
-  ok "Python executable is available: $PYTHON"
-  python_summary="$("$PYTHON" - <<'PY' 2>/dev/null
+if command -v "$UV" >/dev/null 2>&1; then
+  ok "uv is available: $("$UV" --version)"
+  python_summary="$(cd "$REPO_ROOT" && "$UV" run --group "$UV_GROUP" -- python - <<'PY' 2>/dev/null
 import sys
 try:
     import torch
-    print(f"python={sys.version.split()[0]} torch={torch.__version__} cuda_available={torch.cuda.is_available()}")
+    print(
+        f"python={sys.version.split()[0]} "
+        f"torch={torch.__version__} "
+        f"cuda_available={torch.cuda.is_available()}"
+    )
 except Exception as exc:
     print(f"python={sys.version.split()[0]} torch_import_error={type(exc).__name__}: {exc}")
     raise
@@ -142,10 +153,10 @@ PY
   if [[ "$?" -eq 0 ]]; then
     ok "$python_summary"
   else
-    fail "Python could not import torch cleanly"
+    fail "uv run --group $UV_GROUP -- python could not import torch cleanly"
   fi
 else
-  fail "Python executable is not executable: $PYTHON"
+  fail "uv is not installed or not on PATH: $UV"
 fi
 
 csv_abs="$(abs_path "$CSV_PATH")"

@@ -14,7 +14,8 @@ Launcher options:
   -h, --help           Show this help.
 
 Environment overrides:
-  PYTHON                       Python executable. Default: repo-root .venv absolute path.
+  UV                           uv executable. Default: uv.
+  UV_GROUP                     uv dependency group. Default: dev.
   PROFILE                      benchmark_runner profile. Default: range_workload_aware_diagnostic.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
   CACHE_DIR                    Cache directory.
@@ -49,8 +50,8 @@ display_path() {
 }
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
-PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
+UV="${UV:-uv}"
+UV_GROUP="${UV_GROUP:-dev}"
 PROFILE="${PROFILE:-range_workload_aware_diagnostic}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
 CACHE_DIR="${CACHE_DIR:-artifacts/cache/range_workload_aware_diagnostic}"
@@ -91,9 +92,9 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 127
 fi
 
-if [[ ! -x "$PYTHON" ]]; then
-  echo "Python executable is not executable: $PYTHON" >&2
-  exit 2
+if ! command -v "$UV" >/dev/null 2>&1; then
+  echo "uv executable was not found on PATH: $UV" >&2
+  exit 127
 fi
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -117,7 +118,11 @@ mkdir -p "$(display_path "$logs_dir")"
 rm -f "$(display_path "$monitor_log")" "$(display_path "$status_file")" "$(display_path "$done_file")"
 
 benchmark_cmd=(
-  "$PYTHON"
+  "$UV"
+  run
+  --group "$UV_GROUP"
+  --
+  python
   -m experiments.benchmark_runner
   --profile "$PROFILE"
   --workloads range
@@ -143,6 +148,8 @@ if [[ "${#extra_args[@]}" -gt 0 ]]; then
   benchmark_cmd+=("${extra_args[@]}")
 fi
 
+uv_python_cmd=("$UV" run --group "$UV_GROUP" -- python)
+
 monitor_cmd=(
   "$QDS_ROOT/scripts/monitor_system.sh"
   --interval "$MONITOR_INTERVAL"
@@ -165,7 +172,7 @@ trap 'touch $(q "$done_file")' EXIT
 $(join_shell "${benchmark_cmd[@]}") 2>&1 | tee $(q "$console_log")
 status=\${PIPESTATUS[0]}
 if [ "\$status" -ne 0 ]; then
-  $(q "$PYTHON") scripts/mark_benchmark_failed.py \
+  $(join_shell "${uv_python_cmd[@]}") scripts/mark_benchmark_failed.py \
     --status-file $(q "$RESULTS_DIR/run_status.json") \
     --exit-status "\$status" \
     --message "tmux launcher observed non-zero benchmark exit status \$status"

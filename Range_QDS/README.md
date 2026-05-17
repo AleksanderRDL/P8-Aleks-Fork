@@ -14,13 +14,13 @@ checkpoint state in
 
 ## Setup
 
-Run commands from `Range_QDS/`. Use a canonical venv path; Python 3.14 warns if the
-interpreter path contains `..`.
+Run commands from `Range_QDS/`. The project uses `uv` from the repository root
+with the `dev` dependency group.
 
 ```bash
 cd Range_QDS
-PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
-(cd .. && "$PYTHON" -m pip install -e ".[dev]")
+make sync
+make lock-check
 make check-env
 make test
 ```
@@ -30,6 +30,7 @@ make test
 ```bash
 make typecheck
 make lint
+make lint-yaml
 make smoke
 make smoke-csv CLEANED_CSV=../AISDATA/cleaned/<file-or-directory>
 make benchmark-preflight
@@ -42,14 +43,15 @@ make clean-smoke-artifacts CONFIRM=1
 Direct CLI example:
 
 ```bash
-"$PYTHON" -m experiments.run_ais_experiment \
-  --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
-  --cache_dir artifacts/cache/manual_csv \
+cd ..
+uv run --group dev -- python -m experiments.run_ais_experiment \
+  --csv_path AISDATA/cleaned/<cleaned-ais-file.csv> \
+  --cache_dir Range_QDS/artifacts/cache/manual_csv \
   --workload range \
   --n_queries 128 \
   --epochs 6 \
   --compression_ratio 0.10 \
-  --results_dir artifacts/results/manual_range
+  --results_dir Range_QDS/artifacts/results/manual_range
 ```
 
 ## Where To Look
@@ -69,7 +71,7 @@ Direct CLI example:
 ## Requirements
 
 Dependency source of truth lives in root [`../pyproject.toml`](../pyproject.toml).
-Install with `pip install -e ".[dev]"` from the repo root.
+Use `uv sync --group dev` from the repo root.
 
 ## Output Policy
 

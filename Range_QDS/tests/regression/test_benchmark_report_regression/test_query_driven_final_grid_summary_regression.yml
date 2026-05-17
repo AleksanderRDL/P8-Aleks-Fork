@@ -1,0 +1,16 @@
+failed_checks: []
+final_success_allowed: true
+numeric_success_bars_pass: true
+observed_cell_count: 28
+required_cell_count: 28
+required_single_run_gate_names:
+- workload_stability_gate_pass
+- support_overlap_gate_pass
+- predictability_gate_pass
+- prior_predictive_alignment_gate_pass
+- target_diffusion_gate_pass
+- workload_signature_gate_pass
+- learning_causality_gate_pass
+- prior_sample_gate_pass
+- global_sanity_gate_pass
+status: final_grid_pass

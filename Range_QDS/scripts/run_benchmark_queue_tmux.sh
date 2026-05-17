@@ -15,7 +15,8 @@ Launcher options:
   -h, --help           Show this help.
 
 Environment overrides:
-  PYTHON                       Python executable. Default: repo-root .venv absolute path.
+  UV                           uv executable. Default: uv.
+  UV_GROUP                     uv dependency group. Default: dev.
   PROFILE                      benchmark_runner profile. Default: range_workload_aware_diagnostic.
   WORKLOADS                    benchmark_runner --workloads value. Default: range.
   CSV_PATH                     Cleaned CSV file/directory. Default: ../AISDATA/cleaned.
@@ -69,8 +70,8 @@ trim() {
 }
 
 QDS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_PYTHON="$(cd "$QDS_ROOT/.." && pwd)/.venv/bin/python"
-PYTHON="${PYTHON:-$DEFAULT_PYTHON}"
+UV="${UV:-uv}"
+UV_GROUP="${UV_GROUP:-dev}"
 PROFILE="${PROFILE:-range_workload_aware_diagnostic}"
 WORKLOADS="${WORKLOADS:-range}"
 CSV_PATH="${CSV_PATH:-../AISDATA/cleaned}"
@@ -117,9 +118,9 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 127
 fi
 
-if [[ ! -x "$PYTHON" ]]; then
-  echo "Python executable is not executable: $PYTHON" >&2
-  exit 2
+if ! command -v "$UV" >/dev/null 2>&1; then
+  echo "uv executable was not found on PATH: $UV" >&2
+  exit 127
 fi
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -158,7 +159,7 @@ if ! awk -F '\t' 'NF && $1 !~ /^#/ { found=1 } END { exit(found ? 0 : 1) }' "$pl
   exit 2
 fi
 
-"$PYTHON" "$QDS_ROOT/scripts/validate_benchmark_queue_plan.py" "$plan_abs"
+"$UV" run --group "$UV_GROUP" -- python "$QDS_ROOT/scripts/validate_benchmark_queue_plan.py" "$plan_abs"
 
 console_log="$QUEUE_DIR/logs/console.log"
 monitor_log="$QUEUE_DIR/logs/system_monitor.log"
@@ -170,7 +171,7 @@ runner_file="$queue_abs/queue_runner.sh"
 rm -f "$(display_path "$console_log")" "$(display_path "$monitor_log")" "$(display_path "$status_file")" \
   "$(display_path "$summary_file")" "$(display_path "$done_file")"
 
-"$PYTHON" - "$(display_path "$manifest_file")" \
+"$UV" run --group "$UV_GROUP" -- python - "$(display_path "$manifest_file")" \
   "$QUEUE_ID" "$SESSION" "$PROFILE" "$WORKLOADS" "$ARTIFACT_ROOT" "$QUEUE_DIR" \
   "$QUEUE_DIR/queue_plan.tsv" "$CONTINUE_ON_FAILURE" <<'PY'
 import json
@@ -196,7 +197,8 @@ PY
   printf '#!/usr/bin/env bash\n'
   printf 'set -uo pipefail\n'
   printf 'QDS_ROOT=%q\n' "$QDS_ROOT"
-  printf 'PYTHON=%q\n' "$PYTHON"
+  printf 'UV=%q\n' "$UV"
+  printf 'UV_GROUP=%q\n' "$UV_GROUP"
   printf 'PROFILE=%q\n' "$PROFILE"
   printf 'WORKLOADS=%q\n' "$WORKLOADS"
   printf 'CSV_PATH=%q\n' "$CSV_PATH"
@@ -223,7 +225,7 @@ rm -f "$DONE_FILE"
 trap 'touch "$DONE_FILE"' EXIT
 
 json_event() {
-  "$PYTHON" - "$STATUS_FILE" "$@" <<'PY'
+  "$UV" run --group "$UV_GROUP" -- python - "$STATUS_FILE" "$@" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -253,7 +255,11 @@ run_one() {
   echo "[queue] starting run_id=$run_id seed=$seed child_extra_args=$child_extra_args at $started" | tee -a "$CONSOLE_LOG"
 
   local cmd=(
-    "$PYTHON"
+    "$UV"
+    run
+    --group "$UV_GROUP"
+    --
+    python
     -m experiments.benchmark_runner
     --profile "$PROFILE"
     --workloads "$WORKLOADS"
@@ -288,7 +294,7 @@ run_one() {
   status=${PIPESTATUS[0]}
   finished="$(date -Is)"
   if [[ "$status" -ne 0 ]]; then
-    "$PYTHON" scripts/mark_benchmark_failed.py \
+    "$UV" run --group "$UV_GROUP" -- python scripts/mark_benchmark_failed.py \
       --status-file "$results_dir/run_status.json" \
       --exit-status "$status" \
       --message "queue launcher observed non-zero benchmark exit status $status"
@@ -321,7 +327,7 @@ done < "$PLAN_FILE"
 
 finished_at="$(date -Is)"
 json_event event=queue_finished exit_status="$overall" finished_at="$finished_at"
-"$PYTHON" - "$SUMMARY_FILE" "$started_at" "$finished_at" "$overall" "$run_count" "$failure_count" <<'PY'
+"$UV" run --group "$UV_GROUP" -- python - "$SUMMARY_FILE" "$started_at" "$finished_at" "$overall" "$run_count" "$failure_count" <<'PY'
 import json
 import sys
 from pathlib import Path

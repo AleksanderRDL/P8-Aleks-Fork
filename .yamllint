@@ -1,0 +1,22 @@
+---
+extends: default
+
+ignore: |
+  .git/
+  .mypy_cache/
+  .pytest_cache/
+  .ruff_cache/
+  .venv/
+  AISDATA/
+  Range_QDS/artifacts/
+  Range_QDS/tests/regression/
+  artifacts/
+  build/
+  dist/
+  spark_temp/
+
+rules:
+  document-start: disable
+  line-length:
+    max: 120
+    level: warning

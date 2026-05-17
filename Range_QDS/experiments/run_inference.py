@@ -4,17 +4,15 @@ Loads a .pt checkpoint produced by run_ais_experiment.py (save_checkpoint) and
 evaluates MLQDS against baselines on the supplied CSV. No gradient updates are
 performed, so this is safe for a local CPU/GPU machine.
 
-Example, from `QDS`:
+Example, from repository root:
 
-    PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
-
-    "$PYTHON" -m experiments.run_inference \
-        --checkpoint artifacts/benchmarks/range_workload_aware_diagnostic/runs/<run_id>/range_workload_aware_diagnostic/benchmark_model.pt \
-        --csv_path ../AISDATA/cleaned/<cleaned-ais-file.csv> \
+    uv run --group dev -- python -m experiments.run_inference \
+        --checkpoint Range_QDS/artifacts/benchmarks/range_workload_aware_diagnostic/runs/<run_id>/range_workload_aware_diagnostic/benchmark_model.pt \
+        --csv_path AISDATA/cleaned/<cleaned-ais-file.csv> \
         --n_queries 512 \
-        --results_dir artifacts/benchmarks/inference_range_workload_aware_diagnostic
+        --results_dir Range_QDS/artifacts/benchmarks/inference_range_workload_aware_diagnostic
 
-Run this from ``QDS`` so the ``src`` package resolves.
+Run this from the repository root so the project package resolves through uv.
 """
 
 from __future__ import annotations
@@ -28,8 +26,8 @@ from typing import Any
 import torch
 
 from data.ais_loader import load_ais_csv
-from data.trajectory_dataset import TrajectoryDataset
 from data.trajectory_cache import load_or_build_ais_cache
+from data.trajectory_dataset import TrajectoryDataset
 from evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
@@ -37,14 +35,17 @@ from evaluation.baselines import (
 )
 from evaluation.evaluate_methods import evaluate_method
 from evaluation.query_cache import EvaluationQueryCache
-from evaluation.tables import print_geometric_distortion_table, print_method_comparison_table, print_range_usefulness_table
+from evaluation.tables import (
+    print_geometric_distortion_table,
+    print_method_comparison_table,
+    print_range_usefulness_table,
+)
 from experiments.cli_utils import normalized_gap_arg
-from experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
-from queries.query_generator import RANGE_ANCHOR_MODES, RANGE_TIME_DOMAIN_MODES, generate_typed_query_workload
-from simplification.mlqds_scoring import workload_type_head
-from training.importance_labels import compute_typed_importance_labels
-from training.training_outputs import TrainingOutputs
-from training.checkpoints import load_checkpoint
+from experiments.geojson_writers import (
+    report_trajectory_length_loss,
+    write_queries_geojson,
+    write_simplified_csv,
+)
 from experiments.torch_runtime import (
     AMP_MODE_CHOICES,
     FLOAT32_MATMUL_PRECISION_CHOICES,
@@ -53,6 +54,15 @@ from experiments.torch_runtime import (
     normalize_amp_mode,
     torch_runtime_snapshot,
 )
+from queries.query_generator import (
+    RANGE_ANCHOR_MODES,
+    RANGE_TIME_DOMAIN_MODES,
+    generate_typed_query_workload,
+)
+from simplification.mlqds_scoring import workload_type_head
+from training.checkpoints import load_checkpoint
+from training.importance_labels import compute_typed_importance_labels
+from training.training_outputs import TrainingOutputs
 
 
 def _build_parser() -> argparse.ArgumentParser:

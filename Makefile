@@ -2,21 +2,25 @@ SHELL := /bin/bash
 
 REPO_ROOT := $(abspath .)
 RANGE_QDS_DIR := $(REPO_ROOT)/Range_QDS
-PYTHON ?= $(REPO_ROOT)/.venv/bin/python
-BOOTSTRAP_PYTHON ?= python3
-QDS_PYTHON ?= $(PYTHON)
+UV ?= uv
+UV_GROUP ?= dev
+UV_GROUP_FLAGS ?= --group $(UV_GROUP)
+UV_RUN := cd $(REPO_ROOT) && $(UV) run $(UV_GROUP_FLAGS) --
 CSV ?=
 QUERY_ARGS ?= --help
 
-.PHONY: help setup install pipeline qds-check-env lint test typecheck smoke smoke-csv db-up db-down db-reset db-logs db-smoke db-import db-query
+.PHONY: help setup sync lock-check check-env pipeline qds-check-env lint lint-yaml test typecheck smoke smoke-csv db-up db-down db-reset db-logs db-smoke db-import db-query
 
 help:
 	@echo "Targets:"
-	@echo "  setup            Create .venv and install Python dependencies"
-	@echo "  install          Install the project with dev dependencies into PYTHON"
+	@echo "  setup            Alias for sync"
+	@echo "  sync             Sync the uv environment with dependency group $(UV_GROUP)"
+	@echo "  lock-check       Verify uv.lock is current"
+	@echo "  check-env        Print uv/Python versions and run pip check"
 	@echo "  pipeline         Run AIS cleaning pipeline"
 	@echo "  qds-check-env    Print QDS Python/package versions and run pip check"
 	@echo "  lint             Run QDS Ruff correctness lint"
+	@echo "  lint-yaml        Run yamllint on repository YAML files"
 	@echo "  test             Run the QDS pytest suite"
 	@echo "  typecheck        Run QDS Pyright"
 	@echo "  smoke            Run a tiny QDS synthetic training/evaluation experiment"
@@ -29,33 +33,42 @@ help:
 	@echo "  db-import        Import cleaned AIS CSV (override with CSV=...)"
 	@echo "  db-query         Run range query script (override with QUERY_ARGS=...)"
 
-setup:
-	$(BOOTSTRAP_PYTHON) -m venv .venv
-	$(REPO_ROOT)/.venv/bin/python -m pip install -e ".[dev]"
+setup: sync
 
-install:
-	$(PYTHON) -m pip install -e ".[dev]"
+sync:
+	cd $(REPO_ROOT) && $(UV) sync $(UV_GROUP_FLAGS)
+
+lock-check:
+	cd $(REPO_ROOT) && $(UV) lock --check
+
+check-env:
+	cd $(REPO_ROOT) && $(UV) --version
+	$(UV_RUN) python -V
+	$(UV_RUN) python -m pip check
 
 pipeline:
-	$(PYTHON) main.py
+	$(UV_RUN) python main.py
 
 qds-check-env:
-	$(MAKE) -C $(RANGE_QDS_DIR) check-env PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) check-env UV="$(UV)" UV_GROUP="$(UV_GROUP)"
 
 lint:
-	$(MAKE) -C $(RANGE_QDS_DIR) lint PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) lint UV="$(UV)" UV_GROUP="$(UV_GROUP)"
+
+lint-yaml:
+	$(UV_RUN) yamllint .
 
 test:
-	$(MAKE) -C $(RANGE_QDS_DIR) test PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) test UV="$(UV)" UV_GROUP="$(UV_GROUP)"
 
 typecheck:
-	$(MAKE) -C $(RANGE_QDS_DIR) typecheck PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) typecheck UV="$(UV)" UV_GROUP="$(UV_GROUP)"
 
 smoke:
-	$(MAKE) -C $(RANGE_QDS_DIR) smoke PYTHON="$(QDS_PYTHON)"
+	$(MAKE) -C $(RANGE_QDS_DIR) smoke UV="$(UV)" UV_GROUP="$(UV_GROUP)"
 
 smoke-csv:
-	$(MAKE) -C $(RANGE_QDS_DIR) smoke-csv PYTHON="$(QDS_PYTHON)" CLEANED_CSV="$(CLEANED_CSV)"
+	$(MAKE) -C $(RANGE_QDS_DIR) smoke-csv UV="$(UV)" UV_GROUP="$(UV_GROUP)" CLEANED_CSV="$(CLEANED_CSV)"
 
 db-up:
 	docker compose -f db/compose.yaml up -d
@@ -71,11 +84,11 @@ db-logs:
 	docker compose -f db/compose.yaml logs -f postgis
 
 db-smoke:
-	$(PYTHON) db/smoke_test_db.py
+	$(UV_RUN) python db/smoke_test_db.py
 
 db-import:
 	@if [ -z "$(CSV)" ]; then echo "Set CSV to a cleaned AIS file, for example: make db-import CSV=AISDATA/cleaned/<file-or-directory>"; exit 2; fi
-	$(PYTHON) db/import_ais_csv.py $(CSV)
+	$(UV_RUN) python db/import_ais_csv.py $(CSV)
 
 db-query:
-	$(PYTHON) db/run_range_query.py $(QUERY_ARGS)
+	$(UV_RUN) python db/run_range_query.py $(QUERY_ARGS)

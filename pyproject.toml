@@ -22,13 +22,12 @@ dev = [
     "pyright==1.1.409",
     "pytest==9.0.3",
     "ruff==0.15.13",
-
     # Python bindings for jq. Install the jq CLI separately in WSL if shell jq is required.
     "jq==1.11.0",
-
     "hypothesis[numpy,pandas]==6.152.7",
     "pytest-regressions[dataframe,num]==2.10.0",
     "rich==15.0.0",
+    "yamllint==1.38.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -55,6 +54,8 @@ addopts = [
 xfail_strict = true
 markers = [
     "integration: tests that require external services, databases, or large local artifacts",
+    "property: property-based tests using hypothesis",
+    "regression: stable schema/report snapshot tests",
     "slow: tests that are intentionally slow",
     "spark: tests that require Spark",
 ]
@@ -72,10 +73,13 @@ exclude = [
     "**/build",
     "**/dist",
     "**/spark_temp",
+    "**/node_modules",
+    "**/.*",
 ]
 pythonVersion = "3.14"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = "none"
+reportPrivateImportUsage = "none"
 
 [tool.ruff]
 line-length = 100
@@ -86,11 +90,14 @@ exclude = [
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    "**/__pycache__",
     "AISDATA",
     "artifacts",
     "build",
     "dist",
     "spark_temp",
+    "**/node_modules",
+    "**/.*",
 ]
 
 [tool.ruff.lint]

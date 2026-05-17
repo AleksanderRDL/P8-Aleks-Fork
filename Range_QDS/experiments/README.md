@@ -3,13 +3,12 @@
 Owns CLI parsing, config construction, benchmark profiles, run orchestration,
 and artifact writing.
 
-Commands below assume the current directory is `Range_QDS/`:
+Commands below assume the current directory is the repository root:
 
 ```bash
-PYTHON="$(cd .. && pwd -P)/.venv/bin/python"
-"$PYTHON" -m experiments.run_ais_experiment --help
-"$PYTHON" -m experiments.benchmark_runner --help
-"$PYTHON" -m experiments.run_inference --help
+uv run --group dev -- python -m experiments.run_ais_experiment --help
+uv run --group dev -- python -m experiments.benchmark_runner --help
+uv run --group dev -- python -m experiments.run_inference --help
 ```
 
 ## Files

@@ -1481,8 +1481,8 @@ Use the standard strict diagnostic scale unless runtime makes it impossible. A s
 Recommended command shape:
 
 ```bash
-python -m experiments.run_ais_experiment \
-  --results_dir ../artifacts/results/query_driven_v2_checkpoint01_generator_health_probe_standard_c10_r05 \
+uv run --group dev -- python -m experiments.run_ais_experiment \
+  --results_dir Range_QDS/artifacts/results/query_driven_v2_checkpoint01_generator_health_probe_standard_c10_r05 \
   --n_ships 64 \
   --n_points 256 \
   --synthetic_route_families 4 \

@@ -772,3 +772,57 @@ Key results:
 
 Decision:
 - Continue future checkpoints from the Checkpoint 4.74 candidate and keep extra discoveries in both progress-log updates and final summaries.
+
+## Checkpoint 4.85 — Developer Tooling
+
+Status: partial
+
+Goal:
+- Implement the tooling guide without touching scientific model, selector, or generator behavior.
+- Migrate active commands to `uv --group dev`.
+- Add jq filters, property tests, regression snapshots, Rich summaries, and yamllint.
+
+Changes:
+- Reworked root and `Range_QDS` Makefiles around `uv sync --group dev` and `uv run --group dev -- ...`.
+- Updated active README and experiment command examples away from `.venv/bin/python` and pip install flows.
+- Migrated benchmark preflight/tmux launchers from `PYTHON` executable paths to `UV` and `UV_GROUP`.
+- Added jq artifact filters under `scripts/jq/`.
+- Added `scripts/summarize_run.py` Rich run summary.
+- Added Hypothesis property tests for workload-profile plans, zero-prior fields, and learned-segment selector budget accounting.
+- Added pytest-regressions snapshots for final-grid summary, benchmark row fields, and gate summary shape.
+- Added `yamllint==1.38.0`, `.yamllint`, and `make lint-yaml`.
+- Added pytest markers for `property` and `regression`.
+- Suppressed Pyright `reportPrivateImportUsage` to remove Torch-stub false positives and make the configured typecheck usable.
+
+Tests:
+- `uv sync --group dev`
+- `uv lock --check`
+- `git diff --check`
+- `uv run --group dev -- yamllint .`
+- `uv run --group dev -- pyright Range_QDS/data Range_QDS/evaluation Range_QDS/experiments Range_QDS/models Range_QDS/queries Range_QDS/simplification Range_QDS/training Range_QDS/scripts Range_QDS/tests`
+- `uv run --group dev -- ruff check Range_QDS/scripts/summarize_run.py Range_QDS/tests/property Range_QDS/tests/regression Range_QDS/experiments/run_inference.py`
+- `uv run --group dev -- pytest Range_QDS/tests/property Range_QDS/tests/regression -q`
+- `uv run --group dev -- pytest Range_QDS/tests/test_query_driven_rework.py Range_QDS/tests/test_benchmark_runner.py Range_QDS/tests/property Range_QDS/tests/regression -q`
+- `uv run --group dev -- pytest Range_QDS/tests -q`
+- `bash -n Range_QDS/scripts/benchmark_preflight.sh Range_QDS/scripts/run_range_benchmark_tmux.sh Range_QDS/scripts/run_benchmark_queue_tmux.sh`
+
+Experiment artifact:
+- path: not generated
+- command: no scientific probe was run; this was tooling-only.
+
+Key results:
+- Full pytest passed: `415 passed, 1 warning`.
+- Full Pyright passed after removing Torch-stub private-export noise.
+- yamllint passed.
+- jq filters parse.
+- Full `ruff check Range_QDS` still does not pass: `195` pre-existing lint findings remain outside this tooling patch.
+
+Extra discoveries:
+- Active `experiments/README.md` and `experiments/run_inference.py` still had stale `.venv/bin/python` examples; fixed.
+- Default yamllint indentation does not fit pytest-regressions generated snapshot YAML, so those generated snapshots are excluded from YAML linting.
+- The full Ruff gate is not yet a reliable project-wide save gate until the existing lint debt is either fixed or intentionally scoped.
+
+Decision:
+- Tooling is implemented and usable.
+- Treat the checkpoint as partial because the guide's full Ruff check remains blocked by existing lint debt.
+- Continue scientific iterations only after the user decides whether to commit this tooling checkpoint with the documented Ruff debt or spend a separate cleanup checkpoint on project-wide Ruff.
