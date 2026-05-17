@@ -3,6 +3,41 @@
 This is the short checkpoint log required by `docs/query-driven-rework-guide.md`.
 Detailed stdout and raw metrics are kept in `artifacts/results/`.
 
+## High-Value Summary
+
+The redesign has made real progress, but it is not complete. The project has moved from broad structural uncertainty to a narrower candidate-level blocker. The current best strict synthetic/debug cell beats both final baselines on `QueryUsefulV1`, while workload stability, support overlap, target diffusion, prior predictability, prior-predictive alignment, and workload signature gates pass. The remaining blockers are learning-causality materiality and global sanity, especially length preservation.
+
+Current best single-cell evidence is promising but not final success:
+
+```text
+MLQDS QueryUsefulV1:           0.1669032451715525
+uniform QueryUsefulV1:         0.14223795796380634
+Douglas-Peucker QueryUsefulV1: 0.16362459837911367
+length preservation:           0.7938149625265364
+```
+
+Interpretation:
+- This is the best current candidate because it beats both uniform and Douglas-Peucker in one strict synthetic/debug cell while keeping the workload/prior gates healthy.
+- It is not a final success claim because learning causality still fails and length preservation is below the active `0.80` gate.
+- The full 4x7 grid should remain unrun until the strict single-cell gates pass.
+- The next useful work is not more broad sweeping. It is targeted work on selector/length allocation and material learned causality from the current best candidate.
+
+Major durable discoveries so far:
+- Balanced synthetic split cardinalities were necessary to make workload-signature diagnostics meaningful. The old default `70/15/15` synthetic split created misleading raw hit-count and query-count drift.
+- Prior predictability became healthy after target/predictability fixes. The current blocker is no longer generic prior support or target diffusion.
+- Raw factorized scalar targets plus factorized head base-rate initialization materially improved model calibration and produced the first strict-cell MLQDS win over Douglas-Peucker in this sequence.
+- `route_density_prior` is harmful under the current raw-factorized/head-initialized setup. It should stay available for diagnostics/support overlap, but be excluded from v2 model inputs. Do not generalize this finding to older target/model states.
+- `learned_segment_length_repair_fraction=0.6` is material to the current best candidate. Removing repair improves `QueryUsefulV1` and some causality signs, but invalidates global geometry. Full repair or stronger geometry repair weakens learned control or loses to Douglas-Peucker.
+- Training-fit improvements are not enough. Several changes improved fit diagnostics but worsened retained-mask quality.
+
+Current research question:
+
+```text
+Can the selector/model make train-derived prior, behavior, and score perturbations materially affect frozen retained masks while preserving at least 0.80 length and the current MLQDS win over uniform and Douglas-Peucker?
+```
+
+If a future checkpoint does not answer that question more clearly, it is probably low-value.
+
 ## Current State — 2026-05-17
 
 Status: active, not complete
@@ -27,20 +62,67 @@ Best current strict result:
 - gates failed: learning causality, global sanity
 
 Current blockers:
-- Learning-causality deltas are positive but below material thresholds in the best candidate.
-- Length preservation is just below the guide's active `0.80` gate.
-- Full 4x7 grid remains intentionally unrun.
+- Learning causality still fails. In the best strict artifact, key deltas are correct-sign but below material thresholds: shuffled scores `0.008957581030671818` versus required `0.014799172324647697`; untrained model `0.002338397270806869` versus required `0.005`; shuffled prior fields `0.0028898208710833317` versus required `0.005`; without query-prior features `0.0028898208710833317` versus required `0.005`.
+- Segment-budget-head materiality is already useful in the best strict artifact: `0.010472792329425523`, above the `0.005` material threshold. Do not treat all heads as equally weak.
+- Length preservation is close but still below the guide's active `0.80` gate: `0.7938149625265364`.
+- No-length-repair improves MLQDS QueryUsefulV1 to `0.1759846099523811`, but length collapses to `0.6790996203798462` and learning causality still fails. It is a diagnostic, not a candidate.
+- Full 4x7 grid remains intentionally unrun because strict single-cell gates still fail.
 
 Current decision:
 - Do not run the full grid.
 - Do not increase workload/caps yet; current standard strict cell already has healthy accepted query counts.
 - Do not lower gates for a success claim while learning causality still fails.
+- Do not lower the length gate to `0.75`; that would still leave learning causality failed.
+- Keep `learned_segment_length_repair_fraction=0.6` in all summaries of the current candidate. It is material to the best-candidate trade-off.
 - Next scientific checkpoint should target either selector/length allocation or material causality from the Checkpoint 4.74 candidate.
 
 Current extra discoveries:
 - The best candidate depends materially on `learned_segment_length_repair_fraction=0.6`; summaries must carry this knob because no-repair has stronger score causality but invalid global geometry.
 - The score-protected length frontier in the best/no-repair artifacts only clears the `0.80` length gate while protecting about `10%` of budget for top learned-score points. At the guide's `25%` learned-slot materiality floor, the length upper bound is about `0.7911`, so the current selector/score distribution has a real learned-control-vs-length tension.
 - `max_budget_share_per_ship` in `simplification/learned_segment_budget.py` is not a strict per-ship cap when the fair-share cap is larger; it is effectively `max(share_cap, fair_share_cap)`. Treat the name as misleading when reasoning about selector allocation caps.
+
+Why this candidate is current best:
+- Earlier route-density exclusion failed under the Checkpoint 3.x target/model state, so route density should not be treated as generically bad across all historical runs.
+- Checkpoint 4.72 later isolated `route_density_prior` as the dominant harmful prior channel under the newer raw-factorized/head-initialized setup: zeroing only route density improved QueryUsefulV1 to `0.16718745914649327`, while other prior channels were neutral or slightly helpful.
+- Checkpoint 4.73 made the narrow code change: keep `route_density_prior` in prior fields for support diagnostics, but zero it for v2 model features.
+- Checkpoint 4.74 restored the strict-cell MLQDS win over Douglas-Peucker while keeping the standard workload/prior gates healthy.
+- Checkpoint 4.83 showed the current length-repair path suppresses some score/causality upside, but removing it destroys global geometry and still does not pass learning causality. Therefore `learned_segment_length_repair_fraction=0.6` remains part of the best current candidate.
+- The current problem is not workload health or generic prior harm. The remaining problem is making useful prior/behavior/score perturbations material enough in retained masks while preserving length.
+
+Evidence boundary:
+- A strict single-cell win is not a final success claim. Final acceptance still requires all strict single-cell gates plus the full 4x7 coverage/compression grid.
+- Any future change must be judged against Checkpoint 4.74 unless it intentionally redefines the candidate baseline.
+- Checkpoint 4.83 is useful evidence about the repair-vs-causality trade-off, but it does not replace Checkpoint 4.74 as the best candidate because its length is invalid.
+- Raw training-fit improvements are not enough. Checkpoint 4.79 showed better fit diagnostics can still worsen retained-mask quality and lose the Douglas-Peucker comparison.
+- Length-only improvements are not enough. Checkpoints 4.65, 4.66, and 4.81 improved length slightly or nearly cleared it but weakened MLQDS, learned control, or causality.
+- A no-repair score win is not enough. Checkpoint 4.83 beat both baselines on QueryUsefulV1 but failed global sanity badly and still failed learning causality.
+
+Rejected-path memory:
+
+| Path | Best observed effect | Rejection reason |
+|---|---:|---|
+| no length repair, `learned_segment_length_repair_fraction=0.0` | MLQDS `0.1759846099523811`; learned-controlled slot fraction `0.8461538461538461` | length collapsed to `0.6790996203798462`; learning causality still failed |
+| full length repair | length `0.7980194800294772` | learned-controlled slot fraction collapsed to `0.203125`; MLQDS lost to Douglas-Peucker |
+| geometry gain `0.25` | length `0.797193150044111` | MLQDS regressed and causality worsened |
+| full prior residual scale `1.0` after route removal | length `0.7939141083394758` | MLQDS `0.16109363670733973`, lost to Douglas-Peucker; shuffled-score causality failed by sign |
+| semantic prior-to-head residual | improved training fit | retained-mask result worsened; MLQDS `0.16054051959902663`, lost to Douglas-Peucker; prior ablations became harmful |
+| point-score blend `0.15` | length `0.7943720026689473` | MLQDS `0.1581758366351451`, lost to Douglas-Peucker; shuffled and untrained causality failed by sign |
+
+Next-checkpoint guardrails:
+- Prefer narrow changes that preserve Checkpoint 4.74's DP win and healthy workload/prior gates.
+- For length work, preserve learned-controlled slots; do not spend the budget with query-free repair that crowds out learned selection.
+- For causality work, focus on making prior/behavior/score perturbations move retained masks materially, not merely improving per-head fit.
+- Score-protected length filling is a plausible diagnostic direction, but it must respect the observed frontier: protecting `25%` learned-score budget currently appears incompatible with the `0.80` length gate.
+- Do not re-test blunt prior-strength escalation unless there is a new mechanism that explains why it will avoid the Checkpoint 4.76 and 4.79 failures.
+- Do not add temporal scaffold or change acceptance thresholds to manufacture a success claim.
+
+Minimum pass condition for the next scientific candidate update:
+- Keep the Checkpoint 4.74 baseline comparable unless there is an explicit reason to reset the baseline.
+- Preserve the MLQDS win over uniform and Douglas-Peucker on `QueryUsefulV1`.
+- Clear `global_sanity_gate`, especially length preservation `>=0.80`.
+- Clear `learning_causality_gate` with material deltas, not only correct signs.
+- Keep `workload_stability`, `workload_signature`, `support_overlap`, `target_diffusion`, `predictability`, and `prior_predictive_alignment` passing.
+- Report whether the change affects learned-controlled slot fraction, segment-budget-head delta, shuffled-score delta, no-prior delta, no-behavior-head delta, and length.
 
 ## Checkpoint 1 — Workload Generator And Profile Health
 
